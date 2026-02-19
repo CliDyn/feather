@@ -67,13 +67,9 @@ class SeasonalCycleDiag(DiagnosticBase):
                     self.experiment, model, var_info.domain,
                 )
                 model_data = self.model_loader.load_var(key, var)
-                ds = self.model_loader.load(key)
-                area = ds["area"] if "area" in ds else np.cos(
-                    np.deg2rad(ds["latitude"])
-                )
 
-                # Global mean at each timestep → monthly climatology
-                ts = global_mean(model_data, area)
+                # HEALPix cells are equal area — simple mean is correct
+                ts = global_mean(model_data).compute()
                 monthly = monthly_climatology(ts, self.period)
                 model_monthly[model] = monthly
 

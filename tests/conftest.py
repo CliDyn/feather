@@ -37,9 +37,8 @@ def synth_healpix():
     # Build 2D field: (time, values)
     temp_2d = temp_base[np.newaxis, :] + seasonal[:, np.newaxis]
 
-    # Cell area (proportional to cos(lat) for simplicity)
-    area = np.cos(np.deg2rad(lat))
-    area = area / area.sum() * 4 * np.pi  # normalise to sphere
+    # HEALPix cells are equal area
+    area = np.ones(ncells) * (4 * np.pi / ncells)
 
     ds = xr.Dataset(
         {

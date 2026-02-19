@@ -1,9 +1,14 @@
 """Spatial utilities: zonal means, global/regional means, regridding, HEALPix mesh."""
 
+import logging
+from functools import lru_cache
+
 import numpy as np
 import xarray as xr
 
 from scipy.spatial import cKDTree
+
+logger = logging.getLogger(__name__)
 
 
 def zonal_mean(da: xr.DataArray, lat: xr.DataArray,
@@ -77,15 +82,20 @@ def zonal_mean(da: xr.DataArray, lat: xr.DataArray,
     return xr.DataArray(out, dims=dims, coords=coords, name=da.name)
 
 
-def global_mean(da: xr.DataArray, area: xr.DataArray) -> xr.DataArray:
-    """Area-weighted global mean.
+def global_mean(da: xr.DataArray,
+                area: xr.DataArray = None) -> xr.DataArray:
+    """Area-weighted global mean for unstructured grids (e.g. HEALPix).
+
+    For HEALPix data (equal-area cells), pass ``area=None`` to compute
+    a simple mean — no area weighting is needed.
 
     Parameters
     ----------
     da : xr.DataArray
         Data array with a spatial dimension.
-    area : xr.DataArray
-        Cell areas with the same spatial dimension.
+    area : xr.DataArray, optional
+        Cell areas.  If *None*, computes a simple (unweighted) mean,
+        which is correct for equal-area grids like HEALPix.
 
     Returns
     -------
@@ -93,8 +103,9 @@ def global_mean(da: xr.DataArray, area: xr.DataArray) -> xr.DataArray:
         Global mean (spatial dimension reduced).
     """
     spatial_dim = _get_spatial_dim(da)
-    weighted = da.weighted(area)
-    return weighted.mean(dim=spatial_dim)
+    if area is not None:
+        return da.weighted(area).mean(dim=spatial_dim)
+    return da.mean(dim=spatial_dim)
 
 
 def regional_mean(da: xr.DataArray, area: xr.DataArray,
@@ -131,31 +142,212 @@ def regional_mean(da: xr.DataArray, area: xr.DataArray,
     return global_mean(da, area)
 
 
-def latlon_global_mean(da: xr.DataArray) -> xr.DataArray:
-    """Cosine-latitude weighted global mean for regular lat/lon grids.
+def latlon_global_mean(da: xr.DataArray,
+                       area: xr.DataArray | np.ndarray = None) -> xr.DataArray:
+    """Area-weighted global mean for regular lat/lon grids.
+
+    Uses proper cell areas computed via ``nereus.mesh_from_arrays()``
+    (or pre-computed areas if provided).  Falls back to cosine-latitude
+    weighting when nereus is not available.
 
     Parameters
     ----------
     da : xr.DataArray
-        Data on a regular lat/lon grid. Latitude coordinate must be named
-        ``'lat'`` or ``'latitude'``.
+        Data on a regular lat/lon grid.
+    area : xr.DataArray or np.ndarray, optional
+        Pre-computed 2-D cell areas with shape ``(nlat, nlon)``.
+        Pass this when you already have areas (e.g. CMIP6 ``areacella``
+        / ``areacello``).  If *None*, areas are computed from the grid
+        coordinates.
 
     Returns
     -------
     xr.DataArray
         Global mean (spatial dimensions reduced).
     """
-    for name in ("lat", "latitude"):
-        if name in da.coords:
-            lat_coord = da[name]
-            break
-    else:
-        raise ValueError(f"No latitude coordinate found in {list(da.coords)}")
+    lat_name, lon_name = _find_latlon_dims(da)
 
-    weights = np.cos(np.deg2rad(lat_coord))
-    spatial_dims = [d for d in da.dims
-                    if d in ("lat", "lon", "latitude", "longitude")]
-    return da.weighted(weights).mean(dim=spatial_dims)
+    if area is None:
+        area = compute_latlon_areas(
+            da[lat_name].values, da[lon_name].values,
+        )
+
+    # Wrap numpy array in a DataArray aligned to da's spatial dims
+    if not isinstance(area, xr.DataArray):
+        area = xr.DataArray(
+            np.asarray(area),
+            dims=(lat_name, lon_name),
+            coords={
+                lat_name: da[lat_name].values,
+                lon_name: da[lon_name].values,
+            },
+        )
+
+    return da.weighted(area).mean(dim=[lat_name, lon_name])
+
+
+def compute_latlon_areas(
+    lat: np.ndarray, lon: np.ndarray,
+) -> np.ndarray:
+    """Compute cell areas (m²) for a regular lat/lon grid.
+
+    Uses ``nereus.mesh_from_arrays()`` for accurate area computation.
+    Results are cached per unique grid shape + bounds so repeated calls
+    with the same grid are free.
+
+    Parameters
+    ----------
+    lat : array-like, 1-D
+        Latitude values in degrees.
+    lon : array-like, 1-D
+        Longitude values in degrees.
+
+    Returns
+    -------
+    np.ndarray, shape (nlat, nlon)
+        Cell areas in m².
+    """
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+
+    # Cache key: grid geometry (length + endpoints)
+    cache_key = (
+        len(lat), len(lon),
+        float(lat[0]), float(lat[-1]),
+        float(lon[0]), float(lon[-1]),
+    )
+    return _cached_latlon_areas(cache_key, tuple(lat), tuple(lon))
+
+
+@lru_cache(maxsize=16)
+def _cached_latlon_areas(cache_key, lat_tuple, lon_tuple):
+    """LRU-cached helper — nereus mesh creation + reshape."""
+    import warnings
+
+    import nereus as nr
+
+    lat = np.array(lat_tuple)
+    lon = np.array(lon_tuple)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # meshgrid info
+        mesh = nr.mesh_from_arrays(lon, lat)
+
+    nlat, nlon = len(lat), len(lon)
+    return mesh.area.values.reshape(nlat, nlon)
+
+
+def _find_latlon_dims(da: xr.DataArray) -> tuple[str, str]:
+    """Identify latitude and longitude dimension names in a DataArray.
+
+    Checks common naming conventions and raises a clear error
+    if neither can be found.
+
+    Returns
+    -------
+    (lat_name, lon_name) : tuple[str, str]
+    """
+    lat_name = lon_name = None
+
+    lat_candidates = {"lat", "latitude", "nav_lat", "y", "rlat", "nlat"}
+    lon_candidates = {"lon", "longitude", "nav_lon", "x", "rlon", "nlon"}
+
+    for dim in da.dims:
+        low = dim.lower()
+        if low in lat_candidates and lat_name is None:
+            lat_name = dim
+        elif low in lon_candidates and lon_name is None:
+            lon_name = dim
+
+    if lat_name is None or lon_name is None:
+        raise ValueError(
+            f"Cannot identify lat/lon dimensions in {da.dims}. "
+            f"Expected names like 'lat'/'lon' or 'latitude'/'longitude'."
+        )
+
+    return lat_name, lon_name
+
+
+class RegridIndex:
+    """Pre-computed nearest-neighbour index from scattered → regular grid.
+
+    Build once with :meth:`build`, then apply to many fields cheaply
+    with :meth:`apply`.
+    """
+
+    def __init__(self, idx: np.ndarray, target_shape: tuple,
+                 target_lats: np.ndarray, target_lons: np.ndarray):
+        self.idx = idx
+        self.target_shape = target_shape
+        self.target_lats = target_lats
+        self.target_lons = target_lons
+
+    @classmethod
+    def build(cls, lon: np.ndarray, lat: np.ndarray,
+              target_lats: np.ndarray, target_lons: np.ndarray) -> "RegridIndex":
+        """Build a KDTree index from source to target grid.
+
+        Parameters
+        ----------
+        lon, lat : array-like, 1-D
+            Source point coordinates in degrees.
+        target_lats, target_lons : array-like, 1-D
+            Target grid coordinates in degrees.
+
+        Returns
+        -------
+        RegridIndex
+        """
+        lon_np = np.asarray(lon).ravel()
+        lat_np = np.asarray(lat).ravel()
+
+        lon_r = np.deg2rad(lon_np)
+        lat_r = np.deg2rad(lat_np)
+        src_xyz = np.column_stack([
+            np.cos(lat_r) * np.cos(lon_r),
+            np.cos(lat_r) * np.sin(lon_r),
+            np.sin(lat_r),
+        ])
+
+        tgt_lons_2d, tgt_lats_2d = np.meshgrid(target_lons, target_lats)
+        lon_t = np.deg2rad(tgt_lons_2d.ravel())
+        lat_t = np.deg2rad(tgt_lats_2d.ravel())
+        tgt_xyz = np.column_stack([
+            np.cos(lat_t) * np.cos(lon_t),
+            np.cos(lat_t) * np.sin(lon_t),
+            np.sin(lat_t),
+        ])
+
+        logger.info(
+            "Building KDTree for %d source → %d×%d target points",
+            len(lon_np), len(target_lats), len(target_lons),
+        )
+        tree = cKDTree(src_xyz)
+        _, idx = tree.query(tgt_xyz)
+
+        return cls(idx, tgt_lats_2d.shape,
+                   np.asarray(target_lats), np.asarray(target_lons))
+
+    def apply(self, data) -> xr.DataArray:
+        """Apply pre-computed index to a data field.
+
+        Parameters
+        ----------
+        data : array-like, 1-D
+            Values at source points.
+
+        Returns
+        -------
+        xr.DataArray
+            Regridded data with dims ``('lat', 'lon')``.
+        """
+        data_np = np.asarray(data).ravel()
+        regridded = data_np[self.idx].reshape(self.target_shape)
+        return xr.DataArray(
+            regridded,
+            dims=("lat", "lon"),
+            coords={"lat": self.target_lats, "lon": self.target_lons},
+        )
 
 
 def regrid_to_latlon(
@@ -164,6 +356,7 @@ def regrid_to_latlon(
     lat: np.ndarray | xr.DataArray,
     target_lats: np.ndarray,
     target_lons: np.ndarray,
+    regrid_index: RegridIndex = None,
 ) -> xr.DataArray:
     """Nearest-neighbour regrid from scattered points to a regular lat/lon grid.
 
@@ -180,44 +373,22 @@ def regrid_to_latlon(
         Target latitude values (degrees, ascending).
     target_lons : array-like, 1-D
         Target longitude values (degrees).
+    regrid_index : RegridIndex, optional
+        Pre-computed index from :class:`RegridIndex.build`.
+        If provided, *lon* and *lat* are ignored and the KDTree is
+        **not** rebuilt — this is much faster for repeated regrids on
+        the same grid.
 
     Returns
     -------
     xr.DataArray
         Regridded data with dimensions ``('lat', 'lon')``.
     """
-    data_np = np.asarray(data).ravel()
-    lon_np = np.asarray(lon).ravel()
-    lat_np = np.asarray(lat).ravel()
+    if regrid_index is not None:
+        return regrid_index.apply(data)
 
-    # Convert source points to 3-D Cartesian (unit sphere)
-    lon_r = np.deg2rad(lon_np)
-    lat_r = np.deg2rad(lat_np)
-    src_xyz = np.column_stack([
-        np.cos(lat_r) * np.cos(lon_r),
-        np.cos(lat_r) * np.sin(lon_r),
-        np.sin(lat_r),
-    ])
-
-    # Build target grid
-    tgt_lons, tgt_lats = np.meshgrid(target_lons, target_lats)
-    lon_t = np.deg2rad(tgt_lons.ravel())
-    lat_t = np.deg2rad(tgt_lats.ravel())
-    tgt_xyz = np.column_stack([
-        np.cos(lat_t) * np.cos(lon_t),
-        np.cos(lat_t) * np.sin(lon_t),
-        np.sin(lat_t),
-    ])
-
-    tree = cKDTree(src_xyz)
-    _, idx = tree.query(tgt_xyz)
-    regridded = data_np[idx].reshape(tgt_lats.shape)
-
-    return xr.DataArray(
-        regridded,
-        dims=("lat", "lon"),
-        coords={"lat": np.asarray(target_lats), "lon": np.asarray(target_lons)},
-    )
+    idx = RegridIndex.build(lon, lat, target_lats, target_lons)
+    return idx.apply(data)
 
 
 def healpix_mesh(ncells: int) -> xr.Dataset:

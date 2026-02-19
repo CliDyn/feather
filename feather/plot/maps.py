@@ -54,14 +54,15 @@ def plot_bias_map(model_data, obs_data, lon, lat, *,
     """
     import cartopy.crs as ccrs
     import nereus as nr
+    from nereus.plotting import get_projection
 
     fig, axes = plt.subplots(
         1, 3, figsize=(20, 5),
-        subplot_kw={"projection": nr.projection(projection)},
+        subplot_kw={"projection": get_projection(projection)},
     )
 
     # --- Panel 1: Model (HEALPix via nereus) ---
-    _, interpolator = nr.plot(
+    _, _, interpolator = nr.plot(
         np.asarray(model_data), np.asarray(lon), np.asarray(lat),
         ax=axes[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
@@ -134,11 +135,12 @@ def plot_single_map(data, lon, lat, *, title="", projection="rob",
     fig, ax, interpolator
     """
     import nereus as nr
+    from nereus.plotting import get_projection
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 6),
-                           subplot_kw={"projection": nr.projection(projection)})
+                           subplot_kw={"projection": get_projection(projection)})
 
-    _, interpolator = nr.plot(
+    _, _, interpolator = nr.plot(
         np.asarray(data), np.asarray(lon), np.asarray(lat),
         ax=ax, projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, **kwargs,

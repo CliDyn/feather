@@ -67,10 +67,6 @@ class TimeseriesDiag(DiagnosticBase):
                     self.experiment, model, var_info.domain,
                 )
                 model_data = self.model_loader.load_var(key, var)
-                ds = self.model_loader.load(key)
-                area = ds["area"] if "area" in ds else np.cos(
-                    np.deg2rad(ds["latitude"])
-                )
 
                 # Slice to period
                 if self.period is not None and "time" in model_data.dims:
@@ -78,7 +74,8 @@ class TimeseriesDiag(DiagnosticBase):
                         time=slice(self.period[0], self.period[1]),
                     )
 
-                ts = global_mean(model_data, area)
+                # HEALPix cells are equal area — simple mean is correct
+                ts = global_mean(model_data).compute()
                 model_ts[model] = ts
 
             # Observation time series
