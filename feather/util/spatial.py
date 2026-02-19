@@ -1,7 +1,9 @@
-"""Spatial utilities: zonal means, global/regional means, HEALPix mesh."""
+"""Spatial utilities: zonal means, global/regional means, regridding, HEALPix mesh."""
 
 import numpy as np
 import xarray as xr
+
+from scipy.spatial import cKDTree
 
 
 def zonal_mean(da: xr.DataArray, lat: xr.DataArray,
@@ -127,6 +129,95 @@ def regional_mean(da: xr.DataArray, area: xr.DataArray,
         area = area.where(mask)
 
     return global_mean(da, area)
+
+
+def latlon_global_mean(da: xr.DataArray) -> xr.DataArray:
+    """Cosine-latitude weighted global mean for regular lat/lon grids.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data on a regular lat/lon grid. Latitude coordinate must be named
+        ``'lat'`` or ``'latitude'``.
+
+    Returns
+    -------
+    xr.DataArray
+        Global mean (spatial dimensions reduced).
+    """
+    for name in ("lat", "latitude"):
+        if name in da.coords:
+            lat_coord = da[name]
+            break
+    else:
+        raise ValueError(f"No latitude coordinate found in {list(da.coords)}")
+
+    weights = np.cos(np.deg2rad(lat_coord))
+    spatial_dims = [d for d in da.dims
+                    if d in ("lat", "lon", "latitude", "longitude")]
+    return da.weighted(weights).mean(dim=spatial_dims)
+
+
+def regrid_to_latlon(
+    data: np.ndarray | xr.DataArray,
+    lon: np.ndarray | xr.DataArray,
+    lat: np.ndarray | xr.DataArray,
+    target_lats: np.ndarray,
+    target_lons: np.ndarray,
+) -> xr.DataArray:
+    """Nearest-neighbour regrid from scattered points to a regular lat/lon grid.
+
+    Uses a 3-D Cartesian KDTree for fast NN lookup (works for any source
+    grid, including HEALPix).
+
+    Parameters
+    ----------
+    data : array-like, 1-D
+        Values at source points.
+    lon, lat : array-like, 1-D
+        Source point coordinates in degrees.
+    target_lats : array-like, 1-D
+        Target latitude values (degrees, ascending).
+    target_lons : array-like, 1-D
+        Target longitude values (degrees).
+
+    Returns
+    -------
+    xr.DataArray
+        Regridded data with dimensions ``('lat', 'lon')``.
+    """
+    data_np = np.asarray(data).ravel()
+    lon_np = np.asarray(lon).ravel()
+    lat_np = np.asarray(lat).ravel()
+
+    # Convert source points to 3-D Cartesian (unit sphere)
+    lon_r = np.deg2rad(lon_np)
+    lat_r = np.deg2rad(lat_np)
+    src_xyz = np.column_stack([
+        np.cos(lat_r) * np.cos(lon_r),
+        np.cos(lat_r) * np.sin(lon_r),
+        np.sin(lat_r),
+    ])
+
+    # Build target grid
+    tgt_lons, tgt_lats = np.meshgrid(target_lons, target_lats)
+    lon_t = np.deg2rad(tgt_lons.ravel())
+    lat_t = np.deg2rad(tgt_lats.ravel())
+    tgt_xyz = np.column_stack([
+        np.cos(lat_t) * np.cos(lon_t),
+        np.cos(lat_t) * np.sin(lon_t),
+        np.sin(lat_t),
+    ])
+
+    tree = cKDTree(src_xyz)
+    _, idx = tree.query(tgt_xyz)
+    regridded = data_np[idx].reshape(tgt_lats.shape)
+
+    return xr.DataArray(
+        regridded,
+        dims=("lat", "lon"),
+        coords={"lat": np.asarray(target_lats), "lon": np.asarray(target_lons)},
+    )
 
 
 def healpix_mesh(ncells: int) -> xr.Dataset:

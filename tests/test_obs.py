@@ -21,7 +21,7 @@ def obs_config(tmp_path):
 
     lats = np.arange(-87.5, 90, 5.0)
     lons = np.arange(2.5, 360, 5.0)
-    time = xr.cftime_range("1990-01", periods=24, freq="MS")
+    time = xr.date_range("1990-01", periods=24, freq="MS")
 
     ds = xr.Dataset({
         "t2m": xr.DataArray(

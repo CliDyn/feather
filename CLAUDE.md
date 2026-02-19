@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 62 unit tests + 2 integration tests.
+Current test count: 95 unit tests + 2 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -44,17 +44,20 @@ feather/                     # Package root
 │   ├── obs.py               # ObsLoader (observations from config)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (27 vars)
 ├── util/
-│   ├── spatial.py           # zonal_mean, global_mean, regional_mean
+│   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, regrid_to_latlon
 │   ├── temporal.py          # climatology, anomaly, seasonal/monthly grouping
 │   └── units.py             # Unit conversion functions
 ├── plot/
-│   ├── maps.py              # plot_bias_map, plot_single_map (nereus-based)
+│   ├── maps.py              # plot_bias_map (3-panel), plot_single_map (nereus-based)
 │   ├── lines.py             # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile
 │   └── styles.py            # MODEL_COLORS, OBS_COLOR, apply_style
 ├── diag/
 │   ├── base.py              # DiagnosticBase ABC (compute → plot → run)
 │   ├── figure_meta.py       # save_figure_with_metadata, build_metadata
-│   └── registry.py          # @register decorator, get/list diagnostics
+│   ├── registry.py          # @register decorator, get/list diagnostics
+│   ├── global_biases.py     # GlobalBiases: climatology bias maps
+│   ├── timeseries.py        # TimeseriesDiag: global-mean time series
+│   └── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
 └── export/                  # Placeholder for future notebook export
 ```
 
@@ -66,7 +69,7 @@ feather/                     # Package root
 | `feather/data/variables.py` | Central variable registry — add new variables here |
 | `feather/diag/base.py` | Base class for all diagnostics — subclass this |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
-| `tests/conftest.py` | Synthetic HEALPix fixture (nside=8, 768 cells) |
+| `tests/conftest.py` | Synthetic HEALPix/obs fixtures, mock loaders, minimal_config |
 | `PLAN.md` | Full implementation plan with phase status |
 
 ## Configuration

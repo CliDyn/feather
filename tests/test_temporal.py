@@ -14,7 +14,7 @@ from feather.util.temporal import (
 
 def _make_timeseries(n_years=3):
     """Helper: create a simple time series with known values."""
-    time = xr.cftime_range("1990-01", periods=12 * n_years, freq="MS")
+    time = xr.date_range("1990-01", periods=12 * n_years, freq="MS")
     # Values: baseline 280 + seasonal cycle (amplitude 10)
     months = np.tile(np.arange(12), n_years)
     values = 280 + 10 * np.sin(2 * np.pi * months / 12)

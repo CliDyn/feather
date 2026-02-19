@@ -43,7 +43,7 @@ We need a lightweight, human-readable framework for evaluating DestinE high-reso
 1. **Data shapes:** Model 2D data is `(time=300, values=12582912)` with 33 vars. Lazy dask loading via intake works well.
 2. **Zonal mean on HEALPix:** 1° lat-band binning works on full-resolution data. At nside=8 (tests), need ≥10° bins to avoid empty polar bins. At nside=1024 (production), 1° is fine.
 3. **ERA5 variable naming:** Variable names inside the NetCDF differ from the file-key names (e.g., file key `t2m` → variable inside is `T2M`). The ObsLoader `_find_variable()` handles this via case-insensitive fallback.
-4. **cftime deprecation:** `xr.cftime_range()` is deprecated; use `xr.date_range(..., use_cftime=True)` in future test code.
+4. **cftime deprecation:** `xr.cftime_range()` is deprecated — all test code migrated to `xr.date_range()` in Phase 3.
 5. **Catalog key convention:** 2D uses `clmn_high`, 3D uses `clmn_standard`. The `DataLoader.make_key()` method encodes this.
 
 ### Verification results
@@ -200,14 +200,17 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   └── default.yaml                  # Default config with Levante paths
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py                   # Synthetic HEALPix fixtures (nside=8)
+│   ├── conftest.py                   # Synthetic fixtures, mock loaders, minimal_config
 │   ├── test_config.py                # 3 tests
 │   ├── test_loader.py                # 6 tests (+ 1 integration)
 │   ├── test_obs.py                   # 5 tests (+ 1 integration)
 │   ├── test_spatial.py               # 5 tests
 │   ├── test_temporal.py              # 7 tests
 │   ├── test_figure_metadata.py       # 18 tests
-│   └── test_diag_base.py             # 18 tests
+│   ├── test_diag_base.py             # 18 tests
+│   ├── test_global_biases.py         # 16 tests
+│   ├── test_timeseries.py            # 9 tests
+│   └── test_seasonal_cycle.py        # 8 tests
 └── feather/
     ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader
     ├── config.py                     # FeatherConfig dataclass + YAML loader
@@ -218,71 +221,84 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   └── variables.py              # VarInfo + VARIABLE_REGISTRY (27 vars)
     ├── util/
     │   ├── __init__.py
-    │   ├── spatial.py                # zonal_mean, global_mean, regional_mean
+    │   ├── spatial.py                # zonal_mean, global_mean, latlon_global_mean, regrid_to_latlon
     │   ├── temporal.py               # climatology, seasonal, monthly, anomaly, annual_mean
     │   └── units.py                  # K↔°C, precip flux↔mm/day, Pa↔hPa
     ├── plot/
     │   ├── __init__.py
-    │   ├── maps.py                   # plot_bias_map, plot_single_map (nereus)
+    │   ├── maps.py                   # plot_bias_map (3-panel), plot_single_map (nereus)
     │   ├── lines.py                  # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile
     │   └── styles.py                 # MODEL_COLORS, OBS_COLOR, apply_style
     ├── diag/
-    │   ├── __init__.py               # Exports DiagnosticBase, register, build_metadata, etc.
+    │   ├── __init__.py               # Exports + auto-imports diagnostics for @register
     │   ├── base.py                   # DiagnosticBase ABC (compute → plot → run)
     │   ├── figure_meta.py            # save_figure_with_metadata, build_metadata
-    │   └── registry.py               # @register, get_diagnostic, list_diagnostics
+    │   ├── registry.py               # @register, get_diagnostic, list_diagnostics
+    │   ├── global_biases.py          # GlobalBiases diagnostic
+    │   ├── timeseries.py             # TimeseriesDiag diagnostic
+    │   └── seasonal_cycle.py         # SeasonalCycleDiag diagnostic
     └── export/
         └── __init__.py               # Placeholder
 ```
 
 ---
 
-## Phase 3: First Diagnostics
+## Phase 3: First Diagnostics — COMPLETED
 
-### Step 3.1 — Global biases diagnostic
+**Status:** All 3 diagnostics implemented and verified.
 
-**File:** `feather/diag/global_biases.py`
+### What was built
 
-Climatology bias maps (model − obs), 3-panel maps via `plot_bias_map()`.
+| Module | File | Status |
+|--------|------|--------|
+| Spatial utils additions | `feather/util/spatial.py` (+`latlon_global_mean`, `regrid_to_latlon`) | Done |
+| Bias map plotting | `feather/plot/maps.py` (rewritten `plot_bias_map`) | Done |
+| Global biases diagnostic | `feather/diag/global_biases.py` | Done |
+| Time series diagnostic | `feather/diag/timeseries.py` | Done |
+| Seasonal cycle diagnostic | `feather/diag/seasonal_cycle.py` | Done |
+| Diag `__init__` imports | `feather/diag/__init__.py` (auto-registers diagnostics) | Done |
+| Shared test fixtures | `tests/conftest.py` (+MockModelLoader, MockObsLoader, minimal_config) | Done |
+| Global biases tests | `tests/test_global_biases.py` (16 tests) | Done |
+| Timeseries tests | `tests/test_timeseries.py` (9 tests) | Done |
+| Seasonal cycle tests | `tests/test_seasonal_cycle.py` (8 tests) | Done |
 
-For each model × variable:
-1. Compute model climatology (time-mean over period)
-2. Load matching obs climatology
-3. Compute bias = model − obs
-4. Generate 3-panel figure: Model | Observation | Bias
-5. Compute summary statistics (global_mean_bias, RMSE, bias_range)
-6. Save with full metadata JSON
+### Key design decisions from Phase 3
 
-**Figures produced per variable:**
-- `{var}_annual_bias_{model}.png` + `.json` — annual mean bias map
-- `{var}_seasonal_bias_{model}_{season}.png` + `.json` — seasonal bias maps (DJF, JJA)
+1. **NN regridding via scipy KDTree.** `regrid_to_latlon()` in `spatial.py` converts source lon/lat to 3D Cartesian coords and uses `cKDTree` for nearest-neighbour lookup. Works for any source grid (HEALPix, curvilinear, unstructured) without depending on healpy ordering. At nside=8 (test) and nside=1024 (production), this is efficient.
 
-**Important notes for implementation:**
-- Obs data is on regular lat/lon; model data is on HEALPix. For bias computation, either regrid obs to HEALPix or compute global scalars separately. For map plotting, nereus handles the HEALPix → regular grid interpolation.
-- The `plot_bias_map()` in `feather/plot/maps.py` currently has placeholder logic for the obs and bias panels — needs to be completed with actual regridding/plotting.
+2. **Pre-computed bias for plotting.** `plot_bias_map()` now accepts an optional `bias_data` parameter (xr.DataArray on regular grid). The diagnostic's `compute()` does the regridding + bias calculation, and `plot()` just visualizes. This keeps the plotting code simple and testable.
 
-### Step 3.2 — Time series diagnostic
+3. **Three-panel bias map: HEALPix + cartopy + cartopy.** Model panel uses `nr.plot()` on HEALPix (NN interpolation to regular grid for display). Obs and bias panels use standard `xr.DataArray.plot()` with cartopy `PlateCarree` transform. Bias colorbar is symmetric (98th percentile of |bias|).
 
-**File:** `feather/diag/timeseries.py`
+4. **cftime → matplotlib compatibility.** Time series plot uses a `_to_plot_time()` helper that converts cftime datetime objects to pandas Timestamps via string parsing, since matplotlib cannot directly plot cftime dates.
 
-Global-mean time series (model vs obs).
+5. **Diagnostics are configurable at construction.** All three accept `variables=`, `experiment=`, and `period=` overrides. The class-level defaults (`variables=["avg_2t"]`, `experiment="baseline_hist"`, `period=("1990","2014")`) cover the most common use case.
 
-For each model × variable:
-1. Compute area-weighted global mean at each timestep
-2. Same for obs (regrid or already global)
-3. Plot time series overlay
-4. Save with metadata including correlation, trend
+6. **Cos-lat weighted obs global mean.** `latlon_global_mean()` uses `np.cos(deg2rad(lat))` weighting for regular grids, handling both `lat`/`latitude` coordinate names.
 
-### Step 3.3 — Seasonal cycle diagnostic
+7. **Mock loaders in conftest.py.** `MockModelLoader` wraps `synth_healpix` dataset and returns it for any key. `MockObsLoader` wraps `synth_obs` dataset. This lets diagnostic tests run without real data or intake catalogs.
 
-**File:** `feather/diag/seasonal_cycle.py`
+### Figures produced per diagnostic
 
-Monthly climatological cycle (Jan-Dec) comparison.
+- **global_biases:** Per model × variable: `{var}_annual_bias_{model}.png`, `{var}_djf_bias_{model}.png`, `{var}_jja_bias_{model}.png` (3 figures × N models × N variables)
+- **timeseries:** Per variable: `{var}_timeseries.png` (all models + obs on same axes)
+- **seasonal_cycle:** Per variable: `{var}_seasonal_cycle.png` (all models + obs on same axes)
 
-For each variable:
-1. Compute monthly climatology (model + obs)
-2. Plot 12-month cycle (all models + obs on same axes)
-3. Save with metadata
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 95/95 passed
+pytest tests/ -v -m "integration"      → 2/2 passed
+Total: 97 tests (33 new + 64 existing)
+```
+
+### Practical notes for future diagnostics
+
+- **NN regridding at nside=8 introduces ~1-3K error in global mean.** Test tolerances must account for this. At nside=1024 (production), NN error is negligible (<0.1K).
+- **`scipy.spatial.cKDTree` is the only dependency for `regrid_to_latlon`.** It works on any scattered source grid — no dependence on HEALPix ordering (nest vs ring) or the healpy/nereus libraries. This is deliberate: keeps regridding testable without heavy imports.
+- **cftime dates cannot be plotted by matplotlib directly.** The `_to_plot_time()` helper in `timeseries.py` converts via `pd.to_datetime([str(t) for t in time_values])`. If `nc_time_axis` is available it would handle this automatically, but the string-parsing approach is simpler and always works.
+- **`plot_bias_map` requires nereus.** Tests that call it must either mock it (as in `test_global_biases.py`) or be marked as integration tests. The `compute()` methods of all diagnostics do NOT need nereus — only `plot()` for map-based diagnostics.
+- **xr.Dataset.area may not exist in all catalog entries.** Diagnostics fall back to `np.cos(np.deg2rad(lat))` when `"area"` is not in the dataset. For HEALPix grids, all cells have equal area, so uniform weighting would also be valid.
 
 ---
 
@@ -652,21 +668,11 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-After Phase 2 (done), the recommended order is:
+After Phase 3 (done), the recommended order is:
 
-1. **Phase 3** — First diagnostics (global_biases, timeseries, seasonal_cycle)
-2. **Phase 5** — LLM analysis pipeline (can test with Phase 3 figures)
-3. **Phase 6** — Web dashboard (can test with Phase 3 figures + Phase 5 analyses)
-4. **Phase 4** — CMIP6 loader (adds optional comparison to existing diagnostics)
-5. **Phase 7** — Pipeline runner (ties everything together)
-6. **Phase 8-9** — Additional diagnostics
-7. **Phase 10** — Export / notebook generation
-
-### Important considerations for Phase 3
-
-- **`plot_bias_map()` needs work.** The current implementation in `feather/plot/maps.py` has placeholder text for the obs and bias panels. To produce real bias maps, either:
-  (a) Regrid obs to HEALPix and compute bias on native grid, then plot all three via `nr.plot()`, or
-  (b) Regrid model to regular grid, compute bias on regular grid, and plot with `pcolormesh`.
-  Option (a) is preferred as it keeps everything on HEALPix until the plotting step.
-- **Global mean for obs vs model.** The model global mean uses `nr.surface_mean(data, area)` on HEALPix. For obs on regular lat/lon, use latitude-weighted mean (`cos(lat)` weighting).
-- **Period alignment.** Model data is 1990-2014 (300 months). Obs may have different periods — always slice obs to match model period before comparison.
+1. **Phase 5** — LLM analysis pipeline (can test with Phase 3 figures)
+2. **Phase 6** — Web dashboard (can test with Phase 3 figures + Phase 5 analyses)
+3. **Phase 4** — CMIP6 loader (adds optional comparison to existing diagnostics)
+4. **Phase 7** — Pipeline runner (ties everything together)
+5. **Phase 8-9** — Additional diagnostics
+6. **Phase 10** — Export / notebook generation

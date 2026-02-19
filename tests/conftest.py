@@ -4,6 +4,12 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from feather.config import FeatherConfig
+from feather.data.loader import DataLoader
+
+
+# ── Synthetic data fixtures ──────────────────────────────────────────
+
 
 @pytest.fixture
 def synth_healpix():
@@ -23,7 +29,7 @@ def synth_healpix():
     temp_base = 300 - 40 * np.abs(lat / 90.0)
 
     # Create monthly time axis (12 months)
-    time = xr.cftime_range("1990-01", periods=12, freq="MS", calendar="standard")
+    time = xr.date_range("1990-01", periods=12, freq="MS", calendar="standard")
 
     # Add seasonal cycle: +5K in summer, -5K in winter (NH convention)
     seasonal = 5 * np.sin(2 * np.pi * (np.arange(12) - 3) / 12)
@@ -57,7 +63,7 @@ def synth_obs():
     """
     lats = np.arange(-87.5, 90, 5.0)
     lons = np.arange(2.5, 360, 5.0)
-    time = xr.cftime_range("1990-01", periods=12, freq="MS", calendar="standard")
+    time = xr.date_range("1990-01", periods=12, freq="MS", calendar="standard")
 
     # Temperature gradient matching synth_healpix
     lat_grid, lon_grid = np.meshgrid(lats, lons, indexing="ij")
@@ -75,3 +81,70 @@ def synth_obs():
         }
     )
     return ds
+
+
+# ── Configuration fixture ────────────────────────────────────────────
+
+
+@pytest.fixture
+def minimal_config(tmp_path):
+    """Minimal FeatherConfig for testing diagnostics."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ifs-fesom"],
+        obs_root="",
+        obs_datasets={},
+        cmip6={"enabled": False},
+        dask={},
+        nereus={},
+        output_dir=str(tmp_path / "output"),
+    )
+
+
+# ── Mock data loaders ────────────────────────────────────────────────
+
+
+class MockModelLoader:
+    """Mock DataLoader that returns the given dataset for any key."""
+
+    def __init__(self, dataset: xr.Dataset):
+        self._ds = dataset
+
+    def load(self, key: str) -> xr.Dataset:
+        return self._ds
+
+    def load_var(self, key: str, variable: str) -> xr.DataArray:
+        return self._ds[variable]
+
+    @staticmethod
+    def make_key(experiment, model, domain, member=1):
+        return DataLoader.make_key(experiment, model, domain, member)
+
+
+class MockObsLoader:
+    """Mock ObsLoader that returns a fixed DataArray for any request."""
+
+    def __init__(self, dataset: xr.Dataset, var_name: str = "t2m"):
+        self._ds = dataset
+        self._var_name = var_name
+
+    def load(self, dataset, variable, period=None):
+        da = self._ds[self._var_name]
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
+    def load_for_model_var(self, model_var, period=None):
+        return self.load(None, None, period=period)
+
+
+@pytest.fixture
+def mock_model_loader(synth_healpix):
+    """MockModelLoader backed by synth_healpix."""
+    return MockModelLoader(synth_healpix)
+
+
+@pytest.fixture
+def mock_obs_loader(synth_obs):
+    """MockObsLoader backed by synth_obs."""
+    return MockObsLoader(synth_obs)
