@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 95 unit tests + 2 integration tests.
+Current test count: 142 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -42,6 +42,7 @@ feather/                     # Package root
 ├── data/
 │   ├── loader.py            # DataLoader (intake catalogs + file paths)
 │   ├── obs.py               # ObsLoader (observations from config)
+│   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (27 vars)
 ├── util/
 │   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, regrid_to_latlon
@@ -69,7 +70,8 @@ feather/                     # Package root
 | `feather/data/variables.py` | Central variable registry — add new variables here |
 | `feather/diag/base.py` | Base class for all diagnostics — subclass this |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
-| `tests/conftest.py` | Synthetic HEALPix/obs fixtures, mock loaders, minimal_config |
+| `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
+| `tests/conftest.py` | Synthetic HEALPix/obs/CMIP6 fixtures, mock loaders, minimal_config |
 | `PLAN.md` | Full implementation plan with phase status |
 
 ## Configuration
@@ -183,9 +185,20 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `save_figure_with_metadata()` appends `generated_at` timestamp without mutating input dict
 - The metadata JSON is the contract between diagnostics → LLM analyzer → dashboard
 
+### CMIP6 data
+- `CMIP6Loader` loads per-variable zarr files directly (no intake at load time) — avoids staggered-grid conflicts
+- Two ensemble modes: `"one_per_model"` (first variant per model) or `"all_members"` (all variants)
+- Config supports both `variants: [list]` (new) and `variant: str` (legacy) format
+- `load_var()` returns `None` for missing data — diagnostics should handle gracefully
+- Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
+- Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
+- Diagnostic integration not yet done — loader is ready but diagnostics don't call it yet
+
 ### Test fixtures
 - `synth_healpix` in `conftest.py`: nside=8, 768 cells, 12 timesteps, temperature gradient pole→equator
 - `synth_obs` in `conftest.py`: 5° regular lat/lon grid, matching temperature field
+- `synth_cmip6` in `conftest.py`: 5° lat/lon grid, 12 timesteps, `tas` + `areacella`
+- `MockCMIP6Loader` in `conftest.py`: follows real CMIP6Loader API with synthetic data
 - Registry tests use `autouse` fixture to save/restore `_REGISTRY` global state
 
 ## Dependencies

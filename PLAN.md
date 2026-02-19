@@ -205,7 +205,8 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── run_global_biases.py          # CLI: argparse-based global biases runner
 │   ├── run_timeseries.py             # CLI: time series runner
 │   ├── run_seasonal_cycle.py         # CLI: seasonal cycle runner
-│   └── run_all.py                    # CLI: run all diagnostics with --diagnostics filter
+│   ├── run_all.py                    # CLI: run all diagnostics with --diagnostics filter
+│   └── test_cmip6_e2e.py            # E2E CMIP6 test (run on compute node)
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py                   # Synthetic fixtures, mock loaders, minimal_config
@@ -218,14 +219,16 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_diag_base.py             # 18 tests
 │   ├── test_global_biases.py         # 16 tests
 │   ├── test_timeseries.py            # 9 tests
-│   └── test_seasonal_cycle.py        # 8 tests
+│   ├── test_seasonal_cycle.py        # 8 tests
+│   └── test_cmip6.py                # 47 unit + 2 integration tests
 └── feather/
-    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader
+    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader
     ├── config.py                     # FeatherConfig dataclass + YAML loader
     ├── data/
     │   ├── __init__.py
     │   ├── loader.py                 # DataLoader: catalog + paths
     │   ├── obs.py                    # ObsLoader: config-driven obs access
+    │   ├── cmip6.py                  # CMIP6Loader: zarr loading + multi-model mean
     │   └── variables.py              # VarInfo + VARIABLE_REGISTRY (27 vars)
     ├── util/
     │   ├── __init__.py
@@ -328,27 +331,77 @@ Total: 97 tests (33 new + 64 existing)
 
 ---
 
-## Phase 4: CMIP6 Loader
+## Phase 4: CMIP6 Loader — COMPLETED
 
-**File:** `feather/data/cmip6.py`
+**Status:** CMIP6Loader implemented and verified (47 new tests, 142 total passing).
 
-Simplified CMIP6 loader adapted from existing implementation at
-`/home/a/a270088/PYTHON/DestinE/phase2/.../cmip6_loader.py`.
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| CMIP6 Loader | `feather/data/cmip6.py` (~320 lines) | Done |
+| Config update | `configs/default.yaml` (ensemble_mode, multi-variant models) | Done |
+| Exports | `feather/data/__init__.py`, `feather/__init__.py` | Done |
+| Test fixtures | `tests/conftest.py` (synth_cmip6, MockCMIP6Loader, cmip6_config) | Done |
+| Tests | `tests/test_cmip6.py` (47 unit + 2 integration tests) | Done |
+
+### CMIP6Loader API
 
 ```python
 class CMIP6Loader:
-    """Load CMIP6 historical climatologies for comparison."""
+    """Load CMIP6 data and compute multi-model mean on a common grid."""
 
-    def __init__(self, config: FeatherConfig): ...
-
-    def load_var(self, cmip6_var: str, model: str, experiment: str = "historical",
-                 period: tuple[str, str] = None) -> xr.DataArray: ...
-
-    def load_multi_model_mean(self, cmip6_var: str,
-                               period: tuple[str, str] = None) -> xr.DataArray: ...
-
-    def available_models(self, cmip6_var: str) -> list[str]: ...
+    def load_var(cmip6_var, model, *, variant, table, period, season) -> DataArray | None
+    def load_var_for_model_var(model_var, model, **kw) -> DataArray | None
+    def load_multi_model_mean(cmip6_var, *, table, period, season, ensemble_mode) -> (DataArray | None, info)
+    def load_mmm_for_model_var(model_var, **kw) -> (DataArray | None, info)
+    def load_area(model, variant, table) -> DataArray | None
+    def available_models(cmip6_var, table) -> list[str]
+    def available_members(cmip6_var, table) -> list[tuple[str, str]]
+    def available_models_for_model_var(model_var) -> list[str]
 ```
+
+### Key design decisions from Phase 4
+
+1. **Per-variable zarr loading only (no intake at load time).** Avoids staggered-grid conflicts that occur when loading merged multi-variable datasets. Path format: `{zarr_dir}/{Model}_historical_{variant}_{table}_{var}.zarr`.
+
+2. **Two ensemble modes.** Config default `ensemble_mode: "one_per_model"` uses first variant per model (7 members for MMM). `"all_members"` uses all listed variants (~35 members). Per-call override via `ensemble_mode` kwarg on `load_multi_model_mean()`.
+
+3. **Backward-compatible variant config.** `_get_variants(model_cfg)` supports both new `variants: [list]` and legacy `variant: str` format.
+
+4. **Calendar normalization inside `load_var()`.** Different CMIP6 models use 360_day, noleap, standard calendars with different mid-month conventions. `_normalize_time()` converts all to first-of-month pandas timestamps before time slicing.
+
+5. **Silent skip for missing data.** `load_var()` returns `None` when zarr not found or variable missing. `load_multi_model_mean()` collects models_skipped in info dict.
+
+6. **Regular grid meshgrid for RegridIndex.** CMIP6 data is on regular lat/lon grids (1D lat + 1D lon arrays of different length). Must meshgrid before passing to `RegridIndex.build()` which expects scattered points of equal length.
+
+7. **Area weights cached per `{model}_{variant}_{table}` key.** `load_area()` looks for `areacella` (fx table, atmosphere) or `areacello` (Ofx table, ocean).
+
+### Config changes
+
+- `regrid_resolution`: 0.25 → 1.0 (sufficient for CMIP6 comparison)
+- `ensemble_mode: "one_per_model"` added
+- `influence_radius` removed (not used by feather's RegridIndex)
+- Models expanded from single `variant: str` to `variants: [list]` (7 models, up to 6 variants each)
+
+### Verification results
+
+```
+pytest tests/test_cmip6.py -v -m "not integration"  → 47/47 passed
+pytest tests/ -v -m "not integration"                → 142/142 passed (47 new + 95 existing)
+```
+
+### Important TODO: Replace RegridIndex with nereus RegridInterpolator
+
+Feather's `RegridIndex` (in `util/spatial.py`) reimplements the same Cartesian-KDTree NN algorithm that nereus's `nr.RegridInterpolator` provides. Key differences:
+
+| Feature | Feather `RegridIndex` | Nereus `RegridInterpolator` |
+|---------|----------------------|----------------------------|
+| Target grid | Manual target arrays | Auto-generated from `resolution` |
+| Influence radius | None — every cell gets a value | 80km default — distant points become NaN |
+| Multi-dim input | 1D only | 1D, 2D, ND natively |
+
+The influence radius matters: without it, ocean values bleed onto land (and vice versa), creating artifacts. This refactor should replace `RegridIndex` with `nr.RegridInterpolator` everywhere: `util/spatial.py`, `data/cmip6.py`, and any diagnostic that calls `RegridIndex` or `regrid_to_latlon`.
 
 CMIP6 comparison is always optional (`cmip6.enabled` in config). When enabled, diagnostics add:
 - CMIP6 MMM line/panel to existing figures
