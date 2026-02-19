@@ -40,7 +40,7 @@ We need a lightweight, human-readable framework for evaluating DestinE high-reso
 
 ### Key findings from Phase 1
 
-1. **Data shapes:** Model 2D data is `(time=300, values=12582912)` with 33 vars. Lazy dask loading via intake works well.
+1. **Data shapes:** Model 2D data is `(time=300, values=12582912)` with 33 vars. Lazy dask loading via intake works well. Datasets contain `longitude`, `latitude`, `time`, and variable data — but NO `area` variable. HEALPix cells are equal area, so simple `.mean()` suffices for spatial averages.
 2. **Zonal mean on HEALPix:** 1° lat-band binning works on full-resolution data. At nside=8 (tests), need ≥10° bins to avoid empty polar bins. At nside=1024 (production), 1° is fine.
 3. **ERA5 variable naming:** Variable names inside the NetCDF differ from the file-key names (e.g., file key `t2m` → variable inside is `T2M`). The ObsLoader `_find_variable()` handles this via case-insensitive fallback.
 4. **cftime deprecation:** `xr.cftime_range()` is deprecated — all test code migrated to `xr.date_range()` in Phase 3.
@@ -160,7 +160,9 @@ CMIP6_VAR_MAP = {
 ### Nereus Library (installed in conda `nereus` env)
 
 Reuse from nereus:
-- `nr.plot(data, lon, lat, ...)` — map plotting with NN interpolation, returns reusable `interpolator`
+- `nr.plot(data, lon, lat, *, ax, projection, resolution, interpolator, cmap, vmin, vmax, colorbar, colorbar_label, title, ...)` → `(fig, ax, interpolator)` — **3 return values**, map plotting with NN interpolation
+- `nereus.plotting.get_projection(name)` — returns cartopy projection object (NOT `nr.projection()` which doesn't exist)
+- `nr.mesh_from_arrays(lon, lat)` → mesh with `.area` attribute — compute cell areas for regular grids
 - `nr.transect(data, lon, lat, depth, start, end, ...)` — vertical cross-sections
 - `nr.regrid()` / `RegridInterpolator` — NN regridding with caching
 - `nr.surface_mean(data, area)` — area-weighted surface mean
@@ -196,8 +198,14 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 ├── pyproject.toml
 ├── PLAN.md
 ├── CLAUDE.md
+├── README.md
 ├── configs/
 │   └── default.yaml                  # Default config with Levante paths
+├── scripts/
+│   ├── run_global_biases.py          # CLI: argparse-based global biases runner
+│   ├── run_timeseries.py             # CLI: time series runner
+│   ├── run_seasonal_cycle.py         # CLI: seasonal cycle runner
+│   └── run_all.py                    # CLI: run all diagnostics with --diagnostics filter
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py                   # Synthetic fixtures, mock loaders, minimal_config
@@ -221,7 +229,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   └── variables.py              # VarInfo + VARIABLE_REGISTRY (27 vars)
     ├── util/
     │   ├── __init__.py
-    │   ├── spatial.py                # zonal_mean, global_mean, latlon_global_mean, regrid_to_latlon
+    │   ├── spatial.py                # zonal_mean, global_mean, latlon_global_mean, RegridIndex, regrid_to_latlon, compute_latlon_areas
     │   ├── temporal.py               # climatology, seasonal, monthly, anomaly, annual_mean
     │   └── units.py                  # K↔°C, precip flux↔mm/day, Pa↔hPa
     ├── plot/
@@ -251,8 +259,9 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 
 | Module | File | Status |
 |--------|------|--------|
-| Spatial utils additions | `feather/util/spatial.py` (+`latlon_global_mean`, `regrid_to_latlon`) | Done |
-| Bias map plotting | `feather/plot/maps.py` (rewritten `plot_bias_map`) | Done |
+| Spatial utils additions | `feather/util/spatial.py` (+`latlon_global_mean`, `regrid_to_latlon`, `RegridIndex`, `compute_latlon_areas`) | Done |
+| Bias map plotting | `feather/plot/maps.py` (`plot_bias_map` using `nr.plot()` for all panels) | Done |
+| CLI scripts | `scripts/run_global_biases.py`, `run_timeseries.py`, `run_seasonal_cycle.py`, `run_all.py` | Done |
 | Global biases diagnostic | `feather/diag/global_biases.py` | Done |
 | Time series diagnostic | `feather/diag/timeseries.py` | Done |
 | Seasonal cycle diagnostic | `feather/diag/seasonal_cycle.py` | Done |
@@ -264,17 +273,17 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 
 ### Key design decisions from Phase 3
 
-1. **NN regridding via scipy KDTree.** `regrid_to_latlon()` in `spatial.py` converts source lon/lat to 3D Cartesian coords and uses `cKDTree` for nearest-neighbour lookup. Works for any source grid (HEALPix, curvilinear, unstructured) without depending on healpy ordering. At nside=8 (test) and nside=1024 (production), this is efficient.
+1. **NN regridding via `RegridIndex` (scipy KDTree).** `RegridIndex.build()` converts source lon/lat to 3D Cartesian coords and builds a `cKDTree` once. `RegridIndex.apply()` does cheap index lookup for subsequent fields. The convenience function `regrid_to_latlon()` wraps this. At nside=1024 (12.6M source points), building the KDTree takes ~30s but each `.apply()` is ~1s — critical since global_biases calls it 9+ times (3 models × annual + DJF + JJA).
 
 2. **Pre-computed bias for plotting.** `plot_bias_map()` now accepts an optional `bias_data` parameter (xr.DataArray on regular grid). The diagnostic's `compute()` does the regridding + bias calculation, and `plot()` just visualizes. This keeps the plotting code simple and testable.
 
-3. **Three-panel bias map: HEALPix + cartopy + cartopy.** Model panel uses `nr.plot()` on HEALPix (NN interpolation to regular grid for display). Obs and bias panels use standard `xr.DataArray.plot()` with cartopy `PlateCarree` transform. Bias colorbar is symmetric (98th percentile of |bias|).
+3. **Three-panel bias map uses nereus for all panels.** All three panels (model, obs, bias) use `nr.plot()` for consistent sizing and colorbar placement. Model data is regridded to the obs grid in `compute()`, so all panels share the same lat/lon grid and can reuse the nereus interpolator. Bias colorbar is symmetric (98th percentile of |bias|). Shared vmin/vmax for model+obs panels computed from 2nd/98th percentile.
 
 4. **cftime → matplotlib compatibility.** Time series plot uses a `_to_plot_time()` helper that converts cftime datetime objects to pandas Timestamps via string parsing, since matplotlib cannot directly plot cftime dates.
 
 5. **Diagnostics are configurable at construction.** All three accept `variables=`, `experiment=`, and `period=` overrides. The class-level defaults (`variables=["avg_2t"]`, `experiment="baseline_hist"`, `period=("1990","2014")`) cover the most common use case.
 
-6. **Cos-lat weighted obs global mean.** `latlon_global_mean()` uses `np.cos(deg2rad(lat))` weighting for regular grids, handling both `lat`/`latitude` coordinate names.
+6. **Obs global mean uses nereus cell areas.** `latlon_global_mean()` computes proper cell areas via `nereus.mesh_from_arrays()` with LRU caching. Accepts optional pre-computed areas for CMIP6 `areacella`/`areacello`. Robust dim name detection supports `lat`/`latitude`/`nav_lat`/`y`/`rlat` and equivalents.
 
 7. **Mock loaders in conftest.py.** `MockModelLoader` wraps `synth_healpix` dataset and returns it for any key. `MockObsLoader` wraps `synth_obs` dataset. This lets diagnostic tests run without real data or intake catalogs.
 
@@ -294,11 +303,28 @@ Total: 97 tests (33 new + 64 existing)
 
 ### Practical notes for future diagnostics
 
+- **HEALPix grids are equal area — no area weighting needed.** Use `global_mean(data)` with `area=None` (simple `.mean()`) for model data on HEALPix. Using `cos(lat)` weights on equal-area cells over-weights the tropics and introduces a ~+3.3K warm bias for temperature. This was the single biggest bug found during initial testing.
+- **Regular lat/lon grids need proper area weighting.** For observations (ERA5 etc.) use `latlon_global_mean()` which computes cell areas via `nereus.mesh_from_arrays()`. Unweighted means on lat/lon grids over-weight polar regions and are ~8K too cold for temperature.
+- **CMIP6 area weighting must use `areacella`/`areacello`.** The CMIP6 catalog has 234 area-weight files (`{Model}_{Experiment}_{Variant}_{fx|Ofx}_areacell{a|o}.zarr`). Do NOT use `cos(lat)` for CMIP6 — models may have irregular grids.
+- **Dask arrays need explicit `.compute()` after reductions.** When loading model data via intake catalogs, data is dask-backed. After computing climatologies or global means, call `.compute()` to materialise before passing to numpy operations or storing in results dicts.
+- **`RegridIndex` builds KDTree once, applies cheaply.** At nside=1024, the model grid has 12.6M points. Building the KDTree takes ~30s but lookup is fast (~1s). All models share the same HEALPix grid, so one index serves all 3 models × all seasons. Never rebuild per field.
 - **NN regridding at nside=8 introduces ~1-3K error in global mean.** Test tolerances must account for this. At nside=1024 (production), NN error is negligible (<0.1K).
-- **`scipy.spatial.cKDTree` is the only dependency for `regrid_to_latlon`.** It works on any scattered source grid — no dependence on HEALPix ordering (nest vs ring) or the healpy/nereus libraries. This is deliberate: keeps regridding testable without heavy imports.
-- **cftime dates cannot be plotted by matplotlib directly.** The `_to_plot_time()` helper in `timeseries.py` converts via `pd.to_datetime([str(t) for t in time_values])`. If `nc_time_axis` is available it would handle this automatically, but the string-parsing approach is simpler and always works.
-- **`plot_bias_map` requires nereus.** Tests that call it must either mock it (as in `test_global_biases.py`) or be marked as integration tests. The `compute()` methods of all diagnostics do NOT need nereus — only `plot()` for map-based diagnostics.
-- **xr.Dataset.area may not exist in all catalog entries.** Diagnostics fall back to `np.cos(np.deg2rad(lat))` when `"area"` is not in the dataset. For HEALPix grids, all cells have equal area, so uniform weighting would also be valid.
+- **cftime dates cannot be plotted by matplotlib directly.** The `_to_plot_time()` helper in `timeseries.py` converts via `pd.to_datetime([str(t) for t in time_values])`.
+- **`plot_bias_map` requires nereus.** Tests that call it must either mock it (as in `test_global_biases.py`) or be marked as integration tests. The `compute()` methods do NOT need nereus — only `plot()` for map-based diagnostics.
+
+### nereus API reference (verified)
+
+- `nr.plot(data, lon, lat, *, ax, projection, resolution, interpolator, cmap, vmin, vmax, colorbar, colorbar_label, title, ...)` → `(fig, ax, interpolator)` — **3 return values**
+- `nereus.plotting.get_projection(name)` — returns cartopy projection (NOT `nr.projection()`, which doesn't exist)
+- `nr.mesh_from_arrays(lon, lat)` → mesh with `.area` attribute — for computing cell areas of regular grids
+- `nr.surface_mean(data, area)` — area-weighted surface mean
+
+### Lessons learned
+
+1. **Always verify area weighting.** The most common climate data trap: unweighted mean on lat/lon is ~8K cold; cos(lat) on equal-area HEALPix is ~3K warm. Both fail silently.
+2. **Don't mix plotting APIs.** Using `nr.plot()` for one panel and `xr.DataArray.plot()` for another creates inconsistent colorbars and panel sizes. Use the same API for all panels.
+3. **Build expensive indices once.** KDTree from 12.6M points takes ~30s. Building it 9 times (3 models × 3 time periods) made the diagnostic take 5+ minutes instead of ~1 minute.
+4. **Model datasets may not contain `area`.** The intake catalog datasets have `longitude`, `latitude`, `time`, and variable data — but no `area` variable. HEALPix being equal-area makes this a non-issue for global means.
 
 ---
 
