@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feather"
+version = "0.1.0"
+description = "Lightweight climate model evaluation framework for DestinE simulations"
+requires-python = ">=3.10"
+dependencies = [
+    "xarray",
+    "dask",
+    "distributed",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "cartopy",
+    "intake",
+    "intake-xarray",
+    "healpy",
+    "nereus",
+    "pyyaml",
+    "netcdf4",
+    "zarr",
+    "cmocean",
+    "nbformat",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+include = ["feather*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests requiring real data on Levante",
+]
