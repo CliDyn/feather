@@ -5,105 +5,128 @@ import numpy as np
 import xarray as xr
 
 
-def plot_bias_map(model_data, obs_data, lon, lat, *,
+def plot_bias_map(model_data, obs_data, *,
                   bias_data=None,
                   title="", model_title="Model", obs_title="Observation",
                   bias_title="Bias (Model \u2212 Obs)",
                   projection="rob", resolution=0.25,
-                  interpolator=None, cmap="RdBu_r", bias_cmap="RdBu_r",
-                  vmin=None, vmax=None, **kwargs):
+                  cmap="RdBu_r", bias_cmap="RdBu_r",
+                  vmin=None, vmax=None, units="",
+                  figsize_per_panel=(7, 5)):
     """Three-panel figure: model | observation | bias (model - obs).
 
-    Uses nereus.plot() for the model panel (HEALPix data) and standard
-    cartopy/xarray plotting for the observation and bias panels (regular
-    lat/lon grids).
+    Uses ``nereus.plot()`` for all three panels to ensure consistent
+    sizing and colorbar placement.  All data inputs should be 2-D
+    ``xr.DataArray`` objects on a regular lat/lon grid (with ``lat``
+    and ``lon`` coordinates).
 
     Parameters
     ----------
-    model_data : array-like
-        Model field (1D HEALPix).
+    model_data : xr.DataArray
+        Model climatology regridded to the observation grid (2-D).
     obs_data : xr.DataArray
-        Observation field on a regular lat/lon grid.
-    lon, lat : array-like
-        Coordinates for model data.
+        Observation climatology on a regular lat/lon grid (2-D).
     bias_data : xr.DataArray, optional
-        Pre-computed bias on a regular lat/lon grid.  If *None*, the bias
-        panel shows a placeholder.
+        Pre-computed bias on the same grid.  If *None*, the bias panel
+        shows a placeholder.
     title : str
         Figure super-title.
     model_title, obs_title, bias_title : str
         Panel titles.
     projection : str
-        Map projection for nereus.
+        Map projection name (default ``'rob'`` — Robinson).
     resolution : float
-        Regrid resolution for nereus.
-    interpolator : optional
-        Reusable nereus interpolator.
+        Nereus plotting resolution in degrees.
     cmap : str
         Colormap for model/obs panels.
     bias_cmap : str
         Colormap for bias panel (default diverging).
     vmin, vmax : float, optional
-        Colorbar limits for model/obs panels.
-    **kwargs
-        Extra keyword arguments passed to nereus.plot().
+        Colorbar limits for model/obs panels.  If *None*, computed from
+        the 2nd / 98th percentile of both model and obs data.
+    units : str
+        Colorbar label (e.g. ``'K'``).
+    figsize_per_panel : tuple
+        ``(width, height)`` per panel in inches.
 
     Returns
     -------
-    fig, axes, interpolator
+    fig, axes
     """
-    import cartopy.crs as ccrs
     import nereus as nr
     from nereus.plotting import get_projection
 
+    proj = get_projection(projection)
+    ncols = 3
     fig, axes = plt.subplots(
-        1, 3, figsize=(20, 5),
-        subplot_kw={"projection": get_projection(projection)},
+        1, ncols,
+        figsize=(figsize_per_panel[0] * ncols, figsize_per_panel[1]),
+        subplot_kw={"projection": proj},
     )
 
-    # --- Panel 1: Model (HEALPix via nereus) ---
+    # Auto-compute shared vmin/vmax for model and obs panels
+    if vmin is None or vmax is None:
+        all_vals = np.concatenate([
+            v[np.isfinite(v)] for v in [
+                np.asarray(model_data).ravel(),
+                np.asarray(obs_data).ravel(),
+            ]
+        ])
+        if vmin is None:
+            vmin = float(np.percentile(all_vals, 2))
+        if vmax is None:
+            vmax = float(np.percentile(all_vals, 98))
+
+    # Symmetric bounds for bias panel
+    bias_abs_max = 1.0
+    if bias_data is not None:
+        bv = np.asarray(bias_data).ravel()
+        bv = bv[np.isfinite(bv)]
+        if len(bv) > 0:
+            bias_abs_max = float(np.percentile(np.abs(bv), 98)) or 1.0
+
+    interpolator = None  # shared across panels on the same grid
+
+    # --- Panel 1: Model ---
+    vals, lons, lats = _flatten_latlon(model_data)
     _, _, interpolator = nr.plot(
-        np.asarray(model_data), np.asarray(lon), np.asarray(lat),
+        vals, lons, lats,
         ax=axes[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
-        **kwargs,
+        colorbar=True, colorbar_label=units, title=model_title,
     )
-    axes[0].set_title(model_title)
 
-    # --- Panel 2: Observation (regular lat/lon grid) ---
-    if isinstance(obs_data, xr.DataArray):
-        obs_data.plot(
-            ax=axes[1], transform=ccrs.PlateCarree(),
-            cmap=cmap, vmin=vmin, vmax=vmax, add_colorbar=True,
-        )
-        axes[1].coastlines()
-        axes[1].set_global()
-    axes[1].set_title(obs_title)
+    # --- Panel 2: Observation (same grid → reuse interpolator) ---
+    vals, lons, lats = _flatten_latlon(obs_data)
+    _, _, interpolator = nr.plot(
+        vals, lons, lats,
+        ax=axes[1], projection=projection, resolution=resolution,
+        interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
+        colorbar=True, colorbar_label=units, title=obs_title,
+    )
 
     # --- Panel 3: Bias ---
-    if bias_data is not None and isinstance(bias_data, xr.DataArray):
-        abs_max = float(np.nanpercentile(np.abs(bias_data.values), 98))
-        if abs_max == 0:
-            abs_max = 1.0
-        bias_data.plot(
-            ax=axes[2], transform=ccrs.PlateCarree(),
-            cmap=bias_cmap, vmin=-abs_max, vmax=abs_max,
-            add_colorbar=True,
+    if bias_data is not None:
+        vals, lons, lats = _flatten_latlon(bias_data)
+        _, _, _ = nr.plot(
+            vals, lons, lats,
+            ax=axes[2], projection=projection, resolution=resolution,
+            interpolator=interpolator, cmap=bias_cmap,
+            vmin=-bias_abs_max, vmax=bias_abs_max,
+            colorbar=True, colorbar_label=units, title=bias_title,
         )
-        axes[2].coastlines()
-        axes[2].set_global()
     else:
         axes[2].text(
             0.5, 0.5, "Bias (pre-compute required)",
             transform=axes[2].transAxes, ha="center", va="center",
         )
-    axes[2].set_title(bias_title)
+        axes[2].set_title(bias_title)
 
     if title:
-        fig.suptitle(title, fontsize=14, y=1.02)
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
 
-    plt.tight_layout()
-    return fig, axes, interpolator
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig, axes
 
 
 def plot_single_map(data, lon, lat, *, title="", projection="rob",
@@ -151,3 +174,18 @@ def plot_single_map(data, lon, lat, *, title="", projection="rob",
 
     plt.tight_layout()
     return fig, ax, interpolator
+
+
+def _flatten_latlon(da: xr.DataArray):
+    """Flatten a 2-D lat/lon DataArray into 1-D arrays for nereus.plot().
+
+    Returns
+    -------
+    (values_1d, lon_1d, lat_1d) : tuple of np.ndarray
+    """
+    lat_name = "lat" if "lat" in da.dims else "latitude"
+    lon_name = "lon" if "lon" in da.dims else "longitude"
+    lons_2d, lats_2d = np.meshgrid(
+        da[lon_name].values, da[lat_name].values,
+    )
+    return da.values.ravel(), lons_2d.ravel(), lats_2d.ravel()

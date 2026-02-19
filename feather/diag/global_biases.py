@@ -17,9 +17,7 @@ from feather.diag.registry import register
 from feather.plot.maps import plot_bias_map
 from feather.util.spatial import (
     RegridIndex,
-    global_mean,
     latlon_global_mean,
-    regrid_to_latlon,
 )
 from feather.util.temporal import climatology, seasonal_climatology
 
@@ -124,9 +122,11 @@ class GlobalBiases(DiagnosticBase):
 
                 # --- Seasonal biases (DJF, JJA) ---
                 seasonal_biases: dict[str, Any] = {}
+                seasonal_regrids: dict[str, Any] = {}
                 for season in ["DJF", "JJA"]:
                     if season in model_seasonal:
                         s_regrid = regrid_idx.apply(model_seasonal[season])
+                        seasonal_regrids[season] = s_regrid
                         if season in obs_seasonal:
                             obs_s = obs_seasonal[season]
                             s_bias = s_regrid - obs_s.values
@@ -136,10 +136,8 @@ class GlobalBiases(DiagnosticBase):
                             seasonal_biases[season] = s_bias
 
                 model_results[model] = {
-                    "annual_clim": model_clim,
-                    "seasonal_clim": model_seasonal,
-                    "lon": lon,
-                    "lat": lat,
+                    "annual_regrid": annual_regrid,
+                    "seasonal_regrids": seasonal_regrids,
                     "global_mean": model_gmean,
                     "annual_bias": annual_bias,
                     "annual_bias_gmean": bias_gmean,
@@ -177,12 +175,12 @@ class GlobalBiases(DiagnosticBase):
 
             for model, mdata in vr["models"].items():
                 # --- Annual bias map ---
-                fig, axes, _ = plot_bias_map(
-                    mdata["annual_clim"], obs_clim,
-                    mdata["lon"], mdata["lat"],
+                fig, axes = plot_bias_map(
+                    mdata["annual_regrid"], obs_clim,
                     bias_data=mdata["annual_bias"],
                     title=f"{var_info.long_name} Annual Mean \u2014 {model}",
                     cmap=var_info.cmap,
+                    units=var_info.units,
                 )
                 meta = self._build_metadata(
                     title=f"{var_info.long_name} Annual Bias \u2014 {model}",
@@ -207,16 +205,16 @@ class GlobalBiases(DiagnosticBase):
                 # --- Seasonal bias maps ---
                 for season, bias in mdata["seasonal_biases"].items():
                     obs_s = vr["obs"]["seasonal_clim"][season]
-                    model_s = mdata["seasonal_clim"][season]
+                    model_s = mdata["seasonal_regrids"][season]
 
-                    fig_s, _, _ = plot_bias_map(
+                    fig_s, _ = plot_bias_map(
                         model_s, obs_s,
-                        mdata["lon"], mdata["lat"],
                         bias_data=bias,
                         title=(
                             f"{var_info.long_name} {season} \u2014 {model}"
                         ),
                         cmap=var_info.cmap,
+                        units=var_info.units,
                     )
                     meta_s = self._build_metadata(
                         title=(

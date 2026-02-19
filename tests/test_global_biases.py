@@ -123,12 +123,13 @@ class TestGlobalBiasesCompute:
         results = diag.compute()
 
         mdata = results["avg_2t"]["models"]["ifs-fesom"]
-        assert "annual_clim" in mdata
+        assert "annual_regrid" in mdata
         assert "annual_bias" in mdata
         assert "annual_bias_gmean" in mdata
         assert "annual_rmse" in mdata
         assert "global_mean" in mdata
         assert "seasonal_biases" in mdata
+        assert "seasonal_regrids" in mdata
 
     def test_obs_results_fields(self, mock_model_loader, mock_obs_loader,
                                  minimal_config):
@@ -222,6 +223,7 @@ class TestGlobalBiasesPlot:
         annual_bias = regridded - obs_clim.values
 
         seasonal_biases = {}
+        seasonal_regrids = {}
         obs_seasonal = seasonal_climatology(synth_obs["t2m"])
         for season in ["DJF", "JJA"]:
             if season in model_seasonal and season in obs_seasonal:
@@ -230,16 +232,15 @@ class TestGlobalBiasesPlot:
                     ms, lon, lat,
                     obs_clim.lat.values, obs_clim.lon.values,
                 )
+                seasonal_regrids[season] = s_regrid
                 seasonal_biases[season] = s_regrid - obs_seasonal[season].values
 
         return {
             "avg_2t": {
                 "models": {
                     "ifs-fesom": {
-                        "annual_clim": model_clim,
-                        "seasonal_clim": model_seasonal,
-                        "lon": lon,
-                        "lat": lat,
+                        "annual_regrid": regridded,
+                        "seasonal_regrids": seasonal_regrids,
                         "global_mean": model_gmean,
                         "annual_bias": annual_bias,
                         "annual_bias_gmean": float(
@@ -277,7 +278,7 @@ class TestGlobalBiasesPlot:
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
             "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None], None),
+            return_value=(mock_fig, [None, None, None]),
         ):
             pairs = diag.plot(results)
 
@@ -301,7 +302,7 @@ class TestGlobalBiasesPlot:
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
             "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None], None),
+            return_value=(mock_fig, [None, None, None]),
         ):
             pairs = diag.plot(results)
 
@@ -326,7 +327,7 @@ class TestGlobalBiasesPlot:
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
             "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None], None),
+            return_value=(mock_fig, [None, None, None]),
         ):
             pairs = diag.plot(results)
 
