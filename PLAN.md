@@ -402,6 +402,269 @@ CMIP6 comparison is always optional (`cmip6.enabled` in config). When enabled, d
 
 ---
 
+## Phase 4b: CMIP6 Integration into Diagnostics
+
+**Status:** Not started.
+
+**Goal:** Wire the existing CMIP6Loader into the three diagnostics (global_biases, timeseries, seasonal_cycle) so each figure gains an optional CMIP6 multi-model mean (MMM) reference — providing historical context for how DestinE models compare to the broader CMIP6 ensemble.
+
+**Guiding principle:** CMIP6 is always secondary context. It must never break a diagnostic when disabled or when data is missing. Every CMIP6 addition is guarded by `self.cmip6_enabled` and `None` checks.
+
+### What already exists
+
+- `DiagnosticBase` has `cmip6_loader` attribute and `cmip6_enabled` property
+- `CMIP6Loader` has `load_mmm_for_model_var(model_var, period=..., season=...)` → `(mmm_da | None, info)`
+- `CMIP6Loader` has `load_var_for_model_var(model_var, model, period=..., season=...)` for individual models
+- `CMIP6_COLOR = "#888888"` in `plot/styles.py`
+- `_build_metadata()` already accepts `cmip6_info` kwarg
+
+### Step 4b.1 — `timeseries.py`: add CMIP6 MMM line
+
+**Simplest diagnostic to start with — one line on existing axes.**
+
+In `compute()`, after obs:
+```python
+# CMIP6 multi-model mean time series (optional)
+cmip6_ts = None
+cmip6_info = {}
+if self.cmip6_enabled:
+    mmm, info = self.cmip6_loader.load_mmm_for_model_var(
+        var, period=self.period,
+    )
+    if mmm is not None:
+        # MMM is a 2D field (lat, lon) — need monthly time series
+        # Load per-month instead: iterate available models, compute
+        # global-mean time series, average across models
+        cmip6_ts = self._compute_cmip6_timeseries(var, var_info)
+        cmip6_info = info
+```
+
+**Problem:** `load_mmm_for_model_var` returns a time-averaged 2D field, not a time series. For timeseries we need monthly global means per CMIP6 model, then ensemble-average.
+
+**New helper `_compute_cmip6_timeseries()`:**
+```python
+def _compute_cmip6_timeseries(self, var, var_info):
+    """Compute CMIP6 ensemble-mean global-mean time series."""
+    member_series = []
+    for model in self.cmip6_loader.models:
+        da = self.cmip6_loader.load_var_for_model_var(
+            var, model, period=self.period,
+        )
+        if da is None:
+            continue
+        # da is time-averaged (load_var computes .mean("time"))
+        # → Need raw monthly data: call load_var directly with
+        #   period but WITHOUT time-averaging
+        ...
+```
+
+**Issue:** `load_var()` always time-averages. We need a lower-level method that returns the time series. Options:
+1. Add `time_mean=False` kwarg to `CMIP6Loader.load_var()` — cleanest
+2. Call `xr.open_zarr()` directly in the diagnostic — too coupled
+
+**→ Add `time_mean` parameter to `CMIP6Loader.load_var()`:**
+```python
+def load_var(self, ..., time_mean: bool = True) -> xr.DataArray | None:
+    ...
+    if "time" in da.dims:
+        ...
+        if time_mean:
+            da = da.mean("time")
+    return da.compute()
+```
+
+Then in `_compute_cmip6_timeseries`:
+```python
+def _compute_cmip6_timeseries(self, var, var_info):
+    """Compute CMIP6 MMM global-mean time series."""
+    from feather.util.spatial import latlon_global_mean
+
+    member_series = []
+    models_used = []
+    for model in self.cmip6_loader.models:
+        vinfo = get_var(var)
+        da = self.cmip6_loader.load_var(
+            vinfo.cmip6_variable, model,
+            table=vinfo.cmip6_table,
+            period=self.period,
+            time_mean=False,  # keep time dim
+        )
+        if da is None:
+            continue
+        # Area-weighted global mean per timestep
+        area = self.cmip6_loader.load_area(model)
+        ts = latlon_global_mean(da, area=area)
+        member_series.append(ts)
+        models_used.append(model)
+
+    if not member_series:
+        return None, {}
+
+    # Align to common time axis, then ensemble mean
+    aligned = xr.align(*member_series, join="inner")
+    mmm_ts = sum(aligned) / len(aligned)
+    info = {"n_members": len(models_used), "models_used": models_used}
+    return mmm_ts, info
+```
+
+In `plot()`, add CMIP6 line:
+```python
+if "cmip6_ts" in vr and vr["cmip6_ts"] is not None:
+    cmip6_ts = vr["cmip6_ts"]
+    cmip6_time = _to_plot_time(cmip6_ts.time.values)
+    ax.plot(
+        cmip6_time, cmip6_ts.values,
+        label="CMIP6 MMM", color=CMIP6_COLOR,
+        linewidth=1.5, linestyle="--",
+    )
+```
+
+In metadata: pass `cmip6_info=vr.get("cmip6_info")`.
+
+### Step 4b.2 — `seasonal_cycle.py`: add CMIP6 MMM line
+
+Same pattern as timeseries but with monthly climatology.
+
+In `compute()`:
+```python
+cmip6_monthly = None
+cmip6_info = {}
+if self.cmip6_enabled:
+    cmip6_ts, info = self._compute_cmip6_timeseries(var, var_info)
+    if cmip6_ts is not None:
+        cmip6_monthly = monthly_climatology(cmip6_ts)
+        cmip6_info = info
+```
+
+In `plot()`:
+```python
+if "cmip6_monthly" in vr and vr["cmip6_monthly"] is not None:
+    ax.plot(
+        months, vr["cmip6_monthly"].values,
+        marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+        linewidth=1.5, linestyle="--",
+    )
+```
+
+**Note:** `_compute_cmip6_timeseries` can be shared — extract to base class or a helper module. Both timeseries and seasonal_cycle need the same CMIP6 time series; seasonal_cycle just applies `monthly_climatology()` on top.
+
+### Step 4b.3 — `global_biases.py`: add CMIP6 MMM bias panel
+
+**Most complex — adds a 4th panel to the existing 3-panel map.**
+
+In `compute()`, after the model loop:
+```python
+cmip6_data = {}
+cmip6_info = {}
+if self.cmip6_enabled:
+    mmm, info = self.cmip6_loader.load_mmm_for_model_var(
+        var, period=self.period,
+    )
+    if mmm is not None:
+        # mmm is on CMIP6 regridded grid (lat/lon)
+        # Interpolate to common nereus target grid
+        cmip6_regrid = mmm.interp(lat=target_lats, lon=target_lons)
+        cmip6_bias = cmip6_regrid - obs_clim_common
+        cmip6_data = {
+            "regrid": cmip6_regrid,
+            "bias": cmip6_bias,
+            "bias_gmean": float(latlon_global_mean(cmip6_bias).values),
+        }
+        cmip6_info = info
+
+        # Include CMIP6 in shared colorbar ranges
+        # (recompute with CMIP6 fields included)
+```
+
+In `plot()`, extend the figure:
+- If CMIP6 data exists, create a **4-panel** layout: Model | Obs | Bias | CMIP6 Bias
+- Or: overlay CMIP6 bias contours on the bias panel
+- **Recommended:** 4th panel. Keeps it clean and comparable.
+
+**Approach for 4-panel:** Add `ncols` parameter to `plot_bias_map`, or create separate CMIP6 bias figure, or extend figure manually.
+
+**Simplest approach:** Generate a separate CMIP6 bias map figure per variable (not per model) since CMIP6 MMM is model-independent:
+```python
+if cmip6_data:
+    fig_c, _ = plot_bias_map(
+        cmip6_data["regrid"], obs_clim,
+        bias_data=cmip6_data["bias"],
+        title=f"{var_info.long_name} Annual Mean — CMIP6 MMM",
+        model_title="CMIP6 MMM",
+        cmap=var_info.cmap, units=var_info.units,
+        vmin=ann_cb["vmin"], vmax=ann_cb["vmax"],
+        bias_vmax=ann_cb["bias_vmax"],
+    )
+    meta_c = self._build_metadata(
+        title=f"{var_info.long_name} Annual Bias — CMIP6 MMM",
+        figure_id=f"{var}_annual_bias_cmip6_mmm",
+        models=["CMIP6 MMM"],
+        cmip6_info=cmip6_info,
+        ...
+    )
+    figures.append((fig_c, meta_c))
+```
+
+Uses the **same shared colorbar ranges** as the DestinE model figures → directly comparable.
+
+### Step 4b.4 — `CMIP6Loader.load_var()`: add `time_mean` parameter
+
+```python
+def load_var(self, ..., time_mean: bool = True) -> xr.DataArray | None:
+```
+
+Default `True` preserves backward compatibility. When `False`, returns the full time series after period/season filtering and calendar normalization.
+
+### Step 4b.5 — Shared CMIP6 time series helper
+
+Extract `_compute_cmip6_timeseries()` as a method on `DiagnosticBase` (or a standalone utility) since both timeseries and seasonal_cycle need it:
+
+```python
+# In DiagnosticBase or a mixin:
+def _cmip6_global_mean_timeseries(self, var):
+    """CMIP6 ensemble-mean global-mean monthly time series."""
+```
+
+### Step 4b.6 — Config and test updates
+
+- `configs/default.yaml`: change `cmip6.enabled: true` to test
+- `tests/conftest.py`: `MockCMIP6Loader` already has `load_var`, `load_mmm`, `load_area` — add `time_mean` support
+- New tests per diagnostic: verify CMIP6 data appears in results when enabled, is absent when disabled
+- Verify shared colorbar ranges include CMIP6 fields when present
+
+### Step 4b.7 — Metadata enrichment
+
+When CMIP6 is included, add to metadata sidecar:
+```json
+{
+  "cmip6_info": {
+    "n_members": 7,
+    "models_used": ["MIROC6/r1i1p1f1", "CESM2/r10i1p1f1", ...],
+    "ensemble_mode": "one_per_model"
+  }
+}
+```
+
+This is already supported by `_build_metadata(cmip6_info=...)`.
+
+### Implementation order
+
+1. `CMIP6Loader.load_var()` — add `time_mean=False` support
+2. `MockCMIP6Loader` — update for `time_mean`
+3. `timeseries.py` — add CMIP6 MMM line (simplest, proves the pattern)
+4. `seasonal_cycle.py` — add CMIP6 MMM line (reuses same helper)
+5. `global_biases.py` — add CMIP6 MMM bias map (separate figure, shared colorbar)
+6. Tests for all three diagnostics with CMIP6 enabled/disabled
+7. Verify with real data on compute node
+
+### Design decisions to confirm
+
+- **CMIP6 bias map as separate figure (not 4th panel)?** Keeps `plot_bias_map` simple. The CMIP6 MMM is the same for all DestinE models, so one CMIP6 figure per variable (not per model) is natural. Uses shared colorbar ranges for comparability.
+- **CMIP6 MMM line style:** dashed gray (`--`, `CMIP6_COLOR`) to visually distinguish from solid model lines and thick obs line.
+- **Missing CMIP6 data:** silently skip — no error, no empty panel. `cmip6_info` in metadata is `None` or absent.
+
+---
+
 ## Phase 5: LLM Analysis Pipeline
 
 **Goal:** Automatically analyze each diagnostic figure using an LLM (Gemini), producing structured scientific interpretations that feed the dashboard.
