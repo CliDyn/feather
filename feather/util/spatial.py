@@ -6,8 +6,6 @@ from functools import lru_cache
 import numpy as np
 import xarray as xr
 
-from scipy.spatial import cKDTree
-
 logger = logging.getLogger(__name__)
 
 
@@ -266,129 +264,6 @@ def _find_latlon_dims(da: xr.DataArray) -> tuple[str, str]:
         )
 
     return lat_name, lon_name
-
-
-class RegridIndex:
-    """Pre-computed nearest-neighbour index from scattered → regular grid.
-
-    Build once with :meth:`build`, then apply to many fields cheaply
-    with :meth:`apply`.
-    """
-
-    def __init__(self, idx: np.ndarray, target_shape: tuple,
-                 target_lats: np.ndarray, target_lons: np.ndarray):
-        self.idx = idx
-        self.target_shape = target_shape
-        self.target_lats = target_lats
-        self.target_lons = target_lons
-
-    @classmethod
-    def build(cls, lon: np.ndarray, lat: np.ndarray,
-              target_lats: np.ndarray, target_lons: np.ndarray) -> "RegridIndex":
-        """Build a KDTree index from source to target grid.
-
-        Parameters
-        ----------
-        lon, lat : array-like, 1-D
-            Source point coordinates in degrees.
-        target_lats, target_lons : array-like, 1-D
-            Target grid coordinates in degrees.
-
-        Returns
-        -------
-        RegridIndex
-        """
-        lon_np = np.asarray(lon).ravel()
-        lat_np = np.asarray(lat).ravel()
-
-        lon_r = np.deg2rad(lon_np)
-        lat_r = np.deg2rad(lat_np)
-        src_xyz = np.column_stack([
-            np.cos(lat_r) * np.cos(lon_r),
-            np.cos(lat_r) * np.sin(lon_r),
-            np.sin(lat_r),
-        ])
-
-        tgt_lons_2d, tgt_lats_2d = np.meshgrid(target_lons, target_lats)
-        lon_t = np.deg2rad(tgt_lons_2d.ravel())
-        lat_t = np.deg2rad(tgt_lats_2d.ravel())
-        tgt_xyz = np.column_stack([
-            np.cos(lat_t) * np.cos(lon_t),
-            np.cos(lat_t) * np.sin(lon_t),
-            np.sin(lat_t),
-        ])
-
-        logger.info(
-            "Building KDTree for %d source → %d×%d target points",
-            len(lon_np), len(target_lats), len(target_lons),
-        )
-        tree = cKDTree(src_xyz)
-        _, idx = tree.query(tgt_xyz)
-
-        return cls(idx, tgt_lats_2d.shape,
-                   np.asarray(target_lats), np.asarray(target_lons))
-
-    def apply(self, data) -> xr.DataArray:
-        """Apply pre-computed index to a data field.
-
-        Parameters
-        ----------
-        data : array-like, 1-D
-            Values at source points.
-
-        Returns
-        -------
-        xr.DataArray
-            Regridded data with dims ``('lat', 'lon')``.
-        """
-        data_np = np.asarray(data).ravel()
-        regridded = data_np[self.idx].reshape(self.target_shape)
-        return xr.DataArray(
-            regridded,
-            dims=("lat", "lon"),
-            coords={"lat": self.target_lats, "lon": self.target_lons},
-        )
-
-
-def regrid_to_latlon(
-    data: np.ndarray | xr.DataArray,
-    lon: np.ndarray | xr.DataArray,
-    lat: np.ndarray | xr.DataArray,
-    target_lats: np.ndarray,
-    target_lons: np.ndarray,
-    regrid_index: RegridIndex = None,
-) -> xr.DataArray:
-    """Nearest-neighbour regrid from scattered points to a regular lat/lon grid.
-
-    Uses a 3-D Cartesian KDTree for fast NN lookup (works for any source
-    grid, including HEALPix).
-
-    Parameters
-    ----------
-    data : array-like, 1-D
-        Values at source points.
-    lon, lat : array-like, 1-D
-        Source point coordinates in degrees.
-    target_lats : array-like, 1-D
-        Target latitude values (degrees, ascending).
-    target_lons : array-like, 1-D
-        Target longitude values (degrees).
-    regrid_index : RegridIndex, optional
-        Pre-computed index from :class:`RegridIndex.build`.
-        If provided, *lon* and *lat* are ignored and the KDTree is
-        **not** rebuilt — this is much faster for repeated regrids on
-        the same grid.
-
-    Returns
-    -------
-    xr.DataArray
-        Regridded data with dimensions ``('lat', 'lon')``.
-    """
-    if regrid_index is not None:
-        return regrid_index.apply(data)
-
-    idx = RegridIndex.build(lon, lat, target_lats, target_lons)
-    return idx.apply(data)
 
 
 def healpix_mesh(ncells: int) -> xr.Dataset:

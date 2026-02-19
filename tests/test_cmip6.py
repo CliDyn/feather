@@ -35,11 +35,12 @@ def _make_config(tmp_path, models=None, ensemble_mode="one_per_model",
             "enabled": True,
             "catalog_path": str(tmp_path / "fake_catalog.yaml"),
             "regrid_resolution": regrid_resolution,
+            "influence_radius": 1_000_000,
             "ensemble_mode": ensemble_mode,
             "models": models,
         },
         dask={},
-        nereus={},
+        nereus={"influence_radius": 1_000_000},
         output_dir=str(tmp_path / "output"),
     )
 
@@ -667,13 +668,14 @@ class TestCMIP6Integration:
                 "enabled": True,
                 "catalog_path": self.CATALOG_PATH,
                 "regrid_resolution": 1.0,
+                "influence_radius": 80_000,
                 "ensemble_mode": "one_per_model",
                 "models": {
                     "MIROC6": {"variants": ["r1i1p1f1"]},
                 },
             },
             dask={},
-            nereus={},
+            nereus={"influence_radius": 80_000},
             output_dir=str(tmp_path / "output"),
         )
 

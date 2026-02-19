@@ -1,13 +1,13 @@
 """CMIP6 data loader for multi-model mean comparisons.
 
 Loads CMIP6 historical data from per-variable zarr files, regrids to a
-common regular grid using feather's RegridIndex, and computes multi-model
-mean (MMM) fields.
+common regular grid using nereus RegridInterpolator, and computes
+multi-model mean (MMM) fields.
 
 Design principles:
 - Per-variable zarr loading (no intake at load time) — avoids staggered-grid conflicts
 - Models missing variables are silently skipped (load_var returns None)
-- Uses feather's RegridIndex (KDTree NN) for MMM regridding
+- Uses nereus RegridInterpolator (KDTree NN + influence radius) for MMM regridding
 - Calendar normalization inside load_var before time slicing
 - Two ensemble modes: "one_per_model" and "all_members"
 """
@@ -16,12 +16,12 @@ import logging
 import os
 from pathlib import Path
 
+import nereus as nr
 import numpy as np
 import pandas as pd
 import xarray as xr
 
 from feather.data.variables import VARIABLE_REGISTRY
-from feather.util.spatial import RegridIndex
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +192,8 @@ class CMIP6Loader:
         """Compute multi-model mean on a common regular grid.
 
         Each member is loaded on its native grid, regridded to a common
-        lat/lon grid via RegridIndex (KDTree NN), then averaged.
+        lat/lon grid via ``nereus.regrid()`` (KDTree NN with influence
+        radius masking), then averaged.
 
         Parameters
         ----------
@@ -218,15 +219,13 @@ class CMIP6Loader:
 
         member_pairs = self._get_member_pairs(ensemble_mode)
 
-        # Determine target grid
         resolution = self._cfg.get("regrid_resolution", 1.0)
-        target_lats = np.arange(-90 + resolution / 2, 90, resolution)
-        target_lons = np.arange(0 + resolution / 2, 360, resolution)
+        influence_radius = self._cfg.get("influence_radius", 80_000.0)
 
         regridded_fields = []
         models_used = []
         models_skipped = []
-        regrid_cache: dict[str, RegridIndex] = {}
+        interp_cache: dict[str, nr.RegridInterpolator] = {}
 
         for model, variant in member_pairs:
             member_label = f"{model}/{variant}"
@@ -240,7 +239,7 @@ class CMIP6Loader:
                 models_skipped.append(member_label)
                 continue
 
-            # Find lat/lon and regrid
+            # Find lat/lon
             try:
                 lat, lon = self._find_lat_lon(da)
             except ValueError as e:
@@ -248,7 +247,7 @@ class CMIP6Loader:
                 models_skipped.append(member_label)
                 continue
 
-            # For regular grids (1D lat + 1D lon), meshgrid to scattered points
+            # For regular grids (1D lat + 1D lon), meshgrid to scattered
             if lat.ndim == 1 and lon.ndim == 1 and len(lat) != len(lon):
                 lon_2d, lat_2d = np.meshgrid(lon, lat)
                 lon_flat = lon_2d.ravel()
@@ -257,13 +256,28 @@ class CMIP6Loader:
                 lon_flat = lon.ravel()
                 lat_flat = lat.ravel()
 
-            # Cache RegridIndex per model (same grid for all variants)
+            # Cache interpolator per model (same grid for all variants)
             cache_key = f"{model}_{table}"
-            if cache_key not in regrid_cache:
-                regrid_cache[cache_key] = RegridIndex.build(
-                    lon_flat, lat_flat, target_lats, target_lons,
+            if cache_key not in interp_cache:
+                regridded, interpolator = nr.regrid(
+                    da.values.ravel(),
+                    lon=lon_flat, lat=lat_flat,
+                    resolution=resolution,
+                    influence_radius=influence_radius,
+                    lon_bounds=(0.0, 360.0),
+                    as_xarray=True,
                 )
-            regridded = regrid_cache[cache_key].apply(da.values.ravel())
+                interp_cache[cache_key] = interpolator
+            else:
+                interpolator = interp_cache[cache_key]
+                regridded_np = interpolator(da.values.ravel())
+                regridded = xr.DataArray(
+                    regridded_np, dims=("lat", "lon"),
+                    coords={
+                        "lat": interpolator.target_lat[:, 0],
+                        "lon": interpolator.target_lon[0, :],
+                    },
+                )
             regridded_fields.append(regridded)
             models_used.append(member_label)
 

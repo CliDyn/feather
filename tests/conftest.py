@@ -96,7 +96,7 @@ def minimal_config(tmp_path):
         obs_datasets={},
         cmip6={"enabled": False},
         dask={},
-        nereus={},
+        nereus={"influence_radius": 1_000_000},
         output_dir=str(tmp_path / "output"),
     )
 
@@ -293,6 +293,7 @@ def cmip6_config(tmp_path):
             "enabled": True,
             "catalog_path": str(tmp_path / "fake_catalog.yaml"),
             "regrid_resolution": 1.0,
+            "influence_radius": 1_000_000,
             "ensemble_mode": "one_per_model",
             "models": {
                 "ModelA": {"variants": ["r1i1p1f1", "r2i1p1f1"]},
@@ -300,6 +301,6 @@ def cmip6_config(tmp_path):
             },
         },
         dask={},
-        nereus={},
+        nereus={"influence_radius": 1_000_000},
         output_dir=str(tmp_path / "output"),
     )

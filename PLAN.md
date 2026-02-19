@@ -232,7 +232,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   └── variables.py              # VarInfo + VARIABLE_REGISTRY (27 vars)
     ├── util/
     │   ├── __init__.py
-    │   ├── spatial.py                # zonal_mean, global_mean, latlon_global_mean, RegridIndex, regrid_to_latlon, compute_latlon_areas
+    │   ├── spatial.py                # zonal_mean, global_mean, latlon_global_mean, compute_latlon_areas
     │   ├── temporal.py               # climatology, seasonal, monthly, anomaly, annual_mean
     │   └── units.py                  # K↔°C, precip flux↔mm/day, Pa↔hPa
     ├── plot/
@@ -262,7 +262,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 
 | Module | File | Status |
 |--------|------|--------|
-| Spatial utils additions | `feather/util/spatial.py` (+`latlon_global_mean`, `regrid_to_latlon`, `RegridIndex`, `compute_latlon_areas`) | Done |
+| Spatial utils additions | `feather/util/spatial.py` (+`latlon_global_mean`, `compute_latlon_areas`) | Done |
 | Bias map plotting | `feather/plot/maps.py` (`plot_bias_map` using `nr.plot()` for all panels) | Done |
 | CLI scripts | `scripts/run_global_biases.py`, `run_timeseries.py`, `run_seasonal_cycle.py`, `run_all.py` | Done |
 | Global biases diagnostic | `feather/diag/global_biases.py` | Done |
@@ -276,19 +276,21 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 
 ### Key design decisions from Phase 3
 
-1. **NN regridding via `RegridIndex` (scipy KDTree).** `RegridIndex.build()` converts source lon/lat to 3D Cartesian coords and builds a `cKDTree` once. `RegridIndex.apply()` does cheap index lookup for subsequent fields. The convenience function `regrid_to_latlon()` wraps this. At nside=1024 (12.6M source points), building the KDTree takes ~30s but each `.apply()` is ~1s — critical since global_biases calls it 9+ times (3 models × annual + DJF + JJA).
+1. **NN regridding via nereus `RegridInterpolator`.** Uses `nr.regrid()` on first call (builds KDTree + returns reusable interpolator), then `interpolator(data)` for subsequent fields. Includes influence radius masking (80km default) to prevent ocean→land value bleeding. At nside=1024 (12.6M source points), building the interpolator takes ~30s but each reuse is ~1s — critical since global_biases calls it 9+ times (3 models × annual + DJF + JJA).
 
 2. **Pre-computed bias for plotting.** `plot_bias_map()` now accepts an optional `bias_data` parameter (xr.DataArray on regular grid). The diagnostic's `compute()` does the regridding + bias calculation, and `plot()` just visualizes. This keeps the plotting code simple and testable.
 
-3. **Three-panel bias map uses nereus for all panels.** All three panels (model, obs, bias) use `nr.plot()` for consistent sizing and colorbar placement. Model data is regridded to the obs grid in `compute()`, so all panels share the same lat/lon grid and can reuse the nereus interpolator. Bias colorbar is symmetric (98th percentile of |bias|). Shared vmin/vmax for model+obs panels computed from 2nd/98th percentile.
+3. **Three-panel bias map uses nereus for all panels.** All three panels (model, obs, bias) use `nr.plot()` for consistent sizing and colorbar placement. Model and obs data are both on the nereus common grid in `compute()`, so all panels share the same lat/lon grid and can reuse the nereus interpolator.
 
-4. **cftime → matplotlib compatibility.** Time series plot uses a `_to_plot_time()` helper that converts cftime datetime objects to pandas Timestamps via string parsing, since matplotlib cannot directly plot cftime dates.
+4. **Shared colorbar ranges across models for cross-model comparison.** `compute()` collects all model fields, obs, and biases per period (annual, DJF, JJA) and computes shared `vmin`/`vmax` (2nd/98th percentile across all models + obs) and `bias_vmax` (98th percentile of |bias| across all models). These are stored in `results[var]["colorbar_ranges"]` and passed to `plot_bias_map()` via its `vmin`, `vmax`, and `bias_vmax` parameters. This ensures that when comparing model A vs model B for the same variable and period, the color scales are identical. The same principle applies to any diagnostic that produces per-model figures — shared ranges should be computed across models so figures are directly comparable.
 
-5. **Diagnostics are configurable at construction.** All three accept `variables=`, `experiment=`, and `period=` overrides. The class-level defaults (`variables=["avg_2t"]`, `experiment="baseline_hist"`, `period=("1990","2014")`) cover the most common use case.
+5. **cftime → matplotlib compatibility.** Time series plot uses a `_to_plot_time()` helper that converts cftime datetime objects to pandas Timestamps via string parsing, since matplotlib cannot directly plot cftime dates.
 
-6. **Obs global mean uses nereus cell areas.** `latlon_global_mean()` computes proper cell areas via `nereus.mesh_from_arrays()` with LRU caching. Accepts optional pre-computed areas for CMIP6 `areacella`/`areacello`. Robust dim name detection supports `lat`/`latitude`/`nav_lat`/`y`/`rlat` and equivalents.
+6. **Diagnostics are configurable at construction.** All three accept `variables=`, `experiment=`, and `period=` overrides. The class-level defaults (`variables=["avg_2t"]`, `experiment="baseline_hist"`, `period=("1990","2014")`) cover the most common use case.
 
-7. **Mock loaders in conftest.py.** `MockModelLoader` wraps `synth_healpix` dataset and returns it for any key. `MockObsLoader` wraps `synth_obs` dataset. This lets diagnostic tests run without real data or intake catalogs.
+7. **Obs global mean uses nereus cell areas.** `latlon_global_mean()` computes proper cell areas via `nereus.mesh_from_arrays()` with LRU caching. Accepts optional pre-computed areas for CMIP6 `areacella`/`areacello`. Robust dim name detection supports `lat`/`latitude`/`nav_lat`/`y`/`rlat` and equivalents.
+
+8. **Mock loaders in conftest.py.** `MockModelLoader` wraps `synth_healpix` dataset and returns it for any key. `MockObsLoader` wraps `synth_obs` dataset. This lets diagnostic tests run without real data or intake catalogs.
 
 ### Figures produced per diagnostic
 
@@ -310,7 +312,7 @@ Total: 97 tests (33 new + 64 existing)
 - **Regular lat/lon grids need proper area weighting.** For observations (ERA5 etc.) use `latlon_global_mean()` which computes cell areas via `nereus.mesh_from_arrays()`. Unweighted means on lat/lon grids over-weight polar regions and are ~8K too cold for temperature.
 - **CMIP6 area weighting must use `areacella`/`areacello`.** The CMIP6 catalog has 234 area-weight files (`{Model}_{Experiment}_{Variant}_{fx|Ofx}_areacell{a|o}.zarr`). Do NOT use `cos(lat)` for CMIP6 — models may have irregular grids.
 - **Dask arrays need explicit `.compute()` after reductions.** When loading model data via intake catalogs, data is dask-backed. After computing climatologies or global means, call `.compute()` to materialise before passing to numpy operations or storing in results dicts.
-- **`RegridIndex` builds KDTree once, applies cheaply.** At nside=1024, the model grid has 12.6M points. Building the KDTree takes ~30s but lookup is fast (~1s). All models share the same HEALPix grid, so one index serves all 3 models × all seasons. Never rebuild per field.
+- **nereus `RegridInterpolator` builds KDTree once, reuses cheaply.** At nside=1024, the model grid has 12.6M points. Building the interpolator via `nr.regrid()` takes ~30s but each `interpolator(data)` call is ~1s. All models share the same HEALPix grid, so one interpolator serves all 3 models × all seasons. Never rebuild per field.
 - **NN regridding at nside=8 introduces ~1-3K error in global mean.** Test tolerances must account for this. At nside=1024 (production), NN error is negligible (<0.1K).
 - **cftime dates cannot be plotted by matplotlib directly.** The `_to_plot_time()` helper in `timeseries.py` converts via `pd.to_datetime([str(t) for t in time_values])`.
 - **`plot_bias_map` requires nereus.** Tests that call it must either mock it (as in `test_global_biases.py`) or be marked as integration tests. The `compute()` methods do NOT need nereus — only `plot()` for map-based diagnostics.
@@ -328,6 +330,9 @@ Total: 97 tests (33 new + 64 existing)
 2. **Don't mix plotting APIs.** Using `nr.plot()` for one panel and `xr.DataArray.plot()` for another creates inconsistent colorbars and panel sizes. Use the same API for all panels.
 3. **Build expensive indices once.** KDTree from 12.6M points takes ~30s. Building it 9 times (3 models × 3 time periods) made the diagnostic take 5+ minutes instead of ~1 minute.
 4. **Model datasets may not contain `area`.** The intake catalog datasets have `longitude`, `latitude`, `time`, and variable data — but no `area` variable. HEALPix being equal-area makes this a non-issue for global means.
+5. **All data passed to multi-panel plots must be on the same grid.** When `nr.plot()` reuses a shared interpolator across panels, it maps source array indices (not coordinates) to target pixels. If Panel 1 data is on a south→north grid (nereus) and Panel 2 data is on a north→south grid (ERA5), the shared interpolator flips Panel 2 upside down. Fix: regrid obs onto the common nereus target grid in `compute()` and store the common-grid obs in the results dict — never mix grids across panels.
+6. **Shared colorbar ranges are essential for cross-model comparison.** Per-model auto-computed colorbars make it impossible to compare figures visually. Always compute shared `vmin`/`vmax`/`bias_vmax` across all models after the model loop, then pass explicitly to plotting functions. This applies to any diagnostic that produces separate figures per model.
+7. **Influence radius must match source data density.** `nr.regrid()` masks target cells beyond the influence radius as NaN. Production HEALPix nside=1024 (~5 km spacing) works with the 80 km default. Test data (nside=8, ~815 km spacing) and coarse CMIP6 grids (5° in tests) need ~1000 km. Always make influence_radius configurable via config, not hardcoded.
 
 ---
 
@@ -373,7 +378,7 @@ class CMIP6Loader:
 
 5. **Silent skip for missing data.** `load_var()` returns `None` when zarr not found or variable missing. `load_multi_model_mean()` collects models_skipped in info dict.
 
-6. **Regular grid meshgrid for RegridIndex.** CMIP6 data is on regular lat/lon grids (1D lat + 1D lon arrays of different length). Must meshgrid before passing to `RegridIndex.build()` which expects scattered points of equal length.
+6. **Regular grid meshgrid for nereus regrid.** CMIP6 data is on regular lat/lon grids (1D lat + 1D lon arrays of different length). Must meshgrid before passing to `nr.regrid()` which expects scattered points of equal length.
 
 7. **Area weights cached per `{model}_{variant}_{table}` key.** `load_area()` looks for `areacella` (fx table, atmosphere) or `areacello` (Ofx table, ocean).
 
@@ -381,7 +386,7 @@ class CMIP6Loader:
 
 - `regrid_resolution`: 0.25 → 1.0 (sufficient for CMIP6 comparison)
 - `ensemble_mode: "one_per_model"` added
-- `influence_radius` removed (not used by feather's RegridIndex)
+- `influence_radius: 80000` in both cmip6 and nereus config sections (meters; prevents ocean→land bleeding)
 - Models expanded from single `variant: str` to `variants: [list]` (7 models, up to 6 variants each)
 
 ### Verification results
@@ -390,18 +395,6 @@ class CMIP6Loader:
 pytest tests/test_cmip6.py -v -m "not integration"  → 47/47 passed
 pytest tests/ -v -m "not integration"                → 142/142 passed (47 new + 95 existing)
 ```
-
-### Important TODO: Replace RegridIndex with nereus RegridInterpolator
-
-Feather's `RegridIndex` (in `util/spatial.py`) reimplements the same Cartesian-KDTree NN algorithm that nereus's `nr.RegridInterpolator` provides. Key differences:
-
-| Feature | Feather `RegridIndex` | Nereus `RegridInterpolator` |
-|---------|----------------------|----------------------------|
-| Target grid | Manual target arrays | Auto-generated from `resolution` |
-| Influence radius | None — every cell gets a value | 80km default — distant points become NaN |
-| Multi-dim input | 1D only | 1D, 2D, ND natively |
-
-The influence radius matters: without it, ocean values bleed onto land (and vice versa), creating artifacts. This refactor should replace `RegridIndex` with `nr.RegridInterpolator` everywhere: `util/spatial.py`, `data/cmip6.py`, and any diagnostic that calls `RegridIndex` or `regrid_to_latlon`.
 
 CMIP6 comparison is always optional (`cmip6.enabled` in config). When enabled, diagnostics add:
 - CMIP6 MMM line/panel to existing figures
@@ -728,6 +721,17 @@ This means diagnostics can be:
 - Exported as standalone Jupyter notebooks
 - Tested with synthetic data
 - Added without touching any other code (just `@register`)
+
+### Cross-model comparability
+
+All diagnostics that produce per-model figures must use **shared colorbar ranges** across models for the same variable and time period. This is a core design principle — the primary purpose of feather is comparing models against each other and against observations.
+
+**Implementation pattern:** `compute()` first loops over all models to collect regridded fields and biases, then computes shared ranges (2nd/98th percentile for field panels, 98th percentile of |bias| for bias panels) across all models. These ranges are stored in the results dict and passed to plotting functions. This ensures identical color scales when placing figures side by side.
+
+Applies to:
+- **global_biases**: `colorbar_ranges` per period (annual, DJF, JJA) with `vmin`, `vmax`, `bias_vmax`
+- **Future map diagnostics**: same pattern — compute shared ranges after the model loop
+- **Line plots** (timeseries, seasonal_cycle): already overlay all models on shared axes — inherently comparable
 
 ### Pipeline stages are independent
 

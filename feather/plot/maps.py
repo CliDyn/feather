@@ -11,7 +11,8 @@ def plot_bias_map(model_data, obs_data, *,
                   bias_title="Bias (Model \u2212 Obs)",
                   projection="rob", resolution=0.25,
                   cmap="RdBu_r", bias_cmap="RdBu_r",
-                  vmin=None, vmax=None, units="",
+                  vmin=None, vmax=None, bias_vmax=None,
+                  units="",
                   figsize_per_panel=(7, 5)):
     """Three-panel figure: model | observation | bias (model - obs).
 
@@ -44,6 +45,11 @@ def plot_bias_map(model_data, obs_data, *,
     vmin, vmax : float, optional
         Colorbar limits for model/obs panels.  If *None*, computed from
         the 2nd / 98th percentile of both model and obs data.
+    bias_vmax : float, optional
+        Symmetric colorbar limit for the bias panel (``-bias_vmax`` to
+        ``+bias_vmax``).  If *None*, computed from the 98th percentile
+        of ``|bias_data|``.  Pass a shared value across models to enable
+        cross-model comparison.
     units : str
         Colorbar label (e.g. ``'K'``).
     figsize_per_panel : tuple
@@ -78,12 +84,14 @@ def plot_bias_map(model_data, obs_data, *,
             vmax = float(np.percentile(all_vals, 98))
 
     # Symmetric bounds for bias panel
-    bias_abs_max = 1.0
-    if bias_data is not None:
+    if bias_vmax is not None:
+        bias_abs_max = bias_vmax
+    elif bias_data is not None:
         bv = np.asarray(bias_data).ravel()
         bv = bv[np.isfinite(bv)]
-        if len(bv) > 0:
-            bias_abs_max = float(np.percentile(np.abs(bv), 98)) or 1.0
+        bias_abs_max = float(np.percentile(np.abs(bv), 98)) or 1.0 if len(bv) > 0 else 1.0
+    else:
+        bias_abs_max = 1.0
 
     interpolator = None  # shared across panels on the same grid
 

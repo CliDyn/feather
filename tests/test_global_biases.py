@@ -4,50 +4,64 @@ import json
 from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
+import nereus as nr
 import numpy as np
 import pytest
+import xarray as xr
 
 from feather.diag.global_biases import GlobalBiases
-from feather.util.spatial import latlon_global_mean, regrid_to_latlon
+from feather.util.spatial import latlon_global_mean
 
 
 # ── Utility tests ────────────────────────────────────────────────────
 
+# Large influence radius for nside=8 test data (~815 km spacing)
+_TEST_INFLUENCE_RADIUS = 1_000_000
 
-class TestRegridToLatlon:
-    """Tests for NN regridding from scattered to regular grid."""
+
+class TestNereusRegrid:
+    """Tests for NN regridding via nereus from scattered to regular grid."""
 
     def test_basic_regrid(self, synth_healpix, synth_obs):
-        """Regrid HEALPix to obs grid — result shape matches obs."""
+        """Regrid HEALPix to obs grid — result has lat/lon dims."""
         model_clim = synth_healpix["avg_2t"].isel(time=0)
-        lon = synth_healpix["longitude"]
-        lat = synth_healpix["latitude"]
+        lon = np.asarray(synth_healpix["longitude"])
+        lat = np.asarray(synth_healpix["latitude"])
         obs = synth_obs["t2m"].isel(time=0)
+        obs_res = abs(float(obs.lat.values[1] - obs.lat.values[0]))
 
-        regridded = regrid_to_latlon(
-            model_clim, lon, lat,
-            obs.lat.values, obs.lon.values,
+        regridded, _ = nr.regrid(
+            model_clim.values.ravel(),
+            lon=lon, lat=lat,
+            resolution=obs_res,
+            influence_radius=_TEST_INFLUENCE_RADIUS,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
         )
 
-        assert regridded.shape == obs.shape
         assert "lat" in regridded.dims
         assert "lon" in regridded.dims
 
     def test_regrid_preserves_mean(self, synth_healpix, synth_obs):
         """Regridded global mean is close to the original."""
         model_clim = synth_healpix["avg_2t"].isel(time=0)
-        lon = synth_healpix["longitude"]
-        lat = synth_healpix["latitude"]
+        lon = np.asarray(synth_healpix["longitude"])
+        lat = np.asarray(synth_healpix["latitude"])
         area = synth_healpix["area"]
         obs = synth_obs["t2m"].isel(time=0)
+        obs_res = abs(float(obs.lat.values[1] - obs.lat.values[0]))
 
         from feather.util.spatial import global_mean
 
         original_mean = float(global_mean(model_clim, area).values)
 
-        regridded = regrid_to_latlon(
-            model_clim, lon, lat,
-            obs.lat.values, obs.lon.values,
+        regridded, _ = nr.regrid(
+            model_clim.values.ravel(),
+            lon=lon, lat=lat,
+            resolution=obs_res,
+            influence_radius=_TEST_INFLUENCE_RADIUS,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
         )
         regridded_mean = float(latlon_global_mean(regridded).values)
 
@@ -57,15 +71,23 @@ class TestRegridToLatlon:
     def test_matching_data_gives_small_bias(self, synth_healpix, synth_obs):
         """When model & obs have same pattern, regridded bias is small."""
         model_clim = synth_healpix["avg_2t"].isel(time=0)
-        lon = synth_healpix["longitude"]
-        lat = synth_healpix["latitude"]
+        lon = np.asarray(synth_healpix["longitude"])
+        lat = np.asarray(synth_healpix["latitude"])
         obs_clim = synth_obs["t2m"].isel(time=0)
+        obs_res = abs(float(obs_clim.lat.values[1] - obs_clim.lat.values[0]))
 
-        regridded = regrid_to_latlon(
-            model_clim, lon, lat,
-            obs_clim.lat.values, obs_clim.lon.values,
+        regridded, interpolator = nr.regrid(
+            model_clim.values.ravel(),
+            lon=lon, lat=lat,
+            resolution=obs_res,
+            influence_radius=_TEST_INFLUENCE_RADIUS,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
         )
-        bias = regridded - obs_clim.values
+        target_lats = interpolator.target_lat[:, 0]
+        target_lons = interpolator.target_lon[0, :]
+        obs_common = obs_clim.interp(lat=target_lats, lon=target_lons)
+        bias = regridded - obs_common
 
         # With matching synthetic data, bias should be small
         assert abs(float(latlon_global_mean(bias).values)) < 3.0
@@ -208,19 +230,29 @@ class TestGlobalBiasesPlot:
         var_info = get_var(var)
         ds = synth_healpix
         model_clim = climatology(ds["avg_2t"])
-        lon = ds["longitude"]
-        lat = ds["latitude"]
+        lon = np.asarray(ds["longitude"])
+        lat = np.asarray(ds["latitude"])
         area = ds["area"]
         model_gmean = float(global_mean(model_clim, area).values)
         model_seasonal = seasonal_climatology(ds["avg_2t"])
 
         obs_clim = climatology(synth_obs["t2m"])
+        obs_res = abs(float(obs_clim.lat.values[1] - obs_clim.lat.values[0]))
 
-        regridded = regrid_to_latlon(
-            model_clim, lon, lat,
-            obs_clim.lat.values, obs_clim.lon.values,
+        regridded, interpolator = nr.regrid(
+            model_clim.values.ravel(),
+            lon=lon, lat=lat,
+            resolution=obs_res,
+            influence_radius=_TEST_INFLUENCE_RADIUS,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
         )
-        annual_bias = regridded - obs_clim.values
+        target_lats = interpolator.target_lat[:, 0]
+        target_lons = interpolator.target_lon[0, :]
+
+        # Regrid obs to common nereus grid
+        obs_clim_common = obs_clim.interp(lat=target_lats, lon=target_lons)
+        annual_bias = regridded - obs_clim_common
 
         seasonal_biases = {}
         seasonal_regrids = {}
@@ -228,38 +260,55 @@ class TestGlobalBiasesPlot:
         for season in ["DJF", "JJA"]:
             if season in model_seasonal and season in obs_seasonal:
                 ms = model_seasonal[season]
-                s_regrid = regrid_to_latlon(
-                    ms, lon, lat,
-                    obs_clim.lat.values, obs_clim.lon.values,
+                s_np = interpolator(ms.values.ravel())
+                s_regrid = xr.DataArray(
+                    s_np, dims=("lat", "lon"),
+                    coords={"lat": target_lats, "lon": target_lons},
                 )
                 seasonal_regrids[season] = s_regrid
-                seasonal_biases[season] = s_regrid - obs_seasonal[season].values
+                obs_s = obs_seasonal[season].interp(
+                    lat=target_lats, lon=target_lons,
+                )
+                seasonal_biases[season] = s_regrid - obs_s
+
+        model_results = {
+            "ifs-fesom": {
+                "annual_regrid": regridded,
+                "seasonal_regrids": seasonal_regrids,
+                "global_mean": model_gmean,
+                "annual_bias": annual_bias,
+                "annual_bias_gmean": float(
+                    latlon_global_mean(annual_bias).values
+                ),
+                "annual_rmse": float(np.sqrt(
+                    latlon_global_mean(annual_bias ** 2).values
+                )),
+                "seasonal_biases": seasonal_biases,
+            },
+        }
+        obs_seasonal_common = {}
+        for season in ["DJF", "JJA"]:
+            if season in obs_seasonal:
+                obs_seasonal_common[season] = obs_seasonal[season].interp(
+                    lat=target_lats, lon=target_lons,
+                )
+
+        colorbar_ranges = GlobalBiases._compute_colorbar_ranges(
+            model_results, obs_clim_common, obs_seasonal_common,
+        )
 
         return {
             "avg_2t": {
-                "models": {
-                    "ifs-fesom": {
-                        "annual_regrid": regridded,
-                        "seasonal_regrids": seasonal_regrids,
-                        "global_mean": model_gmean,
-                        "annual_bias": annual_bias,
-                        "annual_bias_gmean": float(
-                            latlon_global_mean(annual_bias).values
-                        ),
-                        "annual_rmse": float(np.sqrt(
-                            latlon_global_mean(annual_bias ** 2).values
-                        )),
-                        "seasonal_biases": seasonal_biases,
-                    },
-                },
+                "models": model_results,
                 "obs": {
-                    "clim": obs_clim,
-                    "seasonal_clim": obs_seasonal,
+                    "clim": obs_clim_common,
+                    "seasonal_clim": obs_seasonal_common,
                     "global_mean": float(
                         latlon_global_mean(obs_clim).values
                     ),
                 },
                 "var_info": var_info,
+                "colorbar_ranges": colorbar_ranges,
             },
         }
 

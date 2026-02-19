@@ -58,7 +58,8 @@ obs_datasets:
 cmip6:
   enabled: false
   catalog_path: "/home/a/a270088/PYTHON/DestinE/cmip6/cmip6_zarr_catalog.yaml"
-  regrid_resolution: 1.0
+  regrid_resolution: 0.25
+  influence_radius: 80000
   ensemble_mode: "one_per_model"
   models:
     AWI-CM-1-1-MR:

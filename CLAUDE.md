@@ -45,7 +45,7 @@ feather/                     # Package root
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (27 vars)
 ├── util/
-│   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, regrid_to_latlon
+│   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, compute_latlon_areas
 │   ├── temporal.py          # climatology, anomaly, seasonal/monthly grouping
 │   └── units.py             # Unit conversion functions
 ├── plot/

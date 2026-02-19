@@ -8,17 +8,16 @@ import logging
 from typing import Any
 
 import matplotlib.pyplot as plt
+import nereus as nr
 import numpy as np
+import xarray as xr
 
 from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_bias_map
-from feather.util.spatial import (
-    RegridIndex,
-    latlon_global_mean,
-)
+from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import climatology, seasonal_climatology
 
 logger = logging.getLogger(__name__)
@@ -62,6 +61,10 @@ class GlobalBiases(DiagnosticBase):
         """
         results: dict[str, Any] = {}
 
+        influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0
+        )
+
         for var in self.variables:
             var_info = get_var(var)
             model_results: dict[str, dict] = {}
@@ -72,12 +75,17 @@ class GlobalBiases(DiagnosticBase):
             obs_gmean = float(latlon_global_mean(obs_clim).values)
             obs_seasonal = seasonal_climatology(obs_data)
 
-            obs_lats = obs_clim.lat.values if "lat" in obs_clim.coords else obs_clim.latitude.values
-            obs_lons = obs_clim.lon.values if "lon" in obs_clim.coords else obs_clim.longitude.values
+            lat_name = "lat" if "lat" in obs_clim.coords else "latitude"
+            lon_name = "lon" if "lon" in obs_clim.coords else "longitude"
+            obs_lats = obs_clim[lat_name].values
+            obs_lons = obs_clim[lon_name].values
+            obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-            # Pre-build regrid index once (all models share the same
+            # Build nereus interpolator once (all models share the same
             # HEALPix grid, so the KDTree is built only once).
-            regrid_idx: RegridIndex | None = None
+            interpolator = None
+            obs_clim_common = None
+            obs_seasonal_common = {}
 
             for model in self.config.models:
                 logger.info("Computing biases for %s / %s ...", var, model)
@@ -95,26 +103,53 @@ class GlobalBiases(DiagnosticBase):
                 model_gmean = float(model_clim.mean().values)
 
                 model_seasonal = seasonal_climatology(model_data, self.period)
-                # Materialise seasonal climatologies
                 model_seasonal = {
                     s: model_seasonal[s].compute()
                     for s in model_seasonal.data_vars
                 }
 
-                # Build KDTree index once (reused across models + seasons)
-                if regrid_idx is None:
-                    lon_np = np.asarray(lon)
-                    lat_np = np.asarray(lat)
-                    regrid_idx = RegridIndex.build(
-                        lon_np, lat_np, obs_lats, obs_lons,
+                # Build interpolator once (reused across models + seasons)
+                if interpolator is None:
+                    annual_regrid, interpolator = nr.regrid(
+                        model_clim.values.ravel(),
+                        lon=np.asarray(lon), lat=np.asarray(lat),
+                        resolution=obs_res,
+                        influence_radius=influence_radius,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
+                    )
+                    target_lats = interpolator.target_lat[:, 0]
+                    target_lons = interpolator.target_lon[0, :]
+
+                    # Regrid obs to common nereus grid (once)
+                    obs_clim_common = obs_clim.interp(
+                        {lat_name: target_lats, lon_name: target_lons}
+                    )
+                    if lat_name != "lat":
+                        obs_clim_common = obs_clim_common.rename(
+                            {lat_name: "lat", lon_name: "lon"}
+                        )
+
+                    # Also regrid seasonal obs
+                    obs_seasonal_common = {}
+                    for season in obs_seasonal:
+                        obs_s = obs_seasonal[season].interp(
+                            {lat_name: target_lats, lon_name: target_lons}
+                        )
+                        if lat_name != "lat":
+                            obs_s = obs_s.rename(
+                                {lat_name: "lat", lon_name: "lon"}
+                            )
+                        obs_seasonal_common[season] = obs_s
+                else:
+                    regridded_np = interpolator(model_clim.values.ravel())
+                    annual_regrid = xr.DataArray(
+                        regridded_np, dims=("lat", "lon"),
+                        coords={"lat": target_lats, "lon": target_lons},
                     )
 
-                # --- Annual bias (fast: just index lookup) ---
-                annual_regrid = regrid_idx.apply(model_clim)
-                annual_bias = annual_regrid - obs_clim.values
-                annual_bias = annual_bias.assign_coords(
-                    lat=obs_lats, lon=obs_lons,
-                )
+                # --- Annual bias ---
+                annual_bias = annual_regrid - obs_clim_common
                 bias_gmean = float(latlon_global_mean(annual_bias).values)
                 rmse = float(np.sqrt(
                     latlon_global_mean(annual_bias ** 2).values
@@ -125,14 +160,18 @@ class GlobalBiases(DiagnosticBase):
                 seasonal_regrids: dict[str, Any] = {}
                 for season in ["DJF", "JJA"]:
                     if season in model_seasonal:
-                        s_regrid = regrid_idx.apply(model_seasonal[season])
+                        s_np = interpolator(
+                            model_seasonal[season].values.ravel()
+                        )
+                        s_regrid = xr.DataArray(
+                            s_np, dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
                         seasonal_regrids[season] = s_regrid
-                        if season in obs_seasonal:
-                            obs_s = obs_seasonal[season]
-                            s_bias = s_regrid - obs_s.values
-                            s_bias = s_bias.assign_coords(
-                                lat=obs_lats, lon=obs_lons,
-                            )
+                        if season in obs_seasonal_common:
+                            s_bias = s_regrid - obs_seasonal_common[season]
                             seasonal_biases[season] = s_bias
 
                 model_results[model] = {
@@ -145,22 +184,97 @@ class GlobalBiases(DiagnosticBase):
                     "seasonal_biases": seasonal_biases,
                 }
 
+            # Compute shared colorbar ranges across all models per period
+            colorbar_ranges = self._compute_colorbar_ranges(
+                model_results, obs_clim_common, obs_seasonal_common,
+            )
+
             results[var] = {
                 "models": model_results,
                 "obs": {
-                    "clim": obs_clim,
-                    "seasonal_clim": obs_seasonal,
+                    "clim": obs_clim_common,
+                    "seasonal_clim": obs_seasonal_common,
                     "global_mean": obs_gmean,
                 },
                 "var_info": var_info,
+                "colorbar_ranges": colorbar_ranges,
             }
 
         return results
+
+    # ── Colorbar range computation ────────────────────────────────────
+
+    @staticmethod
+    def _compute_colorbar_ranges(
+        model_results: dict[str, dict],
+        obs_clim_common: xr.DataArray,
+        obs_seasonal_common: dict[str, xr.DataArray],
+    ) -> dict[str, dict]:
+        """Compute shared colorbar ranges across all models per period.
+
+        Returns a dict keyed by period name ("annual", "DJF", "JJA")
+        with ``vmin``, ``vmax`` (field panels) and ``bias_vmax``
+        (symmetric bias panel) values.
+        """
+        ranges: dict[str, dict] = {}
+
+        def _percentile_range(arrays):
+            """Compute vmin/vmax from 2nd/98th percentile of arrays."""
+            vals = np.concatenate([
+                np.asarray(a).ravel()[np.isfinite(np.asarray(a).ravel())]
+                for a in arrays
+            ])
+            return float(np.percentile(vals, 2)), float(np.percentile(vals, 98))
+
+        def _bias_max(arrays):
+            """Compute symmetric bias range from 98th percentile of |bias|."""
+            vals = np.concatenate([
+                np.asarray(a).ravel()[np.isfinite(np.asarray(a).ravel())]
+                for a in arrays
+            ])
+            return float(np.percentile(np.abs(vals), 98)) or 1.0
+
+        # Annual
+        field_arrays = [mr["annual_regrid"] for mr in model_results.values()]
+        field_arrays.append(obs_clim_common)
+        bias_arrays = [mr["annual_bias"] for mr in model_results.values()]
+        vmin, vmax = _percentile_range(field_arrays)
+        ranges["annual"] = {
+            "vmin": vmin, "vmax": vmax,
+            "bias_vmax": _bias_max(bias_arrays),
+        }
+
+        # Seasonal
+        for season in ["DJF", "JJA"]:
+            s_fields = [
+                mr["seasonal_regrids"][season]
+                for mr in model_results.values()
+                if season in mr["seasonal_regrids"]
+            ]
+            s_biases = [
+                mr["seasonal_biases"][season]
+                for mr in model_results.values()
+                if season in mr["seasonal_biases"]
+            ]
+            if not s_fields:
+                continue
+            if season in obs_seasonal_common:
+                s_fields.append(obs_seasonal_common[season])
+            vmin, vmax = _percentile_range(s_fields)
+            ranges[season] = {
+                "vmin": vmin, "vmax": vmax,
+                "bias_vmax": _bias_max(s_biases) if s_biases else 1.0,
+            }
+
+        return ranges
 
     # ── Plotting ───────────────────────────────────────────────────────
 
     def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
         """Generate 3-panel bias maps for each model x variable.
+
+        Uses shared colorbar ranges across all models per period so
+        figures can be compared side by side.
 
         Returns
         -------
@@ -172,15 +286,19 @@ class GlobalBiases(DiagnosticBase):
             var_info = vr["var_info"]
             obs_clim = vr["obs"]["clim"]
             obs_gmean = vr["obs"]["global_mean"]
+            cb = vr["colorbar_ranges"]
 
             for model, mdata in vr["models"].items():
                 # --- Annual bias map ---
+                ann_cb = cb["annual"]
                 fig, axes = plot_bias_map(
                     mdata["annual_regrid"], obs_clim,
                     bias_data=mdata["annual_bias"],
                     title=f"{var_info.long_name} Annual Mean \u2014 {model}",
                     cmap=var_info.cmap,
                     units=var_info.units,
+                    vmin=ann_cb["vmin"], vmax=ann_cb["vmax"],
+                    bias_vmax=ann_cb["bias_vmax"],
                 )
                 meta = self._build_metadata(
                     title=f"{var_info.long_name} Annual Bias \u2014 {model}",
@@ -206,6 +324,7 @@ class GlobalBiases(DiagnosticBase):
                 for season, bias in mdata["seasonal_biases"].items():
                     obs_s = vr["obs"]["seasonal_clim"][season]
                     model_s = mdata["seasonal_regrids"][season]
+                    s_cb = cb.get(season, {})
 
                     fig_s, _ = plot_bias_map(
                         model_s, obs_s,
@@ -215,6 +334,9 @@ class GlobalBiases(DiagnosticBase):
                         ),
                         cmap=var_info.cmap,
                         units=var_info.units,
+                        vmin=s_cb.get("vmin"),
+                        vmax=s_cb.get("vmax"),
+                        bias_vmax=s_cb.get("bias_vmax"),
                     )
                     meta_s = self._build_metadata(
                         title=(
