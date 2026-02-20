@@ -1,0 +1,667 @@
+/* ── Feather Climate Diagnostics — Static Site Styles ──────────────── */
+
+/* ── CSS Custom Properties ─────────────────────────────────────────── */
+:root {
+    --bg-primary: #0f1117;
+    --bg-secondary: #1a1d27;
+    --bg-card: #21242f;
+    --bg-sidebar: #161921;
+    --text-primary: #e4e6ed;
+    --text-secondary: #9ca0ae;
+    --text-muted: #6b7085;
+    --accent: #5b8af5;
+    --accent-hover: #7ba4ff;
+    --accent-dim: rgba(91, 138, 245, 0.12);
+    --border: #2a2d3a;
+    --border-light: #353849;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.45);
+    --radius: 10px;
+    --radius-sm: 6px;
+    --sidebar-width: 280px;
+    --transition: 0.2s ease;
+
+    /* Confidence badge colors */
+    --confidence-high: #4ade80;
+    --confidence-medium: #fbbf24;
+    --confidence-low: #f87171;
+
+    /* Group badge colors */
+    --group-temperature: #f87171;
+    --group-precipitation: #34d399;
+    --group-radiation: #fbbf24;
+    --group-circulation: #60a5fa;
+    --group-clouds: #c084fc;
+    --group-wind: #67e8f9;
+    --group-moisture: #a78bfa;
+    --group-surface_fluxes: #fb923c;
+    --group-ocean_surface: #22d3ee;
+    --group-sea_ice: #93c5fd;
+    --group-ocean_3d: #2dd4bf;
+    --group-atmosphere_3d: #818cf8;
+    --group-other: #9ca0ae;
+}
+
+/* ── Reset & Base ──────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    font-size: 15px;
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.65;
+    min-height: 100vh;
+}
+
+a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color var(--transition);
+}
+
+a:hover {
+    color: var(--accent-hover);
+}
+
+img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius-sm);
+}
+
+/* ── Layout: Sidebar + Main ────────────────────────────────────────── */
+.layout {
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────── */
+.sidebar {
+    width: var(--sidebar-width);
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border);
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    overflow-y: auto;
+    padding: 1.5rem 0;
+    z-index: 100;
+}
+
+.sidebar-header {
+    padding: 0 1.25rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1rem;
+}
+
+.sidebar-header h1 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), #b967f5);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: -0.02em;
+}
+
+.sidebar-header .subtitle {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+    line-height: 1.4;
+}
+
+.sidebar-nav {
+    padding: 0 0.75rem;
+}
+
+.group-section {
+    margin-bottom: 1rem;
+}
+
+.group-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 0.4rem 0.5rem;
+}
+
+.nav-link {
+    display: block;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nav-link:hover {
+    background: var(--accent-dim);
+    color: var(--text-primary);
+}
+
+.nav-link.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* ── Main Content ──────────────────────────────────────────────────── */
+.main-content {
+    margin-left: var(--sidebar-width);
+    flex: 1;
+    padding: 2rem 2.5rem;
+    max-width: 1400px;
+}
+
+/* ── Page Header ───────────────────────────────────────────────────── */
+.page-header {
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.page-header h1 {
+    font-size: 1.8rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.page-header .meta {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+/* ── Group Badges ──────────────────────────────────────────────────── */
+.group-badge {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.group-badge--temperature {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--group-temperature);
+}
+
+.group-badge--precipitation {
+    background: rgba(52, 211, 153, 0.15);
+    color: var(--group-precipitation);
+}
+
+.group-badge--radiation {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--group-radiation);
+}
+
+.group-badge--circulation {
+    background: rgba(96, 165, 250, 0.15);
+    color: var(--group-circulation);
+}
+
+.group-badge--clouds {
+    background: rgba(192, 132, 252, 0.15);
+    color: var(--group-clouds);
+}
+
+.group-badge--wind {
+    background: rgba(103, 232, 249, 0.15);
+    color: var(--group-wind);
+}
+
+.group-badge--moisture {
+    background: rgba(167, 139, 250, 0.15);
+    color: var(--group-moisture);
+}
+
+.group-badge--surface_fluxes {
+    background: rgba(251, 146, 60, 0.15);
+    color: var(--group-surface_fluxes);
+}
+
+.group-badge--ocean_surface {
+    background: rgba(34, 211, 238, 0.15);
+    color: var(--group-ocean_surface);
+}
+
+.group-badge--sea_ice {
+    background: rgba(147, 197, 253, 0.15);
+    color: var(--group-sea_ice);
+}
+
+.group-badge--ocean_3d {
+    background: rgba(45, 212, 191, 0.15);
+    color: var(--group-ocean_3d);
+}
+
+.group-badge--atmosphere_3d {
+    background: rgba(129, 140, 248, 0.15);
+    color: var(--group-atmosphere_3d);
+}
+
+.group-badge--other {
+    background: rgba(156, 160, 174, 0.15);
+    color: var(--group-other);
+}
+
+/* ── Group Headings (index page) ───────────────────────────────────── */
+.group-heading {
+    margin: 1.5rem 0 0.75rem;
+    font-size: 1.1rem;
+    color: var(--text-secondary);
+}
+
+/* ── Card Grid (Index) ─────────────────────────────────────────────── */
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.card-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: all var(--transition);
+    cursor: pointer;
+}
+
+.card:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.card-thumb {
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+}
+
+.card-body {
+    padding: 1rem 1.25rem;
+}
+
+.card-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.card-headline {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.card-footer {
+    padding: 0.6rem 1.25rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+}
+
+/* ── Diagnostic Page ───────────────────────────────────────────────── */
+.synthesis-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.5rem 2rem;
+    margin-bottom: 2rem;
+}
+
+.synthesis-box h2 {
+    font-size: 1.1rem;
+    margin-bottom: 0.75rem;
+    color: var(--accent);
+}
+
+.synthesis-headline {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+    padding: 0.75rem 1rem;
+    border-left: 3px solid var(--accent);
+    background: var(--accent-dim);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.synthesis-narrative {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.7;
+    white-space: pre-line;
+}
+
+.connections-label {
+    font-size: 0.82rem;
+    margin-top: 1rem;
+    color: var(--text-muted);
+}
+
+.connections-list {
+    margin-top: 0.3rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+
+.connection-tag {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--accent-dim);
+    color: var(--accent);
+}
+
+/* ── CMIP6 Badge ──────────────────────────────────────────────────── */
+.cmip6-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+    vertical-align: middle;
+}
+
+/* ── CMIP6 Info Box ───────────────────────────────────────────────── */
+.cmip6-info-box {
+    background: rgba(74, 222, 128, 0.06);
+    border: 1px solid rgba(74, 222, 128, 0.2);
+    border-radius: var(--radius);
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+}
+
+.cmip6-info-box h4 {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #4ade80;
+    margin-bottom: 0.5rem;
+}
+
+.cmip6-info-box p {
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+
+/* ── Figure Section ────────────────────────────────────────────────── */
+.figure-section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 1.5rem;
+    overflow: hidden;
+}
+
+.figure-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.figure-header h3 {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.figure-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+}
+
+.figure-image {
+    padding: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-secondary);
+}
+
+.figure-image img {
+    width: 100%;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-sm);
+}
+
+.figure-details {
+    padding: 1.25rem;
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    max-height: 600px;
+}
+
+/* ── Metadata Table ────────────────────────────────────────────────── */
+.meta-table {
+    width: 100%;
+    font-size: 0.8rem;
+    border-collapse: collapse;
+    margin-bottom: 1rem;
+}
+
+.meta-table th {
+    text-align: left;
+    color: var(--text-muted);
+    font-weight: 600;
+    padding: 0.35rem 0.6rem;
+    white-space: nowrap;
+    width: 35%;
+    border-bottom: 1px solid var(--border);
+}
+
+.meta-table td {
+    color: var(--text-secondary);
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+}
+
+/* ── Analysis Panel ────────────────────────────────────────────────── */
+.analysis-panel h4 {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 1rem 0 0.4rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.analysis-panel h4:first-child {
+    margin-top: 0;
+}
+
+.analysis-panel p,
+.analysis-panel li {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.analysis-panel ul {
+    list-style: none;
+    padding: 0;
+}
+
+.analysis-panel ul li {
+    padding: 0.25rem 0 0.25rem 1rem;
+    position: relative;
+}
+
+.analysis-panel ul li::before {
+    content: '\25B8';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+}
+
+/* ── Confidence Badge ──────────────────────────────────────────────── */
+.confidence-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+}
+
+.confidence-badge--high {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--confidence-high);
+}
+
+.confidence-badge--medium {
+    background: rgba(251, 191, 36, 0.15);
+    color: var(--confidence-medium);
+}
+
+.confidence-badge--low {
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--confidence-low);
+}
+
+/* ── No Analysis Notice ────────────────────────────────────────────── */
+.no-analysis-notice {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 0.5rem 0;
+}
+
+/* ── Lightbox ───────────────────────────────────────────────────────── */
+.lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.92);
+    backdrop-filter: blur(8px);
+    cursor: zoom-out;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.lightbox.active {
+    display: flex;
+    animation: lightbox-fade-in 0.2s ease;
+}
+
+.lightbox img {
+    max-width: 95vw;
+    max-height: 92vh;
+    object-fit: contain;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+}
+
+@keyframes lightbox-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+    .figure-content {
+        grid-template-columns: 1fr;
+    }
+
+    .figure-details {
+        border-left: none;
+        border-top: 1px solid var(--border);
+        max-height: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .sidebar {
+        display: none;
+    }
+
+    .main-content {
+        margin-left: 0;
+        padding: 1.5rem 1rem;
+    }
+
+    .card-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .page-header h1 {
+        font-size: 1.3rem;
+    }
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-light);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+}

@@ -106,3 +106,29 @@ llm:
     max_retries: 3
     retry_delay: 10
     skip_existing: true
+
+website:
+  title: "Feather — Climate Model Evaluation"
+  subtitle: "DestinE High-Resolution Simulations vs Observations (1990-2014)"
+  group_order:
+    - temperature
+    - precipitation
+    - radiation
+    - circulation
+    - ocean_surface
+    - sea_ice
+    - ocean_3d
+    - atmosphere_3d
+  group_labels:
+    temperature: "Temperature"
+    precipitation: "Precipitation"
+    radiation: "Radiation Budget"
+    circulation: "Atmospheric Circulation"
+    clouds: "Clouds"
+    wind: "Wind"
+    moisture: "Moisture"
+    surface_fluxes: "Surface Fluxes"
+    ocean_surface: "Ocean Surface"
+    sea_ice: "Sea Ice"
+    ocean_3d: "Ocean 3D"
+    atmosphere_3d: "Atmosphere 3D"

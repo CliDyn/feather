@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ site_title }}{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% block css_path %}static/style.css{% endblock %}">
+</head>
+
+<body>
+    <div class="layout">
+
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h1>{{ site_title }}</h1>
+                <div class="subtitle">{{ site_subtitle }}</div>
+            </div>
+            <div class="sidebar-nav">
+                <a class="nav-link {% block nav_index_active %}{% endblock %}"
+                    href="{% block index_href %}index.html{% endblock %}">
+                    Overview
+                </a>
+                {% for group_key, group_label, group_diags in groups %}
+                <div class="group-section">
+                    <div class="group-label">{{ group_label }}</div>
+                    {% for d in group_diags %}
+                    <a class="nav-link {% if active_diag is defined and active_diag == d.name %}active{% endif %}"
+                        href="{% block diag_href scoped %}{{ d.name }}.html{% endblock %}">
+                        {{ d.title }}
+                    </a>
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </nav>
+
+        <!-- Main -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+
+    </div>
+
+    <!-- Lightbox Modal -->
+    <div id="lightbox" class="lightbox" onclick="closeLightbox()">
+        <img id="lightbox-img" src="" alt="">
+    </div>
+
+    <script>
+        function openLightbox(src, alt) {
+            var lb = document.getElementById('lightbox');
+            var img = document.getElementById('lightbox-img');
+            img.src = src;
+            img.alt = alt || '';
+            lb.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+        function closeLightbox() {
+            var lb = document.getElementById('lightbox');
+            lb.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeLightbox();
+        });
+    </script>
+</body>
+
+</html>

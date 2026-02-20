@@ -19,6 +19,7 @@ class FeatherConfig:
     nereus: dict
     output_dir: str
     llm: dict = field(default_factory=dict)
+    website: dict = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> "FeatherConfig":
@@ -44,4 +45,5 @@ class FeatherConfig:
             nereus=raw.get("nereus", {}),
             output_dir=raw.get("output_dir", "./output"),
             llm=raw.get("llm", {}),
+            website=raw.get("website", {}),
         )

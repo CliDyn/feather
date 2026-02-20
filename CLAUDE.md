@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 208 unit tests + 4 integration tests.
+Current test count: 238 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -63,6 +63,10 @@ feather/                     # Package root
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
 │   └── analyzer.py          # FigureAnalyzer: discover, analyze, synthesize
+├── website/
+│   ├── generator.py         # SiteGenerator: collect, group, build static site
+│   ├── templates/           # Jinja2 templates (base, index, diagnostic)
+│   └── static/style.css     # Dark theme CSS with group badges
 └── export/                  # Placeholder for future notebook export
 ```
 
@@ -77,7 +81,9 @@ feather/                     # Package root
 | `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
 | `feather/llm/analyzer.py` | FigureAnalyzer — Gemini-based figure analysis |
 | `feather/llm/schemas.py` | Pydantic models for structured LLM output |
+| `feather/website/generator.py` | SiteGenerator — static HTML dashboard from figures + analysis |
 | `scripts/run_analysis.py` | CLI runner for LLM analysis |
+| `scripts/run_website.py` | CLI runner for website generation |
 | `tests/conftest.py` | Synthetic HEALPix/obs/CMIP6 fixtures, mock loaders, minimal_config |
 | `PLAN.md` | Full implementation plan with phase status |
 

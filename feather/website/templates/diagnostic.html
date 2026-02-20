@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block title %}{{ diag.title }} — {{ site_title }}{% endblock %}
+
+{% set active_diag = diag.name %}
+
+{% block content %}
+<div class="page-header">
+    <h1>
+        <span class="group-badge group-badge--{{ diag.group }}">{{ diag.group | replace("_", " ") | title }}</span>
+        {{ diag.title }}
+        {% if diag.has_cmip6 %}
+        <span class="cmip6-badge">CMIP6</span>
+        {% endif %}
+    </h1>
+    <div class="meta">
+        {{ diag.figures|length }} figure{{ "s" if diag.figures|length != 1 }} &middot;
+        {{ period }}
+    </div>
+</div>
+
+<!-- CMIP6 Info Box -->
+{% if diag.has_cmip6 and diag.cmip6_info %}
+<div class="cmip6-info-box">
+    <h4>CMIP6 Multi-Model Mean Context</h4>
+    {% if diag.cmip6_info.n_members is defined %}
+    <p>
+        Comparison with CMIP6 ensemble mean from
+        <strong>{{ diag.cmip6_info.n_members }}</strong> members.
+    </p>
+    {% endif %}
+    {% if diag.cmip6_model_names %}
+    <p><strong>Contributing models:</strong>
+        {{ diag.cmip6_model_names|join(", ") }}
+    </p>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Synthesis -->
+{% if diag.synthesis %}
+<div class="synthesis-box">
+    <h2>Synthesis</h2>
+    {% if diag.synthesis.headline_finding %}
+    <div class="synthesis-headline">{{ diag.synthesis.headline_finding }}</div>
+    {% endif %}
+    {% if diag.synthesis.narrative %}
+    <div class="synthesis-narrative">{{ diag.synthesis.narrative }}</div>
+    {% endif %}
+    {% if diag.synthesis.connections %}
+    <h4 class="connections-label">Related diagnostics</h4>
+    <div class="connections-list">
+        {% for conn in diag.synthesis.connections %}
+        <span class="connection-tag">{{ conn }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<!-- Figures -->
+{% for fig in diag.figures %}
+<div class="figure-section">
+    <div class="figure-header">
+        <h3>{{ fig.title }}</h3>
+    </div>
+    <div class="figure-content">
+        <div class="figure-image">
+            <img src="figures/{{ diag.name }}/{{ fig.filename }}" alt="{{ fig.title }}" loading="lazy"
+                style="cursor: zoom-in;" onclick="openLightbox(this.src, this.alt)">
+        </div>
+        <div class="figure-details">
+            <!-- Metadata table -->
+            {% if fig.metadata %}
+            <table class="meta-table">
+                {% if fig.metadata.variables_used %}
+                <tr>
+                    <th>Variables</th>
+                    <td>{{ fig.metadata.variables_used|join(", ") }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.models %}
+                <tr>
+                    <th>Models</th>
+                    <td>{{ fig.metadata.models|join(", ") }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.obs_dataset %}
+                <tr>
+                    <th>Obs Dataset</th>
+                    <td>{{ fig.metadata.obs_dataset }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.units %}
+                <tr>
+                    <th>Units</th>
+                    <td>{{ fig.metadata.units }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.period %}
+                <tr>
+                    <th>Period</th>
+                    <td>{{ fig.metadata.period|join("–") }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.computation_notes %}
+                <tr>
+                    <th>Method</th>
+                    <td>{{ fig.metadata.computation_notes }}</td>
+                </tr>
+                {% endif %}
+                {% if fig.metadata.summary_statistics %}
+                {% for stat_key, stat_val in fig.metadata.summary_statistics.items() %}
+                <tr>
+                    <th>{{ stat_key | replace("_", " ") | title }}</th>
+                    <td>{{ "%.3f"|format(stat_val) if stat_val is number else stat_val }}</td>
+                </tr>
+                {% endfor %}
+                {% endif %}
+            </table>
+            {% endif %}
+
+            <!-- LLM analysis -->
+            {% if fig.analysis %}
+            <div class="analysis-panel">
+                <h4>Summary
+                    {% if fig.analysis.confidence %}
+                    <span class="confidence-badge confidence-badge--{{ fig.analysis.confidence }}">
+                        {{ fig.analysis.confidence }}
+                    </span>
+                    {% endif %}
+                </h4>
+                <p>{{ fig.analysis.summary }}</p>
+
+                {% if fig.analysis.key_findings %}
+                <h4>Key Findings</h4>
+                <ul>
+                    {% for finding in fig.analysis.key_findings %}
+                    <li>{{ finding }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+
+                {% if fig.analysis.spatial_patterns %}
+                <h4>Spatial Patterns</h4>
+                <p>{{ fig.analysis.spatial_patterns }}</p>
+                {% endif %}
+
+                {% if fig.analysis.model_agreement %}
+                <h4>Model Agreement</h4>
+                <p>{{ fig.analysis.model_agreement }}</p>
+                {% endif %}
+
+                {% if fig.analysis.physical_interpretation %}
+                <h4>Physical Interpretation</h4>
+                <p>{{ fig.analysis.physical_interpretation }}</p>
+                {% endif %}
+
+                {% if fig.analysis.caveats %}
+                <h4>Caveats</h4>
+                <ul>
+                    {% for caveat in fig.analysis.caveats %}
+                    <li>{{ caveat }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="no-analysis-notice">LLM analysis not yet available for this figure.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endblock %}

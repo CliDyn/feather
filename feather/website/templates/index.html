@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}{{ site_title }} — Overview{% endblock %}
+{% block nav_index_active %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Diagnostic Dashboard</h1>
+    <div class="meta">
+        {{ diagnostics|length }} diagnostics &middot;
+        Models: {{ models|join(", ") }} &middot;
+        Period: {{ period }}
+    </div>
+</div>
+
+{% for group_key, group_label, group_diags in groups %}
+<h2 class="group-heading">
+    <span class="group-badge group-badge--{{ group_key }}">{{ group_label }}</span>
+</h2>
+
+<div class="card-grid">
+    {% for diag in group_diags %}
+    <a href="{{ diag.name }}.html" class="card-link">
+        <div class="card">
+            <img class="card-thumb" src="figures/{{ diag.name }}/{{ diag.thumbnail }}"
+                alt="{{ diag.title }}" loading="lazy">
+            <div class="card-body">
+                <div class="card-title">
+                    {{ diag.title }}
+                    {% if diag.has_cmip6 %}
+                    <span class="cmip6-badge">CMIP6</span>
+                    {% endif %}
+                </div>
+                {% if diag.synthesis and diag.synthesis.headline_finding %}
+                <div class="card-headline">{{ diag.synthesis.headline_finding }}</div>
+                {% endif %}
+            </div>
+            <div class="card-footer">
+                <span>{{ diag.figures|length }} figure{{ "s" if diag.figures|length != 1 }}</span>
+                {% if diag.has_analysis %}
+                <span>AI Analysis</span>
+                {% else %}
+                <span>Figures only</span>
+                {% endif %}
+            </div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% endfor %}
+{% endblock %}

@@ -206,6 +206,8 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── run_timeseries.py             # CLI: time series runner
 │   ├── run_seasonal_cycle.py         # CLI: seasonal cycle runner
 │   ├── run_all.py                    # CLI: run all diagnostics with --diagnostics filter
+│   ├── run_analysis.py              # CLI: LLM analysis runner
+│   ├── run_website.py               # CLI: static website generator
 │   └── test_cmip6_e2e.py            # E2E CMIP6 test (run on compute node)
 ├── tests/
 │   ├── __init__.py
@@ -220,9 +222,11 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_global_biases.py         # 23 tests (16 + 7 CMIP6)
 │   ├── test_timeseries.py            # 15 tests (9 + 6 CMIP6)
 │   ├── test_seasonal_cycle.py        # 14 tests (8 + 6 CMIP6)
-│   └── test_cmip6.py                # 47 unit + 2 integration tests
+│   ├── test_cmip6.py                # 47 unit + 2 integration tests
+│   ├── test_llm.py                  # 47 tests (mocked Gemini)
+│   └── test_website.py             # 30 tests
 └── feather/
-    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader
+    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader, FigureAnalyzer, SiteGenerator
     ├── config.py                     # FeatherConfig dataclass + YAML loader
     ├── data/
     │   ├── __init__.py
@@ -248,6 +252,20 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   ├── global_biases.py          # GlobalBiases diagnostic
     │   ├── timeseries.py             # TimeseriesDiag diagnostic
     │   └── seasonal_cycle.py         # SeasonalCycleDiag diagnostic
+    ├── llm/
+    │   ├── __init__.py
+    │   ├── schemas.py               # FigureAnalysis, DiagnosticSynthesis (Pydantic)
+    │   ├── prompts.py               # System + user prompts for Gemini analysis
+    │   └── analyzer.py              # FigureAnalyzer: discover, analyze, synthesize
+    ├── website/
+    │   ├── __init__.py              # Exports SiteGenerator
+    │   ├── generator.py             # SiteGenerator: collect, group, build
+    │   ├── templates/
+    │   │   ├── base.html            # Sidebar nav, lightbox JS
+    │   │   ├── index.html           # Card grid overview by group
+    │   │   └── diagnostic.html      # Per-diagnostic detail page
+    │   └── static/
+    │       └── style.css            # Dark theme, group badges, responsive
     └── export/
         └── __init__.py               # Placeholder
 ```
@@ -862,113 +880,77 @@ class FeatherConfig:
 
 ---
 
-## Phase 6: Web Dashboard
+## Phase 6: Web Dashboard — COMPLETED
 
 **Goal:** Generate a static HTML site with all diagnostic figures, their metadata, and LLM analyses — viewable in any browser, no server needed.
 
-### Step 6.1 — Site generator
+**Status:** All steps implemented and verified. 30 unit tests passing.
 
-**File:** `feather/website/generator.py`
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| Config | `feather/config.py` — added `website: dict` field | Done |
+| Config | `configs/default.yaml` — added `website:` section (title, subtitle, group_order, group_labels) | Done |
+| Deps | `pyproject.toml` — added `jinja2>=3.0` | Done |
+| Generator | `feather/website/generator.py` (SiteGenerator class) | Done |
+| Templates | `feather/website/templates/base.html` (sidebar, lightbox) | Done |
+| Templates | `feather/website/templates/index.html` (card grid overview) | Done |
+| Templates | `feather/website/templates/diagnostic.html` (per-diagnostic detail) | Done |
+| CSS | `feather/website/static/style.css` (dark theme, group badges) | Done |
+| CLI | `scripts/run_website.py` (argparse runner) | Done |
+| Package | `feather/website/__init__.py`, updated `feather/__init__.py` | Done |
+| Tests | `tests/test_website.py` (30 tests) | Done |
+
+### Key design decisions
+
+1. **Groups instead of tiers.** The reference implementation uses Tier 1/2/3 categories. Feather uses thematic groups (temperature, radiation, ocean_surface, etc.) with color-coded badges and configurable ordering via `website.group_order`.
+
+2. **`SiteGenerator.collect_diagnostics()` scans the filesystem.** Walks `figures/` subdirectories, discovers PNG+JSON pairs, loads analysis JSONs from `analysis/`, extracts CMIP6 info from metadata sidecars. Falls back to the diagnostic registry for title/group, with `_humanize()` as a last resort.
+
+3. **`_group_diagnostics()` respects config ordering.** Groups are ordered by `website.group_order` first, then any remaining groups alphabetically. Labels come from `website.group_labels` with humanized fallback.
+
+4. **Graceful degradation.** Works without LLM analysis (shows "not yet available"), without CMIP6 info, without synthesis, and even without metadata sidecars (PNG-only). Each missing piece is simply omitted from the rendered page.
+
+5. **No envelope/f_out metrics.** Unlike the reference implementation, feather does not compute P5–P95 envelope comparisons. All envelope-related CSS and template logic was removed.
+
+6. **CMIP6 info extracted from figure metadata.** The `cmip6_info` dict (n_members, models_used) is read from the first figure's JSON sidecar that contains it. CMIP6 model names are extracted and displayed in an info box on the diagnostic page.
+
+### SiteGenerator API
 
 ```python
 class SiteGenerator:
-    """Build static HTML dashboard from figures + analyses."""
-
-    def __init__(self, config: FeatherConfig):
-        self.figures_dir = Path(config.output_dir) / "figures"
-        self.analysis_dir = Path(config.output_dir) / "analysis"
-        self.site_dir = Path(config.output_dir) / "site"
-        self.env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(TEMPLATES_DIR)
-        )
-
-    def collect_diagnostics(self) -> list[dict]:
-        """Scan figures/ and analysis/ directories.
-
-        For each diagnostic:
-        - Discover all PNG + JSON pairs
-        - Load metadata sidecars
-        - Load LLM analyses (if available)
-        - Load synthesis (if available)
-        - Group by diagnostic group
-        """
-
-    def build(self):
-        """Build the complete static site.
-
-        1. Collect all diagnostic data
-        2. Copy static assets (CSS)
-        3. Copy figure PNGs
-        4. Group diagnostics by group
-        5. Render index.html (gallery overview)
-        6. Render one HTML page per diagnostic
-        """
+    def __init__(self, config: FeatherConfig)
+    def collect_diagnostics(self) -> list[dict]          # Scan figures/ + analysis/
+    def _group_diagnostics(self, diagnostics) -> list     # Group + order by config
+    def build(self) -> Path                               # Generate site, return site_dir
 ```
 
-### Step 6.2 — Jinja2 templates
+### Templates
 
-Adapted from the reference implementation's dark-theme design.
+- **`base.html`:** Two-column layout (fixed 280px sidebar + scrollable main), group-based nav, lightbox JS (click-to-zoom, Escape to close), Google Fonts (Inter)
+- **`index.html`:** Card grid per group with thumbnail, title, CMIP6 badge, synthesis headline, figure count + analysis status
+- **`diagnostic.html`:** Group badge + title + CMIP6 badge in header, CMIP6 info box (contributing models), synthesis box (headline + narrative + connections), per-figure sections (two-column: image left with lightbox zoom, metadata table + LLM analysis panel right)
 
-**`templates/base.html`:**
-- Sidebar navigation grouped by diagnostic group (temperature, radiation, ocean, sea ice, etc.)
-- Main content area
-- Lightbox modal for figure zoom (click to enlarge)
-- Google Fonts (Inter)
+### CSS design
 
-**`templates/index.html`:**
-- Overview header (models, period, diagnostic count)
-- Card grid: one card per diagnostic with:
-  - Thumbnail (first figure)
-  - Title + group badge
-  - Headline finding (from synthesis, if available)
-  - Figure count + analysis status
+Dark theme adapted from reference implementation with group-specific badge colors:
+- `--group-temperature: #f87171` (red), `--group-radiation: #fbbf24` (amber), `--group-precipitation: #34d399` (green), `--group-circulation: #60a5fa` (blue), `--group-ocean_surface: #22d3ee` (cyan), `--group-sea_ice: #93c5fd` (light blue), etc.
+- Responsive: sidebar hidden on <768px, single-column cards; figure content collapses to single column on <1024px
+- Confidence badges: high (green), medium (yellow), low (red)
 
-**`templates/diagnostic.html`:**
-- Page header with group badge + diagnostic title
-- Synthesis box (headline finding + narrative + connections)
-- Per-figure sections:
-  - Figure image (clickable for lightbox zoom)
-  - Metadata table (variables, models, obs dataset, units, period, method)
-  - Summary statistics (global mean bias, RMSE, etc.)
-  - LLM analysis panel (if available):
-    - Summary
-    - Key findings (bulleted)
-    - Spatial patterns
-    - Model agreement
-    - Physical interpretation
-    - Caveats
-    - Confidence badge (high/medium/low)
+### Verification results
 
-### Step 6.3 — CSS styles
+```
+pytest tests/test_website.py -v            → 30/30 passed
+pytest tests/ -v -m "not integration"      → 238/238 passed (30 new + 208 existing)
+```
 
-**File:** `feather/website/static/style.css`
+### Usage
 
-Reuse the dark-theme design from the reference implementation:
-- Dark background (`#0f1117`, `#1a1d27`, `#21242f`)
-- Inter font, clean typography
-- Card grid layout for gallery
-- Side-by-side figure + analysis layout
-- Confidence badges (green/yellow/red)
-- Group badges (color-coded by domain)
-- Responsive breakpoints (1024px, 768px)
-- Lightbox overlay for figure zoom
-
-### Step 6.4 — Dashboard configuration
-
-Add to `configs/default.yaml`:
-
-```yaml
-website:
-  title: "Feather — Climate Model Evaluation"
-  subtitle: "DestinE High-Resolution Simulations vs Observations"
-  group_labels:
-    temperature: "Temperature"
-    radiation: "Radiation Budget"
-    precipitation: "Precipitation"
-    circulation: "Atmospheric Circulation"
-    ocean_surface: "Ocean Surface"
-    sea_ice: "Sea Ice"
-    ocean_3d: "Ocean 3D"
+```bash
+python scripts/run_website.py --config configs/default.yaml -v
+# → generates output/site/index.html + per-diagnostic pages
 ```
 
 ---
