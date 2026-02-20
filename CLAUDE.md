@@ -231,7 +231,8 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `plot_combined_bias_map()` in `plot/maps.py` handles layout with `max_cols` overflow to extra rows
 - 18 validated DestinE↔ERA5 surface variables (temperature, pressure, wind, clouds, precipitation, radiation, heat fluxes)
 - Gracefully skips models missing a variable (e.g., ICON lacks `avg_tcc`) with a warning
-- `cmip6_individual=True` mode shows individual CMIP6 models instead of MMM
+- `--cmip6-individual` CLI flag enables individual CMIP6 model bias panels **plus** MMM (both computed together)
+- Without the flag, only CMIP6 MMM is shown (default behavior)
 - `--variables` CLI flag intersects with diagnostic's supported list; warns about unsupported variables
 
 ### LLM analysis
@@ -258,6 +259,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Also available as `python -m feather`
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
+- `--cmip6-individual` flag plots individual CMIP6 model biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`)
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 

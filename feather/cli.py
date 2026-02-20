@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None):
         help="OpenAI API key for the report step",
     )
     parser.add_argument(
+        "--cmip6-individual",
+        action="store_true",
+        help="Plot individual CMIP6 model biases (plus MMM) instead of MMM only",
+    )
+    parser.add_argument(
         "--no-skip-existing",
         action="store_true",
         help="Re-run steps even if output already exists",
@@ -124,6 +129,7 @@ def main(argv: list[str] | None = None):
         openai_api_key=args.openai_api_key,
         skip_existing=not args.no_skip_existing,
         compile_pdf=args.compile_pdf,
+        cmip6_individual=args.cmip6_individual,
     )
 
     print()

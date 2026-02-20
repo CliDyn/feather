@@ -238,8 +238,13 @@ class GlobalBiases(DiagnosticBase):
             cmip6_individual_data: dict[str, dict] = {}
             if self.cmip6_enabled and interpolator is not None:
                 if self.cmip6_individual:
-                    # Individual CMIP6 models
+                    # Individual CMIP6 models + MMM
                     cmip6_individual_data = self._compute_cmip6_individual(
+                        var, target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common,
+                        common_area,
+                    )
+                    cmip6_data, cmip6_info = self._compute_cmip6_mmm(
                         var, target_lats, target_lons,
                         obs_clim_common, obs_seasonal_common,
                         common_area,

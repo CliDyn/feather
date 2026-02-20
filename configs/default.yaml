@@ -64,29 +64,55 @@ cmip6:
   ensemble_mode: "one_per_model"
   models:
     CanESM5:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     MPI-ESM1-2-LR:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     GISS-E2-1-G:
-      variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+      variant: "r1i1p1f2"
     IPSL-CM6A-LR:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     ACCESS-ESM1-5:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     EC-Earth3:
-      variants: ["r1i1p1f1", "r3i1p1f1", "r4i1p1f1", "r6i1p1f1", "r9i1p1f1"]
+      variant: "r1i1p1f1"
     CNRM-CM6-1:
-      variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+      variant: "r1i1p1f2"
     AWI-CM-1-1-MR:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     CNRM-ESM2-1:
-      variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+      variant: "r1i1p1f2"
     FGOALS-g3:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     INM-CM5-0:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
     MRI-ESM2-0:
-      variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+      variant: "r1i1p1f1"
+  # Full ensemble (5 variants per model) — uncomment to use all members:
+  # models:
+  #   CanESM5:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   MPI-ESM1-2-LR:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   GISS-E2-1-G:
+  #     variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+  #   IPSL-CM6A-LR:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   ACCESS-ESM1-5:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   EC-Earth3:
+  #     variants: ["r1i1p1f1", "r3i1p1f1", "r4i1p1f1", "r6i1p1f1", "r9i1p1f1"]
+  #   CNRM-CM6-1:
+  #     variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+  #   AWI-CM-1-1-MR:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   CNRM-ESM2-1:
+  #     variants: ["r1i1p1f2", "r2i1p1f2", "r3i1p1f2", "r4i1p1f2", "r5i1p1f2"]
+  #   FGOALS-g3:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   INM-CM5-0:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
+  #   MRI-ESM2-0:
+  #     variants: ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1", "r4i1p1f1", "r5i1p1f1"]
 
 dask:
   n_workers: 4

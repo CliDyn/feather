@@ -1170,6 +1170,51 @@ feather --steps diagnostics --diagnostics global_biases --variables avg_msl avg_
 
 ---
 
+## Phase 7c: CMIP6 Individual Model Biases CLI — COMPLETED
+
+**Status:** Implemented and verified. 294 unit tests passing.
+
+**Goal:** Add CLI option to plot individual CMIP6 model biases (not just MMM) in the global biases diagnostic, and simplify the CMIP6 config for faster testing.
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| CLI | `feather/cli.py` | Added `--cmip6-individual` flag |
+| Pipeline | `feather/run.py` | `run_pipeline()` and `_run_diagnostics()` accept and pass `cmip6_individual` kwarg; uses `inspect.signature()` to only pass to diagnostics that accept it |
+| GlobalBiases | `feather/diag/global_biases.py` | When `cmip6_individual=True`, computes **both** individual CMIP6 models AND MMM (was either/or) |
+| Config | `configs/default.yaml` | Active model list uses single `variant: str` per model (12 models); full 5-variant list preserved as comment |
+| Tests | `tests/test_global_biases.py` | Updated `test_individual_has_no_mmm` → `test_individual_also_has_mmm` |
+
+### Key design decisions
+
+1. **Both individual + MMM when `cmip6_individual=True`.** Previously the code was either/or — individual mode excluded MMM. Now when individual mode is active, both individual CMIP6 model biases and the MMM are computed and plotted. The combined figure shows: obs panel + DestinE model bias panels + CMIP6 MMM bias panel + individual CMIP6 model bias panels. This gives the richest comparison view.
+
+2. **`inspect.signature()` for safe kwarg passing.** The `cmip6_individual` kwarg is only accepted by `GlobalBiases`, not by `TimeseriesDiag` or `SeasonalCycleDiag`. The pipeline uses `inspect.signature(cls.__init__)` to check if the diagnostic class accepts the parameter before passing it, avoiding `TypeError` for diagnostics that don't support it.
+
+3. **Single-variant CMIP6 config for faster runs.** The default config now uses `variant: str` (1 member per model) instead of `variants: [list]` (5 members per model). This reduces CMIP6 load time from 60 members to 12 members. The full ensemble config is preserved as a commented block for easy switching.
+
+### CLI usage
+
+```bash
+# Default: CMIP6 MMM only in bias maps
+feather --steps diagnostics --diagnostics global_biases --variables avg_2t -v
+
+# Individual CMIP6 model biases + MMM
+feather --steps diagnostics --diagnostics global_biases --variables avg_2t --cmip6-individual -v
+
+# Python API
+result = run_pipeline(cfg, steps=["diagnostics"], cmip6_individual=True)
+```
+
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 294/294 passed
+```
+
+---
+
 ## Phase 8: Atmosphere Diagnostics
 
 - `radiation_budget` — TOA & surface radiation vs CERES (+optional CMIP6 MMM)
@@ -1253,7 +1298,7 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c
 
 Next:
 1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)

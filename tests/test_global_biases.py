@@ -671,11 +671,11 @@ class TestGlobalBiasesCMIP6Individual:
         # Should have entries for individual models
         assert len(ind_data["annual"]) >= 1
 
-    def test_individual_has_no_mmm(
+    def test_individual_also_has_mmm(
         self, mock_model_loader, mock_obs_loader,
         cmip6_config, mock_cmip6_loader,
     ):
-        """When cmip6_individual=True, cmip6_data (MMM) is empty."""
+        """When cmip6_individual=True, both individual and MMM are computed."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
@@ -684,7 +684,10 @@ class TestGlobalBiasesCMIP6Individual:
         )
         results = diag.compute()
 
-        assert results["avg_2t"]["cmip6_data"] == {}
+        # MMM is also computed alongside individual models
+        assert "annual" in results["avg_2t"]["cmip6_data"]
+        # Individual data is present too
+        assert results["avg_2t"]["cmip6_individual_data"] != {}
 
     def test_individual_models_in_combined_figure(
         self, mock_model_loader, mock_obs_loader,

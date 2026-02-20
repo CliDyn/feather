@@ -25,6 +25,7 @@ def run_pipeline(
     openai_api_key: str | None = None,
     skip_existing: bool = True,
     compile_pdf: bool = False,
+    cmip6_individual: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
 
@@ -51,6 +52,9 @@ def run_pipeline(
         Skip already-existing outputs where supported.
     compile_pdf : bool
         Whether to compile the LaTeX report to PDF.
+    cmip6_individual : bool
+        Plot individual CMIP6 model biases (plus MMM) instead of MMM only.
+        Only affects diagnostics that support it (currently ``GlobalBiases``).
 
     Returns
     -------
@@ -79,6 +83,7 @@ def run_pipeline(
             variables=variables,
             experiment=experiment,
             period=period,
+            cmip6_individual=cmip6_individual,
         )
 
     # ── Step 2: LLM analysis ────────────────────────────────────────
@@ -120,6 +125,7 @@ def _run_diagnostics(
     variables: list[str] | None = None,
     experiment: str = "baseline_hist",
     period: tuple[str, str] = ("1990", "2014"),
+    cmip6_individual: bool = False,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
     from feather.data.loader import DataLoader
@@ -161,6 +167,11 @@ def _run_diagnostics(
         cls = get_diagnostic(name)
         # Build constructor kwargs — intersect user variables with diagnostic's
         kwargs: dict[str, Any] = {"cmip6_loader": cmip6_loader}
+        if cmip6_individual:
+            import inspect
+            sig = inspect.signature(cls.__init__)
+            if "cmip6_individual" in sig.parameters:
+                kwargs["cmip6_individual"] = True
         if variables:
             supported = set(cls.variables)
             overlap = [v for v in variables if v in supported]
