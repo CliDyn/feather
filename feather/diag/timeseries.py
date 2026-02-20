@@ -32,18 +32,39 @@ class TimeseriesDiag(DiagnosticBase):
     name = "timeseries"
     title = "Global Mean Time Series"
     domain = "sfc"
-    variables = ["avg_2t"]
-    group = "temperature"
+    variables = [
+        # Temperature & pressure
+        "avg_2t", "avg_msl",
+        # Wind
+        "avg_10u", "avg_10v",
+        # Cloud cover
+        "avg_tcc",
+        # Precipitation
+        "avg_tprate",
+        # Surface heat fluxes
+        "avg_ishf", "avg_slhtf",
+        # Surface downwelling radiation
+        "avg_sdswrf", "avg_sdlwrf",
+        # Surface net radiation (all-sky + clear-sky)
+        "avg_snswrf", "avg_snlwrf",
+        "avg_snswrfcs", "avg_snlwrfcs",
+        # TOA net radiation (all-sky + clear-sky)
+        "avg_tnswrf", "avg_tnlwrf",
+        "avg_tnswrfcs", "avg_tnlwrfcs",
+    ]
+    group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
-                 experiment="baseline_hist", period=("1990", "2014")):
+                 experiment="baseline_hist", period=("1990", "2014"),
+                 cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
         self.period = period
+        self.cmip6_individual = cmip6_individual
 
     # ── Orchestration (per-variable incremental) ─────────────────────
 
@@ -95,7 +116,14 @@ class TimeseriesDiag(DiagnosticBase):
             key = DataLoader.make_key(
                 self.experiment, model, var_info.domain,
             )
-            model_data = self.model_loader.load_var(key, var)
+            try:
+                model_data = self.model_loader.load_var(key, var)
+            except KeyError:
+                logger.warning(
+                    "  Variable %s not available for %s — skipping",
+                    var, model,
+                )
+                continue
 
             if self.period is not None and "time" in model_data.dims:
                 model_data = model_data.sel(
@@ -111,9 +139,17 @@ class TimeseriesDiag(DiagnosticBase):
         obs_ts = latlon_global_mean(obs_data)
         logger.info("    Obs global mean: %.2f %s", float(obs_ts.mean()), var_info.units)
 
-        cmip6_ts, cmip6_info = self._cmip6_global_mean_timeseries(
+        cmip6_ts = None
+        cmip6_info = {}
+        cmip6_individual_ts: dict[str, Any] = {}
+        cmip6_ts, info = self._cmip6_global_mean_timeseries(
             var, period=self.period,
+            return_individual=self.cmip6_individual,
         )
+        if cmip6_ts is not None:
+            cmip6_info = info
+            if self.cmip6_individual and "individual_series" in info:
+                cmip6_individual_ts = dict(info["individual_series"])
 
         return {
             "models": model_ts,
@@ -121,6 +157,7 @@ class TimeseriesDiag(DiagnosticBase):
             "var_info": var_info,
             "cmip6_ts": cmip6_ts,
             "cmip6_info": cmip6_info,
+            "cmip6_individual_ts": cmip6_individual_ts,
         }
 
     def compute(self) -> dict[str, Any]:
@@ -156,22 +193,24 @@ class TimeseriesDiag(DiagnosticBase):
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot global-mean time series for a single variable."""
         var_info = vr["var_info"]
+        all_models = list(self.config.models)
 
         fig, ax = plt.subplots(figsize=(12, 5))
 
-        for model, ts in vr["models"].items():
-            color = MODEL_COLORS.get(model)
+        # Layer 1: Individual CMIP6 model lines (background)
+        cmip6_indiv = vr.get("cmip6_individual_ts", {})
+        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
+            label = "CMIP6 members" if i == 0 else "_nolegend_"
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values, label=model, color=color)
+            ax.plot(
+                time_vals, ts.values,
+                color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                label=label,
+            )
+        if cmip6_indiv:
+            all_models.extend(cmip6_indiv.keys())
 
-        obs_ts = vr["obs"]
-        obs_time = _to_plot_time(obs_ts.time.values)
-        ax.plot(
-            obs_time, obs_ts.values,
-            label="Obs", color=OBS_COLOR, linewidth=2,
-        )
-
-        # CMIP6 MMM line (optional)
+        # Layer 2: CMIP6 MMM line (middle)
         if vr.get("cmip6_ts") is not None:
             cmip6_ts = vr["cmip6_ts"]
             cmip6_time = _to_plot_time(cmip6_ts.time.values)
@@ -180,6 +219,20 @@ class TimeseriesDiag(DiagnosticBase):
                 label="CMIP6 MMM", color=CMIP6_COLOR,
                 linewidth=1.5, linestyle="--",
             )
+
+        # Layer 3: DestinE model lines (foreground)
+        for model, ts in vr["models"].items():
+            color = MODEL_COLORS.get(model)
+            time_vals = _to_plot_time(ts.time.values)
+            ax.plot(time_vals, ts.values, label=model, color=color)
+
+        # Layer 4: Observations (top)
+        obs_ts = vr["obs"]
+        obs_time = _to_plot_time(obs_ts.time.values)
+        ax.plot(
+            obs_time, obs_ts.values,
+            label="Obs", color=OBS_COLOR, linewidth=2,
+        )
 
         ax.set_title(f"{var_info.long_name} \u2014 Global Mean")
         ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
@@ -190,7 +243,7 @@ class TimeseriesDiag(DiagnosticBase):
         meta = self._build_metadata(
             title=f"{var_info.long_name} Global Mean Time Series",
             figure_id=f"{var}_timeseries",
-            models=self.config.models,
+            models=all_models,
             variables=[var],
             description=(
                 f"Area-weighted global mean time series of "

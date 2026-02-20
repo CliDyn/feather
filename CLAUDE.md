@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 294 unit tests + 4 integration tests.
+Current test count: 328 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -235,6 +235,14 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Without the flag, only CMIP6 MMM is shown (default behavior)
 - `--variables` CLI flag intersects with diagnostic's supported list; warns about unsupported variables
 
+### Timeseries & SeasonalCycle diagnostics
+- Both share the same 18-variable list as GlobalBiases (temperature, pressure, wind, clouds, precipitation, radiation, heat fluxes)
+- Both support `cmip6_individual=True` for individual CMIP6 model lines + MMM
+- 4-layer plotting: individual CMIP6 (background, semi-transparent) → MMM (dashed) → DestinE models (foreground) → Obs (top)
+- Gracefully skip models missing a variable via `try/except KeyError`
+- Group is `"evaluation"` (spans multiple physical domains)
+- CMIP6 individual series come from `_cmip6_global_mean_timeseries(return_individual=True)` on `DiagnosticBase`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
@@ -259,7 +267,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Also available as `python -m feather`
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
-- `--cmip6-individual` flag plots individual CMIP6 model biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`)
+- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`)
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 

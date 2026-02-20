@@ -267,8 +267,8 @@ class CMIP6Loader:
                 lon_flat = lon.ravel()
                 lat_flat = lat.ravel()
 
-            # Cache interpolator per model (persists across calls)
-            cache_key = f"{model}_{table}_{resolution}"
+            # Cache interpolator per model+grid (persists across calls)
+            cache_key = f"{model}_{table}_{resolution}_{len(lon_flat)}"
             if cache_key not in self._interp_cache:
                 logger.info("  Regridding %s (building interpolator)", member_label)
                 regridded, interpolator = nr.regrid(

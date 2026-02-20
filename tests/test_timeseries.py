@@ -16,6 +16,7 @@ class TestTimeseriesCompute:
         """compute() returns expected nested structure."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -30,6 +31,7 @@ class TestTimeseriesCompute:
         """Model time series has correct length (12 months in synth data)."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -42,6 +44,7 @@ class TestTimeseriesCompute:
         """Obs time series has correct length."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -54,6 +57,7 @@ class TestTimeseriesCompute:
         """Global mean values are in a reasonable temperature range."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -66,6 +70,7 @@ class TestTimeseriesCompute:
         """Time series shows seasonal variation (synth data has +-5K cycle)."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -91,6 +96,7 @@ class TestTimeseriesPlot:
         """plot() returns (fig, meta) pairs."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -106,6 +112,7 @@ class TestTimeseriesPlot:
         """Metadata has correct fields."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -122,6 +129,7 @@ class TestTimeseriesPlot:
         """run() saves PNG + JSON."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         saved = diag.run()
 
@@ -141,6 +149,7 @@ class TestTimeseriesSkipExisting:
         """run() skips computation when figure already exists on disk."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         # Pre-create the output files
         diag.output_dir.mkdir(parents=True, exist_ok=True)
@@ -160,6 +169,7 @@ class TestTimeseriesSkipExisting:
         """run(skip_existing=False) recomputes even when figure exists."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
         (diag.output_dir / "avg_2t_timeseries.png").write_bytes(b"fake")
@@ -178,6 +188,7 @@ class TestTimeseriesSkipExisting:
         """run() does NOT skip when only PNG exists (JSON missing)."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
         (diag.output_dir / "avg_2t_timeseries.png").write_bytes(b"fake")
@@ -199,6 +210,7 @@ class TestTimeseriesCMIP6:
         """When CMIP6 is disabled, cmip6_ts is None."""
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -213,6 +225,7 @@ class TestTimeseriesCMIP6:
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -229,6 +242,7 @@ class TestTimeseriesCMIP6:
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -244,6 +258,7 @@ class TestTimeseriesCMIP6:
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -259,6 +274,7 @@ class TestTimeseriesCMIP6:
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -277,6 +293,7 @@ class TestTimeseriesCMIP6:
         diag = TimeseriesDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -285,3 +302,163 @@ class TestTimeseriesCMIP6:
         assert meta.get("cmip6_info") is not None
         assert meta["cmip6_info"]["n_members"] >= 1
         plt.close("all")
+
+
+class TestTimeseriesCMIP6Individual:
+    """Tests for individual CMIP6 model lines in timeseries."""
+
+    def test_individual_populates_data(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """cmip6_individual_ts is non-empty, each model has time dim."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+
+        indiv = results["avg_2t"]["cmip6_individual_ts"]
+        assert len(indiv) > 0
+        for mname, ts in indiv.items():
+            assert "time" in ts.dims
+            assert len(ts) == 12
+
+    def test_individual_also_has_mmm(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Both individual and MMM data are present."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+
+        assert results["avg_2t"]["cmip6_ts"] is not None
+        assert len(results["avg_2t"]["cmip6_individual_ts"]) > 0
+
+    def test_individual_false_no_data(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """cmip6_individual_ts is empty when flag is False."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=False,
+        )
+        results = diag.compute()
+
+        assert results["avg_2t"]["cmip6_individual_ts"] == {}
+
+    def test_individual_plot_has_member_legend(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Legend includes 'CMIP6 members' and 'CMIP6 MMM'."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+        assert "CMIP6 members" in labels
+        assert "CMIP6 MMM" in labels
+        plt.close(fig)
+
+    def test_individual_line_count(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """More lines with individual=True than without."""
+        diag_no = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=False,
+        )
+        results_no = diag_no.compute()
+        pairs_no = diag_no.plot(results_no)
+        n_lines_no = len(pairs_no[0][0].axes[0].get_lines())
+
+        diag_yes = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results_yes = diag_yes.compute()
+        pairs_yes = diag_yes.plot(results_yes)
+        n_lines_yes = len(pairs_yes[0][0].axes[0].get_lines())
+
+        assert n_lines_yes > n_lines_no
+        plt.close("all")
+
+    def test_individual_reasonable_values(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Individual model values are in 260-310K range."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+
+        for mname, ts in results["avg_2t"]["cmip6_individual_ts"].items():
+            assert np.all(ts.values > 260)
+            assert np.all(ts.values < 310)
+
+    def test_individual_metadata(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Metadata models list includes CMIP6 model names."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        _, meta = pairs[0]
+        cmip6_models = list(results["avg_2t"]["cmip6_individual_ts"].keys())
+        for cm in cmip6_models:
+            assert cm in meta["models"]
+        plt.close("all")
+
+
+class TestTimeseriesMultiVariable:
+    """Tests for expanded variable list in timeseries."""
+
+    def test_default_variables_expanded(self):
+        """Class-level variable list has 18 entries."""
+        assert len(TimeseriesDiag.variables) == 18
+        assert "avg_2t" in TimeseriesDiag.variables
+        assert "avg_msl" in TimeseriesDiag.variables
+        assert "avg_tnlwrfcs" in TimeseriesDiag.variables
+
+    def test_custom_variables_override(self, mock_model_loader, mock_obs_loader,
+                                        minimal_config):
+        """Constructor variables= overrides the default list."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+        assert diag.variables == ["avg_2t"]

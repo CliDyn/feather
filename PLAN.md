@@ -222,8 +222,8 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_figure_metadata.py       # 18 tests
 │   ├── test_diag_base.py             # 23 tests
 │   ├── test_global_biases.py         # 27 tests (16 + 7 CMIP6 + 4 skip_existing)
-│   ├── test_timeseries.py            # 18 tests (9 + 6 CMIP6 + 3 skip_existing)
-│   ├── test_seasonal_cycle.py        # 17 tests (8 + 6 CMIP6 + 3 skip_existing)
+│   ├── test_timeseries.py            # 27 tests (9 + 6 CMIP6 + 7 CMIP6-individual + 3 skip_existing + 2 multi-var)
+│   ├── test_seasonal_cycle.py        # 26 tests (8 + 6 CMIP6 + 7 CMIP6-individual + 3 skip_existing + 2 multi-var)
 │   ├── test_cmip6.py                # 47 unit + 2 integration tests
 │   ├── test_llm.py                  # 47 tests (mocked Gemini)
 │   ├── test_website.py             # 30 tests
@@ -1256,6 +1256,43 @@ pytest tests/ -v -m "not integration"  → 319/319 passed (25 new + 294 existing
 
 ---
 
+## Phase 7e: Timeseries CMIP6 Individual + Variable Expansion — COMPLETED
+
+**Status:** All steps implemented and verified. 328 unit tests passing (+9 new).
+
+**Goal:** Bring the timeseries diagnostic to feature parity with seasonal_cycle and global_biases: support individual CMIP6 model lines (not just MMM), expand from 1 variable to 18 validated surface variables, and handle missing variables gracefully.
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| TimeseriesDiag | `feather/diag/timeseries.py` | Expanded to 18 variables, added `cmip6_individual` kwarg, 4-layer plotting (individual CMIP6 → MMM → DestinE → Obs), graceful missing-variable handling via `try/except KeyError` |
+| Pipeline runner | `feather/run.py` | Updated docstring — `cmip6_individual` now affects `GlobalBiases`, `SeasonalCycleDiag`, and `TimeseriesDiag` |
+| Tests | `tests/test_timeseries.py` | +7 CMIP6 individual tests + 2 multi-variable tests; updated all existing tests for expanded variable list |
+
+### Key design decisions
+
+1. **Feature parity across all 3 diagnostics.** All three diagnostics (global_biases, seasonal_cycle, timeseries) now share the same 18-variable list, `cmip6_individual` support, and graceful missing-variable handling. The `--cmip6-individual` CLI flag works uniformly across all diagnostics via `inspect.signature()`.
+
+2. **4-layer plotting pattern.** Consistent layered rendering across timeseries and seasonal_cycle: (1) Individual CMIP6 models in background (semi-transparent gray), (2) CMIP6 MMM (dashed gray), (3) DestinE models (foreground, colored), (4) Observations (top, thick line). This ensures the most important data (obs) is always visible.
+
+3. **18 validated surface variables.** Temperature (`avg_2t`), pressure (`avg_msl`), wind (`avg_10u`, `avg_10v`), cloud cover (`avg_tcc`), precipitation (`avg_tprate`), surface heat fluxes (`avg_ishf`, `avg_slhtf`), surface downwelling radiation (`avg_sdswrf`, `avg_sdlwrf`), surface net radiation all-sky + clear-sky (`avg_snswrf`, `avg_snlwrf`, `avg_snswrfcs`, `avg_snlwrfcs`), TOA net radiation all-sky + clear-sky (`avg_tnswrf`, `avg_tnlwrf`, `avg_tnswrfcs`, `avg_tnlwrfcs`).
+
+4. **Group changed to `"evaluation"`.** Timeseries and seasonal_cycle both use the `"evaluation"` group since they span multiple physical domains (temperature, radiation, precipitation, etc.).
+
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 328/328 passed (9 new + 319 existing)
+```
+
+End-to-end verified on compute node:
+```bash
+feather --steps diagnostics --diagnostics timeseries --variables avg_2t avg_msl avg_tprate --cmip6-individual -v
+```
+
+---
+
 ## Phase 8: Atmosphere Diagnostics
 
 - `radiation_budget` — TOA & surface radiation vs CERES (+optional CMIP6 MMM)
@@ -1339,7 +1376,7 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d, 7e
 
 Next:
 1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)

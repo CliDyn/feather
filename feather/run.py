@@ -53,8 +53,9 @@ def run_pipeline(
     compile_pdf : bool
         Whether to compile the LaTeX report to PDF.
     cmip6_individual : bool
-        Plot individual CMIP6 model biases (plus MMM) instead of MMM only.
-        Only affects diagnostics that support it (currently ``GlobalBiases``).
+        Plot individual CMIP6 model lines/biases (plus MMM) instead of
+        MMM only.  Affects diagnostics that accept the parameter
+        (``GlobalBiases``, ``SeasonalCycleDiag``, ``TimeseriesDiag``).
 
     Returns
     -------
