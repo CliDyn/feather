@@ -137,6 +137,131 @@ def plot_bias_map(model_data, obs_data, *,
     return fig, axes
 
 
+def plot_combined_bias_map(
+    obs_data, bias_dict, *,
+    title="", obs_title="Observation",
+    cmap="RdBu_r", bias_cmap="RdBu_r",
+    vmin=None, vmax=None, bias_vmax=None,
+    units="",
+    projection="rob", resolution=0.25,
+    max_cols=3,
+    figsize_per_panel=(7, 5),
+):
+    """Combined multi-panel figure: obs climatology + bias maps.
+
+    Produces one figure with an observation panel followed by one bias
+    panel per entry in *bias_dict*.  Layout wraps to multiple rows when
+    more than *max_cols* panels are needed.
+
+    Parameters
+    ----------
+    obs_data : xr.DataArray
+        Observation climatology on a regular lat/lon grid (2-D).
+    bias_dict : dict[str, xr.DataArray]
+        Ordered mapping of ``label -> bias_field``.  Each entry becomes
+        one bias panel titled with the label.
+    title : str
+        Figure super-title.
+    obs_title : str
+        Title for the observation panel.
+    cmap : str
+        Colormap for the observation (field) panel.
+    bias_cmap : str
+        Diverging colormap for bias panels.
+    vmin, vmax : float, optional
+        Colorbar limits for the obs panel.  If *None*, computed from the
+        2nd / 98th percentile of obs data.
+    bias_vmax : float, optional
+        Symmetric colorbar limit for bias panels (``-bias_vmax`` to
+        ``+bias_vmax``).  If *None*, computed from all bias fields.
+    units : str
+        Colorbar label.
+    projection : str
+        Map projection name (default Robinson).
+    resolution : float
+        Nereus plotting resolution in degrees.
+    max_cols : int
+        Maximum columns before wrapping to a new row.
+    figsize_per_panel : tuple
+        ``(width, height)`` per panel in inches.
+
+    Returns
+    -------
+    fig, axes
+    """
+    import math
+
+    import nereus as nr
+    from nereus.plotting import get_projection
+
+    n_panels = 1 + len(bias_dict)
+    ncols = min(n_panels, max_cols)
+    nrows = math.ceil(n_panels / ncols)
+
+    proj = get_projection(projection)
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(figsize_per_panel[0] * ncols, figsize_per_panel[1] * nrows),
+        subplot_kw={"projection": proj},
+    )
+
+    # Flatten axes to 1-D array for uniform indexing
+    if nrows == 1 and ncols == 1:
+        axes_flat = [axes]
+    else:
+        axes_flat = np.asarray(axes).ravel().tolist()
+
+    # Auto-compute vmin/vmax for obs panel
+    if vmin is None or vmax is None:
+        obs_vals = np.asarray(obs_data).ravel()
+        obs_vals = obs_vals[np.isfinite(obs_vals)]
+        if vmin is None:
+            vmin = float(np.percentile(obs_vals, 2))
+        if vmax is None:
+            vmax = float(np.percentile(obs_vals, 98))
+
+    # Auto-compute symmetric bias range from all bias fields
+    if bias_vmax is None and bias_dict:
+        all_bias = np.concatenate([
+            np.asarray(b).ravel()[np.isfinite(np.asarray(b).ravel())]
+            for b in bias_dict.values()
+        ])
+        bias_vmax = float(np.percentile(np.abs(all_bias), 98)) if len(all_bias) > 0 else 1.0
+        bias_vmax = bias_vmax or 1.0
+
+    interpolator = None  # shared across all panels (same grid)
+
+    # --- Panel 0: Observation ---
+    vals, lons, lats = _flatten_latlon(obs_data)
+    _, _, interpolator = nr.plot(
+        vals, lons, lats,
+        ax=axes_flat[0], projection=projection, resolution=resolution,
+        interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
+        colorbar=True, colorbar_label=units, title=obs_title,
+    )
+
+    # --- Bias panels ---
+    for i, (label, bias_field) in enumerate(bias_dict.items(), start=1):
+        vals, lons, lats = _flatten_latlon(bias_field)
+        _, _, interpolator = nr.plot(
+            vals, lons, lats,
+            ax=axes_flat[i], projection=projection, resolution=resolution,
+            interpolator=interpolator, cmap=bias_cmap,
+            vmin=-bias_vmax, vmax=bias_vmax,
+            colorbar=True, colorbar_label=units, title=f"Bias: {label}",
+        )
+
+    # Hide unused axes
+    for j in range(n_panels, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    if title:
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig, axes_flat[:n_panels]
+
+
 def plot_single_map(data, lon, lat, *, title="", projection="rob",
                     resolution=0.25, interpolator=None, cmap="viridis",
                     **kwargs):

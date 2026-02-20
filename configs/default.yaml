@@ -28,7 +28,8 @@ obs_datasets:
       ssrd: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
       strd: "ERA5_surface_thermal_radiation_downwards_mon_full_sfc_1940-2024.nc"
       e: "ERA5_evaporation_mon_full_sfc_1940-2024.nc"
-      tcwv: "ERA5_total_column_cloud_liquid_water_mon_full_sfc_1940-2024.nc"
+      tclw: "ERA5_total_column_cloud_liquid_water_mon_full_sfc_1940-2024.nc"
+      tciw: "ERA5_total_column_cloud_ice_water_mon_full_sfc_1940-2024.nc"
       u10: "ERA5_10m_u_component_of_wind_mon_full_sfc_1940-2024.nc"
       v10: "ERA5_10m_v_component_of_wind_mon_full_sfc_1940-2024.nc"
       siconc_era5: "ERA5_sea_ice_cover_mon_full_sfc_1940-2024.nc"
@@ -118,6 +119,7 @@ website:
   title: "Feather — Climate Model Evaluation"
   subtitle: "DestinE High-Resolution Simulations vs Observations (1990-2014)"
   group_order:
+    - evaluation
     - temperature
     - precipitation
     - radiation
@@ -127,6 +129,7 @@ website:
     - ocean_3d
     - atmosphere_3d
   group_labels:
+    evaluation: "Global Biases"
     temperature: "Temperature"
     precipitation: "Precipitation"
     radiation: "Radiation Budget"

@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 284 unit tests + 4 integration tests.
+Current test count: 294 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -46,13 +46,13 @@ feather/                     # Package root
 │   ├── loader.py            # DataLoader (intake catalogs + file paths)
 │   ├── obs.py               # ObsLoader (observations from config)
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
-│   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (27 vars)
+│   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (33 vars)
 ├── util/
 │   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, compute_latlon_areas
 │   ├── temporal.py          # climatology, anomaly, seasonal/monthly grouping
 │   └── units.py             # Unit conversion functions
 ├── plot/
-│   ├── maps.py              # plot_bias_map (3-panel), plot_single_map (nereus-based)
+│   ├── maps.py              # plot_combined_bias_map (multi-panel), plot_bias_map (3-panel), plot_single_map
 │   ├── lines.py             # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile
 │   └── styles.py            # MODEL_COLORS, OBS_COLOR, apply_style
 ├── diag/
@@ -200,9 +200,15 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Zonal means: use `feather.util.spatial.zonal_mean()` with `np.digitize` lat-band binning (no regridding)
 - For synthetic test data, use nside=8 (768 cells) with ≥10° lat bins — 1° bins leave polar bins empty at low nside
 
-### ERA5 variable naming
+### ERA5 variable naming and units
 - File keys in config (e.g., `t2m`) differ from NetCDF internal names (e.g., `T2M`)
 - `ObsLoader._find_variable()` handles this with case-insensitive fallback
+- ERA5 radiation/flux variables are stored as **daily accumulations** (J/m²/day), not W/m². Divide by 86400 to get W/m².
+- ERA5 precipitation (`TP`) is in m/day. Multiply by `1000/86400` to get kg/m²/s.
+- ERA5 cloud cover (`TCC`) is 0-1 fraction; DestinE `avg_tcc` is 0-100%. Multiply by 100.
+- ERA5 and DestinE share IFS sign convention: surface heat fluxes **positive downward** (into surface)
+- CMIP6 `hfss`/`hfls` are positive **upward** (opposite sign). CMIP6 mapping omitted for these variables.
+- Unit conversions are defined via `obs_unit_factor` in `VARIABLE_REGISTRY` (`feather/data/variables.py`)
 
 ### Metadata sidecar pattern
 - Every saved figure gets a companion `.json` with full metadata
@@ -218,6 +224,15 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
 - All 3 diagnostics (timeseries, seasonal_cycle, global_biases) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
+- `get_member_pairs()` public API for listing (model, variant) tuples
+
+### GlobalBiases diagnostic
+- Produces **combined multi-panel figures**: 1 obs panel + N bias panels per variable per period
+- `plot_combined_bias_map()` in `plot/maps.py` handles layout with `max_cols` overflow to extra rows
+- 18 validated DestinE↔ERA5 surface variables (temperature, pressure, wind, clouds, precipitation, radiation, heat fluxes)
+- Gracefully skips models missing a variable (e.g., ICON lacks `avg_tcc`) with a warning
+- `cmip6_individual=True` mode shows individual CMIP6 models instead of MMM
+- `--variables` CLI flag intersects with diagnostic's supported list; warns about unsupported variables
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`

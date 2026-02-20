@@ -1,6 +1,7 @@
 """Tests for the global_biases diagnostic."""
 
 import json
+from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
@@ -14,7 +15,7 @@ from feather.util.spatial import latlon_global_mean
 from tests.conftest import MockCMIP6Loader
 
 
-# ── Utility tests ────────────────────────────────────────────────────
+# -- Utility tests ----------------------------------------------------------
 
 # Large influence radius for nside=8 test data (~815 km spacing)
 _TEST_INFLUENCE_RADIUS = 1_000_000
@@ -24,7 +25,7 @@ class TestNereusRegrid:
     """Tests for NN regridding via nereus from scattered to regular grid."""
 
     def test_basic_regrid(self, synth_healpix, synth_obs):
-        """Regrid HEALPix to obs grid — result has lat/lon dims."""
+        """Regrid HEALPix to obs grid -- result has lat/lon dims."""
         model_clim = synth_healpix["avg_2t"].isel(time=0)
         lon = np.asarray(synth_healpix["longitude"])
         lat = np.asarray(synth_healpix["latitude"])
@@ -116,7 +117,7 @@ class TestLatlonGlobalMean:
         assert 270 < result < 300
 
 
-# ── GlobalBiases compute tests ───────────────────────────────────────
+# -- GlobalBiases compute tests --------------------------------------------
 
 
 class TestGlobalBiasesCompute:
@@ -127,6 +128,7 @@ class TestGlobalBiasesCompute:
         """compute() returns expected nested structure."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -142,6 +144,7 @@ class TestGlobalBiasesCompute:
         """Each model entry has required fields."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -159,6 +162,7 @@ class TestGlobalBiasesCompute:
         """Obs entry has required fields."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -173,11 +177,12 @@ class TestGlobalBiasesCompute:
         """With matching synth data, global mean bias is small."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
         mdata = results["avg_2t"]["models"]["ifs-fesom"]
-        # Synth model and obs have the same pattern → small bias
+        # Synth model and obs have the same pattern -> small bias
         assert abs(mdata["annual_bias_gmean"]) < 3.0
 
     def test_rmse_is_small_for_matching_data(
@@ -186,6 +191,7 @@ class TestGlobalBiasesCompute:
         """RMSE is small when model matches obs."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -198,6 +204,7 @@ class TestGlobalBiasesCompute:
         """Seasonal biases are computed for DJF and JJA."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -215,11 +222,11 @@ class TestGlobalBiasesCompute:
         assert diag.variables == ["avg_2t"]
 
 
-# ── GlobalBiases plot tests (mocked) ─────────────────────────────────
+# -- GlobalBiases plot tests (mocked) --------------------------------------
 
 
 class TestGlobalBiasesPlot:
-    """Tests for GlobalBiases.plot() — mocks map plotting."""
+    """Tests for GlobalBiases.plot() -- mocks map plotting."""
 
     def _make_mock_results(self, synth_healpix, synth_obs):
         """Produce results dict from compute() for testing plot()."""
@@ -310,6 +317,9 @@ class TestGlobalBiasesPlot:
                 },
                 "var_info": var_info,
                 "colorbar_ranges": colorbar_ranges,
+                "cmip6_data": {},
+                "cmip6_info": {},
+                "cmip6_individual_data": {},
             },
         }
 
@@ -317,22 +327,22 @@ class TestGlobalBiasesPlot:
         self, synth_healpix, synth_obs, minimal_config,
         mock_model_loader, mock_obs_loader,
     ):
-        """plot() returns 3 figures: annual + DJF + JJA per model."""
+        """plot() returns 3 combined figures: annual + DJF + JJA."""
         results = self._make_mock_results(synth_healpix, synth_obs)
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
 
-        # Mock plot_bias_map to avoid nereus dependency
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
-            "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None]),
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
         ):
             pairs = diag.plot(results)
 
-        # 1 model × (1 annual + 2 seasons) = 3
+        # 3 combined figures: annual + DJF + JJA
         assert len(pairs) == 3
         for fig, meta in pairs:
             assert isinstance(meta, dict)
@@ -347,44 +357,72 @@ class TestGlobalBiasesPlot:
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
-            "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None]),
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
         ):
             pairs = diag.plot(results)
 
         # Check annual bias metadata
         _, meta = pairs[0]
-        assert meta["figure_id"] == "avg_2t_annual_bias_ifs-fesom"
-        assert meta["plot_type"] == "bias_map"
-        assert "global_mean_bias" in meta["summary_statistics"]
-        assert "rmse" in meta["summary_statistics"]
+        assert meta["figure_id"] == "avg_2t_annual_bias_combined"
+        assert meta["plot_type"] == "combined_bias_map"
+        assert "ifs-fesom" in meta["summary_statistics"]
+        assert "global_mean_bias" in meta["summary_statistics"]["ifs-fesom"]
+        assert "rmse" in meta["summary_statistics"]["ifs-fesom"]
 
-    def test_plot_seasonal_figure_ids(
+    def test_plot_combined_figure_ids(
         self, synth_healpix, synth_obs, minimal_config,
         mock_model_loader, mock_obs_loader,
     ):
-        """Seasonal figure IDs follow naming convention."""
+        """Combined figure IDs follow naming convention."""
         results = self._make_mock_results(synth_healpix, synth_obs)
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
-            "feather.diag.global_biases.plot_bias_map",
-            return_value=(mock_fig, [None, None, None]),
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
         ):
             pairs = diag.plot(results)
 
         figure_ids = [meta["figure_id"] for _, meta in pairs]
-        assert "avg_2t_annual_bias_ifs-fesom" in figure_ids
-        assert "avg_2t_djf_bias_ifs-fesom" in figure_ids
-        assert "avg_2t_jja_bias_ifs-fesom" in figure_ids
+        assert "avg_2t_annual_bias_combined" in figure_ids
+        assert "avg_2t_djf_bias_combined" in figure_ids
+        assert "avg_2t_jja_bias_combined" in figure_ids
+
+    def test_plot_models_list_in_metadata(
+        self, synth_healpix, synth_obs, minimal_config,
+        mock_model_loader, mock_obs_loader,
+    ):
+        """Metadata models list contains all models in the figure."""
+        results = self._make_mock_results(synth_healpix, synth_obs)
+
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        _, meta = pairs[0]
+        assert "ifs-fesom" in meta["models"]
+
+
+# -- CMIP6 integration tests -----------------------------------------------
 
 
 class TestGlobalBiasesCMIP6:
@@ -395,6 +433,7 @@ class TestGlobalBiasesCMIP6:
         """When CMIP6 is disabled, cmip6_data is empty."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -409,6 +448,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -426,6 +466,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -440,6 +481,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -457,6 +499,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
@@ -464,30 +507,37 @@ class TestGlobalBiasesCMIP6:
         assert info["n_members"] >= 1
         assert len(info["models_used"]) >= 1
 
-    def test_cmip6_plot_generates_extra_figures(
+    def test_cmip6_included_in_combined_figure(
         self, synth_healpix, synth_obs, cmip6_config,
         mock_model_loader, mock_obs_loader, mock_cmip6_loader,
     ):
-        """plot() generates extra CMIP6 bias map figures."""
+        """CMIP6 MMM appears in the combined figure (3 total figures)."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
-            "feather.diag.global_biases.plot_bias_map",
+            "feather.diag.global_biases.plot_combined_bias_map",
             return_value=(mock_fig, [None, None, None]),
         ):
             pairs = diag.plot(results)
 
-        # 1 model × 3 (annual + DJF + JJA) + CMIP6 × 3 (annual + DJF + JJA) = 6
-        assert len(pairs) == 6
+        # Still 3 combined figures (annual + DJF + JJA), CMIP6 is inside them
+        assert len(pairs) == 3
         figure_ids = [meta["figure_id"] for _, meta in pairs]
-        assert "avg_2t_annual_bias_cmip6_mmm" in figure_ids
-        assert "avg_2t_djf_bias_cmip6_mmm" in figure_ids
-        assert "avg_2t_jja_bias_cmip6_mmm" in figure_ids
+        assert "avg_2t_annual_bias_combined" in figure_ids
+
+        # CMIP6 MMM should appear in models list
+        annual_meta = next(
+            meta for _, meta in pairs
+            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+        )
+        assert "CMIP6 MMM" in annual_meta["models"]
+        assert "CMIP6 MMM" in annual_meta["summary_statistics"]
 
     def test_cmip6_plot_metadata_has_info(
         self, synth_healpix, synth_obs, cmip6_config,
@@ -497,21 +547,215 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
+            variables=["avg_2t"],
         )
         results = diag.compute()
 
         mock_fig = MagicMock(spec=plt.Figure)
         with patch(
-            "feather.diag.global_biases.plot_bias_map",
+            "feather.diag.global_biases.plot_combined_bias_map",
             return_value=(mock_fig, [None, None, None]),
         ):
             pairs = diag.plot(results)
 
-        # Find the CMIP6 annual figure
-        cmip6_metas = [
+        # Annual combined figure should have cmip6_info
+        annual_meta = next(
             meta for _, meta in pairs
-            if "cmip6_mmm" in meta["figure_id"]
+            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+        )
+        assert annual_meta.get("cmip6_info") is not None
+        assert annual_meta["cmip6_info"]["n_members"] >= 1
+
+
+# -- Combined bias map plot function tests ----------------------------------
+
+
+class TestPlotCombinedBiasMap:
+    """Tests for plot_combined_bias_map() layout and behavior."""
+
+    def _make_obs_and_biases(self, synth_obs, n_biases=3):
+        """Create obs field and N bias fields for testing."""
+        obs = synth_obs["t2m"].isel(time=0)
+        biases = {}
+        for i in range(n_biases):
+            # Small offset per model to make distinct biases
+            biases[f"Model-{i+1}"] = obs * 0.0 + (i + 1) * 0.5
+        return obs, biases
+
+    def test_correct_panel_count(self, synth_obs):
+        """Number of returned axes matches 1 (obs) + N (biases)."""
+        obs, biases = self._make_obs_and_biases(synth_obs, n_biases=3)
+
+        with patch(
+            "nereus.plot",
+            return_value=(None, None, None),
+        ):
+            from feather.plot.maps import plot_combined_bias_map
+            fig, axes = plot_combined_bias_map(obs, biases)
+
+        # 1 obs + 3 biases = 4 panels
+        assert len(axes) == 4
+        plt.close("all")
+
+    def test_max_cols_overflow_to_rows(self, synth_obs):
+        """When panels > max_cols, layout wraps to multiple rows."""
+        obs, biases = self._make_obs_and_biases(synth_obs, n_biases=4)
+
+        with patch(
+            "nereus.plot",
+            return_value=(None, None, None),
+        ):
+            from feather.plot.maps import plot_combined_bias_map
+            fig, axes = plot_combined_bias_map(
+                obs, biases, max_cols=3,
+            )
+
+        # 1 obs + 4 biases = 5 panels, max_cols=3 -> 2 rows
+        assert len(axes) == 5
+        plt.close("all")
+
+    def test_unused_axes_hidden(self, synth_obs):
+        """Axes beyond N panels are hidden."""
+        obs, biases = self._make_obs_and_biases(synth_obs, n_biases=1)
+
+        with patch(
+            "nereus.plot",
+            return_value=(None, None, None),
+        ):
+            from feather.plot.maps import plot_combined_bias_map
+            # 2 panels in a 3-col layout -> 1 row, 3 axes, 1 hidden
+            fig, axes = plot_combined_bias_map(
+                obs, biases, max_cols=3,
+            )
+
+        # axes has 2 visible panels; the underlying figure has 3 axes
+        assert len(axes) == 2
+        plt.close("all")
+
+    def test_single_bias_panel(self, synth_obs):
+        """Works with a single bias panel (obs + 1 bias = 2 panels)."""
+        obs, biases = self._make_obs_and_biases(synth_obs, n_biases=1)
+
+        with patch(
+            "nereus.plot",
+            return_value=(None, None, None),
+        ):
+            from feather.plot.maps import plot_combined_bias_map
+            fig, axes = plot_combined_bias_map(obs, biases)
+
+        assert len(axes) == 2
+        plt.close("all")
+
+
+# -- CMIP6 individual model tests ------------------------------------------
+
+
+class TestGlobalBiasesCMIP6Individual:
+    """Tests for cmip6_individual=True mode."""
+
+    def test_individual_populates_data(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """cmip6_individual=True populates cmip6_individual_data."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["avg_2t"],
+        )
+        results = diag.compute()
+
+        ind_data = results["avg_2t"]["cmip6_individual_data"]
+        assert "annual" in ind_data
+        # Should have entries for individual models
+        assert len(ind_data["annual"]) >= 1
+
+    def test_individual_has_no_mmm(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """When cmip6_individual=True, cmip6_data (MMM) is empty."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["avg_2t"],
+        )
+        results = diag.compute()
+
+        assert results["avg_2t"]["cmip6_data"] == {}
+
+    def test_individual_models_in_combined_figure(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Individual CMIP6 models appear in combined figure metadata."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["avg_2t"],
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None] * 5),
+        ):
+            pairs = diag.plot(results)
+
+        # Still 3 combined figures
+        assert len(pairs) == 3
+
+        annual_meta = next(
+            meta for _, meta in pairs
+            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+        )
+        # Should include DestinE model + individual CMIP6 models
+        assert "ifs-fesom" in annual_meta["models"]
+        # At least one CMIP6 individual model in models list
+        cmip6_models = [
+            m for m in annual_meta["models"] if "/" in m
         ]
-        assert len(cmip6_metas) >= 1
-        assert cmip6_metas[0].get("cmip6_info") is not None
-        assert cmip6_metas[0]["cmip6_info"]["n_members"] >= 1
+        assert len(cmip6_models) >= 1
+
+    def test_individual_figure_count_is_3(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Figure count remains 3 even with individual CMIP6 models."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["avg_2t"],
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None] * 5),
+        ):
+            pairs = diag.plot(results)
+
+        assert len(pairs) == 3
+
+    def test_individual_seasonal_data(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Individual CMIP6 seasonal biases are computed."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["avg_2t"],
+        )
+        results = diag.compute()
+
+        ind_data = results["avg_2t"]["cmip6_individual_data"]
+        assert "DJF" in ind_data
+        assert "JJA" in ind_data

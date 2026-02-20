@@ -395,6 +395,18 @@ class CMIP6Loader:
         self._area_cache[cache_key] = None
         return None
 
+    def get_member_pairs(
+        self, ensemble_mode: str | None = None,
+    ) -> list[tuple[str, str]]:
+        """Public API: list of (model, variant) tuples.
+
+        Parameters
+        ----------
+        ensemble_mode : str, optional
+            "one_per_model" or "all_members". If None, uses config default.
+        """
+        return self._get_member_pairs(ensemble_mode)
+
     def available_models(
         self,
         cmip6_var: str,

@@ -143,7 +143,7 @@ class TestCollectDiagnostics:
         assert len(result) == 1
         diag = result[0]
         assert diag["name"] == "global_biases"
-        assert diag["group"] == "temperature"
+        assert diag["group"] == "evaluation"
         assert len(diag["figures"]) == 1
         assert diag["figures"][0]["stem"] == "t2m_bias"
         assert diag["thumbnail"] == "t2m_bias.png"

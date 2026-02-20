@@ -249,6 +249,18 @@ class MockCMIP6Loader:
             return None, {"n_members": 0, "models_used": [], "models_skipped": []}
         return self.load_multi_model_mean(vinfo.cmip6_variable, **kwargs)
 
+    def get_member_pairs(self, ensemble_mode=None):
+        mode = ensemble_mode or "one_per_model"
+        pairs = []
+        for model, cfg in self._models.items():
+            variants = cfg.get("variants", [cfg.get("variant", "r1i1p1f1")])
+            if mode == "one_per_model":
+                pairs.append((model, variants[0]))
+            else:
+                for v in variants:
+                    pairs.append((model, v))
+        return pairs
+
     def load_area(self, model, variant=None, table="Amon"):
         if "areacella" in self._ds.data_vars:
             return self._ds["areacella"]

@@ -1084,6 +1084,92 @@ pytest tests/ -v -m "not integration"                   → 284/284 passed (46 n
 
 ---
 
+## Phase 7b: Combined Multi-Panel Layout + Variable Expansion — COMPLETED
+
+**Status:** All steps implemented and verified on real data. 294 unit tests passing.
+
+**Goal:** (a) Rework GlobalBiases from separate per-model figures to combined multi-panel figures (1 obs + N bias panels per variable per period). (b) Expand from 1 variable (avg_2t) to 18 validated DestinE↔ERA5 variables with correct unit conversions. (c) Fix CMIP6 mappings where sign conventions mismatch.
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| Combined map plot | `feather/plot/maps.py` | Added `plot_combined_bias_map()` — multi-panel with max_cols overflow |
+| CMIP6 API | `feather/data/cmip6.py` | Added public `get_member_pairs()` method |
+| Variable registry | `feather/data/variables.py` | Full rewrite: 33 variables with correct unit conversions and sign conventions |
+| Config | `configs/default.yaml` | Fixed ERA5 `tcwv`→`tclw`, added `tciw`, added "evaluation" website group |
+| GlobalBiases | `feather/diag/global_biases.py` | Combined layout, 18 variables, `cmip6_individual` mode, graceful missing-variable handling |
+| Pipeline runner | `feather/run.py` | `_MultiCatalogLoader`, `--variables` intersection logic with warnings |
+| Test fixtures | `tests/conftest.py` | Added `get_member_pairs()` to MockCMIP6Loader |
+| Tests | `tests/test_global_biases.py` | Updated + 9 new tests (combined layout + individual CMIP6) |
+
+### Variable registry overhaul
+
+Comprehensive crosswalk of DestinE SFC (32 vars) ↔ ERA5 (26 files) ↔ CMIP6 (28 vars):
+
+**ERA5 unit conversion factors:**
+- Radiation/flux variables: ERA5 stores daily accumulations (J/m²/day). Factor `1/86400` converts to W/m².
+- Precipitation: ERA5 `TP` is m/day. Factor `1000/86400` converts to kg/m²/s.
+- Cloud cover: ERA5 is 0-1 fraction, DestinE is 0-100%. Factor `100`.
+- Temperature, pressure, wind: units match directly.
+
+**Sign convention findings:**
+- ERA5 and DestinE share IFS convention: surface heat fluxes positive downward (into surface).
+- CMIP6 `hfss`/`hfls` are positive upward — sign mismatch. CMIP6 mapping omitted for `avg_ishf`/`avg_slhtf`.
+- CMIP6 `rsut`/`rlut` are outgoing components only, not net. CMIP6 mapping omitted for `avg_tnswrf`/`avg_tnlwrf`.
+- CMIP6 `rsds`/`rlds` (downwelling) match DestinE convention. CMIP6 mapping preserved.
+
+**18 GlobalBiases variables:**
+
+| Category | Variables | ERA5 factor | CMIP6 |
+|----------|-----------|-------------|-------|
+| Temperature | avg_2t | 1.0 | tas |
+| Pressure | avg_msl | 1.0 | psl |
+| Wind | avg_10u, avg_10v | 1.0 | uas, vas |
+| Cloud | avg_tcc | ×100 | clt |
+| Precipitation | avg_tprate | ×1000/86400 | pr |
+| Surface heat flux | avg_ishf, avg_slhtf | ÷86400 | — (sign mismatch) |
+| Surface downwelling | avg_sdswrf, avg_sdlwrf | ÷86400 | rsds, rlds |
+| Surface net | avg_snswrf, avg_snlwrf | ÷86400 | — |
+| Surface net clear-sky | avg_snswrfcs, avg_snlwrfcs | ÷86400 | — |
+| TOA net | avg_tnswrf, avg_tnlwrf | ÷86400 | — (outgoing only) |
+| TOA net clear-sky | avg_tnswrfcs, avg_tnlwrfcs | ÷86400 | — |
+
+**Config bugs fixed:**
+- `tcwv` config key was pointing to cloud liquid water file (not water vapour). Renamed to `tclw`.
+- Added `tciw` config key for total column cloud ice water.
+- No ERA5 TCWV file exists in the collection — `avg_tcwv` cannot be used until file is obtained.
+
+### Combined multi-panel layout
+
+`plot_combined_bias_map()` produces ONE figure per variable per period:
+- First panel: obs climatology (field colormap)
+- Subsequent panels: bias maps for each model (diverging colormap)
+- Layout: `ncols = min(n_panels, max_cols)`, `nrows = ceil(n_panels / ncols)`
+- Shared nereus interpolator across all panels
+- 3 figures per variable (annual + DJF + JJA) instead of N_models × 3
+
+### Pipeline runner fixes
+
+- `_MultiCatalogLoader`: searches across multiple intake catalogs (2D + 3D)
+- `--variables` intersection: only processes the overlap between requested variables and diagnostic's supported list
+- Clear WARNING log when requested variables are unsupported
+- Graceful handling when a model doesn't have a variable (skip model, not crash)
+
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 294/294 passed (10 new + 284 existing)
+```
+
+End-to-end verified on compute node:
+```bash
+feather --steps diagnostics --diagnostics global_biases --variables avg_msl avg_tcc avg_tprate -v
+# → avg_msl: 3 models + CMIP6 MMM (psl), avg_tcc: 2 models (icon lacks avg_tcc), avg_tprate: 3 models + CMIP6 MMM (pr)
+```
+
+---
+
 ## Phase 8: Atmosphere Diagnostics
 
 - `radiation_budget` — TOA & surface radiation vs CERES (+optional CMIP6 MMM)
@@ -1167,7 +1253,7 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b
 
 Next:
 1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)

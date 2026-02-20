@@ -148,7 +148,7 @@ def _run_diagnostics(
     logger.info("Running %d diagnostic(s): %s", len(names), names)
 
     # Create loaders
-    model_loader = DataLoader(config)
+    model_loader = _create_model_loader(config)
     obs_loader = ObsLoader(config)
 
     cmip6_loader = None
@@ -159,9 +159,33 @@ def _run_diagnostics(
     total_figures = 0
     for name in names:
         cls = get_diagnostic(name)
+        # Build constructor kwargs — intersect user variables with diagnostic's
+        kwargs: dict[str, Any] = {"cmip6_loader": cmip6_loader}
+        if variables:
+            supported = set(cls.variables)
+            overlap = [v for v in variables if v in supported]
+            unsupported = [v for v in variables if v not in supported]
+            if unsupported:
+                logger.warning(
+                    "%s: requested variables %s not supported "
+                    "(supported: %s)",
+                    name, unsupported, cls.variables,
+                )
+            if not overlap:
+                logger.warning(
+                    "Skipping %s: none of requested variables %s "
+                    "are in its supported list %s",
+                    name, variables, cls.variables,
+                )
+                continue
+            logger.info(
+                "%s: running with variables %s (of %s requested)",
+                name, overlap, variables,
+            )
+            kwargs["variables"] = overlap
         diag = cls(
             model_loader, obs_loader, config,
-            cmip6_loader=cmip6_loader,
+            **kwargs,
         )
         try:
             saved = diag.run()
@@ -170,3 +194,70 @@ def _run_diagnostics(
             logger.exception("Diagnostic %s failed", name)
 
     return total_figures
+
+
+def _create_model_loader(config: FeatherConfig):
+    """Create a model data loader from catalog paths in config.
+
+    Opens all intake catalogs listed in ``config.model_catalogs``
+    (typically ``2d`` and ``3d``) and returns a loader that searches
+    across all of them.
+    """
+    from feather.data.loader import DataLoader
+
+    catalogs = config.model_catalogs
+    if not catalogs:
+        logger.warning("No model_catalogs configured")
+        return DataLoader()
+
+    return _MultiCatalogLoader(catalogs)
+
+
+class _MultiCatalogLoader:
+    """DataLoader that searches across multiple intake catalogs."""
+
+    def __init__(self, catalog_paths: dict[str, str]):
+        import intake
+
+        self._catalogs = {}
+        self._cache: dict[str, "xr.Dataset"] = {}
+        for label, path in catalog_paths.items():
+            self._catalogs[label] = intake.open_catalog(path)
+
+    def load(self, key: str) -> "xr.Dataset":
+        import xarray as xr
+
+        if key in self._cache:
+            return self._cache[key]
+
+        for label, cat in self._catalogs.items():
+            if key in cat:
+                ds = cat[key].to_dask()
+                self._cache[key] = ds
+                return ds
+
+        available = self.list_entries()[:10]
+        raise KeyError(
+            f"Entry {key!r} not found in any catalog. "
+            f"First entries: {available}"
+        )
+
+    def load_var(self, key: str, variable: str) -> "xr.DataArray":
+        ds = self.load(key)
+        if variable not in ds:
+            raise KeyError(
+                f"Variable {variable!r} not in dataset. "
+                f"Available: {list(ds.data_vars)}"
+            )
+        return ds[variable]
+
+    def list_entries(self) -> list[str]:
+        entries = []
+        for cat in self._catalogs.values():
+            entries.extend(list(cat))
+        return entries
+
+    @staticmethod
+    def make_key(experiment: str, model: str, domain: str,
+                 member: int = 1) -> str:
+        return DataLoader.make_key(experiment, model, domain, member)

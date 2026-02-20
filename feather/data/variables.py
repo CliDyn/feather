@@ -1,6 +1,29 @@
-"""Variable metadata and model-obs-CMIP6 mapping registry."""
+"""Variable metadata and model-obs-CMIP6 mapping registry.
+
+Unit conversion notes
+---------------------
+ERA5 monthly data stores radiation/flux variables as **daily accumulations**
+(J/m² per day for radiation, m per day for precipitation).  To convert to
+instantaneous rates (W/m² or kg/m²/s) we divide by 86400 (seconds per day).
+
+Sign conventions
+~~~~~~~~~~~~~~~~
+ERA5 and DestinE (both IFS-based) share the same sign convention:
+- Surface heat fluxes: **positive downward** (into surface)
+- Net radiation: **positive downward**
+
+CMIP6 uses the opposite convention for several variables:
+- ``hfss`` / ``hfls``: **positive upward** (surface → atmosphere)
+- ``rsut`` / ``rlut``: **positive upward** (outgoing at TOA)
+
+Variables where CMIP6 has a sign mismatch have ``cmip6_variable=""`` to
+prevent incorrect comparisons until sign-flip support is added.
+"""
 
 from dataclasses import dataclass
+
+# ERA5 accumulated → instantaneous rate conversion factor
+_ACCUM_FACTOR = 1.0 / 86400.0   # J/m²/day → W/m²  (or m/day → m/s)
 
 
 @dataclass(frozen=True)
@@ -9,11 +32,11 @@ class VarInfo:
 
     name: str            # Model variable name (e.g., "avg_2t")
     long_name: str       # Human-readable name
-    units: str           # Physical units
+    units: str           # Physical units (model convention)
     domain: str          # "sfc", "o2d", "pl", "o3d"
     cmap: str            # Default colormap for bias plots
     obs_dataset: str     # Observation dataset name (e.g., "ERA5")
-    obs_variable: str    # Variable name in obs dataset
+    obs_variable: str    # Variable name in obs dataset config
     cmip6_variable: str = ""
     cmip6_table: str = ""
     obs_unit_factor: float = 1.0   # Multiply obs by this to match model units
@@ -22,7 +45,13 @@ class VarInfo:
 
 
 VARIABLE_REGISTRY: dict[str, VarInfo] = {
-    # --- Surface atmospheric variables (SFC) ---
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Surface atmospheric variables  (domain = "sfc")
+    # ═══════════════════════════════════════════════════════════════════
+
+    # --- Temperature & pressure (units match directly) ---------------
+
     "avg_2t": VarInfo(
         name="avg_2t", long_name="2m Temperature", units="K",
         domain="sfc", cmap="RdBu_r",
@@ -34,15 +63,10 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         name="avg_skt", long_name="Skin Temperature", units="K",
         domain="sfc", cmap="RdBu_r",
         obs_dataset="ERA5", obs_variable="sst",
+        # NOTE: ERA5 sst is SST (ocean-only); skt is global skin temp.
+        # Comparison is only meaningful over ocean.
         cmip6_variable="ts", cmip6_table="Amon",
         group="temperature",
-    ),
-    "avg_tprate": VarInfo(
-        name="avg_tprate", long_name="Total Precipitation Rate", units="kg/m2/s",
-        domain="sfc", cmap="BrBG",
-        obs_dataset="ERA5", obs_variable="tp",
-        cmip6_variable="pr", cmip6_table="Amon",
-        group="precipitation",
     ),
     "avg_msl": VarInfo(
         name="avg_msl", long_name="Mean Sea Level Pressure", units="Pa",
@@ -51,13 +75,9 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         cmip6_variable="psl", cmip6_table="Amon",
         group="circulation",
     ),
-    "avg_tcc": VarInfo(
-        name="avg_tcc", long_name="Total Cloud Cover", units="0-1",
-        domain="sfc", cmap="Greys_r",
-        obs_dataset="ERA5", obs_variable="tcc",
-        cmip6_variable="clt", cmip6_table="Amon",
-        group="clouds",
-    ),
+
+    # --- Wind (units match directly) ---------------------------------
+
     "avg_10u": VarInfo(
         name="avg_10u", long_name="10m U Wind", units="m/s",
         domain="sfc", cmap="RdBu_r",
@@ -75,62 +95,173 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     "avg_10ws": VarInfo(
         name="avg_10ws", long_name="10m Wind Speed", units="m/s",
         domain="sfc", cmap="YlOrRd",
-        obs_dataset="ERA5", obs_variable="u10",  # derive from u10/v10
+        obs_dataset="ERA5", obs_variable="u10",
+        # NOTE: Derived variable — needs sqrt(u10² + v10²) from ERA5.
+        # Not directly comparable via simple load; excluded from
+        # GlobalBiases until derived-variable support is added.
         group="wind",
     ),
+
+    # --- Cloud cover -------------------------------------------------
+
+    "avg_tcc": VarInfo(
+        name="avg_tcc", long_name="Total Cloud Cover", units="%",
+        domain="sfc", cmap="Greys_r",
+        obs_dataset="ERA5", obs_variable="tcc",
+        obs_unit_factor=100.0,  # ERA5 is 0-1 fraction → model is 0-100%
+        cmip6_variable="clt", cmip6_table="Amon",
+        group="clouds",
+    ),
+
+    # --- Moisture / column quantities --------------------------------
+
     "avg_tcwv": VarInfo(
         name="avg_tcwv", long_name="Total Column Water Vapour", units="kg/m2",
         domain="sfc", cmap="YlGnBu",
         obs_dataset="ERA5", obs_variable="tcwv",
+        # WARNING: No ERA5 TCWV file in the current collection.
+        # Config key 'tcwv' was wrongly mapped to cloud liquid water.
         cmip6_variable="prw", cmip6_table="Amon",
         group="moisture",
     ),
+    "avg_tclw": VarInfo(
+        name="avg_tclw", long_name="Total Column Cloud Liquid Water",
+        units="kg/m2", domain="sfc", cmap="YlGnBu",
+        obs_dataset="ERA5", obs_variable="tclw",
+        group="clouds",
+    ),
+    "avg_tciw": VarInfo(
+        name="avg_tciw", long_name="Total Column Cloud Ice Water",
+        units="kg/m2", domain="sfc", cmap="YlGnBu",
+        obs_dataset="ERA5", obs_variable="tciw",
+        group="clouds",
+    ),
 
-    # --- Surface radiation fluxes ---
-    "avg_tnswrf": VarInfo(
-        name="avg_tnswrf", long_name="TOA Net Shortwave Radiation", units="W/m2",
-        domain="sfc", cmap="RdBu_r",
-        obs_dataset="CERES_EBAF", obs_variable="toa_sw_all_mon",
-        cmip6_variable="rsut", cmip6_table="Amon",
-        group="radiation",
+    # --- Precipitation -----------------------------------------------
+
+    "avg_tprate": VarInfo(
+        name="avg_tprate", long_name="Total Precipitation Rate",
+        units="kg/m2/s", domain="sfc", cmap="BrBG",
+        obs_dataset="ERA5", obs_variable="tp",
+        obs_unit_factor=1000.0 * _ACCUM_FACTOR,  # m/day → kg/m²/s
+        cmip6_variable="pr", cmip6_table="Amon",
+        group="precipitation",
     ),
-    "avg_tnlwrf": VarInfo(
-        name="avg_tnlwrf", long_name="TOA Net Longwave Radiation", units="W/m2",
-        domain="sfc", cmap="RdBu_r",
-        obs_dataset="CERES_EBAF", obs_variable="toa_lw_all_mon",
-        cmip6_variable="rlut", cmip6_table="Amon",
-        group="radiation",
-    ),
+
+    # --- Surface heat fluxes (positive downward, same as ERA5) -------
+    # CMIP6 hfss/hfls are positive UPWARD → sign mismatch → no mapping.
+
     "avg_ishf": VarInfo(
-        name="avg_ishf", long_name="Surface Sensible Heat Flux", units="W/m2",
-        domain="sfc", cmap="RdBu_r",
+        name="avg_ishf", long_name="Surface Sensible Heat Flux",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
         obs_dataset="ERA5", obs_variable="sshf",
-        cmip6_variable="hfss", cmip6_table="Amon",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        # CMIP6 hfss is positive upward — sign mismatch, omitted
         group="surface_fluxes",
     ),
     "avg_slhtf": VarInfo(
-        name="avg_slhtf", long_name="Surface Latent Heat Flux", units="W/m2",
-        domain="sfc", cmap="RdBu_r",
+        name="avg_slhtf", long_name="Surface Latent Heat Flux",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
         obs_dataset="ERA5", obs_variable="slhf",
-        cmip6_variable="hfls", cmip6_table="Amon",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        # CMIP6 hfls is positive upward — sign mismatch, omitted
         group="surface_fluxes",
     ),
+
+    # --- Surface downwelling radiation (positive downward) -----------
+
     "avg_sdswrf": VarInfo(
-        name="avg_sdswrf", long_name="Surface Downwelling Shortwave", units="W/m2",
-        domain="sfc", cmap="YlOrRd",
+        name="avg_sdswrf", long_name="Surface Downwelling Shortwave",
+        units="W/m2", domain="sfc", cmap="YlOrRd",
         obs_dataset="ERA5", obs_variable="ssrd",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
         cmip6_variable="rsds", cmip6_table="Amon",
         group="radiation",
     ),
     "avg_sdlwrf": VarInfo(
-        name="avg_sdlwrf", long_name="Surface Downwelling Longwave", units="W/m2",
-        domain="sfc", cmap="YlOrRd",
+        name="avg_sdlwrf", long_name="Surface Downwelling Longwave",
+        units="W/m2", domain="sfc", cmap="YlOrRd",
         obs_dataset="ERA5", obs_variable="strd",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
         cmip6_variable="rlds", cmip6_table="Amon",
         group="radiation",
     ),
 
-    # --- Ocean 2D variables (O2D) ---
+    # --- Surface net radiation (positive downward) -------------------
+    # No single CMIP6 variable for net surface radiation.
+
+    "avg_snswrf": VarInfo(
+        name="avg_snswrf", long_name="Surface Net Shortwave Radiation",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="ssr",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        group="radiation",
+    ),
+    "avg_snlwrf": VarInfo(
+        name="avg_snlwrf", long_name="Surface Net Longwave Radiation",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="str",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        group="radiation",
+    ),
+    "avg_snswrfcs": VarInfo(
+        name="avg_snswrfcs",
+        long_name="Surface Net Shortwave Radiation (Clear-Sky)",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="ssrc",
+        obs_unit_factor=_ACCUM_FACTOR,
+        group="radiation",
+    ),
+    "avg_snlwrfcs": VarInfo(
+        name="avg_snlwrfcs",
+        long_name="Surface Net Longwave Radiation (Clear-Sky)",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="strc",
+        obs_unit_factor=_ACCUM_FACTOR,
+        group="radiation",
+    ),
+
+    # --- TOA net radiation (positive downward) -----------------------
+    # CMIP6 rsut/rlut are outgoing components only (positive upward),
+    # not net fluxes → sign mismatch → no mapping.
+
+    "avg_tnswrf": VarInfo(
+        name="avg_tnswrf", long_name="TOA Net Shortwave Radiation",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="tsr",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        # CMIP6 rsut is outgoing SW only — not net; omitted
+        group="radiation",
+    ),
+    "avg_tnlwrf": VarInfo(
+        name="avg_tnlwrf", long_name="TOA Net Longwave Radiation",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="ttr",
+        obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
+        # CMIP6 rlut is outgoing LW only — not net; omitted
+        group="radiation",
+    ),
+    "avg_tnswrfcs": VarInfo(
+        name="avg_tnswrfcs",
+        long_name="TOA Net Shortwave Radiation (Clear-Sky)",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="tsrc",
+        obs_unit_factor=_ACCUM_FACTOR,
+        group="radiation",
+    ),
+    "avg_tnlwrfcs": VarInfo(
+        name="avg_tnlwrfcs",
+        long_name="TOA Net Longwave Radiation (Clear-Sky)",
+        units="W/m2", domain="sfc", cmap="RdBu_r",
+        obs_dataset="ERA5", obs_variable="ttrc",
+        obs_unit_factor=_ACCUM_FACTOR,
+        group="radiation",
+    ),
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Ocean 2D variables  (domain = "o2d")
+    # ═══════════════════════════════════════════════════════════════════
+
     "avg_tos": VarInfo(
         name="avg_tos", long_name="Sea Surface Temperature", units="K",
         domain="o2d", cmap="RdBu_r",
@@ -168,7 +299,10 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         group="ocean_surface",
     ),
 
-    # --- Ocean 3D variables (O3D) ---
+    # ═══════════════════════════════════════════════════════════════════
+    #  Ocean 3D variables  (domain = "o3d")
+    # ═══════════════════════════════════════════════════════════════════
+
     "avg_thetao": VarInfo(
         name="avg_thetao", long_name="Ocean Temperature", units="K",
         domain="o3d", cmap="RdBu_r",
@@ -182,7 +316,10 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         group="ocean_3d",
     ),
 
-    # --- Pressure level variables (PL) ---
+    # ═══════════════════════════════════════════════════════════════════
+    #  Pressure level variables  (domain = "pl")
+    # ═══════════════════════════════════════════════════════════════════
+
     "avg_t": VarInfo(
         name="avg_t", long_name="Temperature (pressure levels)", units="K",
         domain="pl", cmap="RdBu_r",
@@ -196,14 +333,14 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         group="atmosphere_3d",
     ),
     "avg_v": VarInfo(
-        name="avg_v", long_name="Meridional Wind (pressure levels)", units="m/s",
-        domain="pl", cmap="RdBu_r",
+        name="avg_v", long_name="Meridional Wind (pressure levels)",
+        units="m/s", domain="pl", cmap="RdBu_r",
         obs_dataset="ERA5", obs_variable="v10",  # placeholder
         group="atmosphere_3d",
     ),
     "avg_q": VarInfo(
-        name="avg_q", long_name="Specific Humidity (pressure levels)", units="kg/kg",
-        domain="pl", cmap="YlGnBu",
+        name="avg_q", long_name="Specific Humidity (pressure levels)",
+        units="kg/kg", domain="pl", cmap="YlGnBu",
         obs_dataset="ERA5", obs_variable="tcwv",  # placeholder
         group="atmosphere_3d",
     ),
