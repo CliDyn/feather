@@ -107,6 +107,13 @@ llm:
     retry_delay: 10
     skip_existing: true
 
+report:
+  model: "gpt-4o"
+  max_tokens: 16384
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
 website:
   title: "Feather — Climate Model Evaluation"
   subtitle: "DestinE High-Resolution Simulations vs Observations (1990-2014)"

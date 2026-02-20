@@ -1,0 +1,74 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ───────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+
+% ── Page style ─────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Feather Climate Model Evaluation}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  urlcolor=blue!60!black,
+}
+
+% ── Title ──────────────────────────────────────────────────────────
+\title{<< title >>}
+\author{Feather Framework\\
+\small AI-assisted report generation (OpenAI)}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ── Abstract ───────────────────────────────────────────────────────
+\begin{abstract}
+<< abstract >>
+\end{abstract}
+
+% ── Introduction ───────────────────────────────────────────────────
+\section{Introduction}
+
+<< introduction >>
+
+% ── Thematic sections ──────────────────────────────────────────────
+<% for sec in sections %>
+\section{<< sec.title >>}
+
+<< sec.body >>
+
+<% for fig in sec.figures %>
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\textwidth]{<< fig.path >>}
+  \caption{<< fig.caption >>}
+  \label{<< fig.label >>}
+\end{figure}
+
+<% endfor %>
+<% endfor %>
+
+% ── Conclusion ─────────────────────────────────────────────────────
+\section{Conclusion}
+
+<< conclusion >>
+
+\end{document}

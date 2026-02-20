@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 238 unit tests + 4 integration tests.
+Current test count: 284 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -38,6 +38,9 @@ Current test count: 238 unit tests + 4 integration tests.
 
 ```
 feather/                     # Package root
+├── cli.py                   # CLI entry point (feather command)
+├── run.py                   # Pipeline orchestration (run_pipeline)
+├── __main__.py              # python -m feather support
 ├── config.py                # FeatherConfig dataclass + YAML loading
 ├── data/
 │   ├── loader.py            # DataLoader (intake catalogs + file paths)
@@ -67,7 +70,13 @@ feather/                     # Package root
 │   ├── generator.py         # SiteGenerator: collect, group, build static site
 │   ├── templates/           # Jinja2 templates (base, index, diagnostic)
 │   └── static/style.css     # Dark theme CSS with group badges
-└── export/                  # Placeholder for future notebook export
+└── export/
+    ├── report.py            # ReportGenerator (OpenAI, 3-stage)
+    ├── schemas.py           # ReportStructure, WrittenSection, SelectedFigure
+    ├── prompts.py           # OpenAI prompts (curation + writing)
+    ├── openai_client.py     # Thin OpenAI wrapper with retry
+    ├── latex_builder.py     # LaTeX escaping, template rendering, PDF
+    └── templates/           # Jinja2 LaTeX template
 ```
 
 ## Key files
@@ -75,15 +84,16 @@ feather/                     # Package root
 | File | Purpose |
 |------|---------|
 | `configs/default.yaml` | Default configuration with all Levante data paths |
+| `feather/cli.py` | CLI entry point — `feather` command (argparse) |
+| `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
 | `feather/data/variables.py` | Central variable registry — add new variables here |
 | `feather/diag/base.py` | Base class for all diagnostics — subclass this |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
 | `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
 | `feather/llm/analyzer.py` | FigureAnalyzer — Gemini-based figure analysis |
 | `feather/llm/schemas.py` | Pydantic models for structured LLM output |
+| `feather/export/report.py` | ReportGenerator — LaTeX report via OpenAI (3-stage) |
 | `feather/website/generator.py` | SiteGenerator — static HTML dashboard from figures + analysis |
-| `scripts/run_analysis.py` | CLI runner for LLM analysis |
-| `scripts/run_website.py` | CLI runner for website generation |
 | `tests/conftest.py` | Synthetic HEALPix/obs/CMIP6 fixtures, mock loaders, minimal_config |
 | `PLAN.md` | Full implementation plan with phase status |
 
@@ -99,6 +109,7 @@ Key fields:
 - `cmip6` — CMIP6 comparison config (enabled by default)
 - `output_dir` — where figures/analysis/site are written
 - `llm` — LLM provider config (per-purpose: `figure_analysis` uses Gemini)
+- `report` — report generation config (model, max_tokens, temperature, api_key_env, n_highlights)
 
 The `{obs_root}` placeholder in obs dataset paths is resolved at load time.
 
@@ -215,7 +226,25 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - API key from env var (`GEMINI_API_KEY` by default) or passed directly
 - `_parse_json_response()` handles markdown fencing and LaTeX escape sequences (`\Delta`, `\degree`)
 - `skip_existing` (default true) enables incremental re-runs
-- Run via: `python scripts/run_analysis.py --config configs/default.yaml -v`
+- Run via: `feather --steps analyze --api-key $GEMINI_API_KEY -v`
+
+### Report generation (OpenAI)
+- `ReportGenerator` produces a LaTeX report from LLM analysis output via OpenAI
+- 3-stage pipeline: curation (select/group figures) → section writing (per-section prose) → LaTeX assembly
+- Pydantic schemas: `ReportStructure`, `WrittenSection`, `SelectedFigure`, `ReportSection`
+- `escape_latex()` preserves `\ref{}` via placeholder pattern, escapes LaTeX specials + Unicode
+- LaTeX template uses custom Jinja2 delimiters (`<< >>`, `<% %>`) to avoid LaTeX `{}` conflicts
+- Caching: `publication/structure.json` and `publication/sections/{id}.json` for resumable runs
+- `OpenAIClient` has retry logic (3 attempts) and handles markdown-fenced JSON + LaTeX escapes in responses
+- Run via: `feather --steps report --openai-api-key $OPENAI_API_KEY -v`
+
+### Pipeline runner
+- `feather` CLI command registered via `[project.scripts]` in `pyproject.toml`
+- Also available as `python -m feather`
+- 4-stage pipeline: `diagnostics → analyze → report → website`
+- Each step independently runnable via `--steps`; default is `all`
+- `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
+- All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 
 ### Test fixtures
 - `synth_healpix` in `conftest.py`: nside=8, 768 cells, 12 timesteps, temperature gradient pole→equator
@@ -226,7 +255,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 
 ## Dependencies
 
-Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, pyyaml, netcdf4, zarr, cmocean, nbformat, pydantic, google-generativeai
+Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, pyyaml, netcdf4, zarr, cmocean, nbformat, pydantic, google-generativeai, openai, jinja2
 
 Dev: pytest, pytest-cov
 

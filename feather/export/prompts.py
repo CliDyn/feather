@@ -1,0 +1,262 @@
+"""Prompt templates for the report generator.
+
+Stage 1: Editorial curation — select figures and plan report structure.
+Stage 2: Section writing — write scientific prose for each section.
+"""
+
+import json
+
+
+# ── Stage 1: Editorial Curation ──────────────────────────────────────
+
+CURATION_SYSTEM = """\
+You are a senior climate scientist and science editor preparing a concise \
+technical report evaluating high-resolution climate models from the DestinE \
+initiative against observations.
+
+The report covers results from three coupled models — IFS-FESOM, IFS-NEMO, \
+and ICON — running at ~5 km resolution on native HEALPix grids. These are \
+compared against observational datasets (ERA5, CERES, EN4) and optionally \
+against a CMIP6 multi-model mean ensemble. The evaluation period is \
+1990-2014 (historical).
+
+Your task: from the full set of diagnostic results, select the most \
+compelling findings and organise them into 2-5 thematic sections for a \
+publication-quality technical report.
+
+Selection criteria:
+1. Scientific importance — biases that matter for applications
+2. Clear, visually striking results
+3. Thematic coherence within sections
+4. Balance across climate system components (atmosphere, ocean, ice)
+5. Stories where high-resolution models agree or disagree with each other \
+and with CMIP6
+
+Respond ONLY with a valid JSON object (no markdown fencing) matching this schema:
+
+{
+  "title": "Report title",
+  "abstract": "2-3 paragraph abstract summarising key findings",
+  "introduction": "1-2 paragraph introduction setting the context",
+  "sections": [
+    {
+      "section_id": "01_slug",
+      "title": "Section Title",
+      "narrative_hook": "1-2 sentence description of this section's story",
+      "figure_ids": ["figure_stem_1", "figure_stem_2"],
+      "diagnostics": ["diagnostic_name_1", "diagnostic_name_2"]
+    }
+  ],
+  "selected_figures": [
+    {
+      "diagnostic": "diagnostic_name",
+      "figure_id": "figure_stem",
+      "caption": "Descriptive caption for this figure",
+      "label": "fig:short_label"
+    }
+  ],
+  "conclusion": "1-2 paragraph conclusion"
+}
+"""
+
+
+def build_curation_system() -> str:
+    """Return the curation system prompt."""
+    return CURATION_SYSTEM
+
+
+def build_curation_prompt(
+    syntheses: dict[str, dict],
+    figure_metadata: dict[str, list[dict]],
+    figure_analyses: dict[str, list[dict]],
+    n_highlights: int = 10,
+) -> str:
+    """Build the user prompt for Stage 1 editorial curation.
+
+    Parameters
+    ----------
+    syntheses : dict
+        diagnostic_name -> synthesis JSON dict.
+    figure_metadata : dict
+        diagnostic_name -> list of figure metadata dicts.
+    figure_analyses : dict
+        diagnostic_name -> list of figure analysis dicts.
+    n_highlights : int
+        Target number of figures to select.
+    """
+    parts = [
+        f"Please select approximately {n_highlights} figures for the report.\n",
+        "=" * 60,
+        "DIAGNOSTIC SYNTHESES",
+        "=" * 60,
+    ]
+
+    for diag_name, synth in sorted(syntheses.items()):
+        parts.append(f"\n--- {diag_name} ---")
+        parts.append(json.dumps(synth, indent=2))
+
+    parts.append("\n" + "=" * 60)
+    parts.append("AVAILABLE FIGURES (with metadata and analyses)")
+    parts.append("=" * 60)
+
+    for diag_name in sorted(figure_metadata.keys()):
+        parts.append(f"\n--- {diag_name} ---")
+        metas = figure_metadata[diag_name]
+        analyses = figure_analyses.get(diag_name, [])
+
+        for meta in metas:
+            fig_id = meta.get("figure_id", "unknown")
+            parts.append(f"\n  Figure: {fig_id}")
+            parts.append(f"    Title: {meta.get('title', 'N/A')}")
+            parts.append(f"    Variables: {', '.join(meta.get('variables_used', []))}")
+            parts.append(f"    Models: {', '.join(meta.get('models', []))}")
+            parts.append(f"    Description: {meta.get('description', 'N/A')}")
+
+            # Find matching analysis
+            matching = [a for a in analyses if a.get("figure_id") == fig_id]
+            if matching:
+                a = matching[0]
+                parts.append(f"    Summary: {a.get('summary', 'N/A')}")
+                parts.append(f"    Spatial patterns: {a.get('spatial_patterns', 'N/A')}")
+                parts.append(f"    Confidence: {a.get('confidence', 'N/A')}")
+                findings = a.get("key_findings", [])
+                for f in findings:
+                    parts.append(f"      - {f}")
+
+    parts.append("\n\nSelect the most interesting findings and organise "
+                 "them into a coherent report structure.")
+
+    return "\n".join(parts)
+
+
+# ── Stage 2: Section Writing ─────────────────────────────────────────
+
+SECTION_SYSTEM = """\
+You are a climate scientist writing a section of a technical report \
+evaluating high-resolution DestinE models (IFS-FESOM, IFS-NEMO, ICON, \
+~5 km) against observations (ERA5, CERES, EN4) for the period 1990-2014.
+
+Write in an IPCC-like style:
+- Factual, quantitative, cite specific magnitudes and regions
+- No speculation beyond what the data shows
+- Reference figures by their labels (e.g. "Figure~\\ref{fig:label}")
+- Plain text only — NO LaTeX commands (except figure references as above)
+- NO markdown formatting
+
+IMPORTANT REQUIREMENTS for depth and quality:
+- Write 2-4 substantial paragraphs per section
+- Dedicate at least one full paragraph to EACH figure in the section, \
+describing in detail what it shows: spatial patterns, regional hotspots, \
+inter-model differences, magnitudes, and physical interpretation
+- Include quantitative values wherever the analyses provide them \
+(e.g. bias magnitudes in K, percentage changes)
+- Discuss where models agree or disagree with each other and with \
+observations (and optionally with CMIP6 MMM), and explain WHY
+- Connect the findings to physical mechanisms (feedbacks, circulation \
+changes, thermodynamic constraints)
+- End the section with a brief synthesis tying the figures together
+
+Respond ONLY with a valid JSON object (no markdown fencing):
+
+{
+  "section_id": "USE THE EXACT section_id PROVIDED IN THE USER PROMPT",
+  "title": "Section Title",
+  "body": "2-4 paragraphs of detailed scientific prose..."
+}
+"""
+
+
+def build_section_system() -> str:
+    """Return the section writing system prompt."""
+    return SECTION_SYSTEM
+
+
+def build_section_prompt(
+    section: dict,
+    selected_figures: list[dict],
+    figure_analyses: dict[str, list[dict]],
+    syntheses: dict[str, dict],
+) -> str:
+    """Build the user prompt for writing a single section.
+
+    Parameters
+    ----------
+    section : dict
+        ReportSection dict from Stage 1.
+    selected_figures : list of dict
+        SelectedFigure dicts for figures in this section.
+    figure_analyses : dict
+        diagnostic_name -> list of analysis dicts.
+    syntheses : dict
+        diagnostic_name -> synthesis dict.
+    """
+    parts = [
+        f"SECTION ID (use this exactly in your response): {section['section_id']}",
+        f"Section title: {section['title']}",
+        f"Narrative hook: {section['narrative_hook']}",
+        f"\n{'='*60}",
+        "FIGURES IN THIS SECTION — discuss EACH one in depth",
+        f"{'='*60}",
+    ]
+
+    for fig in selected_figures:
+        parts.append(f"\n{'─'*40}")
+        parts.append(f"Figure: {fig['figure_id']} (from diagnostic: {fig['diagnostic']})")
+        parts.append(f"Caption: {fig['caption']}")
+        parts.append(f"LaTeX label: {fig['label']}")
+
+        # Add full analysis data for this figure
+        diag_analyses = figure_analyses.get(fig["diagnostic"], [])
+        matching = [a for a in diag_analyses
+                    if a.get("figure_id") == fig["figure_id"]]
+        if matching:
+            a = matching[0]
+            parts.append(f"\nFull analysis for this figure:")
+            parts.append(f"  Summary: {a.get('summary', '')}")
+            parts.append(f"  Spatial patterns: {a.get('spatial_patterns', '')}")
+            parts.append(f"  Physical interpretation: "
+                         f"{a.get('physical_interpretation', '')}")
+            parts.append(f"  Model agreement: {a.get('model_agreement', '')}")
+            parts.append(f"  Confidence: {a.get('confidence', '')}")
+            findings = a.get("key_findings", [])
+            if findings:
+                parts.append("  Key findings:")
+                for f in findings:
+                    parts.append(f"    - {f}")
+            caveats = a.get("caveats", [])
+            if caveats:
+                parts.append("  Caveats:")
+                for c in caveats:
+                    parts.append(f"    - {c}")
+
+    # Add full syntheses for related diagnostics
+    parts.append(f"\n{'='*60}")
+    parts.append("DIAGNOSTIC SYNTHESES for context")
+    parts.append(f"{'='*60}")
+    for diag_name in section.get("diagnostics", []):
+        if diag_name in syntheses:
+            synth = syntheses[diag_name]
+            parts.append(f"\n--- {diag_name} ---")
+            parts.append(f"Headline: {synth.get('headline_finding', '')}")
+            parts.append(f"Full narrative:\n{synth.get('narrative', '')}")
+            connections = synth.get("connections", [])
+            if connections:
+                parts.append(f"Connections: {', '.join(connections)}")
+
+    parts.append(f"\n{'='*60}")
+    parts.append("INSTRUCTIONS")
+    parts.append(f"{'='*60}")
+    parts.append(
+        f"Write the section '{section['title']}' (section_id: "
+        f"{section['section_id']}).\n"
+        "- Dedicate at least one full paragraph to EACH figure listed above\n"
+        "- Describe what the figure shows in detail: spatial patterns, "
+        "magnitudes, regional hotspots\n"
+        "- Compare IFS-FESOM vs IFS-NEMO vs ICON vs observations explicitly\n"
+        "- Explain physical mechanisms driving the patterns\n"
+        "- Use quantitative values from the analyses\n"
+        "- Reference each figure as Figure~\\ref{label}\n"
+        "- End with a synthesis paragraph connecting the figures"
+    )
+
+    return "\n".join(parts)

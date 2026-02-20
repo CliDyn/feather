@@ -195,7 +195,7 @@ The existing climate diagnostics pipeline at `/home/a/a270088/PYTHON/DestinE/pha
 
 ```
 feather/                              # Git root: /home/a/a270088/PYTHON/feather/feather/
-├── pyproject.toml
+├── pyproject.toml                    # Package config + [project.scripts] feather = feather.cli:main
 ├── PLAN.md
 ├── CLAUDE.md
 ├── README.md
@@ -206,8 +206,10 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── run_timeseries.py             # CLI: time series runner
 │   ├── run_seasonal_cycle.py         # CLI: seasonal cycle runner
 │   ├── run_all.py                    # CLI: run all diagnostics with --diagnostics filter
-│   ├── run_analysis.py              # CLI: LLM analysis runner
-│   ├── run_website.py               # CLI: static website generator
+│   ├── run_pipeline.py              # Legacy wrapper → feather.cli:main()
+│   ├── run_analysis.py              # Legacy wrapper → feather --steps analyze
+│   ├── run_report.py                # Legacy wrapper → feather --steps report
+│   ├── run_website.py               # Legacy wrapper → feather --steps website
 │   └── test_cmip6_e2e.py            # E2E CMIP6 test (run on compute node)
 ├── tests/
 │   ├── __init__.py
@@ -224,9 +226,14 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_seasonal_cycle.py        # 14 tests (8 + 6 CMIP6)
 │   ├── test_cmip6.py                # 47 unit + 2 integration tests
 │   ├── test_llm.py                  # 47 tests (mocked Gemini)
-│   └── test_website.py             # 30 tests
+│   ├── test_website.py             # 30 tests
+│   ├── test_pipeline.py            # 12 tests (pipeline runner)
+│   └── test_report.py              # 34 tests (report generation)
 └── feather/
-    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader, FigureAnalyzer, SiteGenerator
+    ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader, FigureAnalyzer, SiteGenerator, run_pipeline, ReportGenerator
+    ├── __main__.py                   # python -m feather → feather.cli:main()
+    ├── cli.py                        # CLI entry point (feather command): argparse + run_pipeline
+    ├── run.py                        # Pipeline orchestration: run_pipeline()
     ├── config.py                     # FeatherConfig dataclass + YAML loader
     ├── data/
     │   ├── __init__.py
@@ -267,7 +274,14 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   └── static/
     │       └── style.css            # Dark theme, group badges, responsive
     └── export/
-        └── __init__.py               # Placeholder
+        ├── __init__.py              # Exports ReportGenerator
+        ├── report.py                # ReportGenerator: 3-stage LLM pipeline
+        ├── schemas.py               # SelectedFigure, ReportSection, ReportStructure, WrittenSection
+        ├── openai_client.py         # OpenAIClient: chat_json with retry + JSON parsing
+        ├── prompts.py               # Curation + section writing prompts for OpenAI
+        ├── latex_builder.py         # escape_latex, copy_figures, build_document, compile_pdf
+        └── templates/
+            └── report.tex.jinja2    # LaTeX article template (Jinja2, << >> delimiters)
 ```
 
 ---
@@ -955,28 +969,117 @@ python scripts/run_website.py --config configs/default.yaml -v
 
 ---
 
-## Phase 7: Pipeline Runner
+## Phase 7: Pipeline Runner + Report Generation — COMPLETED
 
-**File:** `feather/run.py` (or CLI entry point)
+**Status:** All steps implemented and verified. 46 new tests (12 pipeline + 34 report), 284 total passing.
 
-```python
-def run_pipeline(config_path, *, steps=None, diagnostics=None):
-    """Run the feather pipeline.
+**Goal:** Unified CLI entry point (`feather` command) and LaTeX report generation via OpenAI (3-stage: editorial curation → per-section writing → LaTeX assembly).
 
-    Steps:
-    1. "diagnostics" — run compute + plot for selected diagnostics
-    2. "analyze"     — run LLM analysis on generated figures
-    3. "website"     — build static HTML dashboard
-    4. "all"         — run all steps in sequence
-    """
-```
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| CLI entry point | `feather/cli.py` (argparse, `feather` console script) | Done |
+| Pipeline runner | `feather/run.py` (`run_pipeline()` orchestration) | Done |
+| Module entry | `feather/__main__.py` (`python -m feather` support) | Done |
+| Report schemas | `feather/export/schemas.py` (SelectedFigure, ReportSection, ReportStructure, WrittenSection) | Done |
+| OpenAI client | `feather/export/openai_client.py` (chat_json with retry + JSON parsing) | Done |
+| Report prompts | `feather/export/prompts.py` (curation + section writing prompts) | Done |
+| LaTeX builder | `feather/export/latex_builder.py` (escape_latex, copy_figures, build_document, compile_pdf) | Done |
+| LaTeX template | `feather/export/templates/report.tex.jinja2` (Jinja2 with `<< >>` delimiters) | Done |
+| Report generator | `feather/export/report.py` (ReportGenerator: 3-stage pipeline) | Done |
+| Config | `feather/config.py` — added `report: dict` field | Done |
+| Config | `configs/default.yaml` — added `report:` section | Done |
+| Deps | `pyproject.toml` — added `openai>=1.0`, `[project.scripts]` | Done |
+| Exports | `feather/__init__.py`, `feather/export/__init__.py` — added new exports | Done |
+| Legacy wrappers | `scripts/run_pipeline.py`, `run_report.py`, `run_analysis.py`, `run_website.py` | Done |
+| Tests | `tests/test_pipeline.py` (12 tests) | Done |
+| Tests | `tests/test_report.py` (34 tests) | Done |
+
+### Key design decisions
+
+1. **`feather` console script as primary entry point.** Registered via `[project.scripts]` in `pyproject.toml`. All `scripts/` files are now thin wrappers delegating to `feather.cli:main()`. Supports `python -m feather` via `__main__.py`.
+
+2. **4-stage pipeline:** `diagnostics → analyze → report → website`. Each step is independently runnable via `--steps`. Default is `all` (run everything).
+
+3. **Report generation is a 3-stage LLM workflow:**
+   - Stage 1 (Curation): OpenAI selects/groups figures from all analyses → `ReportStructure` → cached as `publication/structure.json`
+   - Stage 2 (Writing): Per-section OpenAI calls → `WrittenSection` → cached as `publication/sections/{id}.json`
+   - Stage 3 (Assembly): Copy figures, render Jinja2 LaTeX template, write `.tex`, optionally compile PDF
+
+4. **Pydantic schemas with lower minimums.** `ReportStructure` requires min 2 sections and min 4 selected figures (vs 3/6 in reference) since feather currently has only 3 diagnostics.
+
+5. **OpenAI client with retry + JSON parsing.** 3 retries with 10s delay. `_parse_json()` strips markdown fencing and fixes invalid LaTeX escapes (`\Delta` → `\\Delta`) that break JSON parsing.
+
+6. **LaTeX template uses custom Jinja2 delimiters** (`<< >>` for variables, `<% %>` for blocks) to avoid conflicts with LaTeX `{}` syntax.
+
+7. **`escape_latex()` preserves `\ref{}`** via a placeholder pattern (XREFPLACEHOLDER) — replaces `\ref{...}` before escaping, restores after.
+
+8. **Caching for resumable runs.** Both `structure.json` and per-section JSONs are cached. `skip_existing=True` (default) skips already-completed stages.
+
+### CLI usage
 
 ```bash
-# Usage examples:
-python -m feather.run --config configs/default.yaml --step diagnostics
-python -m feather.run --config configs/default.yaml --step analyze
-python -m feather.run --config configs/default.yaml --step website
-python -m feather.run --config configs/default.yaml --step all
+# Install (registers `feather` command)
+pip install -e .
+
+# Full pipeline
+feather -v
+feather --config configs/default.yaml -v
+
+# Individual steps
+feather --steps diagnostics -v
+feather --steps analyze --api-key $GEMINI_API_KEY -v
+feather --steps report --openai-api-key $OPENAI_API_KEY -v
+feather --steps website -v
+
+# Combine steps
+feather --steps analyze report website -v
+
+# Filter diagnostics/variables
+feather --diagnostics global_biases timeseries -v
+feather --variables avg_2t -v
+
+# Report options
+feather --steps report --compile-pdf -v
+feather --steps report --no-skip-existing -v
+
+# Also works as a module
+python -m feather --steps report -v
+```
+
+### Python API
+
+```python
+from feather import FeatherConfig, run_pipeline
+
+cfg = FeatherConfig.from_yaml("configs/default.yaml")
+result = run_pipeline(cfg, steps="all", api_key="...", openai_api_key="...")
+# {"figures": 12, "analyses": 12, "syntheses": 3, "report": Path(...), "site_dir": Path(...)}
+
+# Individual steps
+result = run_pipeline(cfg, steps=["diagnostics"], diagnostics=["global_biases"])
+result = run_pipeline(cfg, steps=["report"], openai_api_key="...")
+```
+
+### Report output structure
+
+```
+output/publication/
+  structure.json        # Stage 1: editorial curation (selected figures, sections)
+  sections/             # Stage 2: per-section written prose
+    01_temperature.json
+    ...
+  figures/              # Copied figures for LaTeX
+  report.tex            # Final LaTeX document
+  report.pdf            # (if --compile-pdf)
+```
+
+### Verification results
+
+```
+pytest tests/test_pipeline.py tests/test_report.py -v  → 46/46 passed
+pytest tests/ -v -m "not integration"                   → 284/284 passed (46 new + 238 existing)
 ```
 
 ---
@@ -1064,11 +1167,9 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-After Phase 3 (done), the recommended order is:
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7
 
-1. **Phase 5** — LLM analysis pipeline (can test with Phase 3 figures)
-2. **Phase 6** — Web dashboard (can test with Phase 3 figures + Phase 5 analyses)
-3. **Phase 4** — CMIP6 loader (adds optional comparison to existing diagnostics)
-4. **Phase 7** — Pipeline runner (ties everything together)
-5. **Phase 8-9** — Additional diagnostics
-6. **Phase 10** — Export / notebook generation
+Next:
+1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)
+2. **Phase 9** — Ocean & sea ice diagnostics (seaice, ocean_surface, ocean_drift)
+3. **Phase 10** — Export / notebook generation
