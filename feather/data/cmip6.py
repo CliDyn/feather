@@ -40,6 +40,7 @@ class CMIP6Loader:
         self._cfg = config.cmip6
         self._zarr_dir = self._resolve_zarr_dir()
         self._area_cache: dict[str, xr.DataArray] = {}
+        self._interp_cache: dict[str, nr.RegridInterpolator] = {}
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -64,8 +65,9 @@ class CMIP6Loader:
         table: str | None = None,
         period: tuple[str, str] | None = None,
         season: str | None = None,
+        time_mean: bool = True,
     ) -> xr.DataArray | None:
-        """Load a single CMIP6 variable climatology for one model+variant.
+        """Load a single CMIP6 variable for one model+variant.
 
         Parameters
         ----------
@@ -81,11 +83,15 @@ class CMIP6Loader:
             (start, end) date strings for time slicing (e.g. ("1990-01", "2010-12")).
         season : str, optional
             Season filter ("DJF", "MAM", "JJA", "SON").
+        time_mean : bool
+            If True (default), return time-mean 2D field. If False, return
+            the full time series after period/season filtering.
 
         Returns
         -------
         xr.DataArray or None
-            Time-mean 2D field, or None if data not found.
+            Time-mean 2D field (or full time series if ``time_mean=False``),
+            or None if data not found.
         """
         if variant is None:
             model_cfg = self.models.get(model, {})
@@ -103,6 +109,7 @@ class CMIP6Loader:
             logger.debug("Zarr not found: %s", zarr_path)
             return None
 
+        logger.info("Loading %s for %s/%s from zarr", cmip6_var, model, variant)
         try:
             ds = xr.open_zarr(zarr_path, consolidated=True)
         except Exception as e:
@@ -138,8 +145,9 @@ class CMIP6Loader:
             if cmip6_var == "siconc":
                 da = self._normalise_siconc(da)
 
-            # Time mean
-            da = da.mean("time")
+            # Time mean (skip if caller wants the full time series)
+            if time_mean:
+                da = da.mean("time")
         else:
             # No time dimension — static field
             if cmip6_var == "siconc":
@@ -218,6 +226,10 @@ class CMIP6Loader:
             table = self._infer_table(cmip6_var)
 
         member_pairs = self._get_member_pairs(ensemble_mode)
+        logger.info(
+            "Computing CMIP6 MMM for %s (%s) — %d members",
+            cmip6_var, table, len(member_pairs),
+        )
 
         resolution = self._cfg.get("regrid_resolution", 1.0)
         influence_radius = self._cfg.get("influence_radius", 80_000.0)
@@ -225,7 +237,6 @@ class CMIP6Loader:
         regridded_fields = []
         models_used = []
         models_skipped = []
-        interp_cache: dict[str, nr.RegridInterpolator] = {}
 
         for model, variant in member_pairs:
             member_label = f"{model}/{variant}"
@@ -256,9 +267,10 @@ class CMIP6Loader:
                 lon_flat = lon.ravel()
                 lat_flat = lat.ravel()
 
-            # Cache interpolator per model (same grid for all variants)
-            cache_key = f"{model}_{table}"
-            if cache_key not in interp_cache:
+            # Cache interpolator per model (persists across calls)
+            cache_key = f"{model}_{table}_{resolution}"
+            if cache_key not in self._interp_cache:
+                logger.info("  Regridding %s (building interpolator)", member_label)
                 regridded, interpolator = nr.regrid(
                     da.values.ravel(),
                     lon=lon_flat, lat=lat_flat,
@@ -267,9 +279,10 @@ class CMIP6Loader:
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                interp_cache[cache_key] = interpolator
+                self._interp_cache[cache_key] = interpolator
             else:
-                interpolator = interp_cache[cache_key]
+                logger.info("  Regridding %s (cached interpolator)", member_label)
+                interpolator = self._interp_cache[cache_key]
                 regridded_np = interpolator(da.values.ravel())
                 regridded = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
@@ -288,10 +301,15 @@ class CMIP6Loader:
         }
 
         if not regridded_fields:
+            logger.info("  No CMIP6 data available for %s", cmip6_var)
             return None, info
 
         stacked = xr.concat(regridded_fields, dim="member")
         mmm = stacked.mean("member")
+        logger.info(
+            "  CMIP6 MMM computed: %d members used, %d skipped",
+            len(models_used), len(models_skipped),
+        )
 
         return mmm, info
 

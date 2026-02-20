@@ -217,9 +217,9 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_temporal.py              # 7 tests
 │   ├── test_figure_metadata.py       # 18 tests
 │   ├── test_diag_base.py             # 18 tests
-│   ├── test_global_biases.py         # 16 tests
-│   ├── test_timeseries.py            # 9 tests
-│   ├── test_seasonal_cycle.py        # 8 tests
+│   ├── test_global_biases.py         # 23 tests (16 + 7 CMIP6)
+│   ├── test_timeseries.py            # 15 tests (9 + 6 CMIP6)
+│   ├── test_seasonal_cycle.py        # 14 tests (8 + 6 CMIP6)
 │   └── test_cmip6.py                # 47 unit + 2 integration tests
 └── feather/
     ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader
@@ -402,9 +402,9 @@ CMIP6 comparison is always optional (`cmip6.enabled` in config). When enabled, d
 
 ---
 
-## Phase 4b: CMIP6 Integration into Diagnostics
+## Phase 4b: CMIP6 Integration into Diagnostics — COMPLETED
 
-**Status:** Not started.
+**Status:** All 3 diagnostics wired to CMIP6Loader (19 new tests, 161 total passing).
 
 **Goal:** Wire the existing CMIP6Loader into the three diagnostics (global_biases, timeseries, seasonal_cycle) so each figure gains an optional CMIP6 multi-model mean (MMM) reference — providing historical context for how DestinE models compare to the broader CMIP6 ensemble.
 
@@ -657,11 +657,54 @@ This is already supported by `_build_metadata(cmip6_info=...)`.
 6. Tests for all three diagnostics with CMIP6 enabled/disabled
 7. Verify with real data on compute node
 
-### Design decisions to confirm
+### Design decisions confirmed
 
-- **CMIP6 bias map as separate figure (not 4th panel)?** Keeps `plot_bias_map` simple. The CMIP6 MMM is the same for all DestinE models, so one CMIP6 figure per variable (not per model) is natural. Uses shared colorbar ranges for comparability.
+- **CMIP6 bias map as separate figure (not 4th panel).** Keeps `plot_bias_map` simple. The CMIP6 MMM is the same for all DestinE models, so one CMIP6 figure per variable (not per model) is natural. Uses shared colorbar ranges for comparability.
 - **CMIP6 MMM line style:** dashed gray (`--`, `CMIP6_COLOR`) to visually distinguish from solid model lines and thick obs line.
 - **Missing CMIP6 data:** silently skip — no error, no empty panel. `cmip6_info` in metadata is `None` or absent.
+- **Shared helper `_cmip6_global_mean_timeseries()` on `DiagnosticBase`.** Both timeseries and seasonal_cycle use it. Loads raw monthly data (`time_mean=False`), computes per-model area-weighted global mean, aligns on common time axis, averages across models.
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| CMIP6Loader | `feather/data/cmip6.py` | Added `time_mean: bool = True` kwarg to `load_var()` |
+| DiagnosticBase | `feather/diag/base.py` | Added `_cmip6_global_mean_timeseries()` shared helper |
+| TimeseriesDiag | `feather/diag/timeseries.py` | CMIP6 MMM line in compute() + plot() + metadata |
+| SeasonalCycleDiag | `feather/diag/seasonal_cycle.py` | CMIP6 MMM line in compute() + plot() + metadata |
+| GlobalBiases | `feather/diag/global_biases.py` | CMIP6 MMM bias maps (annual + DJF + JJA), included in shared colorbar ranges |
+| MockCMIP6Loader | `tests/conftest.py` | Updated `load_var()` for `time_mean` |
+| Tests | `tests/test_timeseries.py` | +6 CMIP6 tests |
+| Tests | `tests/test_seasonal_cycle.py` | +6 CMIP6 tests |
+| Tests | `tests/test_global_biases.py` | +7 CMIP6 tests |
+
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 161/161 passed (19 new + 142 existing)
+```
+
+### Key implementation notes
+
+1. **`CMIP6Loader.load_var(time_mean=False)` returns full time series.** Default `True` preserves backward compatibility. When `False`, returns the DataArray after period/season filtering and calendar normalization but without `.mean("time")`.
+
+2. **`_cmip6_global_mean_timeseries()` on DiagnosticBase.** Iterates configured CMIP6 models (one variant per model by default), loads raw monthly data, computes `latlon_global_mean()` per timestep (area-weighted via `load_area()`), aligns on common time axis, averages across models. Returns `(mmm_ts, info)`.
+
+3. **GlobalBiases CMIP6 integration.** After the model loop, loads CMIP6 MMM for annual and seasonal periods via `load_mmm_for_model_var()`. Interpolates to the common nereus target grid via `.interp()`. Computes bias against obs. CMIP6 fields are included in `_compute_colorbar_ranges()` so all figures (DestinE + CMIP6) share identical color scales.
+
+4. **CMIP6 bias maps are separate figures (one per variable per period).** Not 4th panels. The CMIP6 MMM is model-independent, so one figure per variable is natural. Figure IDs: `{var}_{period}_bias_cmip6_mmm`.
+
+5. **All CMIP6 additions are guarded.** `self.cmip6_enabled` checks + `None` checks ensure diagnostics work identically when CMIP6 is disabled. Existing tests (minimal_config with `cmip6.enabled: False`) verify this.
+
+### Post-implementation fixes and improvements
+
+1. **areacella alignment bug (critical).** When `latlon_global_mean(da, area=area)` receives an xr.DataArray from `load_area()`, coordinate misalignment between areacella and data variables causes `da.weighted(area)` to silently produce wrong results (cold-biased CMIP6 MMM). **Fix:** Added `_align_area()` static method to `DiagnosticBase` that converts areacella to numpy array, letting `latlon_global_mean` re-wrap with the data's own coordinates. This ensures positional (not coordinate-based) alignment.
+
+2. **Interpolator cache locality bug.** `interp_cache` in `load_multi_model_mean()` was a local dict, rebuilt from scratch on each of the 3 calls (annual, DJF, JJA). Building a KDTree for a CMIP6 model grid (~65K points at 1°) takes a few seconds each, so rebuilding 3× per model was wasteful. **Fix:** Promoted to `self._interp_cache` instance attribute on `CMIP6Loader`, persisting across calls. Cache key: `f"{model}_{table}_{resolution}"`.
+
+3. **CMIP6 model list updated to validated 12-model ensemble.** Original config had 7 models with guessed variants. Updated to user's validated 12-model list: CanESM5, MPI-ESM1-2-LR, GISS-E2-1-G, IPSL-CM6A-LR, ACCESS-ESM1-5, EC-Earth3, CNRM-CM6-1, AWI-CM-1-1-MR, CNRM-ESM2-1, FGOALS-g3, INM-CM5-0, MRI-ESM2-0 (5 variants each).
+
+4. **Verbose logging (`-v` / `-vv` flag).** All 4 runner scripts (`run_global_biases.py`, `run_timeseries.py`, `run_seasonal_cycle.py`, `run_all.py`) now accept `-v` for INFO-level and `-vv` for DEBUG-level logging. Informative `logger.info()` calls added throughout: diagnostic compute steps, model/obs/CMIP6 loading, interpolator building, regridding (cached vs new), global mean values, and MMM statistics. Uses Python `logging` module with timestamped format.
 
 ---
 

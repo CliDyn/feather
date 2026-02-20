@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from feather.diag.timeseries import TimeseriesDiag
+from tests.conftest import MockCMIP6Loader
 
 
 class TestTimeseriesCompute:
@@ -130,3 +131,99 @@ class TestTimeseriesPlot:
         assert json_path.exists()
         assert png_path.suffix == ".png"
         assert json_path.suffix == ".json"
+
+
+class TestTimeseriesCMIP6:
+    """Tests for CMIP6 integration in timeseries diagnostic."""
+
+    def test_cmip6_disabled_no_data(self, mock_model_loader, mock_obs_loader,
+                                     minimal_config):
+        """When CMIP6 is disabled, cmip6_ts is None."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+        )
+        results = diag.compute()
+
+        assert results["avg_2t"]["cmip6_ts"] is None
+        assert results["avg_2t"]["cmip6_info"] == {}
+
+    def test_cmip6_enabled_has_timeseries(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """When CMIP6 is enabled, cmip6_ts is a DataArray with time dim."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        cmip6_ts = results["avg_2t"]["cmip6_ts"]
+        assert cmip6_ts is not None
+        assert "time" in cmip6_ts.dims
+        assert len(cmip6_ts) == 12
+
+    def test_cmip6_timeseries_reasonable_values(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 MMM time series values are in reasonable range."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        cmip6_ts = results["avg_2t"]["cmip6_ts"]
+        assert np.all(cmip6_ts.values > 260)
+        assert np.all(cmip6_ts.values < 310)
+
+    def test_cmip6_info_populated(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """cmip6_info has n_members and models_used."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        info = results["avg_2t"]["cmip6_info"]
+        assert info["n_members"] >= 1
+        assert len(info["models_used"]) >= 1
+
+    def test_cmip6_plot_has_line(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Plot includes CMIP6 MMM line when data is available."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, meta = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+        assert "CMIP6 MMM" in labels
+        plt.close(fig)
+
+    def test_cmip6_metadata_includes_info(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Metadata includes cmip6_info when CMIP6 is enabled."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        _, meta = pairs[0]
+        assert meta.get("cmip6_info") is not None
+        assert meta["cmip6_info"]["n_members"] >= 1
+        plt.close("all")

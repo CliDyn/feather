@@ -207,7 +207,7 @@ class MockCMIP6Loader:
         return self._models
 
     def load_var(self, cmip6_var, model, *, variant=None, table=None,
-                 period=None, season=None):
+                 period=None, season=None, time_mean=True):
         if cmip6_var not in self._ds.data_vars:
             return None
         da = self._ds[cmip6_var]
@@ -215,7 +215,7 @@ class MockCMIP6Loader:
             da = da.sel(time=slice(period[0], period[1]))
         if season and "time" in da.dims:
             da = da.sel(time=da["time.season"] == season)
-        if "time" in da.dims:
+        if time_mean and "time" in da.dims:
             da = da.mean("time")
         return da
 

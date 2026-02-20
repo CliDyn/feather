@@ -15,7 +15,7 @@ from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
 from feather.util.spatial import global_mean, latlon_global_mean
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,11 @@ class TimeseriesDiag(DiagnosticBase):
 
         for var in self.variables:
             var_info = get_var(var)
+            logger.info("Processing variable: %s (%s)", var, var_info.long_name)
             model_ts: dict[str, Any] = {}
 
             for model in self.config.models:
+                logger.info("  Loading model data: %s", model)
                 key = DataLoader.make_key(
                     self.experiment, model, var_info.domain,
                 )
@@ -77,15 +79,25 @@ class TimeseriesDiag(DiagnosticBase):
                 # HEALPix cells are equal area — simple mean is correct
                 ts = global_mean(model_data).compute()
                 model_ts[model] = ts
+                logger.info("    Global mean: %.2f %s", float(ts.mean()), var_info.units)
 
             # Observation time series
+            logger.info("  Loading observations for %s", var)
             obs_data = self.obs_loader.load_for_model_var(var, self.period)
             obs_ts = latlon_global_mean(obs_data)
+            logger.info("    Obs global mean: %.2f %s", float(obs_ts.mean()), var_info.units)
+
+            # CMIP6 multi-model mean time series (optional)
+            cmip6_ts, cmip6_info = self._cmip6_global_mean_timeseries(
+                var, period=self.period,
+            )
 
             results[var] = {
                 "models": model_ts,
                 "obs": obs_ts,
                 "var_info": var_info,
+                "cmip6_ts": cmip6_ts,
+                "cmip6_info": cmip6_info,
             }
 
         return results
@@ -118,6 +130,16 @@ class TimeseriesDiag(DiagnosticBase):
                 label="Obs", color=OBS_COLOR, linewidth=2,
             )
 
+            # CMIP6 MMM line (optional)
+            if vr.get("cmip6_ts") is not None:
+                cmip6_ts = vr["cmip6_ts"]
+                cmip6_time = _to_plot_time(cmip6_ts.time.values)
+                ax.plot(
+                    cmip6_time, cmip6_ts.values,
+                    label="CMIP6 MMM", color=CMIP6_COLOR,
+                    linewidth=1.5, linestyle="--",
+                )
+
             ax.set_title(f"{var_info.long_name} \u2014 Global Mean")
             ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
             ax.legend()
@@ -135,6 +157,7 @@ class TimeseriesDiag(DiagnosticBase):
                 ),
                 plot_type="timeseries",
                 period=self.period,
+                cmip6_info=vr.get("cmip6_info") or None,
             )
             figures.append((fig, meta))
 

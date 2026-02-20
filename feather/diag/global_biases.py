@@ -67,9 +67,11 @@ class GlobalBiases(DiagnosticBase):
 
         for var in self.variables:
             var_info = get_var(var)
+            logger.info("Processing variable: %s (%s)", var, var_info.long_name)
             model_results: dict[str, dict] = {}
 
             # Load observation (usually small regular grid)
+            logger.info("  Loading observations for %s", var)
             obs_data = self.obs_loader.load_for_model_var(var, self.period)
             obs_clim = climatology(obs_data)
             obs_gmean = float(latlon_global_mean(obs_clim).values)
@@ -110,6 +112,7 @@ class GlobalBiases(DiagnosticBase):
 
                 # Build interpolator once (reused across models + seasons)
                 if interpolator is None:
+                    logger.info("  Building nereus interpolator (first model)...")
                     annual_regrid, interpolator = nr.regrid(
                         model_clim.values.ravel(),
                         lon=np.asarray(lon), lat=np.asarray(lat),
@@ -184,9 +187,60 @@ class GlobalBiases(DiagnosticBase):
                     "seasonal_biases": seasonal_biases,
                 }
 
+            # CMIP6 MMM bias (optional)
+            cmip6_data = {}
+            cmip6_info = {}
+            if self.cmip6_enabled and interpolator is not None:
+                logger.info("  Loading CMIP6 multi-model mean for %s...", var)
+                mmm, info = self.cmip6_loader.load_mmm_for_model_var(
+                    var, period=self.period,
+                )
+                if mmm is not None:
+                    # Interpolate CMIP6 MMM to the common nereus target grid
+                    cmip6_common = mmm.interp(
+                        lat=target_lats, lon=target_lons,
+                    )
+                    cmip6_bias = cmip6_common - obs_clim_common
+                    cmip6_bias_gmean = float(
+                        latlon_global_mean(cmip6_bias).values
+                    )
+                    cmip6_rmse = float(np.sqrt(
+                        latlon_global_mean(cmip6_bias ** 2).values
+                    ))
+
+                    cmip6_data["annual"] = {
+                        "regrid": cmip6_common,
+                        "bias": cmip6_bias,
+                        "bias_gmean": cmip6_bias_gmean,
+                        "rmse": cmip6_rmse,
+                    }
+                    cmip6_info = info
+
+                    # Seasonal CMIP6 MMM biases
+                    logger.info("  Loading CMIP6 seasonal MMM (DJF, JJA)...")
+                    for season in ["DJF", "JJA"]:
+                        mmm_s, _ = self.cmip6_loader.load_mmm_for_model_var(
+                            var, period=self.period, season=season,
+                        )
+                        if mmm_s is not None and season in obs_seasonal_common:
+                            cmip6_s = mmm_s.interp(
+                                lat=target_lats, lon=target_lons,
+                            )
+                            cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
+                            cmip6_data[season] = {
+                                "regrid": cmip6_s,
+                                "bias": cmip6_s_bias,
+                                "bias_gmean": float(
+                                    latlon_global_mean(cmip6_s_bias).values
+                                ),
+                            }
+
             # Compute shared colorbar ranges across all models per period
+            # (include CMIP6 if available)
+            logger.info("  Computing shared colorbar ranges")
             colorbar_ranges = self._compute_colorbar_ranges(
                 model_results, obs_clim_common, obs_seasonal_common,
+                cmip6_data=cmip6_data,
             )
 
             results[var] = {
@@ -198,6 +252,8 @@ class GlobalBiases(DiagnosticBase):
                 },
                 "var_info": var_info,
                 "colorbar_ranges": colorbar_ranges,
+                "cmip6_data": cmip6_data,
+                "cmip6_info": cmip6_info,
             }
 
         return results
@@ -209,14 +265,22 @@ class GlobalBiases(DiagnosticBase):
         model_results: dict[str, dict],
         obs_clim_common: xr.DataArray,
         obs_seasonal_common: dict[str, xr.DataArray],
+        cmip6_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
+
+        Parameters
+        ----------
+        cmip6_data : dict, optional
+            If provided, CMIP6 fields and biases are included in the
+            range computation so all figures share the same color scale.
 
         Returns a dict keyed by period name ("annual", "DJF", "JJA")
         with ``vmin``, ``vmax`` (field panels) and ``bias_vmax``
         (symmetric bias panel) values.
         """
         ranges: dict[str, dict] = {}
+        cmip6_data = cmip6_data or {}
 
         def _percentile_range(arrays):
             """Compute vmin/vmax from 2nd/98th percentile of arrays."""
@@ -238,6 +302,9 @@ class GlobalBiases(DiagnosticBase):
         field_arrays = [mr["annual_regrid"] for mr in model_results.values()]
         field_arrays.append(obs_clim_common)
         bias_arrays = [mr["annual_bias"] for mr in model_results.values()]
+        if "annual" in cmip6_data:
+            field_arrays.append(cmip6_data["annual"]["regrid"])
+            bias_arrays.append(cmip6_data["annual"]["bias"])
         vmin, vmax = _percentile_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -260,6 +327,9 @@ class GlobalBiases(DiagnosticBase):
                 continue
             if season in obs_seasonal_common:
                 s_fields.append(obs_seasonal_common[season])
+            if season in cmip6_data:
+                s_fields.append(cmip6_data[season]["regrid"])
+                s_biases.append(cmip6_data[season]["bias"])
             vmin, vmax = _percentile_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
@@ -357,5 +427,95 @@ class GlobalBiases(DiagnosticBase):
                         ),
                     )
                     figures.append((fig_s, meta_s))
+
+            # --- CMIP6 MMM bias maps (one per variable, not per model) ---
+            cmip6_data = vr.get("cmip6_data", {})
+            cmip6_info = vr.get("cmip6_info", {})
+            if cmip6_data:
+                # Annual CMIP6 bias
+                if "annual" in cmip6_data:
+                    ann_cb = cb["annual"]
+                    c_data = cmip6_data["annual"]
+                    fig_c, _ = plot_bias_map(
+                        c_data["regrid"], obs_clim,
+                        bias_data=c_data["bias"],
+                        title=(
+                            f"{var_info.long_name} Annual Mean "
+                            f"\u2014 CMIP6 MMM"
+                        ),
+                        model_title="CMIP6 MMM",
+                        cmap=var_info.cmap,
+                        units=var_info.units,
+                        vmin=ann_cb["vmin"], vmax=ann_cb["vmax"],
+                        bias_vmax=ann_cb["bias_vmax"],
+                    )
+                    meta_c = self._build_metadata(
+                        title=(
+                            f"{var_info.long_name} Annual Bias "
+                            f"\u2014 CMIP6 MMM"
+                        ),
+                        figure_id=f"{var}_annual_bias_cmip6_mmm",
+                        models=["CMIP6 MMM"],
+                        variables=[var],
+                        description=(
+                            f"Annual mean climatology bias map for "
+                            f"{var_info.long_name} — CMIP6 multi-model mean."
+                        ),
+                        plot_type="bias_map",
+                        period=self.period,
+                        cmip6_info=cmip6_info,
+                        summary_statistics={
+                            "global_mean_bias": c_data["bias_gmean"],
+                            "rmse": c_data.get("rmse"),
+                            "obs_global_mean": obs_gmean,
+                        },
+                    )
+                    figures.append((fig_c, meta_c))
+
+                # Seasonal CMIP6 biases
+                for season in ["DJF", "JJA"]:
+                    if season not in cmip6_data:
+                        continue
+                    s_cb = cb.get(season, {})
+                    c_s = cmip6_data[season]
+                    obs_s = vr["obs"]["seasonal_clim"].get(season)
+                    if obs_s is None:
+                        continue
+
+                    fig_cs, _ = plot_bias_map(
+                        c_s["regrid"], obs_s,
+                        bias_data=c_s["bias"],
+                        title=(
+                            f"{var_info.long_name} {season} "
+                            f"\u2014 CMIP6 MMM"
+                        ),
+                        model_title="CMIP6 MMM",
+                        cmap=var_info.cmap,
+                        units=var_info.units,
+                        vmin=s_cb.get("vmin"),
+                        vmax=s_cb.get("vmax"),
+                        bias_vmax=s_cb.get("bias_vmax"),
+                    )
+                    meta_cs = self._build_metadata(
+                        title=(
+                            f"{var_info.long_name} {season} Bias "
+                            f"\u2014 CMIP6 MMM"
+                        ),
+                        figure_id=f"{var}_{season.lower()}_bias_cmip6_mmm",
+                        models=["CMIP6 MMM"],
+                        variables=[var],
+                        description=(
+                            f"{season} climatology bias for "
+                            f"{var_info.long_name} — CMIP6 multi-model mean."
+                        ),
+                        plot_type="bias_map",
+                        period=self.period,
+                        cmip6_info=cmip6_info,
+                        computation_notes=(
+                            f"Seasonal climatology ({season}) CMIP6 MMM "
+                            f"bias map."
+                        ),
+                    )
+                    figures.append((fig_cs, meta_cs))
 
         return figures

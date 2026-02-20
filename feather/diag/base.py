@@ -189,3 +189,116 @@ class DiagnosticBase(ABC):
         return save_figure_with_metadata(
             fig, metadata, self.output_dir, filename,
         )
+
+    def _cmip6_global_mean_timeseries(
+        self,
+        var: str,
+        period: tuple[str, str] | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Compute CMIP6 ensemble-mean global-mean monthly time series.
+
+        Loads raw monthly data (``time_mean=False``) for each CMIP6 model,
+        computes area-weighted global mean per timestep, then averages
+        across models.
+
+        Parameters
+        ----------
+        var : str
+            Feather variable name (e.g. ``"avg_2t"``).
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        (mmm_ts, info) : tuple
+            mmm_ts: DataArray with ``time`` dim, or None.
+            info: dict with ``n_members``, ``models_used``.
+        """
+        import numpy as np
+        import xarray as xr
+
+        from feather.data.variables import get_var
+        from feather.util.spatial import latlon_global_mean
+
+        if not self.cmip6_enabled:
+            return None, {}
+
+        vinfo = get_var(var)
+        if not vinfo.cmip6_variable:
+            return None, {}
+
+        logger.info("  Computing CMIP6 global-mean time series for %s (%s)",
+                     var, vinfo.cmip6_variable)
+
+        member_series = []
+        models_used = []
+
+        for model in self.cmip6_loader.models:
+            da = self.cmip6_loader.load_var(
+                vinfo.cmip6_variable, model,
+                table=vinfo.cmip6_table or None,
+                period=period,
+                time_mean=False,
+            )
+            if da is None:
+                continue
+
+            area = self.cmip6_loader.load_area(
+                model, table=vinfo.cmip6_table or "Amon",
+            )
+            # Convert areacella to numpy so latlon_global_mean wraps it
+            # with da's own coordinates — avoids misalignment when
+            # areacella has different dim names or coordinate values.
+            area = self._align_area(da, area)
+            ts = latlon_global_mean(da, area=area)
+            member_series.append(ts)
+            models_used.append(model)
+
+        if not member_series:
+            logger.info("    No CMIP6 models available for %s", var)
+            return None, {}
+
+        # Align to common time axis, then ensemble mean
+        aligned = xr.align(*member_series, join="inner")
+        mmm_ts = sum(aligned) / len(aligned)
+        info = {"n_members": len(models_used), "models_used": models_used}
+        logger.info("    CMIP6 MMM time series: %d models, %d timesteps",
+                     len(models_used), len(mmm_ts.time))
+        return mmm_ts, info
+
+    @staticmethod
+    def _align_area(da, area):
+        """Convert area weights to numpy aligned with da's spatial grid.
+
+        CMIP6 areacella may have different dimension names or slightly
+        different coordinate values than the data variable.  Passing the
+        raw xr.DataArray to ``da.weighted(area)`` causes silent
+        misalignment.  Converting to numpy and letting
+        ``latlon_global_mean`` re-wrap with da's own coords fixes this.
+
+        Returns numpy array if shapes match, else None (fallback to
+        nereus-computed areas).
+        """
+        if area is None:
+            return None
+
+        import numpy as np
+
+        from feather.util.spatial import _find_latlon_dims
+
+        area_np = np.asarray(area)
+        try:
+            lat_name, lon_name = _find_latlon_dims(da)
+        except ValueError:
+            return None
+
+        expected_shape = (len(da[lat_name]), len(da[lon_name]))
+        if area_np.shape == expected_shape:
+            return area_np
+
+        logger.warning(
+            "areacella shape %s != data shape %s — falling back to "
+            "nereus areas",
+            area_np.shape, expected_shape,
+        )
+        return None

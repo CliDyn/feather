@@ -11,6 +11,7 @@ import xarray as xr
 
 from feather.diag.global_biases import GlobalBiases
 from feather.util.spatial import latlon_global_mean
+from tests.conftest import MockCMIP6Loader
 
 
 # ── Utility tests ────────────────────────────────────────────────────
@@ -384,3 +385,133 @@ class TestGlobalBiasesPlot:
         assert "avg_2t_annual_bias_ifs-fesom" in figure_ids
         assert "avg_2t_djf_bias_ifs-fesom" in figure_ids
         assert "avg_2t_jja_bias_ifs-fesom" in figure_ids
+
+
+class TestGlobalBiasesCMIP6:
+    """Tests for CMIP6 integration in global_biases diagnostic."""
+
+    def test_cmip6_disabled_no_data(self, mock_model_loader, mock_obs_loader,
+                                     minimal_config):
+        """When CMIP6 is disabled, cmip6_data is empty."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+        )
+        results = diag.compute()
+
+        assert results["avg_2t"]["cmip6_data"] == {}
+        assert results["avg_2t"]["cmip6_info"] == {}
+
+    def test_cmip6_enabled_has_bias_data(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """When CMIP6 is enabled, cmip6_data has annual bias."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        cmip6_data = results["avg_2t"]["cmip6_data"]
+        assert "annual" in cmip6_data
+        assert "regrid" in cmip6_data["annual"]
+        assert "bias" in cmip6_data["annual"]
+        assert "bias_gmean" in cmip6_data["annual"]
+
+    def test_cmip6_bias_is_small(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 bias is small with matching synthetic data."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        cmip6_data = results["avg_2t"]["cmip6_data"]
+        assert abs(cmip6_data["annual"]["bias_gmean"]) < 5.0
+
+    def test_cmip6_seasonal_biases(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 seasonal biases (DJF, JJA) are computed."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        cmip6_data = results["avg_2t"]["cmip6_data"]
+        assert "DJF" in cmip6_data
+        assert "JJA" in cmip6_data
+        assert "bias" in cmip6_data["DJF"]
+        assert "bias" in cmip6_data["JJA"]
+
+    def test_cmip6_info_populated(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """cmip6_info has n_members and models_used."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        info = results["avg_2t"]["cmip6_info"]
+        assert info["n_members"] >= 1
+        assert len(info["models_used"]) >= 1
+
+    def test_cmip6_plot_generates_extra_figures(
+        self, synth_healpix, synth_obs, cmip6_config,
+        mock_model_loader, mock_obs_loader, mock_cmip6_loader,
+    ):
+        """plot() generates extra CMIP6 bias map figures."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_bias_map",
+            return_value=(mock_fig, [None, None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        # 1 model × 3 (annual + DJF + JJA) + CMIP6 × 3 (annual + DJF + JJA) = 6
+        assert len(pairs) == 6
+        figure_ids = [meta["figure_id"] for _, meta in pairs]
+        assert "avg_2t_annual_bias_cmip6_mmm" in figure_ids
+        assert "avg_2t_djf_bias_cmip6_mmm" in figure_ids
+        assert "avg_2t_jja_bias_cmip6_mmm" in figure_ids
+
+    def test_cmip6_plot_metadata_has_info(
+        self, synth_healpix, synth_obs, cmip6_config,
+        mock_model_loader, mock_obs_loader, mock_cmip6_loader,
+    ):
+        """CMIP6 figure metadata includes cmip6_info."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_bias_map",
+            return_value=(mock_fig, [None, None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        # Find the CMIP6 annual figure
+        cmip6_metas = [
+            meta for _, meta in pairs
+            if "cmip6_mmm" in meta["figure_id"]
+        ]
+        assert len(cmip6_metas) >= 1
+        assert cmip6_metas[0].get("cmip6_info") is not None
+        assert cmip6_metas[0]["cmip6_info"]["n_members"] >= 1

@@ -9,10 +9,12 @@ Usage:
 """
 
 import argparse
+import logging
 
 from feather.config import FeatherConfig
 from feather.data.loader import DataLoader
 from feather.data.obs import ObsLoader
+from feather.data.cmip6 import CMIP6Loader
 from feather.diag.global_biases import GlobalBiases
 
 
@@ -31,7 +33,22 @@ def main():
                         help="Time period for climatologies")
     parser.add_argument("--output", default=None,
                         help="Output directory (overrides config)")
+    parser.add_argument("-v", "--verbose", action="count", default=0,
+                        help="Increase verbosity (-v for INFO, -vv for DEBUG)")
     args = parser.parse_args()
+
+    if args.verbose >= 2:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    elif args.verbose >= 1:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
 
     cfg = FeatherConfig.from_yaml(args.config)
     if args.output:
@@ -50,8 +67,14 @@ def main():
     model_loader = DataLoader.from_catalog(cfg.model_catalogs["2d"])
     obs_loader = ObsLoader(cfg)
 
+    cmip6_loader = None
+    if cfg.cmip6.get("enabled", False):
+        cmip6_loader = CMIP6Loader(cfg)
+        print("CMIP6 comparison: ENABLED")
+
     diag = GlobalBiases(
         model_loader, obs_loader, cfg,
+        cmip6_loader=cmip6_loader,
         variables=args.variables,
         experiment=args.experiment,
         period=tuple(args.period),

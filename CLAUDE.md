@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 142 unit tests + 4 integration tests.
+Current test count: 161 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -192,7 +192,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `load_var()` returns `None` for missing data — diagnostics should handle gracefully
 - Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
-- Diagnostic integration not yet done — loader is ready but diagnostics don't call it yet
+- All 3 diagnostics (timeseries, seasonal_cycle, global_biases) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
 
 ### Test fixtures
 - `synth_healpix` in `conftest.py`: nside=8, 768 cells, 12 timesteps, temperature gradient pole→equator

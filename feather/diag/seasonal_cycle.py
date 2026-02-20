@@ -14,7 +14,7 @@ from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
 from feather.util.spatial import global_mean, latlon_global_mean
 from feather.util.temporal import monthly_climatology
 
@@ -60,9 +60,11 @@ class SeasonalCycleDiag(DiagnosticBase):
 
         for var in self.variables:
             var_info = get_var(var)
+            logger.info("Processing variable: %s (%s)", var, var_info.long_name)
             model_monthly: dict[str, Any] = {}
 
             for model in self.config.models:
+                logger.info("  Loading model data: %s", model)
                 key = DataLoader.make_key(
                     self.experiment, model, var_info.domain,
                 )
@@ -74,14 +76,27 @@ class SeasonalCycleDiag(DiagnosticBase):
                 model_monthly[model] = monthly
 
             # Observation
+            logger.info("  Loading observations for %s", var)
             obs_data = self.obs_loader.load_for_model_var(var, self.period)
             obs_ts = latlon_global_mean(obs_data)
             obs_monthly = monthly_climatology(obs_ts, self.period)
+
+            # CMIP6 multi-model mean seasonal cycle (optional)
+            cmip6_monthly = None
+            cmip6_info = {}
+            cmip6_ts, info = self._cmip6_global_mean_timeseries(
+                var, period=self.period,
+            )
+            if cmip6_ts is not None:
+                cmip6_monthly = monthly_climatology(cmip6_ts)
+                cmip6_info = info
 
             results[var] = {
                 "models": model_monthly,
                 "obs": obs_monthly,
                 "var_info": var_info,
+                "cmip6_monthly": cmip6_monthly,
+                "cmip6_info": cmip6_info,
             }
 
         return results
@@ -118,6 +133,14 @@ class SeasonalCycleDiag(DiagnosticBase):
                 marker="s", label="Obs", color=OBS_COLOR, linewidth=2,
             )
 
+            # CMIP6 MMM line (optional)
+            if vr.get("cmip6_monthly") is not None:
+                ax.plot(
+                    months, vr["cmip6_monthly"].values,
+                    marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+                    linewidth=1.5, linestyle="--",
+                )
+
             ax.set_xticks(months)
             ax.set_xticklabels(month_labels)
             ax.set_title(f"{var_info.long_name} \u2014 Seasonal Cycle")
@@ -137,6 +160,7 @@ class SeasonalCycleDiag(DiagnosticBase):
                 ),
                 plot_type="seasonal_cycle",
                 period=self.period,
+                cmip6_info=vr.get("cmip6_info") or None,
             )
             figures.append((fig, meta))
 
