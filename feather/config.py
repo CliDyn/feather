@@ -18,6 +18,7 @@ class FeatherConfig:
     dask: dict
     nereus: dict
     output_dir: str
+    llm: dict = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str) -> "FeatherConfig":
@@ -42,4 +43,5 @@ class FeatherConfig:
             dask=raw.get("dask", {}),
             nereus=raw.get("nereus", {}),
             output_dir=raw.get("output_dir", "./output"),
+            llm=raw.get("llm", {}),
         )

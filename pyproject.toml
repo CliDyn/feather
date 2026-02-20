@@ -24,6 +24,8 @@ dependencies = [
     "zarr",
     "cmocean",
     "nbformat",
+    "pydantic>=2.0",
+    "google-generativeai>=0.3",
 ]
 
 [project.optional-dependencies]

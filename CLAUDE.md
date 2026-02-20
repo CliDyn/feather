@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 161 unit tests + 4 integration tests.
+Current test count: 208 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -59,6 +59,10 @@ feather/                     # Package root
 │   ├── global_biases.py     # GlobalBiases: climatology bias maps
 │   ├── timeseries.py        # TimeseriesDiag: global-mean time series
 │   └── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
+├── llm/
+│   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
+│   ├── prompts.py           # System + user prompts for Gemini analysis
+│   └── analyzer.py          # FigureAnalyzer: discover, analyze, synthesize
 └── export/                  # Placeholder for future notebook export
 ```
 
@@ -71,6 +75,9 @@ feather/                     # Package root
 | `feather/diag/base.py` | Base class for all diagnostics — subclass this |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
 | `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
+| `feather/llm/analyzer.py` | FigureAnalyzer — Gemini-based figure analysis |
+| `feather/llm/schemas.py` | Pydantic models for structured LLM output |
+| `scripts/run_analysis.py` | CLI runner for LLM analysis |
 | `tests/conftest.py` | Synthetic HEALPix/obs/CMIP6 fixtures, mock loaders, minimal_config |
 | `PLAN.md` | Full implementation plan with phase status |
 
@@ -83,8 +90,9 @@ Key fields:
 - `models` — list of model names: `["ifs-fesom", "ifs-nemo", "icon"]`
 - `obs_root` — root path for observation data
 - `obs_datasets` — nested dict mapping dataset → variables → filenames
-- `cmip6` — CMIP6 comparison config (disabled by default)
+- `cmip6` — CMIP6 comparison config (enabled by default)
 - `output_dir` — where figures/analysis/site are written
+- `llm` — LLM provider config (per-purpose: `figure_analysis` uses Gemini)
 
 The `{obs_root}` placeholder in obs dataset paths is resolved at load time.
 
@@ -194,6 +202,15 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
 - All 3 diagnostics (timeseries, seasonal_cycle, global_biases) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
 
+### LLM analysis
+- `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
+- No dependency on xarray/dask/healpy — works entirely on already-generated figures
+- Config uses per-purpose providers: `llm.figure_analysis` (Gemini), future `llm.report_generation` (OpenAI, etc.)
+- API key from env var (`GEMINI_API_KEY` by default) or passed directly
+- `_parse_json_response()` handles markdown fencing and LaTeX escape sequences (`\Delta`, `\degree`)
+- `skip_existing` (default true) enables incremental re-runs
+- Run via: `python scripts/run_analysis.py --config configs/default.yaml -v`
+
 ### Test fixtures
 - `synth_healpix` in `conftest.py`: nside=8, 768 cells, 12 timesteps, temperature gradient pole→equator
 - `synth_obs` in `conftest.py`: 5° regular lat/lon grid, matching temperature field
@@ -203,7 +220,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 
 ## Dependencies
 
-Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, pyyaml, netcdf4, zarr, cmocean, nbformat
+Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, pyyaml, netcdf4, zarr, cmocean, nbformat, pydantic, google-generativeai
 
 Dev: pytest, pytest-cov
 

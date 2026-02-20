@@ -708,9 +708,34 @@ pytest tests/ -v -m "not integration"  → 161/161 passed (19 new + 142 existing
 
 ---
 
-## Phase 5: LLM Analysis Pipeline
+## Phase 5: LLM Analysis Pipeline — COMPLETED
 
 **Goal:** Automatically analyze each diagnostic figure using an LLM (Gemini), producing structured scientific interpretations that feed the dashboard.
+
+**Status:** All steps implemented and verified. 47 unit tests passing.
+
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| Config | `feather/config.py` — added `llm: dict` field | Done |
+| Config | `configs/default.yaml` — added `llm:` section | Done |
+| Schemas | `feather/llm/schemas.py` (FigureAnalysis, DiagnosticSynthesis) | Done |
+| Prompts | `feather/llm/prompts.py` (system + user prompts for analysis/synthesis) | Done |
+| Analyzer | `feather/llm/analyzer.py` (FigureAnalyzer: discover, analyze, synthesize) | Done |
+| CLI | `scripts/run_analysis.py` (argparse runner) | Done |
+| Package | `feather/llm/__init__.py`, updated `feather/__init__.py` | Done |
+| Deps | `pyproject.toml` — added pydantic, google-generativeai | Done |
+| Tests | `tests/test_llm.py` (47 tests, all mocked) | Done |
+
+### Key design decisions
+
+1. **Per-purpose LLM config** — `llm.figure_analysis` uses Gemini; future `llm.report_generation` can use OpenAI
+2. **`google.generativeai` with `genai.upload_file()`** for figure vision analysis
+3. **Prompts focus on model evaluation** (bias patterns, model-obs agreement) not climate projections
+4. **`_parse_json_response` handles LaTeX escapes** — Gemini uses `\Delta` etc. in scientific text
+5. **Incremental runs** via `skip_existing` — don't re-analyze already-analyzed figures
+6. **No data processing dependency** — works entirely on already-generated PNG+JSON figures
 
 ### Step 5.1 — Analysis schemas
 

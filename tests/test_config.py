@@ -50,7 +50,8 @@ def test_from_yaml_default_config():
     assert len(cfg.models) == 3
     assert "ifs-fesom" in cfg.models
     assert "ERA5" in cfg.obs_datasets
-    assert cfg.cmip6["enabled"] is False
+    assert cfg.cmip6["enabled"] is True
+    assert cfg.llm["figure_analysis"]["provider"] == "gemini"
 
 
 def test_obs_root_resolved():

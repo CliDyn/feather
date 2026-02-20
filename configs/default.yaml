@@ -97,3 +97,12 @@ nereus:
   influence_radius: 80000
 
 output_dir: "./output"
+
+llm:
+  figure_analysis:
+    provider: "gemini"
+    model: "gemini-2.5-flash"
+    api_key_env: "GEMINI_API_KEY"
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
