@@ -32,20 +32,133 @@ class SeasonalCycleDiag(DiagnosticBase):
     name = "seasonal_cycle"
     title = "Seasonal Cycle"
     domain = "sfc"
-    variables = ["avg_2t"]
-    group = "temperature"
+    variables = [
+        # Temperature & pressure
+        "avg_2t", "avg_msl",
+        # Wind
+        "avg_10u", "avg_10v",
+        # Cloud cover
+        "avg_tcc",
+        # Precipitation
+        "avg_tprate",
+        # Surface heat fluxes
+        "avg_ishf", "avg_slhtf",
+        # Surface downwelling radiation
+        "avg_sdswrf", "avg_sdlwrf",
+        # Surface net radiation (all-sky + clear-sky)
+        "avg_snswrf", "avg_snlwrf",
+        "avg_snswrfcs", "avg_snlwrfcs",
+        # TOA net radiation (all-sky + clear-sky)
+        "avg_tnswrf", "avg_tnlwrf",
+        "avg_tnswrfcs", "avg_tnlwrfcs",
+    ]
+    group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
-                 experiment="baseline_hist", period=("1990", "2014")):
+                 experiment="baseline_hist", period=("1990", "2014"),
+                 cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
         self.period = period
+        self.cmip6_individual = cmip6_individual
+
+    # ── Orchestration (per-variable incremental) ─────────────────────
+
+    def run(self, skip_existing: bool = True) -> list[tuple["Path", "Path"]]:
+        """Execute per-variable: compute → plot → save immediately.
+
+        Parameters
+        ----------
+        skip_existing : bool
+            When True, skip variables whose output figure already
+            exists on disk.
+        """
+        from pathlib import Path
+
+        logger.info("Running diagnostic: %s", self.name)
+        saved: list[tuple[Path, Path]] = []
+
+        for var in self.variables:
+            figure_id = f"{var}_seasonal_cycle"
+            if skip_existing and self._figure_exists(figure_id):
+                logger.info("Skipping %s — figure exists", var)
+                saved.append((
+                    self.output_dir / f"{figure_id}.png",
+                    self.output_dir / f"{figure_id}.json",
+                ))
+                continue
+
+            vr = self._compute_single(var)
+            figures = self._plot_single(var, vr)
+            for fig, meta in figures:
+                paths = self._save(fig, meta, meta["figure_id"])
+                saved.append(paths)
+
+        logger.info(
+            "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
+        )
+        return saved
 
     # ── Computation ────────────────────────────────────────────────────
+
+    def _compute_single(self, var: str) -> dict[str, Any]:
+        """Compute monthly climatological cycle for a single variable."""
+        var_info = get_var(var)
+        logger.info("Processing variable: %s (%s)", var, var_info.long_name)
+        model_monthly: dict[str, Any] = {}
+
+        for model in self.config.models:
+            logger.info("  Loading model data: %s", model)
+            key = DataLoader.make_key(
+                self.experiment, model, var_info.domain,
+            )
+            try:
+                model_data = self.model_loader.load_var(key, var)
+            except KeyError:
+                logger.warning(
+                    "  Variable %s not available for %s — skipping",
+                    var, model,
+                )
+                continue
+
+            ts = global_mean(model_data).compute()
+            monthly = monthly_climatology(ts, self.period)
+            model_monthly[model] = monthly
+
+        logger.info("  Loading observations for %s", var)
+        obs_data = self.obs_loader.load_for_model_var(var, self.period)
+        obs_ts = latlon_global_mean(obs_data)
+        obs_monthly = monthly_climatology(obs_ts, self.period)
+
+        cmip6_monthly = None
+        cmip6_info = {}
+        cmip6_individual_monthly: dict[str, Any] = {}
+        cmip6_ts, info = self._cmip6_global_mean_timeseries(
+            var, period=self.period,
+            return_individual=self.cmip6_individual,
+        )
+        if cmip6_ts is not None:
+            cmip6_monthly = monthly_climatology(cmip6_ts)
+            cmip6_info = info
+
+            if self.cmip6_individual and "individual_series" in info:
+                for mname, mts in info["individual_series"].items():
+                    cmip6_individual_monthly[mname] = (
+                        monthly_climatology(mts)
+                    )
+
+        return {
+            "models": model_monthly,
+            "obs": obs_monthly,
+            "var_info": var_info,
+            "cmip6_monthly": cmip6_monthly,
+            "cmip6_info": cmip6_info,
+            "cmip6_individual_monthly": cmip6_individual_monthly,
+        }
 
     def compute(self) -> dict[str, Any]:
         """Compute monthly climatological cycle of global means.
@@ -57,48 +170,8 @@ class SeasonalCycleDiag(DiagnosticBase):
             monthly climatologies for every model and for observations.
         """
         results: dict[str, Any] = {}
-
         for var in self.variables:
-            var_info = get_var(var)
-            logger.info("Processing variable: %s (%s)", var, var_info.long_name)
-            model_monthly: dict[str, Any] = {}
-
-            for model in self.config.models:
-                logger.info("  Loading model data: %s", model)
-                key = DataLoader.make_key(
-                    self.experiment, model, var_info.domain,
-                )
-                model_data = self.model_loader.load_var(key, var)
-
-                # HEALPix cells are equal area — simple mean is correct
-                ts = global_mean(model_data).compute()
-                monthly = monthly_climatology(ts, self.period)
-                model_monthly[model] = monthly
-
-            # Observation
-            logger.info("  Loading observations for %s", var)
-            obs_data = self.obs_loader.load_for_model_var(var, self.period)
-            obs_ts = latlon_global_mean(obs_data)
-            obs_monthly = monthly_climatology(obs_ts, self.period)
-
-            # CMIP6 multi-model mean seasonal cycle (optional)
-            cmip6_monthly = None
-            cmip6_info = {}
-            cmip6_ts, info = self._cmip6_global_mean_timeseries(
-                var, period=self.period,
-            )
-            if cmip6_ts is not None:
-                cmip6_monthly = monthly_climatology(cmip6_ts)
-                cmip6_info = info
-
-            results[var] = {
-                "models": model_monthly,
-                "obs": obs_monthly,
-                "var_info": var_info,
-                "cmip6_monthly": cmip6_monthly,
-                "cmip6_info": cmip6_info,
-            }
-
+            results[var] = self._compute_single(var)
         return results
 
     # ── Plotting ───────────────────────────────────────────────────────
@@ -111,57 +184,77 @@ class SeasonalCycleDiag(DiagnosticBase):
         list of (Figure, metadata-dict)
         """
         figures: list[tuple[plt.Figure, dict]] = []
+        for var, vr in results.items():
+            figures.extend(self._plot_single(var, vr))
+        return figures
+
+    def _plot_single(
+        self, var: str, vr: dict[str, Any],
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Plot 12-month seasonal cycle for a single variable."""
         month_labels = ["J", "F", "M", "A", "M", "J",
                         "J", "A", "S", "O", "N", "D"]
 
-        for var, vr in results.items():
-            var_info = vr["var_info"]
+        var_info = vr["var_info"]
 
-            fig, ax = plt.subplots(figsize=(8, 5))
-            months = np.arange(1, 13)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        months = np.arange(1, 13)
+        all_models = list(self.config.models)
 
-            for model, monthly in vr["models"].items():
-                color = MODEL_COLORS.get(model)
-                ax.plot(
-                    months, monthly.values,
-                    marker="o", label=model, color=color,
-                )
-
-            obs_monthly = vr["obs"]
+        # Layer 1: Individual CMIP6 model lines (background)
+        cmip6_indiv = vr.get("cmip6_individual_monthly", {})
+        for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
+            label = "CMIP6 members" if i == 0 else "_nolegend_"
             ax.plot(
-                months, obs_monthly.values,
-                marker="s", label="Obs", color=OBS_COLOR, linewidth=2,
+                months, monthly.values,
+                color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                label=label,
+            )
+        if cmip6_indiv:
+            all_models.extend(cmip6_indiv.keys())
+
+        # Layer 2: CMIP6 MMM line (middle)
+        if vr.get("cmip6_monthly") is not None:
+            ax.plot(
+                months, vr["cmip6_monthly"].values,
+                marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+                linewidth=1.5, linestyle="--",
             )
 
-            # CMIP6 MMM line (optional)
-            if vr.get("cmip6_monthly") is not None:
-                ax.plot(
-                    months, vr["cmip6_monthly"].values,
-                    marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
-                    linewidth=1.5, linestyle="--",
-                )
-
-            ax.set_xticks(months)
-            ax.set_xticklabels(month_labels)
-            ax.set_title(f"{var_info.long_name} \u2014 Seasonal Cycle")
-            ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-
-            meta = self._build_metadata(
-                title=f"{var_info.long_name} Seasonal Cycle",
-                figure_id=f"{var}_seasonal_cycle",
-                models=self.config.models,
-                variables=[var],
-                description=(
-                    f"Monthly climatological cycle (Jan-Dec) of global mean "
-                    f"{var_info.long_name} for all models vs observations."
-                ),
-                plot_type="seasonal_cycle",
-                period=self.period,
-                cmip6_info=vr.get("cmip6_info") or None,
+        # Layer 3: DestinE model lines (foreground)
+        for model, monthly in vr["models"].items():
+            color = MODEL_COLORS.get(model)
+            ax.plot(
+                months, monthly.values,
+                marker="o", label=model, color=color,
             )
-            figures.append((fig, meta))
 
-        return figures
+        # Layer 4: Observations (top)
+        obs_monthly = vr["obs"]
+        ax.plot(
+            months, obs_monthly.values,
+            marker="s", label="Obs", color=OBS_COLOR, linewidth=2,
+        )
+
+        ax.set_xticks(months)
+        ax.set_xticklabels(month_labels)
+        ax.set_title(f"{var_info.long_name} \u2014 Seasonal Cycle")
+        ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        meta = self._build_metadata(
+            title=f"{var_info.long_name} Seasonal Cycle",
+            figure_id=f"{var}_seasonal_cycle",
+            models=all_models,
+            variables=[var],
+            description=(
+                f"Monthly climatological cycle (Jan-Dec) of global mean "
+                f"{var_info.long_name} for all models vs observations."
+            ),
+            plot_type="seasonal_cycle",
+            period=self.period,
+            cmip6_info=vr.get("cmip6_info") or None,
+        )
+        return [(fig, meta)]

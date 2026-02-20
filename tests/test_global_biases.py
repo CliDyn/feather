@@ -2,6 +2,7 @@
 
 import json
 from collections import OrderedDict
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import matplotlib.pyplot as plt
@@ -220,6 +221,105 @@ class TestGlobalBiasesCompute:
             variables=["avg_2t"],
         )
         assert diag.variables == ["avg_2t"]
+
+
+# -- GlobalBiases skip_existing tests --------------------------------------
+
+
+class TestGlobalBiasesSkipExisting:
+    """Tests for skip_existing and per-variable incremental saving."""
+
+    def test_skip_when_all_figures_exist(self, mock_model_loader,
+                                          mock_obs_loader, minimal_config):
+        """run() skips variable when all 3 period figures exist."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+        # Pre-create all 3 period figures
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        for period in ["annual", "djf", "jja"]:
+            fid = f"avg_2t_{period}_bias_combined"
+            (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+            (diag.output_dir / f"{fid}.json").write_text("{}")
+
+        saved = diag.run(skip_existing=True)
+
+        assert len(saved) == 3
+        # Files should not have been overwritten
+        for png_path, _ in saved:
+            assert png_path.read_bytes() == b"fake"
+
+    def test_no_skip_when_disabled(self, mock_model_loader, mock_obs_loader,
+                                    minimal_config):
+        """run(skip_existing=False) recomputes even when figures exist."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        for period in ["annual", "djf", "jja"]:
+            fid = f"avg_2t_{period}_bias_combined"
+            (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+            (diag.output_dir / f"{fid}.json").write_text("{}")
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            saved = diag.run(skip_existing=False)
+
+        assert len(saved) == 3
+
+    def test_no_skip_when_partial_files(self, mock_model_loader,
+                                         mock_obs_loader, minimal_config):
+        """run() recomputes when only some period figures exist."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        # Only create annual, not DJF and JJA
+        fid = "avg_2t_annual_bias_combined"
+        (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+        (diag.output_dir / f"{fid}.json").write_text("{}")
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            saved = diag.run(skip_existing=True)
+
+        # Should have recomputed (3 new figures)
+        assert len(saved) == 3
+
+    def test_incremental_save_per_variable(self, mock_model_loader,
+                                            mock_obs_loader, minimal_config):
+        """run() saves figures after each variable (incremental)."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["avg_2t"],
+        )
+
+        def _make_saveable_fig():
+            """Create a mock figure whose savefig creates a real file."""
+            mock_fig = MagicMock(spec=plt.Figure)
+            mock_fig.savefig = lambda path, **kw: Path(path).write_bytes(b"png")
+            return mock_fig
+
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+        ) as mock_plot:
+            mock_plot.return_value = (_make_saveable_fig(), [None, None])
+            saved = diag.run(skip_existing=False)
+
+        # 3 period figures for 1 variable
+        assert len(saved) == 3
+        for png_path, json_path in saved:
+            assert png_path.exists()
+            assert json_path.exists()
 
 
 # -- GlobalBiases plot tests (mocked) --------------------------------------

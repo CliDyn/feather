@@ -220,14 +220,14 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_spatial.py               # 5 tests
 │   ├── test_temporal.py              # 7 tests
 │   ├── test_figure_metadata.py       # 18 tests
-│   ├── test_diag_base.py             # 18 tests
-│   ├── test_global_biases.py         # 23 tests (16 + 7 CMIP6)
-│   ├── test_timeseries.py            # 15 tests (9 + 6 CMIP6)
-│   ├── test_seasonal_cycle.py        # 14 tests (8 + 6 CMIP6)
+│   ├── test_diag_base.py             # 23 tests
+│   ├── test_global_biases.py         # 27 tests (16 + 7 CMIP6 + 4 skip_existing)
+│   ├── test_timeseries.py            # 18 tests (9 + 6 CMIP6 + 3 skip_existing)
+│   ├── test_seasonal_cycle.py        # 17 tests (8 + 6 CMIP6 + 3 skip_existing)
 │   ├── test_cmip6.py                # 47 unit + 2 integration tests
 │   ├── test_llm.py                  # 47 tests (mocked Gemini)
 │   ├── test_website.py             # 30 tests
-│   ├── test_pipeline.py            # 12 tests (pipeline runner)
+│   ├── test_pipeline.py            # 13 tests (pipeline runner)
 │   └── test_report.py              # 34 tests (report generation)
 └── feather/
     ├── __init__.py                   # v0.1.0, exports FeatherConfig, DataLoader, ObsLoader, CMIP6Loader, FigureAnalyzer, SiteGenerator, run_pipeline, ReportGenerator
@@ -1215,6 +1215,47 @@ pytest tests/ -v -m "not integration"  → 294/294 passed
 
 ---
 
+## Phase 7d: Incremental Per-Variable Saving + skip_existing — COMPLETED
+
+**Status:** All steps implemented and verified. 319 unit tests passing (+25 new).
+
+**Goal:** When diagnostics crash mid-run (e.g., on variable 4 of 18), all previously computed figures are lost because the pipeline accumulated everything in memory before saving. Additionally, there was no mechanism to skip recomputation of variables whose figures already exist on disk — even though the CLI had a `--no-skip-existing` flag that only applied to the LLM analyzer and report steps. This phase fixes both issues.
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| DiagnosticBase | `feather/diag/base.py` | Added `_figure_exists(figure_id)` helper; `run()` accepts `skip_existing: bool = True` |
+| GlobalBiases | `feather/diag/global_biases.py` | Extracted `_compute_variable()` and `_plot_variable()`; overrode `run()` with per-variable loop: check existence → compute → plot → save immediately per variable |
+| TimeseriesDiag | `feather/diag/timeseries.py` | Extracted `_compute_single()` and `_plot_single()`; overrode `run()` with per-variable skip + incremental save |
+| SeasonalCycleDiag | `feather/diag/seasonal_cycle.py` | Same pattern as timeseries |
+| Pipeline runner | `feather/run.py` | `_run_diagnostics()` accepts and passes `skip_existing` to `diag.run()` |
+| Tests | `tests/test_diag_base.py` | +5 tests (`_figure_exists` with both/missing/no-dir, `run(skip_existing=...)`) |
+| Tests | `tests/test_timeseries.py` | +3 tests (skip/no-skip/partial) |
+| Tests | `tests/test_seasonal_cycle.py` | +3 tests (skip/no-skip/partial) |
+| Tests | `tests/test_global_biases.py` | +4 tests (skip-all/no-skip/partial/incremental-save) |
+| Tests | `tests/test_pipeline.py` | +1 test (skip_existing forwarded to diagnostics) |
+
+### Key design decisions
+
+1. **Per-variable incremental saving.** Each diagnostic's `run()` now iterates over variables one at a time: compute → plot → save immediately. If a later variable crashes, previously saved figures are preserved on disk. Memory is freed after each variable, reducing peak usage for multi-variable diagnostics like GlobalBiases (18 variables × 3 periods).
+
+2. **`_figure_exists()` checks both PNG and JSON.** A figure is only considered "existing" when both the `.png` and `.json` sidecar are present. This prevents skipping corrupt or partial outputs.
+
+3. **GlobalBiases requires all 3 period figures** (annual, DJF, JJA) to skip a variable. If any single period figure is missing, the entire variable is recomputed. This is conservative but safe — partial outputs from a previous crash are always regenerated.
+
+4. **`compute()` and `plot()` remain backward-compatible.** They are now thin wrappers around the new `_compute_variable()` / `_compute_single()` and `_plot_variable()` / `_plot_single()` methods. Existing tests that call `compute()` and `plot()` directly continue to work unchanged.
+
+5. **`skip_existing` flows from CLI through the full pipeline.** `--no-skip-existing` on the CLI sets `skip_existing=False`, which is now forwarded from `run_pipeline()` → `_run_diagnostics()` → `diag.run(skip_existing=...)`, in addition to the existing forwarding to the analyzer and report steps.
+
+### Verification results
+
+```
+pytest tests/ -v -m "not integration"  → 319/319 passed (25 new + 294 existing)
+```
+
+---
+
 ## Phase 8: Atmosphere Diagnostics
 
 - `radiation_budget` — TOA & surface radiation vs CERES (+optional CMIP6 MMM)
@@ -1298,7 +1339,7 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d
 
 Next:
 1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)

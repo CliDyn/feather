@@ -133,6 +133,64 @@ class TestTimeseriesPlot:
         assert json_path.suffix == ".json"
 
 
+class TestTimeseriesSkipExisting:
+    """Tests for skip_existing behavior in timeseries diagnostic."""
+
+    def test_skip_when_figure_exists(self, mock_model_loader, mock_obs_loader,
+                                      minimal_config, tmp_path):
+        """run() skips computation when figure already exists on disk."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+        )
+        # Pre-create the output files
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "avg_2t_timeseries.png").write_bytes(b"fake")
+        (diag.output_dir / "avg_2t_timeseries.json").write_text("{}")
+
+        saved = diag.run(skip_existing=True)
+
+        assert len(saved) == 1
+        png_path, json_path = saved[0]
+        assert png_path == diag.output_dir / "avg_2t_timeseries.png"
+        # File should not have been overwritten (still "fake")
+        assert png_path.read_bytes() == b"fake"
+
+    def test_no_skip_when_disabled(self, mock_model_loader, mock_obs_loader,
+                                    minimal_config, tmp_path):
+        """run(skip_existing=False) recomputes even when figure exists."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "avg_2t_timeseries.png").write_bytes(b"fake")
+        (diag.output_dir / "avg_2t_timeseries.json").write_text("{}")
+
+        saved = diag.run(skip_existing=False)
+
+        assert len(saved) == 1
+        png_path, _ = saved[0]
+        # File should have been overwritten (no longer "fake")
+        assert png_path.read_bytes() != b"fake"
+
+    def test_skip_partial_files_not_skipped(self, mock_model_loader,
+                                             mock_obs_loader, minimal_config,
+                                             tmp_path):
+        """run() does NOT skip when only PNG exists (JSON missing)."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "avg_2t_timeseries.png").write_bytes(b"fake")
+        # JSON is missing
+
+        saved = diag.run(skip_existing=True)
+
+        assert len(saved) == 1
+        png_path, _ = saved[0]
+        # Should have been regenerated
+        assert png_path.read_bytes() != b"fake"
+
+
 class TestTimeseriesCMIP6:
     """Tests for CMIP6 integration in timeseries diagnostic."""
 

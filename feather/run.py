@@ -84,6 +84,7 @@ def run_pipeline(
             experiment=experiment,
             period=period,
             cmip6_individual=cmip6_individual,
+            skip_existing=skip_existing,
         )
 
     # ── Step 2: LLM analysis ────────────────────────────────────────
@@ -126,6 +127,7 @@ def _run_diagnostics(
     experiment: str = "baseline_hist",
     period: tuple[str, str] = ("1990", "2014"),
     cmip6_individual: bool = False,
+    skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
     from feather.data.loader import DataLoader
@@ -199,7 +201,7 @@ def _run_diagnostics(
             **kwargs,
         )
         try:
-            saved = diag.run()
+            saved = diag.run(skip_existing=skip_existing)
             total_figures += len(saved)
         except Exception:
             logger.exception("Diagnostic %s failed", name)

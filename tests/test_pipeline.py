@@ -167,6 +167,16 @@ class TestRunPipeline:
                 skip_existing=False, diagnostics=None,
             )
 
+    def test_skip_existing_passed_to_diagnostics(self, pipeline_config):
+        """skip_existing flag is forwarded to _run_diagnostics."""
+        with patch("feather.run._run_diagnostics", return_value=0) as mock_diag:
+            run_pipeline(
+                pipeline_config, steps=["diagnostics"],
+                skip_existing=False,
+            )
+            call_kwargs = mock_diag.call_args
+            assert call_kwargs.kwargs["skip_existing"] is False
+
     def test_compile_pdf_passed(self, pipeline_config):
         """compile_pdf flag is forwarded to report step."""
         with patch("feather.export.report.ReportGenerator") as mock_cls:

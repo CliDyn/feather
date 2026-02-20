@@ -116,8 +116,15 @@ class DiagnosticBase(ABC):
 
     # ── Orchestration ─────────────────────────────────────────────────
 
-    def run(self) -> list[tuple[Path, Path]]:
+    def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Execute the full diagnostic: compute → plot → save.
+
+        Parameters
+        ----------
+        skip_existing : bool
+            When True, subclass overrides may skip variables whose
+            output figures already exist on disk.  The default base
+            implementation does not skip (subclasses opt in).
 
         Returns
         -------
@@ -190,10 +197,16 @@ class DiagnosticBase(ABC):
             fig, metadata, self.output_dir, filename,
         )
 
+    def _figure_exists(self, figure_id: str) -> bool:
+        """Check if both PNG and JSON sidecar exist for *figure_id*."""
+        d = self.output_dir
+        return (d / f"{figure_id}.png").exists() and (d / f"{figure_id}.json").exists()
+
     def _cmip6_global_mean_timeseries(
         self,
         var: str,
         period: tuple[str, str] | None = None,
+        return_individual: bool = False,
     ) -> tuple[Any, dict[str, Any]]:
         """Compute CMIP6 ensemble-mean global-mean monthly time series.
 
@@ -207,12 +220,16 @@ class DiagnosticBase(ABC):
             Feather variable name (e.g. ``"avg_2t"``).
         period : tuple of str, optional
             (start, end) for time slicing.
+        return_individual : bool, optional
+            When True, ``info["individual_series"]`` contains a dict
+            mapping model name → aligned individual time series.
 
         Returns
         -------
         (mmm_ts, info) : tuple
             mmm_ts: DataArray with ``time`` dim, or None.
-            info: dict with ``n_members``, ``models_used``.
+            info: dict with ``n_members``, ``models_used``, and
+            optionally ``individual_series``.
         """
         import numpy as np
         import xarray as xr
@@ -262,6 +279,8 @@ class DiagnosticBase(ABC):
         aligned = xr.align(*member_series, join="inner")
         mmm_ts = sum(aligned) / len(aligned)
         info = {"n_members": len(models_used), "models_used": models_used}
+        if return_individual:
+            info["individual_series"] = dict(zip(models_used, aligned))
         logger.info("    CMIP6 MMM time series: %d models, %d timesteps",
                      len(models_used), len(mmm_ts.time))
         return mmm_ts, info

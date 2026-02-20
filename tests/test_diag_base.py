@@ -181,6 +181,42 @@ class TestDiagnosticBase:
 
         assert meta["variables_used"] == ["avg_tprate"]
 
+    def test_figure_exists_both_files(self, minimal_config, tmp_path):
+        """_figure_exists() returns True when both PNG and JSON exist."""
+        diag = _MockDiagnostic(None, None, minimal_config)
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "mock_test_fig.png").write_bytes(b"fake")
+        (diag.output_dir / "mock_test_fig.json").write_text("{}")
+
+        assert diag._figure_exists("mock_test_fig") is True
+
+    def test_figure_exists_missing_png(self, minimal_config, tmp_path):
+        """_figure_exists() returns False when PNG is missing."""
+        diag = _MockDiagnostic(None, None, minimal_config)
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "mock_test_fig.json").write_text("{}")
+
+        assert diag._figure_exists("mock_test_fig") is False
+
+    def test_figure_exists_missing_json(self, minimal_config, tmp_path):
+        """_figure_exists() returns False when JSON is missing."""
+        diag = _MockDiagnostic(None, None, minimal_config)
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+        (diag.output_dir / "mock_test_fig.png").write_bytes(b"fake")
+
+        assert diag._figure_exists("mock_test_fig") is False
+
+    def test_figure_exists_no_dir(self, minimal_config, tmp_path):
+        """_figure_exists() returns False when output dir doesn't exist."""
+        diag = _MockDiagnostic(None, None, minimal_config)
+        assert diag._figure_exists("mock_test_fig") is False
+
+    def test_run_accepts_skip_existing(self, minimal_config, tmp_path):
+        """run() accepts skip_existing kwarg without error."""
+        diag = _MockDiagnostic(None, None, minimal_config)
+        saved = diag.run(skip_existing=False)
+        assert len(saved) == 1
+
 
 # ── Registry tests ───────────────────────────────────────────────────
 
