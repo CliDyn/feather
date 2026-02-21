@@ -1378,7 +1378,7 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d, 7e, 8a
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d, 7e, 8a, 8a.1
 
 Next:
 1. **Phase 8b** — Additional atmosphere diagnostics (precipitation, lat_profiles)
@@ -1510,6 +1510,35 @@ feather --steps diagnostics --diagnostics radiation_budget -v
 # With individual CMIP6 models on Gregory plot
 feather --steps diagnostics --diagnostics radiation_budget --cmip6-individual -v
 ```
+
+---
+
+## Phase 8a.1: Timeseries 2-Layer Plotting Style — COMPLETED
+
+**Status:** Implemented and verified. All 27 timeseries tests pass unchanged.
+
+### What changed
+
+Applied the radiation budget imbalance time series style (monthly background + annual foreground) to the general timeseries diagnostic (`feather/diag/timeseries.py`).
+
+**Before:** Single-layer lines (monthly data only).
+**After:** 2-layer approach — thin semi-transparent monthly lines as background + thick opaque annual means as foreground.
+
+| Layer | Element | Alpha | Linewidth | Linestyle |
+|-------|---------|-------|-----------|-----------|
+| 0 | CMIP6 individual monthly | 0.2 | 0.5 | solid |
+| 1 | CMIP6 MMM monthly | 0.3 | 0.7 | dashed |
+| 2 | DestinE models monthly | 0.3 | 0.7 | solid |
+| 3 | Obs monthly | 0.3 | 0.7 | solid |
+| 4 | CMIP6 individual annual | 0.35 | 0.8 | solid |
+| 5 | CMIP6 MMM annual | 1.0 | 2.0 | dashed |
+| 6 | DestinE models annual | 1.0 | 2.0 | solid |
+| 7 | Obs annual | 1.0 | 2.5 | solid |
+
+Legend labels are on annual lines only (thick lines appear in legend).
+
+**Files changed:**
+- `feather/diag/timeseries.py` — added `annual_mean` import, rewrote `_plot_single()` with 2-layer plotting
 
 ---
 

@@ -17,6 +17,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
 from feather.util.spatial import global_mean, latlon_global_mean
+from feather.util.temporal import annual_mean
 
 logger = logging.getLogger(__name__)
 
@@ -191,48 +192,81 @@ class TimeseriesDiag(DiagnosticBase):
     def _plot_single(
         self, var: str, vr: dict[str, Any],
     ) -> list[tuple[plt.Figure, dict]]:
-        """Plot global-mean time series for a single variable."""
+        """Plot global-mean time series for a single variable.
+
+        Monthly data is plotted as semi-transparent background lines;
+        annual means as thicker foreground lines.
+        """
         var_info = vr["var_info"]
         all_models = list(self.config.models)
 
         fig, ax = plt.subplots(figsize=(12, 5))
 
-        # Layer 1: Individual CMIP6 model lines (background)
         cmip6_indiv = vr.get("cmip6_individual_ts", {})
-        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
-            time_vals = _to_plot_time(ts.time.values)
-            ax.plot(
-                time_vals, ts.values,
-                color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                label=label,
-            )
         if cmip6_indiv:
             all_models.extend(cmip6_indiv.keys())
 
-        # Layer 2: CMIP6 MMM line (middle)
+        # --- Monthly pass (background, washed-out) ---
+
+        # CMIP6 individual monthly
+        for _mname, ts in cmip6_indiv.items():
+            time_vals = _to_plot_time(ts.time.values)
+            ax.plot(time_vals, ts.values,
+                    color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
+
+        # CMIP6 MMM monthly
         if vr.get("cmip6_ts") is not None:
             cmip6_ts = vr["cmip6_ts"]
-            cmip6_time = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(
-                cmip6_time, cmip6_ts.values,
-                label="CMIP6 MMM", color=CMIP6_COLOR,
-                linewidth=1.5, linestyle="--",
-            )
+            time_vals = _to_plot_time(cmip6_ts.time.values)
+            ax.plot(time_vals, cmip6_ts.values,
+                    color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+                    linestyle="--")
 
-        # Layer 3: DestinE model lines (foreground)
+        # DestinE model monthly
         for model, ts in vr["models"].items():
             color = MODEL_COLORS.get(model)
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values, label=model, color=color)
+            ax.plot(time_vals, ts.values,
+                    color=color, alpha=0.3, linewidth=0.7)
 
-        # Layer 4: Observations (top)
+        # Obs monthly
         obs_ts = vr["obs"]
         obs_time = _to_plot_time(obs_ts.time.values)
-        ax.plot(
-            obs_time, obs_ts.values,
-            label="Obs", color=OBS_COLOR, linewidth=2,
-        )
+        ax.plot(obs_time, obs_ts.values,
+                color=OBS_COLOR, alpha=0.3, linewidth=0.7)
+
+        # --- Annual pass (foreground, thick with labels) ---
+
+        # CMIP6 individual annual
+        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
+            label = "CMIP6 members" if i == 0 else "_nolegend_"
+            ts_annual = annual_mean(ts)
+            time_vals = _to_plot_time(ts_annual.time.values)
+            ax.plot(time_vals, ts_annual.values,
+                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                    label=label)
+
+        # CMIP6 MMM annual
+        if vr.get("cmip6_ts") is not None:
+            cmip6_annual = annual_mean(vr["cmip6_ts"])
+            time_vals = _to_plot_time(cmip6_annual.time.values)
+            ax.plot(time_vals, cmip6_annual.values,
+                    label="CMIP6 MMM", color=CMIP6_COLOR,
+                    linewidth=2.0, linestyle="--")
+
+        # DestinE model annual
+        for model, ts in vr["models"].items():
+            color = MODEL_COLORS.get(model)
+            ts_annual = annual_mean(ts)
+            time_vals = _to_plot_time(ts_annual.time.values)
+            ax.plot(time_vals, ts_annual.values,
+                    label=model, color=color, linewidth=2.0)
+
+        # Obs annual
+        obs_annual = annual_mean(obs_ts)
+        obs_annual_time = _to_plot_time(obs_annual.time.values)
+        ax.plot(obs_annual_time, obs_annual.values,
+                label="Obs", color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title(f"{var_info.long_name} \u2014 Global Mean")
         ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
