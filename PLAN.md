@@ -1510,3 +1510,17 @@ feather --steps diagnostics --diagnostics radiation_budget -v
 # With individual CMIP6 models on Gregory plot
 feather --steps diagnostics --diagnostics radiation_budget --cmip6-individual -v
 ```
+
+---
+
+## Bugfix: Website Stats Display & Model Name Capitalization
+
+**Two issues fixed in the website diagnostic template:**
+
+1. **Summary statistics rendered as raw Python dicts.** The `diagnostic.html` template iterated `summary_statistics` assuming flat `{key: value}` pairs, but GlobalBiases passes nested `{model_name: {stat: value}}` dicts. The template now checks `{% if stat_val is mapping %}` and renders nested dicts as `Model: Global Mean Bias: -2.22 · Rmse: 96.63` per row.
+
+2. **Model names title-cased incorrectly.** The Jinja2 `| title` filter converted `ifs-fesom` → `Ifs-Fesom` and `CMIP6 MMM` → `Cmip6 Mmm`. Added `_model_display_name()` filter in `generator.py` that uppercases DestinE model names (IFS-FESOM, IFS-NEMO, ICON) and preserves all other names (CMIP6 MMM, ACCESS-CM2/r1i1p1f1) as-is. Applied to both the Models metadata row and the stats table keys.
+
+**Files changed:**
+- `feather/website/generator.py` — added `_model_display_name()` filter + registered in Jinja2 env
+- `feather/website/templates/diagnostic.html` — nested dict handling for stats + `model_display_name` filter on model lists

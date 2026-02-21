@@ -82,7 +82,7 @@
                 {% if fig.metadata.models %}
                 <tr>
                     <th>Models</th>
-                    <td>{{ fig.metadata.models|join(", ") }}</td>
+                    <td>{{ fig.metadata.models|map('model_display_name')|join(", ") }}</td>
                 </tr>
                 {% endif %}
                 {% if fig.metadata.obs_dataset %}
@@ -111,10 +111,23 @@
                 {% endif %}
                 {% if fig.metadata.summary_statistics %}
                 {% for stat_key, stat_val in fig.metadata.summary_statistics.items() %}
+                {% if stat_val is mapping %}
+                {# Per-model stats (nested dict) #}
+                <tr>
+                    <th>{{ stat_key | model_display_name }}</th>
+                    <td>
+                    {% for k, v in stat_val.items() %}
+                        {{ k | replace("_", " ") | title }}: {{ "%.2f"|format(v) if v is number else v }}{% if not loop.last %} · {% endif %}
+                    {% endfor %}
+                    </td>
+                </tr>
+                {% else %}
+                {# Flat stats (simple key-value) #}
                 <tr>
                     <th>{{ stat_key | replace("_", " ") | title }}</th>
                     <td>{{ "%.3f"|format(stat_val) if stat_val is number else stat_val }}</td>
                 </tr>
+                {% endif %}
                 {% endfor %}
                 {% endif %}
             </table>

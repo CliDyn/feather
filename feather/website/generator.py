@@ -23,6 +23,21 @@ def _humanize(name: str) -> str:
     return name.replace("_", " ").title()
 
 
+# Model names that should be displayed in uppercase
+_UPPERCASE_MODELS = {"ifs-fesom", "ifs-nemo", "icon"}
+
+
+def _model_display_name(name: str) -> str:
+    """Return display-friendly model name, preserving proper case.
+
+    DestinE model names (ifs-fesom, ifs-nemo, icon) are uppercased;
+    everything else (CMIP6 MMM, ACCESS-CM2/r1i1p1f1, ...) is kept as-is.
+    """
+    if name.lower() in _UPPERCASE_MODELS:
+        return name.upper()
+    return name
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     """Load a JSON file, returning empty dict on failure."""
     try:
@@ -53,6 +68,7 @@ class SiteGenerator:
             loader=FileSystemLoader(str(template_dir)),
             autoescape=True,
         )
+        self.env.filters["model_display_name"] = _model_display_name
 
     # ── Registry lookup ───────────────────────────────────────────────
 
