@@ -134,23 +134,82 @@ class ReportGenerator:
         if skip_existing and cache_path.exists():
             logger.info("Stage 1: loading cached structure.json")
             with open(cache_path) as f:
-                return json.load(f)
+                result = json.load(f)
+        else:
+            logger.info("Stage 1: calling OpenAI for editorial curation...")
+            user_prompt = build_curation_prompt(
+                syntheses, figure_metadata, figure_analyses,
+                n_highlights=self.n_highlights,
+            )
+            data = self.client.chat_json(
+                system=build_curation_system(), user=user_prompt,
+            )
 
-        logger.info("Stage 1: calling OpenAI for editorial curation...")
-        user_prompt = build_curation_prompt(
-            syntheses, figure_metadata, figure_analyses,
-            n_highlights=self.n_highlights,
-        )
-        data = self.client.chat_json(
-            system=build_curation_system(), user=user_prompt,
-        )
+            # Validate with Pydantic
+            structure = ReportStructure(**data)
+            result = structure.model_dump()
 
-        # Validate with Pydantic
-        structure = ReportStructure(**data)
-        result = structure.model_dump()
+        # Fix diagnostic names — the LLM sometimes returns figure titles
+        # instead of directory names (e.g. "2 m temperature annual mean
+        # bias (ERA5)" instead of "global_biases").
+        fixed = self._fix_diagnostic_names(result, figure_metadata)
 
         self._save_json(cache_path, result)
+        if fixed:
+            logger.info("Fixed %d diagnostic name(s) in curation output", fixed)
+
         return result
+
+    @staticmethod
+    def _fix_diagnostic_names(
+        result: dict, figure_metadata: dict[str, list[dict]],
+    ) -> int:
+        """Resolve ``diagnostic`` fields to actual directory names.
+
+        The LLM sometimes returns human-readable titles (e.g. "2 m
+        temperature annual mean bias (ERA5)") instead of the directory
+        key (e.g. "global_biases").  Build a figure_id → directory lookup
+        from *figure_metadata* and correct any mismatches in-place.
+
+        Also fixes the ``diagnostics`` list in each section by deriving
+        it from the corrected ``selected_figures``.
+
+        Returns the number of corrections made.
+        """
+        # Build figure_id -> diagnostic directory lookup
+        fig_id_to_diag: dict[str, str] = {}
+        for diag_name, metas in figure_metadata.items():
+            for meta in metas:
+                fid = meta.get("figure_id", "")
+                if fid:
+                    fig_id_to_diag[fid] = diag_name
+
+        # Fix selected_figures
+        n_fixed = 0
+        for fig in result.get("selected_figures", []):
+            fig_id = fig.get("figure_id", "")
+            correct = fig_id_to_diag.get(fig_id)
+            if correct and fig.get("diagnostic") != correct:
+                logger.debug(
+                    "Corrected diagnostic for %s: '%s' -> '%s'",
+                    fig_id, fig["diagnostic"], correct,
+                )
+                fig["diagnostic"] = correct
+                n_fixed += 1
+
+        # Rebuild sections[].diagnostics from the corrected figures
+        fig_diag_map = {
+            f["figure_id"]: f["diagnostic"]
+            for f in result.get("selected_figures", [])
+        }
+        for sec in result.get("sections", []):
+            sec["diagnostics"] = list(dict.fromkeys(
+                fig_diag_map[fid]
+                for fid in sec.get("figure_ids", [])
+                if fid in fig_diag_map
+            ))
+
+        return n_fixed
 
     # ── Stage 2: Section Writing ─────────────────────────────────────
 

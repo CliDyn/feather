@@ -109,9 +109,10 @@ saved_files = diag.run()  # returns [(png_path, json_path), ...]
 
 | Diagnostic | Class | What it produces |
 |---|---|---|
-| `global_biases` | `GlobalBiases` | 3-panel bias maps (Model \| Obs \| Bias) per model, annual + DJF/JJA |
+| `global_biases` | `GlobalBiases` | Combined multi-panel bias maps (Obs + all model biases), annual + DJF/JJA |
 | `timeseries` | `TimeseriesDiag` | Global-mean time series, all models + obs overlaid |
 | `seasonal_cycle` | `SeasonalCycleDiag` | 12-month climatological cycle, all models + obs overlaid |
+| `radiation_budget` | `RadiationBudget` | TOA/surface radiation budget bars, Gregory plot, imbalance time series, bias maps vs CERES EBAF |
 
 All diagnostics accept these constructor arguments:
 
@@ -161,7 +162,7 @@ feather/
     loader.py            # DataLoader (intake catalogs + file paths)
     obs.py               # ObsLoader (observations)
     cmip6.py             # CMIP6Loader (multi-model mean from zarr)
-    variables.py         # VARIABLE_REGISTRY (27 variables)
+    variables.py         # VARIABLE_REGISTRY (33 variables)
   util/
     spatial.py           # Zonal/global means, NN regridding
     temporal.py          # Climatology, seasonal/monthly grouping
@@ -177,6 +178,7 @@ feather/
     global_biases.py     # Bias map diagnostic
     timeseries.py        # Time series diagnostic
     seasonal_cycle.py    # Seasonal cycle diagnostic
+    radiation_budget.py  # Radiation budget diagnostic (CERES EBAF)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis
@@ -209,7 +211,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-284 unit tests + 4 integration tests.
+381 unit tests + 4 integration tests.
 
 ## Configuration
 

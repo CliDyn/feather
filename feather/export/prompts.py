@@ -44,12 +44,12 @@ Respond ONLY with a valid JSON object (no markdown fencing) matching this schema
       "title": "Section Title",
       "narrative_hook": "1-2 sentence description of this section's story",
       "figure_ids": ["figure_stem_1", "figure_stem_2"],
-      "diagnostics": ["diagnostic_name_1", "diagnostic_name_2"]
+      "diagnostics": ["diagnostic_directory_key_1", "diagnostic_directory_key_2"]
     }
   ],
   "selected_figures": [
     {
-      "diagnostic": "diagnostic_name",
+      "diagnostic": "diagnostic_directory_name (use the EXACT key from the section headers below, e.g. 'global_biases', 'radiation_budget', NOT the figure title)",
       "figure_id": "figure_stem",
       "caption": "Descriptive caption for this figure",
       "label": "fig:short_label"

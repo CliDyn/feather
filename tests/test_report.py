@@ -488,6 +488,137 @@ class TestReportGenerator:
         assert "\\begin{document}" in content
         assert "Test Report" in content
 
+    def test_fix_diagnostic_names(self, tmp_path):
+        """Test that wrong diagnostic names from LLM are corrected."""
+        cfg = _report_config(tmp_path)
+        pub_dir = tmp_path / "output" / "publication"
+        pub_dir.mkdir(parents=True)
+
+        # Structure with WRONG diagnostic names (as the LLM might return)
+        structure = {
+            "title": "Report",
+            "abstract": "Abstract.",
+            "introduction": "Intro.",
+            "sections": [
+                {
+                    "section_id": "01_temp",
+                    "title": "Temperature",
+                    "narrative_hook": "Hook.",
+                    "figure_ids": ["avg_2t_annual_bias_combined"],
+                    "diagnostics": ["2 m temperature annual mean bias (ERA5)"],
+                },
+                {
+                    "section_id": "02_rad",
+                    "title": "Radiation",
+                    "narrative_hook": "Hook.",
+                    "figure_ids": ["radiation_budget_bars"],
+                    "diagnostics": ["Global mean radiation budget (CERES)"],
+                },
+            ],
+            "selected_figures": [
+                {
+                    "diagnostic": "2 m temperature annual mean bias (ERA5)",
+                    "figure_id": "avg_2t_annual_bias_combined",
+                    "caption": "T2M bias.",
+                    "label": "fig:t2m",
+                },
+                {
+                    "diagnostic": "Global mean radiation budget (CERES)",
+                    "figure_id": "radiation_budget_bars",
+                    "caption": "Budget bars.",
+                    "label": "fig:budget",
+                },
+                {
+                    "diagnostic": "global_biases",
+                    "figure_id": "avg_msl_annual_bias_combined",
+                    "caption": "MSLP bias.",
+                    "label": "fig:mslp",
+                },
+                {
+                    "diagnostic": "timeseries",
+                    "figure_id": "avg_2t_timeseries",
+                    "caption": "T2M timeseries.",
+                    "label": "fig:ts",
+                },
+            ],
+            "conclusion": "Conclusion.",
+        }
+
+        # Figure metadata keyed by actual directory names
+        figure_metadata = {
+            "global_biases": [
+                {"figure_id": "avg_2t_annual_bias_combined"},
+                {"figure_id": "avg_msl_annual_bias_combined"},
+            ],
+            "radiation_budget": [
+                {"figure_id": "radiation_budget_bars"},
+            ],
+            "timeseries": [
+                {"figure_id": "avg_2t_timeseries"},
+            ],
+        }
+
+        n_fixed = ReportGenerator._fix_diagnostic_names(structure, figure_metadata)
+
+        # Two figures had wrong diagnostic names
+        assert n_fixed == 2
+
+        # Check all diagnostics are now correct directory names
+        for fig in structure["selected_figures"]:
+            assert fig["diagnostic"] in ("global_biases", "radiation_budget", "timeseries"), (
+                f"diagnostic '{fig['diagnostic']}' not fixed"
+            )
+
+        # Check sections[].diagnostics are also fixed
+        assert structure["sections"][0]["diagnostics"] == ["global_biases"]
+        assert structure["sections"][1]["diagnostics"] == ["radiation_budget"]
+
+    def test_fix_diagnostic_names_noop(self, tmp_path):
+        """Test that already-correct names are not changed."""
+        structure = _sample_structure()
+        figure_metadata = {
+            "global_biases": [
+                {"figure_id": "fig_t2m_bias"},
+                {"figure_id": "fig_precip_bias"},
+            ],
+            "timeseries": [
+                {"figure_id": "fig_ts_1"},
+                {"figure_id": "fig_ts_2"},
+            ],
+        }
+
+        n_fixed = ReportGenerator._fix_diagnostic_names(structure, figure_metadata)
+        assert n_fixed == 0
+
+    def test_stage1_caching_fixes_diagnostics(self, tmp_path):
+        """Test that cached structure.json also gets diagnostic names fixed."""
+        cfg = _report_config(tmp_path)
+        pub_dir = tmp_path / "output" / "publication"
+        pub_dir.mkdir(parents=True)
+
+        # Write cached structure with WRONG diagnostic name
+        structure = _sample_structure()
+        structure["selected_figures"][0]["diagnostic"] = "Wrong Title Name"
+        (pub_dir / "structure.json").write_text(json.dumps(structure))
+
+        figure_metadata = {
+            "global_biases": [
+                {"figure_id": "fig_t2m_bias"},
+                {"figure_id": "fig_precip_bias"},
+            ],
+            "timeseries": [
+                {"figure_id": "fig_ts_1"},
+                {"figure_id": "fig_ts_2"},
+            ],
+        }
+
+        with patch("feather.export.report.OpenAIClient"):
+            gen = ReportGenerator(cfg, api_key="fake-key")
+        result = gen._stage1_curation({}, figure_metadata, {}, skip_existing=True)
+
+        # The wrong name should be fixed
+        assert result["selected_figures"][0]["diagnostic"] == "global_biases"
+
     def test_stage1_no_cache(self, tmp_path):
         """Test that stage1 calls OpenAI when no cache exists."""
         cfg = _report_config(tmp_path)
