@@ -16,13 +16,23 @@ are IFS-FESOM, IFS-NEMO, and ICON, all running on HEALPix grids as part of \
 the Destination Earth (DestinE) initiative.
 
 Figures compare model output against observational datasets (ERA5, CERES, \
-EN4, etc.) using three types of diagnostics:
+EN4, etc.) using these diagnostic figure types:
 
-1. **Bias maps** — spatial maps of model minus observation climatology. \
-Each panel shows one model's bias.
+1. **Bias maps** — spatial maps of model minus observation climatology \
+(from global_biases and radiation_budget diagnostics). Each panel shows \
+one model's bias.
 2. **Time series** — global-mean time series for each model vs observations.
 3. **Seasonal cycles** — monthly climatological cycles (Jan-Dec) for each \
 model vs observations.
+4. **Radiation budget bars** — grouped bar charts comparing global-mean \
+TOA and surface radiation components (SW, LW, Net, CRE, atmospheric \
+absorption) across models vs CERES EBAF observations.
+5. **Gregory plot** — scatter of global-mean 2 m temperature vs net TOA \
+radiation with regression lines; used to diagnose radiative feedbacks \
+and equilibrium climate sensitivity.
+6. **Radiation imbalance time series** — net TOA radiation over time \
+(monthly background + annual-mean foreground) showing Earth's energy \
+imbalance evolution.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
@@ -36,6 +46,10 @@ of the figure shown. Focus on:
 - Inter-model differences (do models agree? where do they diverge?)
 - Physical mechanisms driving any patterns
 - Features that may relate to model resolution (~5 km vs ~100 km)
+- For radiation figures: compare against CERES EBAF (the satellite gold \
+standard), note sign conventions (positive = energy into the system), \
+assess cloud radiative effects, and for Gregory plots interpret the \
+regression slope as a feedback parameter (W/m²/K)
 
 Be specific — refer to actual regions, magnitudes, and physical mechanisms. \
 Avoid vague statements.
@@ -160,6 +174,8 @@ synthesis for the entire diagnostic. Consider:
 3. Resolution-dependent features — do the ~5 km models capture features \
 that ~100 km CMIP6 models miss?
 4. Physical consistency — are the findings physically coherent?
+5. Radiation budget closure — do models conserve energy at TOA/surface? \
+Are cloud radiative effects realistic?
 
 Respond **only** with a valid JSON object matching this exact schema \
 (no markdown fencing, no commentary outside the JSON):

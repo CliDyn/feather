@@ -20,6 +20,17 @@ compared against observational datasets (ERA5, CERES, EN4) and optionally \
 against a CMIP6 multi-model mean ensemble. The evaluation period is \
 1990-2014 (historical).
 
+Available diagnostics:
+- **Global biases**: Spatial bias maps (model minus obs climatology) for \
+18 surface variables across annual, DJF, and JJA periods
+- **Time series**: Global-mean time series for each variable, showing \
+temporal evolution and trends
+- **Seasonal cycle**: Monthly climatological cycles revealing seasonal \
+bias structure
+- **Radiation budget**: TOA and surface energy budget evaluation against \
+CERES EBAF — includes budget bar charts, Gregory plots (feedback \
+analysis), imbalance time series, and radiation bias maps
+
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 2-5 thematic sections for a \
 publication-quality technical report.
@@ -154,6 +165,10 @@ inter-model differences, magnitudes, and physical interpretation
 observations (and optionally with CMIP6 MMM), and explain WHY
 - Connect the findings to physical mechanisms (feedbacks, circulation \
 changes, thermodynamic constraints)
+- For radiation budget figures: discuss energy balance closure, cloud \
+radiative effects, and compare against CERES EBAF (the satellite reference \
+standard). For Gregory plots, interpret the regression slope as a feedback \
+parameter and relate to equilibrium climate sensitivity.
 - End the section with a brief synthesis tying the figures together
 
 Respond ONLY with a valid JSON object (no markdown fencing):
