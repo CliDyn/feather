@@ -57,7 +57,7 @@ class ReportStructure(BaseModel):
         ..., description="1-2 paragraph introduction (plain text)."
     )
     sections: list[ReportSection] = Field(
-        ..., min_length=2, max_length=5, description="2-5 thematic sections."
+        ..., min_length=2, max_length=10, description="2-10 thematic sections."
     )
     selected_figures: list[SelectedFigure] = Field(
         ..., min_length=4,
