@@ -227,6 +227,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_cmip6.py                # 47 unit + 2 integration tests
 │   ├── test_llm.py                  # 47 tests (mocked Gemini)
 │   ├── test_website.py             # 30 tests
+│   ├── test_radiation_budget.py    # 50 tests (radiation budget diagnostic)
 │   ├── test_pipeline.py            # 13 tests (pipeline runner)
 │   └── test_report.py              # 34 tests (report generation)
 └── feather/
@@ -238,7 +239,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     ├── data/
     │   ├── __init__.py
     │   ├── loader.py                 # DataLoader: catalog + paths
-    │   ├── obs.py                    # ObsLoader: config-driven obs access
+    │   ├── obs.py                    # ObsLoader: config-driven obs access + load_ceres()
     │   ├── cmip6.py                  # CMIP6Loader: zarr loading + multi-model mean
     │   └── variables.py              # VarInfo + VARIABLE_REGISTRY (27 vars)
     ├── util/
@@ -249,7 +250,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     ├── plot/
     │   ├── __init__.py
     │   ├── maps.py                   # plot_bias_map (3-panel), plot_single_map (nereus)
-    │   ├── lines.py                  # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile
+    │   ├── lines.py                  # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile, plot_budget_bars, plot_gregory
     │   └── styles.py                 # MODEL_COLORS, OBS_COLOR, apply_style
     ├── diag/
     │   ├── __init__.py               # Exports + auto-imports diagnostics for @register
@@ -258,7 +259,8 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   ├── registry.py               # @register, get_diagnostic, list_diagnostics
     │   ├── global_biases.py          # GlobalBiases diagnostic
     │   ├── timeseries.py             # TimeseriesDiag diagnostic
-    │   └── seasonal_cycle.py         # SeasonalCycleDiag diagnostic
+    │   ├── seasonal_cycle.py         # SeasonalCycleDiag diagnostic
+    │   └── radiation_budget.py       # RadiationBudget diagnostic (~530 lines)
     ├── llm/
     │   ├── __init__.py
     │   ├── schemas.py               # FigureAnalysis, DiagnosticSynthesis (Pydantic)
@@ -1376,9 +1378,135 @@ Each stage reads from the output of the previous stage via the filesystem. This 
 
 ## Implementation Order (Next Steps)
 
-Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d, 7e
+Completed phases: 1, 2, 3, 4, 4b, 5, 6, 7, 7b, 7c, 7d, 7e, 8a
 
 Next:
-1. **Phase 8** — Atmosphere diagnostics (radiation_budget, precipitation, lat_profiles)
+1. **Phase 8b** — Additional atmosphere diagnostics (precipitation, lat_profiles)
 2. **Phase 9** — Ocean & sea ice diagnostics (seaice, ocean_surface, ocean_drift)
 3. **Phase 10** — Export / notebook generation
+
+---
+
+## Phase 8a: Radiation Budget Diagnostic — COMPLETED
+
+**Status:** All steps implemented and verified. 50 new tests (378 total unit tests).
+
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| CERES Loading | `feather/data/obs.py` — `load_ceres()` method | Done |
+| Budget Bar Chart | `feather/plot/lines.py` — `plot_budget_bars()` | Done |
+| Gregory Plot | `feather/plot/lines.py` — `plot_gregory()` | Done |
+| Bar Color Helper | `feather/plot/lines.py` — `_budget_bar_color()` | Done |
+| Radiation Budget | `feather/diag/radiation_budget.py` — `RadiationBudget` class (~530 lines) | Done |
+| Framework Wiring | `feather/diag/__init__.py` — import added | Done |
+| Tests | `tests/test_radiation_budget.py` — 50 tests | Done |
+
+### Figure output (9 figures per run)
+
+- **Budget bar chart** (1): Global-mean radiation components for all models + CERES + CMIP6 MMM
+- **Gregory plot** (1): T2m vs net TOA scatter with regression lines (climate feedback parameter)
+- **Radiation imbalance time series** (1): Net TOA over time for models + CERES + CMIP6 — monthly as semi-transparent background, annual means as thick foreground lines
+- **Bias maps** (6): toa_net, sfc_net, toa_cre_sw, toa_cre_lw, sfc_net_sw, sfc_net_lw — all vs CERES
+
+### RadiationBudget class architecture
+
+`RadiationBudget` follows a per-figure-group incremental saving pattern (unlike the per-variable pattern of other diagnostics):
+- Group A: Budget bar chart — `_compute_budget()` / `_plot_budget()`
+- Group B: Gregory plot — `_compute_gregory()` / `_plot_gregory()`
+- Group C: Imbalance time series — `_compute_imbalance_timeseries()` / `_plot_imbalance_timeseries()`
+- Group D: Bias maps — `_compute_bias_map()` / `_plot_bias_map()` (iterated over 6 derived quantities)
+
+Each group is independently skippable via `_figure_exists()`.
+
+**Derived quantities** (`_DERIVED_QUANTITIES` dict):
+- `toa_net`: TOA Net Radiation = `avg_tnswrf + avg_tnlwrf`
+- `sfc_net`: Surface Net Radiation = `avg_snswrf + avg_snlwrf`
+- `toa_cre_sw`: TOA CRE Shortwave = `avg_tnswrf - avg_tnswrfcs`
+- `toa_cre_lw`: TOA CRE Longwave = `avg_tnlwrf - avg_tnlwrfcs`
+- `sfc_net_sw`: Surface Net Shortwave = `avg_snswrf` (single component)
+- `sfc_net_lw`: Surface Net Longwave = `avg_snlwrf` (single component)
+
+**Budget components** (`_BUDGET_COMPONENTS` list — 5-element tuples):
+```
+(label, model_var, ceres_var, ceres_file, ceres_sign)
+```
+- `ceres_sign` corrects sign convention: CERES OLR (`toa_lw_all_mon`) is positive upward (~+240 W/m²), but DestinE `avg_tnlwrf` is net LW positive downward (~-238 W/m²). TOA LW gets `ceres_sign=-1.0`, all others `1.0`.
+- Components: TOA SW, TOA LW, TOA Net (derived), Sfc SW, Sfc LW, Sfc Net (derived), Atm Abs (TOA Net - Sfc Net)
+
+**CMIP6 derived quantities for bias maps:**
+- TOA Net = `rsdt - rsut - rlut` (3 MMM vars)
+- Sfc Net = `(rsds - rsus) + (rlds - rlus)` (4 MMM vars)
+- TOA CRE SW = `rsutcs - rsut` (clear-sky reflected - all-sky reflected)
+- TOA CRE LW = `rlutcs - rlut` (clear-sky OLR - all-sky OLR)
+- Sfc Net SW = `rsds - rsus`
+- Sfc Net LW = `rlds - rlus`
+
+### CERES loading (`ObsLoader.load_ceres()`)
+
+CERES files contain many variables in one file (unlike ERA5 one-file-per-variable), so `load_ceres()` bypasses `VARIABLE_REGISTRY`:
+```python
+def load_ceres(self, ceres_var: str, period=None, file_key="toa"):
+```
+- Uses `config.obs_datasets["CERES_EBAF"]` for file paths (with `toa` and `surface` file keys)
+- Caches opened datasets per file key
+- CERES EBAF: 1° lat/lon, W/m² directly (no unit conversion), 2000-03 to 2025-06
+
+### Plotting functions added to `feather/plot/lines.py`
+
+**`plot_budget_bars(budget_data, *, title, ylabel, ax)`** — Grouped bar chart:
+- `budget_data: dict[str, dict[str, float]]` — outer keys are component names, inner keys are source labels
+- Colors from `MODEL_COLORS`, `OBS_COLOR`, `CMIP6_COLOR` via `_budget_bar_color()`
+
+**`plot_gregory(scatter_data, *, title, xlabel, ylabel, ax)`** — Gregory scatter:
+- `scatter_data: list[dict]` — each dict has `label`, `t2m_monthly`, `toa_monthly`, optional `t2m_annual`/`toa_annual`, `color`, `alpha`, `show_regression`
+- Monthly scatter (small, semi-transparent) + annual means (diamonds) + regression lines with slope in legend (W/m²/K)
+
+### Key design decisions
+
+1. **CERES as primary obs** — satellite gold standard for radiation, loaded via `load_ceres()` (not VARIABLE_REGISTRY). CERES variables are diagnostic-specific and don't follow the one-file-per-variable pattern of ERA5.
+2. **Gregory plot uses CERES TOA + ERA5 T2m** — two different obs datasets for the two axes. CERES has no temperature data; ERA5 has no independent TOA radiation measurement.
+3. **CMIP6 net TOA is derived** — `rsdt - rsut - rlut` (3 vars combined). No single CMIP6 variable for net TOA radiation.
+4. **Per-figure-group incremental saving** — each figure group computed/saved independently (unlike per-variable pattern of other diagnostics).
+5. **`cmip6_individual` support** — individual CMIP6 scatter points on Gregory plot (gray dots, no regression) + MMM regression (dashed).
+6. **Sign convention handling** — `ceres_sign` field in `_BUDGET_COMPONENTS` tuple corrects the sign mismatch between CERES OLR (positive upward) and DestinE net LW (positive downward).
+7. **Imbalance time series layered plotting** — monthly data as semi-transparent background lines, annual means as thick foreground lines. X-axis set to model time range via `ax.set_xlim()`; each series (CERES, CMIP6) naturally starts from whenever its data begins (CERES ~2000, CMIP6 varies).
+8. **Error handling** — all CERES loading wrapped in `try/except (KeyError, FileNotFoundError, AttributeError)` for graceful degradation. `AttributeError` catches `MockObsLoader` instances that lack `load_ceres()`.
+
+### Tests (50 total in `tests/test_radiation_budget.py`)
+
+| Class | Count | What it tests |
+|-------|-------|--------------|
+| TestCeresLoading | 4 | `load_ceres()` for TOA/surface vars, missing var, period slicing |
+| TestBudgetComputation | 7 | Budget structure, component values, derived quantities (TOA Net, Sfc Net, Atm Abs), CERES obs |
+| TestBudgetBarsPlot | 4 | Bar chart rendering, empty data, multi-component |
+| TestGregoryComputation | 3 | Gregory data structure, monthly+annual data, obs alignment |
+| TestGregoryPlot | 5 | Scatter plot rendering, regression lines, annual markers |
+| TestImbalanceTimeseries | 5 | Time series structure, model data, obs, values, plot rendering |
+| TestBiasMaps | 4 | Bias map structure, stats, plot, CRE bias |
+| TestRunOrchestration | 3 | Full run produces figures, skip_existing, no-skip |
+| TestSkipExistingPartial | 1 | Skip bars only, compute rest |
+| TestCMIP6Integration | 7 | CMIP6 budget, values, disabled, imbalance, gregory, individual, bias maps |
+| TestMissingData | 2 | Missing CERES graceful, missing model var skipped |
+| TestRegistration | 3 | Registered, class attributes, listed in diagnostics |
+| TestComputePlotInterface | 2 | compute() returns dict, plot() returns figures |
+
+Custom fixtures: `synth_radiation_healpix` (HEALPix with all 11 radiation vars), `synth_ceres` (5° lat/lon CERES-like data), `synth_obs_for_rad` (ERA5 T2m), `MockObsLoaderWithCeres`, `rad_cmip6_loader` (with rsdt/rsut/rlut/rsds/rsus/rlds/rlus/tas/areacella).
+
+### Verification results
+
+```
+pytest tests/test_radiation_budget.py -v  → 50/50 passed
+pytest tests/ -v -m "not integration"     → 378/378 passed (50 new + 328 existing)
+```
+
+### CLI usage
+
+```bash
+# Run radiation budget diagnostic
+feather --steps diagnostics --diagnostics radiation_budget -v
+
+# With individual CMIP6 models on Gregory plot
+feather --steps diagnostics --diagnostics radiation_budget --cmip6-individual -v
+```

@@ -9,6 +9,7 @@ Diagnostics:
 - :mod:`~feather.diag.global_biases` — climatology bias maps
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
+- :mod:`~feather.diag.radiation_budget` — radiation budget analysis
 """
 
 from feather.diag.base import DiagnosticBase
@@ -19,3 +20,4 @@ from feather.diag.registry import get_diagnostic, list_diagnostics, register
 import feather.diag.global_biases  # noqa: F401
 import feather.diag.timeseries  # noqa: F401
 import feather.diag.seasonal_cycle  # noqa: F401
+import feather.diag.radiation_budget  # noqa: F401

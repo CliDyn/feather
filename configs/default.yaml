@@ -128,15 +128,15 @@ output_dir: "./output"
 llm:
   figure_analysis:
     provider: "gemini"
-    model: "gemini-2.5-flash"
+    model: "gemini-3.1-pro-preview"
     api_key_env: "GEMINI_API_KEY"
     max_retries: 3
     retry_delay: 10
     skip_existing: true
 
 report:
-  model: "gpt-4o"
-  max_tokens: 16384
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
   temperature: 0.3
   api_key_env: "OPENAI_API_KEY"
   n_highlights: 10

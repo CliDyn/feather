@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 328 unit tests + 4 integration tests.
+Current test count: 378 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -44,7 +44,7 @@ feather/                     # Package root
 ├── config.py                # FeatherConfig dataclass + YAML loading
 ├── data/
 │   ├── loader.py            # DataLoader (intake catalogs + file paths)
-│   ├── obs.py               # ObsLoader (observations from config)
+│   ├── obs.py               # ObsLoader (observations from config) + load_ceres()
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (33 vars)
 ├── util/
@@ -53,7 +53,7 @@ feather/                     # Package root
 │   └── units.py             # Unit conversion functions
 ├── plot/
 │   ├── maps.py              # plot_combined_bias_map (multi-panel), plot_bias_map (3-panel), plot_single_map
-│   ├── lines.py             # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile
+│   ├── lines.py             # plot_timeseries, plot_seasonal_cycle, plot_zonal_profile, plot_budget_bars, plot_gregory
 │   └── styles.py            # MODEL_COLORS, OBS_COLOR, apply_style
 ├── diag/
 │   ├── base.py              # DiagnosticBase ABC (compute → plot → run)
@@ -61,7 +61,8 @@ feather/                     # Package root
 │   ├── registry.py          # @register decorator, get/list diagnostics
 │   ├── global_biases.py     # GlobalBiases: climatology bias maps
 │   ├── timeseries.py        # TimeseriesDiag: global-mean time series
-│   └── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
+│   ├── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
+│   └── radiation_budget.py  # RadiationBudget: TOA/surface radiation vs CERES
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -223,7 +224,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `load_var()` returns `None` for missing data — diagnostics should handle gracefully
 - Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
-- All 3 diagnostics (timeseries, seasonal_cycle, global_biases) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
+- All 4 diagnostics (timeseries, seasonal_cycle, global_biases, radiation_budget) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
 - `get_member_pairs()` public API for listing (model, variant) tuples
 
 ### GlobalBiases diagnostic
@@ -242,6 +243,19 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Gracefully skip models missing a variable via `try/except KeyError`
 - Group is `"evaluation"` (spans multiple physical domains)
 - CMIP6 individual series come from `_cmip6_global_mean_timeseries(return_individual=True)` on `DiagnosticBase`
+
+### RadiationBudget diagnostic
+- 4th diagnostic: computes derived radiation quantities and produces budget bars, Gregory plot, imbalance time series, and bias maps
+- Uses CERES EBAF as primary obs (not ERA5) — satellite gold standard for radiation, loaded via `ObsLoader.load_ceres()`
+- CERES files contain many variables per file — bypasses `VARIABLE_REGISTRY`, uses `config.obs_datasets["CERES_EBAF"]` with `toa`/`surface` file keys
+- Sign conventions: DestinE uses positive-downward (net into system); CERES OLR (`toa_lw_all_mon`) is positive upward — corrected via `ceres_sign=-1.0` in `_BUDGET_COMPONENTS`
+- CMIP6 net TOA is derived: `rsdt - rsut - rlut` (3 vars combined, no single CMIP6 variable)
+- Gregory plot uses two obs datasets: CERES for TOA radiation + ERA5 for T2m
+- Per-figure-group incremental saving (not per-variable like other diagnostics)
+- Imbalance time series: monthly as semi-transparent background, annual means as thick foreground; x-axis set to model range, each series starts from its own data start
+- Error handling: catches `AttributeError` alongside `KeyError`/`FileNotFoundError` for obs loaders lacking `load_ceres()`
+- `cmip6_individual` support: individual CMIP6 scatter on Gregory plot (gray dots) + MMM regression (dashed)
+- 50 dedicated tests in `tests/test_radiation_budget.py`
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
@@ -267,7 +281,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Also available as `python -m feather`
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
-- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`)
+- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`)
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 

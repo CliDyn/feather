@@ -84,6 +84,54 @@ class ObsLoader:
 
         return da
 
+    def load_ceres(self, ceres_var: str, period=None, file_key="toa"):
+        """Load a specific variable from a CERES EBAF file.
+
+        CERES files contain many variables in a single file, so this
+        provides direct access by variable name rather than going
+        through VARIABLE_REGISTRY.
+
+        Parameters
+        ----------
+        ceres_var : str
+            Variable name inside the CERES file (e.g., 'toa_net_all_mon').
+        period : tuple of str, optional
+            (start, end) for time slicing.
+        file_key : str
+            Config key under CERES_EBAF variables: 'toa' or 'surface'.
+        """
+        ds_cfg = self._config.obs_datasets.get("CERES_EBAF")
+        if ds_cfg is None:
+            raise KeyError(
+                "CERES_EBAF not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        base_path = Path(ds_cfg["path"])
+        variables = ds_cfg.get("variables", {})
+        if file_key not in variables:
+            raise FileNotFoundError(
+                f"File key {file_key!r} not in CERES_EBAF config. "
+                f"Available: {list(variables.keys())}"
+            )
+
+        filepath = base_path / variables[file_key]
+        cache_key = f"CERES_EBAF/{file_key}"
+        if cache_key not in self._cache:
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        if ceres_var not in ds.data_vars:
+            raise KeyError(
+                f"Variable {ceres_var!r} not in CERES {file_key} file. "
+                f"Available: {list(ds.data_vars)}"
+            )
+
+        da = ds[ceres_var]
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""
         return list(self._config.obs_datasets.keys())
