@@ -217,14 +217,27 @@ class GlobalBiases(DiagnosticBase):
                 target_lats = interpolator.target_lat[:, 0]
                 target_lons = interpolator.target_lon[0, :]
 
-                # Regrid obs to common nereus grid (once)
-                obs_clim_common = obs_clim.interp(
-                    {lat_name: target_lats, lon_name: target_lons}
+                # Regrid obs to common nereus grid via NN (once).
+                # Using nereus (not xr.interp) for consistency with
+                # model regridding and to avoid NaN at the 0°/360°
+                # boundary where xr.interp extrapolates.
+                obs_lons_2d, obs_lats_2d = np.meshgrid(
+                    obs_lons, obs_lats,
                 )
-                if lat_name != "lat":
-                    obs_clim_common = obs_clim_common.rename(
-                        {lat_name: "lat", lon_name: "lon"}
-                    )
+                _, obs_interpolator = nr.regrid(
+                    obs_clim.values.ravel(),
+                    lon=obs_lons_2d.ravel(),
+                    lat=obs_lats_2d.ravel(),
+                    resolution=obs_res,
+                    influence_radius=influence_radius,
+                    lon_bounds=(0.0, 360.0),
+                    as_xarray=True,
+                )
+                obs_clim_common = xr.DataArray(
+                    obs_interpolator(obs_clim.values.ravel()),
+                    dims=("lat", "lon"),
+                    coords={"lat": target_lats, "lon": target_lons},
+                )
 
                 # Pre-compute area weights for the common grid (once)
                 from feather.util.spatial import compute_latlon_areas
@@ -232,17 +245,18 @@ class GlobalBiases(DiagnosticBase):
                     target_lats, target_lons,
                 )
 
-                # Also regrid seasonal obs
+                # Also regrid seasonal obs (reuse obs interpolator)
                 obs_seasonal_common = {}
                 for season in obs_seasonal:
-                    obs_s = obs_seasonal[season].interp(
-                        {lat_name: target_lats, lon_name: target_lons}
+                    s_np = obs_interpolator(
+                        obs_seasonal[season].values.ravel(),
                     )
-                    if lat_name != "lat":
-                        obs_s = obs_s.rename(
-                            {lat_name: "lat", lon_name: "lon"}
-                        )
-                    obs_seasonal_common[season] = obs_s
+                    obs_seasonal_common[season] = xr.DataArray(
+                        s_np, dims=("lat", "lon"),
+                        coords={
+                            "lat": target_lats, "lon": target_lons,
+                        },
+                    )
             else:
                 regridded_np = interpolator(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
@@ -404,6 +418,14 @@ class GlobalBiases(DiagnosticBase):
                                   common_area):
         """Compute individual CMIP6 model biases."""
         cmip6_individual_data: dict[str, dict] = {}
+        influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0,
+        )
+        resolution = abs(float(target_lats[1] - target_lats[0]))
+
+        # Cache nereus interpolators per grid shape so models on the
+        # same native grid share a single KDTree build.
+        cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
         logger.info("  Loading individual CMIP6 models for %s...", var)
         member_pairs = self.cmip6_loader.get_member_pairs()
@@ -419,7 +441,10 @@ class GlobalBiases(DiagnosticBase):
                 logger.debug("  Skipping %s — no data", label)
                 continue
 
-            cmip6_common = da.interp(lat=target_lats, lon=target_lons)
+            cmip6_common = self._regrid_to_target(
+                da, target_lats, target_lons,
+                resolution, influence_radius, cmip6_interp_cache,
+            )
             cmip6_bias = cmip6_common - obs_clim_common
             bias_gmean = float(
                 latlon_global_mean(cmip6_bias, area=common_area).values
@@ -445,7 +470,10 @@ class GlobalBiases(DiagnosticBase):
                 )
                 if da_s is None or season not in obs_seasonal_common:
                     continue
-                cmip6_s = da_s.interp(lat=target_lats, lon=target_lons)
+                cmip6_s = self._regrid_to_target(
+                    da_s, target_lats, target_lons,
+                    resolution, influence_radius, cmip6_interp_cache,
+                )
                 cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
                 cmip6_individual_data.setdefault(season, {})[label] = {
                     "regrid": cmip6_s,
@@ -458,6 +486,50 @@ class GlobalBiases(DiagnosticBase):
                 }
 
         return cmip6_individual_data
+
+    # -- Regridding helper --------------------------------------------------
+
+    @staticmethod
+    def _regrid_to_target(da, target_lats, target_lons,
+                          resolution, influence_radius,
+                          interp_cache):
+        """Regrid a regular lat/lon DataArray to the target grid via nereus NN.
+
+        Uses *interp_cache* (keyed by grid shape) to avoid rebuilding
+        the KDTree for models that share the same native grid.
+
+        For coarse-resolution source grids (e.g. CMIP6 at 1-2°) the
+        configured *influence_radius* (tuned for 5 km HEALPix) is too
+        small.  We use 250 km as the floor, which is safe for the
+        atmospheric variables handled by GlobalBiases.  Ocean diagnostics
+        would need a more careful choice to avoid smearing across coasts.
+        """
+        # 250 km floor — covers CMIP6 grids up to ~2° at the equator
+        ir = max(influence_radius, 250_000.0)
+
+        lat_name = "lat" if "lat" in da.coords else "latitude"
+        lon_name = "lon" if "lon" in da.coords else "longitude"
+        lat_arr = da[lat_name].values
+        lon_arr = da[lon_name].values
+
+        grid_key = (len(lat_arr), len(lon_arr))
+
+        if grid_key not in interp_cache:
+            lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
+            _, interp_cache[grid_key] = nr.regrid(
+                da.values.ravel(),
+                lon=lon_2d.ravel(), lat=lat_2d.ravel(),
+                resolution=resolution,
+                influence_radius=ir,
+                lon_bounds=(0.0, 360.0),
+                as_xarray=True,
+            )
+
+        regridded = interp_cache[grid_key](da.values.ravel())
+        return xr.DataArray(
+            regridded, dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
 
     # -- Colorbar range computation -----------------------------------------
 
