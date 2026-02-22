@@ -33,6 +33,17 @@ and equilibrium climate sensitivity.
 6. **Radiation imbalance time series** — net TOA radiation over time \
 (monthly background + annual-mean foreground) showing Earth's energy \
 imbalance evolution.
+7. **Sea ice time series** — NH and SH sea ice area, extent, or volume \
+over time (monthly + annual mean) compared against OSI-SAF (conc/extent) \
+and PIOMAS/GIOMAS (volume) observations.
+8. **Sea ice seasonal cycle** — 12-month climatological cycle of sea ice \
+metrics for each hemisphere, comparing models vs observations.
+9. **Sea ice March & September trends** — annual values for March and \
+September (NH annual max / min, SH annual max / min) showing \
+long-term trends in sea ice metrics.
+10. **Sea ice spatial maps** — polar stereographic maps of sea ice \
+concentration or thickness for extreme months, comparing models and \
+observations.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \

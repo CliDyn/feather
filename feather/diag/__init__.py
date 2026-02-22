@@ -10,6 +10,7 @@ Diagnostics:
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
 - :mod:`~feather.diag.radiation_budget` — radiation budget analysis
+- :mod:`~feather.diag.sea_ice` — sea ice evaluation (area/extent/volume/spatial)
 """
 
 from feather.diag.base import DiagnosticBase
@@ -21,3 +22,4 @@ import feather.diag.global_biases  # noqa: F401
 import feather.diag.timeseries  # noqa: F401
 import feather.diag.seasonal_cycle  # noqa: F401
 import feather.diag.radiation_budget  # noqa: F401
+import feather.diag.sea_ice  # noqa: F401

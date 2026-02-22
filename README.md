@@ -113,6 +113,7 @@ saved_files = diag.run()  # returns [(png_path, json_path), ...]
 | `timeseries` | `TimeseriesDiag` | Global-mean time series, all models + obs overlaid |
 | `seasonal_cycle` | `SeasonalCycleDiag` | 12-month climatological cycle, all models + obs overlaid |
 | `radiation_budget` | `RadiationBudget` | TOA/surface radiation budget bars, Gregory plot, imbalance time series, bias maps vs CERES EBAF |
+| `sea_ice` | `SeaIceDiag` | Sea ice area/extent/volume time series, seasonal cycles, March & September trends, polar spatial maps vs OSI-SAF + PIOMAS/GIOMAS |
 
 All diagnostics accept these constructor arguments:
 
@@ -131,6 +132,7 @@ output/
       ...
     timeseries/
     seasonal_cycle/
+    sea_ice/
   analysis/                         # LLM analysis (Gemini)
     global_biases/
       avg_2t_annual_bias_ifs-fesom_analysis.json
@@ -179,6 +181,7 @@ feather/
     timeseries.py        # Time series diagnostic
     seasonal_cycle.py    # Seasonal cycle diagnostic
     radiation_budget.py  # Radiation budget diagnostic (CERES EBAF)
+    sea_ice.py           # Sea ice diagnostic (OSI-SAF, PIOMAS/GIOMAS)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis
@@ -211,7 +214,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-381 unit tests + 4 integration tests.
+451 unit tests + 4 integration tests.
 
 ## Configuration
 

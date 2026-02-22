@@ -132,6 +132,86 @@ class ObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
+    def load_osisaf(self, hemisphere: str, period=None):
+        """Load OSI-SAF sea ice concentration dataset.
+
+        Parameters
+        ----------
+        hemisphere : str
+            ``"nh"`` or ``"sh"``.
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.Dataset
+            Raw dataset on EASE2 grid with ``ice_conc`` variable.
+        """
+        ds_cfg = self._config.obs_datasets.get("OSI_SAF")
+        if ds_cfg is None:
+            raise KeyError(
+                "OSI_SAF not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        base_path = Path(ds_cfg["path"])
+        variables = ds_cfg.get("variables", {})
+        if hemisphere not in variables:
+            raise FileNotFoundError(
+                f"Hemisphere {hemisphere!r} not in OSI_SAF config. "
+                f"Available: {list(variables.keys())}"
+            )
+
+        filepath = base_path / variables[hemisphere]
+        cache_key = f"OSI_SAF/{hemisphere}"
+        if cache_key not in self._cache:
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        if period is not None and "time" in ds.dims:
+            ds = ds.sel(time=slice(period[0], period[1]))
+        return ds
+
+    def load_psc(self, product: str, period=None):
+        """Load PSC (PIOMAS/GIOMAS) sea ice thickness dataset.
+
+        Parameters
+        ----------
+        product : str
+            ``"piomas"`` (NH) or ``"giomas"`` (SH).
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.Dataset
+            Raw dataset with ``sithick``, ``areacello``, ``latitude``.
+        """
+        ds_cfg = self._config.obs_datasets.get("PSC")
+        if ds_cfg is None:
+            raise KeyError(
+                "PSC not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        base_path = Path(ds_cfg["path"])
+        variables = ds_cfg.get("variables", {})
+        if product not in variables:
+            raise FileNotFoundError(
+                f"Product {product!r} not in PSC config. "
+                f"Available: {list(variables.keys())}"
+            )
+
+        filepath = base_path / variables[product]
+        cache_key = f"PSC/{product}"
+        if cache_key not in self._cache:
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        if period is not None and "time" in ds.dims:
+            ds = ds.sel(time=slice(period[0], period[1]))
+        return ds
+
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""
         return list(self._config.obs_datasets.keys())

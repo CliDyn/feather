@@ -49,8 +49,14 @@ obs_datasets:
     path: "{obs_root}/MSWEP/v2.8"
   OSI_SAF:
     path: "{obs_root}/OSI-SAF/OSI-AQUA"
+    variables:
+      nh: "monthly/ice_conc_nh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+      sh: "monthly/ice_conc_sh_ease2-250_cdr_v3_monthly_1979-2024.nc"
   PSC:
     path: "{obs_root}/PSC"
+    variables:
+      piomas: "PIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x120_curvgrid.nc"
+      giomas: "GIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x276_curvgrid.nc"
   AVISO:
     path: "{obs_root}/AVISO/vDT2024"
   BERKELEY_EARTH:

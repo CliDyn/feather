@@ -30,6 +30,9 @@ bias structure
 - **Radiation budget**: TOA and surface energy budget evaluation against \
 CERES EBAF — includes budget bar charts, Gregory plots (feedback \
 analysis), imbalance time series, and radiation bias maps
+- **Sea ice**: Sea ice area, extent, and volume evaluation against \
+OSI-SAF (concentration/extent) and PIOMAS/GIOMAS (volume) — includes \
+time series, seasonal cycles, extreme month trends, and polar spatial maps
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

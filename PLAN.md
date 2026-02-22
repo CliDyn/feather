@@ -1305,7 +1305,7 @@ feather --steps diagnostics --diagnostics timeseries --variables avg_2t avg_msl 
 
 ## Phase 9: Ocean & Sea Ice Diagnostics
 
-- `seaice` — Extent, area, concentration vs OSI-SAF/PIOMAS (+optional CMIP6)
+- `sea_ice` — Extent, area, concentration, volume vs OSI-SAF/PIOMAS/GIOMAS — **COMPLETED (Phase 9a)**
 - `ocean_surface` — SST, SSS, SSH vs ESA-CCI/EN4/AVISO (+optional CMIP6)
 - `ocean_drift` — Hovmoller diagrams (needs 3D data)
 
@@ -1553,3 +1553,77 @@ Legend labels are on annual lines only (thick lines appear in legend).
 **Files changed:**
 - `feather/website/generator.py` — added `_model_display_name()` filter + registered in Jinja2 env
 - `feather/website/templates/diagnostic.html` — nested dict handling for stats + `model_display_name` filter on model lists
+
+---
+
+## Phase 9a: Sea Ice Diagnostic — COMPLETED
+
+**Status:** Implemented and verified. 70 new tests, 451 total (all passing).
+
+### What was built
+
+| Module | File | Status |
+|--------|------|--------|
+| Sea ice diagnostic | `feather/diag/sea_ice.py` | Done |
+| ObsLoader extensions | `feather/data/obs.py` (load_osisaf, load_psc) | Done |
+| Config paths | `configs/default.yaml` (OSI_SAF, PSC variables) | Done |
+| Registration | `feather/diag/__init__.py` | Done |
+| LLM prompts | `feather/llm/prompts.py` (sea ice figure types) | Done |
+| Report prompts | `feather/export/prompts.py` (sea_ice diagnostic) | Done |
+| Tests | `tests/test_sea_ice.py` (70 tests) | Done |
+
+### Figures produced (13 total, 4 groups)
+
+**Group A — Time series (3 figures):**
+Each has 2 subplots (NH left, SH right), monthly + annual-mean 2-layer style:
+- `sea_ice_area_timeseries` — Ice area (10⁶ km²)
+- `sea_ice_extent_timeseries` — Ice extent (10⁶ km²)
+- `sea_ice_volume_timeseries` — Ice volume (10³ km³)
+
+**Group B — Seasonal cycles (3 figures):**
+Each has 2 subplots (NH left, SH right), 12-month climatology:
+- `sea_ice_area_seasonal_cycle`
+- `sea_ice_extent_seasonal_cycle`
+- `sea_ice_volume_seasonal_cycle`
+
+**Group C — March & September trends (3 figures):**
+Each has 2×2 subplots (NH March / NH Sep / SH Sep / SH March):
+- `sea_ice_area_extremes`
+- `sea_ice_extent_extremes`
+- `sea_ice_volume_extremes`
+
+**Group D — Spatial maps (4 figures):**
+Multi-panel polar stereographic maps via `nr.plot(ax=ax, projection="np"/"sp")`:
+- `siconc_nh_spatial` — Arctic sea ice concentration (March + September)
+- `siconc_sh_spatial` — Antarctic sea ice concentration
+- `sithick_nh_spatial` — Arctic sea ice thickness
+- `sithick_sh_spatial` — Antarctic sea ice thickness
+
+### Key design decisions
+
+1. **Uses nereus ice functions directly** — `nr.ice_area_nh/sh`, `nr.ice_extent_nh/sh`, `nr.ice_volume_nh/sh`. No reimplementation of threshold logic or area weighting.
+
+2. **Uses `nr.plot(ax=ax)` for spatial maps** — nereus handles HEALPix, EASE2, and curvilinear grids natively as point clouds. Cartopy projections (`NorthPolarStereo`/`SouthPolarStereo`) for the axes.
+
+3. **Two new ObsLoader methods** — `load_osisaf(hemisphere, period)` and `load_psc(product, period)` following the `load_ceres()` pattern. Both return raw `xr.Dataset` for the diagnostic to process.
+
+4. **Per-figure-group incremental saving** — like `RadiationBudget`, not per-variable. Time series are pre-computed once and shared across all plotting groups.
+
+5. **Obs data processing:**
+   - OSI-SAF: EASE2 grid stacked to 1D, concentration divided by 100 (% → fraction), cell area = 625,000,000 m² (25 km grid)
+   - PIOMAS/GIOMAS: curvilinear grid stacked to 1D, uses `areacello` from dataset
+
+6. **Colormaps:** `Blues_r` for concentration, `cmocean.cm.tempo` for thickness (light → teal → dark, good perceptual contrast).
+
+7. **Colorbar placement:** Dedicated horizontal axis at bottom (`fig.add_axes`) instead of stealing space from plot axes.
+
+8. **Annual means use `feather.util.temporal.annual_mean`** (`resample(time="YE")`) preserving proper datetime coordinates.
+
+9. **CMIP6 deferred** — constructor accepts `cmip6_loader` but current implementation does not use it. Ready for Phase 2.
+
+### Verification
+
+```
+pytest tests/test_sea_ice.py -v  → 70/70 passed
+pytest tests/ -v -m "not integration"  → 451/451 passed
+```
