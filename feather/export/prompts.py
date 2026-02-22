@@ -32,7 +32,7 @@ CERES EBAF — includes budget bar charts, Gregory plots (feedback \
 analysis), imbalance time series, and radiation bias maps
 
 Your task: from the full set of diagnostic results, select the most \
-compelling findings and organise them into 2-5 thematic sections for a \
+compelling findings and organise them into 5-10 thematic sections for a \
 publication-quality technical report.
 
 Selection criteria:
