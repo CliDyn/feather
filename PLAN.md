@@ -228,6 +228,7 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
 │   ├── test_llm.py                  # 47 tests (mocked Gemini)
 │   ├── test_website.py             # 30 tests
 │   ├── test_radiation_budget.py    # 50 tests (radiation budget diagnostic)
+│   ├── test_sea_ice.py            # 106 tests (sea ice diagnostic + CMIP6)
 │   ├── test_pipeline.py            # 13 tests (pipeline runner)
 │   └── test_report.py              # 34 tests (report generation)
 └── feather/
@@ -260,7 +261,8 @@ feather/                              # Git root: /home/a/a270088/PYTHON/feather
     │   ├── global_biases.py          # GlobalBiases diagnostic
     │   ├── timeseries.py             # TimeseriesDiag diagnostic
     │   ├── seasonal_cycle.py         # SeasonalCycleDiag diagnostic
-    │   └── radiation_budget.py       # RadiationBudget diagnostic (~530 lines)
+    │   ├── radiation_budget.py       # RadiationBudget diagnostic (~530 lines)
+    │   └── sea_ice.py               # SeaIceDiag diagnostic (~800 lines)
     ├── llm/
     │   ├── __init__.py
     │   ├── schemas.py               # FigureAnalysis, DiagnosticSynthesis (Pydantic)
@@ -1619,11 +1621,60 @@ Multi-panel polar stereographic maps via `nr.plot(ax=ax, projection="np"/"sp")`:
 
 8. **Annual means use `feather.util.temporal.annual_mean`** (`resample(time="YE")`) preserving proper datetime coordinates.
 
-9. **CMIP6 deferred** — constructor accepts `cmip6_loader` but current implementation does not use it. Ready for Phase 2.
+9. **CMIP6 integration added in Phase 9a.1** — see below.
 
 ### Verification
 
 ```
 pytest tests/test_sea_ice.py -v  → 70/70 passed
 pytest tests/ -v -m "not integration"  → 451/451 passed
+```
+
+---
+
+## Phase 9a.1: Sea Ice CMIP6 Integration — COMPLETED
+
+**Status:** Implemented and verified. 106 sea ice tests, 487 total unit tests (all passing).
+
+### What was built
+
+| Module | File | Change |
+|--------|------|--------|
+| CMIP6 sea ice computation | `feather/diag/sea_ice.py` | Added `_compute_cmip6_timeseries()`, CMIP6 plotting in Groups A-C |
+| Fill value sanitization | `feather/diag/sea_ice.py` | Zero-out pattern for siconc/sithick/areacello fill values |
+| Model exclusion blocklist | `feather/diag/sea_ice.py` | `_CMIP6_SEA_ICE_EXCLUDE` set |
+| Tests | `tests/test_sea_ice.py` | +36 CMIP6 tests (106 total) |
+
+### Key design decisions
+
+1. **Custom CMIP6 computation, not base class helper.** The base class `_cmip6_global_mean_timeseries()` computes scalar global-mean time series, but sea ice needs hemisphere-specific integrated metrics (area, extent, volume) from 2D spatial fields via nereus ice functions. Similar to how `RadiationBudget` computes derived quantities with custom CMIP6 loading.
+
+2. **CMIP6 only on Groups A-C (time series, seasonal cycles, trends).** Group D spatial maps excluded — CMIP6 at ~100 km resolution would look blocky alongside 5 km DestinE data on polar stereographic projections.
+
+3. **Fill value sanitization: ZERO, don't clip.** Critical lesson: CMIP6 zarr stores may use non-NaN fill values (1e20, 9.97e36) at land/missing cells.
+   - `_normalise_siconc()` in CMIP6Loader divides by 100 when max > 10, turning 1e20 → 1e18
+   - `np.clip(vals, 0, 1)` then converts 1e18 → 1.0 = **fake 100% ice at land cells**
+   - Same pattern for sithick (1e20 clipped to 100m = absurd thickness) and areacello (9.97e36 m² cell area)
+   - **Fix:** `np.where(vals > threshold, 0.0, vals)` zeroes fill values before clipping
+   - areacello upper bound: 1e12 m² (1M km², generous physical maximum for any grid cell)
+
+4. **Auto-detect percentage vs fraction.** After loading (post `_normalise_siconc`), checks if valid max (values < 1e10) exceeds 1.0. If so, re-normalizes by dividing by 100 with an INFO-level log.
+
+5. **Model exclusion blocklist (`_CMIP6_SEA_ICE_EXCLUDE`).** FGOALS-g3 produces unrealistic sea ice (NH area ~2×10⁶ km² instead of ~14, SH area ~30×10⁶ km² instead of ~17). Excluded with WARNING-level log. Easy to extend by adding model names to the set.
+
+6. **Post-computation validation.** After computing all metrics for a model, any metric exceeding 1e14 (physically impossible — max real values are ~2e13) triggers model exclusion from MMM with a warning.
+
+7. **Per-model diagnostic logging.** Each model's mean/max values logged in plot units (10⁶ km² for area/extent, 10³ km³ for volume) to facilitate outlier detection.
+
+8. **4-layer plotting convention** (matching timeseries/seasonal_cycle):
+   - Background: CMIP6 individual monthly (alpha=0.2, lw=0.5)
+   - Middle: CMIP6 MMM monthly (dashed, alpha=0.3)
+   - Foreground: DestinE models (colored, solid)
+   - Top: Observations (black, thick)
+
+### Verification
+
+```
+pytest tests/test_sea_ice.py -v  → 106/106 passed
+pytest tests/ -v -m "not integration"  → 487/487 passed
 ```

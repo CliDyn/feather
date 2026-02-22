@@ -17,7 +17,8 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
+from feather.util.spatial import compute_latlon_areas
 from feather.util.temporal import annual_mean
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,12 @@ _METRICS = {
     "area": {"long_name": "Sea Ice Area", "units": "10⁶ km²", "scale": 1e-12},
     "extent": {"long_name": "Sea Ice Extent", "units": "10⁶ km²", "scale": 1e-12},
     "volume": {"long_name": "Sea Ice Volume", "units": "10³ km³", "scale": 1e-12},
+}
+
+# CMIP6 models excluded from sea ice computations due to known
+# unrealistic results (e.g. implausible hemispheric ice area).
+_CMIP6_SEA_ICE_EXCLUDE = {
+    "FGOALS-g3",  # NH area ~2×10⁶ km² (too low), SH area ~30×10⁶ km² (too high)
 }
 
 # Annual max/min months for each hemisphere
@@ -73,6 +80,15 @@ class SeaIceDiag(DiagnosticBase):
         # Pre-compute model time series (shared across groups A, B, C)
         model_ts = self._compute_model_timeseries()
         obs_ts = self._compute_obs_timeseries()
+        cmip6_ts, cmip6_info, cmip6_indiv = (
+            self._compute_cmip6_timeseries()
+        )
+
+        cmip6_kw = dict(
+            cmip6_ts=cmip6_ts or None,
+            cmip6_individual_ts=cmip6_indiv or None,
+            cmip6_info=cmip6_info or None,
+        )
 
         # Group A: Time series (3 figures)
         for metric in _METRICS:
@@ -84,7 +100,9 @@ class SeaIceDiag(DiagnosticBase):
                     self.output_dir / f"{fid}.json",
                 ))
             else:
-                figs = self._plot_timeseries(metric, model_ts, obs_ts)
+                figs = self._plot_timeseries(
+                    metric, model_ts, obs_ts, **cmip6_kw,
+                )
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -98,7 +116,9 @@ class SeaIceDiag(DiagnosticBase):
                     self.output_dir / f"{fid}.json",
                 ))
             else:
-                figs = self._plot_seasonal_cycle(metric, model_ts, obs_ts)
+                figs = self._plot_seasonal_cycle(
+                    metric, model_ts, obs_ts, **cmip6_kw,
+                )
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -112,7 +132,9 @@ class SeaIceDiag(DiagnosticBase):
                     self.output_dir / f"{fid}.json",
                 ))
             else:
-                figs = self._plot_extremes(metric, model_ts, obs_ts)
+                figs = self._plot_extremes(
+                    metric, model_ts, obs_ts, **cmip6_kw,
+                )
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -144,9 +166,15 @@ class SeaIceDiag(DiagnosticBase):
 
     def compute(self) -> dict[str, Any]:
         """Compute all sea ice results."""
+        cmip6_ts, cmip6_info, cmip6_indiv = (
+            self._compute_cmip6_timeseries()
+        )
         return {
             "model_ts": self._compute_model_timeseries(),
             "obs_ts": self._compute_obs_timeseries(),
+            "cmip6_ts": cmip6_ts,
+            "cmip6_info": cmip6_info,
+            "cmip6_individual_ts": cmip6_indiv,
         }
 
     def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
@@ -154,10 +182,21 @@ class SeaIceDiag(DiagnosticBase):
         figures = []
         model_ts = results["model_ts"]
         obs_ts = results["obs_ts"]
+        cmip6_kw = dict(
+            cmip6_ts=results.get("cmip6_ts") or None,
+            cmip6_individual_ts=results.get("cmip6_individual_ts") or None,
+            cmip6_info=results.get("cmip6_info") or None,
+        )
         for metric in _METRICS:
-            figures.extend(self._plot_timeseries(metric, model_ts, obs_ts))
-            figures.extend(self._plot_seasonal_cycle(metric, model_ts, obs_ts))
-            figures.extend(self._plot_extremes(metric, model_ts, obs_ts))
+            figures.extend(self._plot_timeseries(
+                metric, model_ts, obs_ts, **cmip6_kw,
+            ))
+            figures.extend(self._plot_seasonal_cycle(
+                metric, model_ts, obs_ts, **cmip6_kw,
+            ))
+            figures.extend(self._plot_extremes(
+                metric, model_ts, obs_ts, **cmip6_kw,
+            ))
         for fid, var, pole in [
             ("siconc_nh_spatial", "avg_siconc", "np"),
             ("siconc_sh_spatial", "avg_siconc", "sp"),
@@ -344,16 +383,263 @@ class SeaIceDiag(DiagnosticBase):
 
         return obs
 
+    # ── Computation: CMIP6 time series ────────────────────────────────
+
+    def _compute_cmip6_timeseries(
+        self,
+    ) -> tuple[dict, dict, dict]:
+        """Compute CMIP6 ice area/extent/volume per model, then MMM.
+
+        Returns
+        -------
+        (mmm_ts, cmip6_info, individual_ts) : tuple
+            mmm_ts: dict of metric_hemi → DataArray (ensemble mean).
+            cmip6_info: dict with n_members, models_used.
+            individual_ts: dict of model → {metric_hemi → DataArray}
+                (populated only when cmip6_individual is True).
+        """
+        import nereus as nr
+
+        if not self.cmip6_enabled:
+            return {}, {}, {}
+
+        logger.info("Computing CMIP6 sea ice time series")
+
+        all_model_ts: dict[str, dict] = {}
+        models_used: list[str] = []
+
+        for model in self.cmip6_loader.models:
+            if model in _CMIP6_SEA_ICE_EXCLUDE:
+                logger.warning(
+                    "  EXCLUDING %s from sea ice computations — known "
+                    "unrealistic sea ice results (see _CMIP6_SEA_ICE_EXCLUDE)",
+                    model,
+                )
+                continue
+
+            logger.info("  Loading CMIP6 sea ice for %s", model)
+
+            siconc = self.cmip6_loader.load_var(
+                "siconc", model, table="SImon", time_mean=False,
+                period=self.period,
+            )
+            if siconc is None:
+                logger.info(
+                    "    siconc not available for %s — skipping", model,
+                )
+                continue
+
+            # Find lat/lon coordinates
+            lat_arr = lon_arr = None
+            for lname, loname in [
+                ("lat", "lon"), ("latitude", "longitude"),
+            ]:
+                if lname in siconc.coords and loname in siconc.coords:
+                    lat_arr = np.asarray(siconc.coords[lname])
+                    lon_arr = np.asarray(siconc.coords[loname])
+                    break
+            if lat_arr is None:
+                logger.warning(
+                    "    Cannot find lat/lon for %s — skipping", model,
+                )
+                continue
+
+            # Flatten spatial dims to 1D for nereus ice functions
+            ntime = siconc.sizes["time"]
+            if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                lat_2d, _ = np.meshgrid(lat_arr, lon_arr, indexing="ij")
+            else:
+                lat_2d = lat_arr
+            lat_flat = lat_2d.ravel()
+            npoints = len(lat_flat)
+
+            # Sanitize siconc.  After _normalise_siconc() in load_var,
+            # valid values should be 0-1 fraction.  However:
+            #   - Non-NaN fill values (e.g. 1e20) become ~1e18 after
+            #     /100 normalisation.  These must be ZEROED, not clipped
+            #     to 1.0 (which would create fake 100% ice at land).
+            #   - Some datasets may still be in 0-100% (if the loader
+            #     didn't trigger normalisation).  Re-normalise if needed.
+            siconc_vals = np.nan_to_num(
+                siconc.values.reshape(ntime, npoints), nan=0.0,
+            )
+            # Detect still-in-percentage: valid max in 1-100 range
+            valid_mask = siconc_vals < 1e10  # ignore obvious fill values
+            valid_max = float(siconc_vals[valid_mask].max()) if valid_mask.any() else 0
+            if valid_max > 1.0:
+                logger.info(
+                    "    siconc for %s appears to be in %% (max valid=%.1f)"
+                    " — dividing by 100", model, valid_max,
+                )
+                siconc_vals = siconc_vals / 100.0
+            # Zero fill values (anything > 1 after normalisation)
+            siconc_vals = np.where(siconc_vals > 1.0, 0.0, siconc_vals)
+            siconc_vals = np.where(siconc_vals < 0.0, 0.0, siconc_vals)
+
+            siconc_1d = xr.DataArray(
+                siconc_vals,
+                dims=("time", "points"),
+                coords={"time": siconc.time},
+            )
+
+            # Load or compute cell areas
+            # Max physical cell area: ~1.2e10 m² for a 1° cell at equator.
+            # Use 1e12 m² (1M km²) as generous upper bound — anything
+            # above is a fill value (e.g. 9.97e36 for float32 netCDF fill).
+            _MAX_CELL_AREA = 1e12  # m²
+            area = self.cmip6_loader.load_area(model, table="SImon")
+            if area is not None:
+                area_flat = np.nan_to_num(
+                    np.asarray(area).ravel(), nan=0.0,
+                )
+                area_flat = np.where(
+                    area_flat > _MAX_CELL_AREA, 0.0, area_flat,
+                )
+                area_flat = np.clip(area_flat, 0.0, _MAX_CELL_AREA)
+                if len(area_flat) != npoints:
+                    logger.warning(
+                        "    areacello shape mismatch for %s — computing "
+                        "from grid", model,
+                    )
+                    area = None
+            if area is None:
+                if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                    area_flat = compute_latlon_areas(
+                        lat_arr, lon_arr,
+                    ).ravel()
+                else:
+                    logger.warning(
+                        "    Cannot compute areas for %s — skipping", model,
+                    )
+                    continue
+
+            area_da = xr.DataArray(area_flat, dims="points")
+            lat_da = xr.DataArray(lat_flat, dims="points")
+
+            model_data: dict[str, Any] = {}
+
+            # Concentration metrics (area + extent)
+            for hemi in ("nh", "sh"):
+                area_fn = getattr(nr, f"ice_area_{hemi}")
+                extent_fn = getattr(nr, f"ice_extent_{hemi}")
+                model_data[f"area_{hemi}"] = area_fn(
+                    siconc_1d, area_da, lat_da, as_xarray=True,
+                ).compute()
+                model_data[f"extent_{hemi}"] = extent_fn(
+                    siconc_1d, area_da, lat_da, as_xarray=True,
+                ).compute()
+
+            # Volume (requires sithick)
+            sithick = self.cmip6_loader.load_var(
+                "sithick", model, table="SImon", time_mean=False,
+                period=self.period,
+            )
+            if sithick is not None:
+                sithick_nt = sithick.sizes["time"]
+                # Sanitize thickness: NaN → 0, zero fill values.
+                # Fill values (e.g. 1e20) must be zeroed, not clipped to
+                # 100m — that would create absurd ice volume.  Physical
+                # max thickness is ~20m for multi-year ridged ice.
+                sithick_vals = np.nan_to_num(
+                    sithick.values.reshape(sithick_nt, npoints), nan=0.0,
+                )
+                sithick_vals = np.where(
+                    sithick_vals > 100.0, 0.0, sithick_vals,
+                )
+                sithick_vals = np.clip(sithick_vals, 0.0, 100.0)
+
+                sithick_1d = xr.DataArray(
+                    sithick_vals,
+                    dims=("time", "points"),
+                    coords={"time": sithick.time},
+                )
+                for hemi in ("nh", "sh"):
+                    vol_fn = getattr(nr, f"ice_volume_{hemi}")
+                    model_data[f"volume_{hemi}"] = vol_fn(
+                        sithick_1d, area_da, lat_da, as_xarray=True,
+                    ).compute()
+
+            # Per-model diagnostics: log metrics in plot units so
+            # outliers are easy to spot.
+            for mkey, mval in model_data.items():
+                metric_name = mkey.rsplit("_", 1)[0]  # area, extent, volume
+                hemi_name = mkey.rsplit("_", 1)[1].upper()
+                scale = _METRICS.get(metric_name, {}).get("scale", 1e-12)
+                units = _METRICS.get(metric_name, {}).get("units", "?")
+                scaled_max = float(mval.max()) * scale
+                scaled_mean = float(mval.mean()) * scale
+                logger.info(
+                    "    %s %s %s: mean=%.2f max=%.2f %s",
+                    model, hemi_name, metric_name,
+                    scaled_mean, scaled_max, units,
+                )
+
+            # Post-computation validation: skip models with unreasonable
+            # metrics.  Even after sanitising inputs, some CMIP6 models may
+            # produce absurd values due to grid/metadata issues.
+            # Physical maxima: NH/SH ice extent ~20e6 km² = 2e13 m²,
+            # ice volume ~30e3 km³ ≈ 3e13 m³.  Use 1e14 as generous cap.
+            _MAX_METRIC = 1e14
+            bad_metric = False
+            for mkey, mval in model_data.items():
+                if float(mval.max()) > _MAX_METRIC:
+                    logger.warning(
+                        "    %s has unreasonable %s (max=%.2e) — "
+                        "excluding from MMM",
+                        model, mkey, float(mval.max()),
+                    )
+                    bad_metric = True
+                    break
+            if bad_metric:
+                continue
+
+            all_model_ts[model] = model_data
+            models_used.append(model)
+
+        if not models_used:
+            logger.info("    No CMIP6 models available for sea ice")
+            return {}, {}, {}
+
+        # Compute MMM by aligning to common time axis
+        mmm_ts: dict[str, xr.DataArray] = {}
+        for key in ("area_nh", "area_sh", "extent_nh", "extent_sh",
+                     "volume_nh", "volume_sh"):
+            series = [
+                all_model_ts[m][key]
+                for m in models_used
+                if key in all_model_ts[m]
+            ]
+            if series:
+                aligned = xr.align(*series, join="inner")
+                mmm_ts[key] = sum(aligned) / len(aligned)
+
+        cmip6_info = {
+            "n_members": len(models_used),
+            "models_used": models_used,
+        }
+        logger.info(
+            "    CMIP6 sea ice MMM: %d models, keys: %s",
+            len(models_used), list(mmm_ts.keys()),
+        )
+
+        individual_ts = all_model_ts if self.cmip6_individual else {}
+        return mmm_ts, cmip6_info, individual_ts
+
     # ── Plotting: Time series ─────────────────────────────────────────
 
     def _plot_timeseries(
         self, metric: str, model_ts: dict, obs_ts: dict,
+        cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot NH/SH time series for a given metric."""
         info = _METRICS[metric]
         scale = info["scale"]
         fig, (ax_nh, ax_sh) = plt.subplots(1, 2, figsize=(14, 5))
         all_models = []
+        cmip6_individual_ts = cmip6_individual_ts or {}
+
+        if cmip6_individual_ts:
+            all_models.extend(cmip6_individual_ts.keys())
 
         for ax, hemi, hemi_label in [
             (ax_nh, "nh", "Northern Hemisphere"),
@@ -361,12 +647,23 @@ class SeaIceDiag(DiagnosticBase):
         ]:
             key = f"{metric}_{hemi}"
 
-            # Obs monthly (background)
-            if key in obs_ts:
-                ts = obs_ts[key]
+            # --- Monthly pass (background, semi-transparent) ---
+
+            # CMIP6 individual monthly
+            for _mname, mdata in cmip6_individual_ts.items():
+                if key in mdata:
+                    ts = mdata[key]
+                    time_vals = _to_plot_time(ts.time.values)
+                    ax.plot(time_vals, ts.values * scale,
+                            color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
+
+            # CMIP6 MMM monthly
+            if cmip6_ts and key in cmip6_ts:
+                ts = cmip6_ts[key]
                 time_vals = _to_plot_time(ts.time.values)
                 ax.plot(time_vals, ts.values * scale,
-                        color=OBS_COLOR, alpha=0.3, linewidth=0.7)
+                        color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+                        linestyle="--")
 
             # Model monthly (background)
             for model, mdata in model_ts.items():
@@ -377,13 +674,34 @@ class SeaIceDiag(DiagnosticBase):
                     ax.plot(time_vals, ts.values * scale,
                             color=color, alpha=0.3, linewidth=0.7)
 
-            # Obs annual (foreground)
+            # Obs monthly (background)
             if key in obs_ts:
                 ts = obs_ts[key]
-                annual = annual_mean(ts)
-                time_vals = _to_plot_time(annual.time.values)
-                ax.plot(time_vals, annual.values * scale,
-                        label="Obs", color=OBS_COLOR, linewidth=2.5)
+                time_vals = _to_plot_time(ts.time.values)
+                ax.plot(time_vals, ts.values * scale,
+                        color=OBS_COLOR, alpha=0.3, linewidth=0.7)
+
+            # --- Annual pass (foreground, thick with labels) ---
+
+            # CMIP6 individual annual
+            for i, (_mname, mdata) in enumerate(
+                cmip6_individual_ts.items()
+            ):
+                if key in mdata:
+                    label = "CMIP6 members" if i == 0 else "_nolegend_"
+                    ts_annual = annual_mean(mdata[key])
+                    time_vals = _to_plot_time(ts_annual.time.values)
+                    ax.plot(time_vals, ts_annual.values * scale,
+                            color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                            label=label)
+
+            # CMIP6 MMM annual
+            if cmip6_ts and key in cmip6_ts:
+                ts_annual = annual_mean(cmip6_ts[key])
+                time_vals = _to_plot_time(ts_annual.time.values)
+                ax.plot(time_vals, ts_annual.values * scale,
+                        label="CMIP6 MMM", color=CMIP6_COLOR,
+                        linewidth=2.0, linestyle="--")
 
             # Model annual (foreground)
             for model, mdata in model_ts.items():
@@ -396,6 +714,14 @@ class SeaIceDiag(DiagnosticBase):
                             label=model, color=color, linewidth=2.0)
                     if model not in all_models:
                         all_models.append(model)
+
+            # Obs annual (foreground)
+            if key in obs_ts:
+                ts = obs_ts[key]
+                annual = annual_mean(ts)
+                time_vals = _to_plot_time(annual.time.values)
+                ax.plot(time_vals, annual.values * scale,
+                        label="Obs", color=OBS_COLOR, linewidth=2.5)
 
             ax.set_title(f"{hemi_label}")
             ax.set_ylabel(f"{info['long_name']} ({info['units']})")
@@ -416,6 +742,7 @@ class SeaIceDiag(DiagnosticBase):
             plot_type="timeseries",
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
+            cmip6_info=cmip6_info,
         )
         return [(fig, meta)]
 
@@ -423,6 +750,7 @@ class SeaIceDiag(DiagnosticBase):
 
     def _plot_seasonal_cycle(
         self, metric: str, model_ts: dict, obs_ts: dict,
+        cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot NH/SH seasonal cycle for a given metric."""
         info = _METRICS[metric]
@@ -433,12 +761,34 @@ class SeaIceDiag(DiagnosticBase):
 
         fig, (ax_nh, ax_sh) = plt.subplots(1, 2, figsize=(14, 5))
         all_models = []
+        cmip6_individual_ts = cmip6_individual_ts or {}
+
+        if cmip6_individual_ts:
+            all_models.extend(cmip6_individual_ts.keys())
 
         for ax, hemi, hemi_label in [
             (ax_nh, "nh", "Northern Hemisphere"),
             (ax_sh, "sh", "Southern Hemisphere"),
         ]:
             key = f"{metric}_{hemi}"
+
+            # CMIP6 individual
+            for i, (_mname, mdata) in enumerate(
+                cmip6_individual_ts.items()
+            ):
+                if key in mdata:
+                    clim = mdata[key].groupby("time.month").mean("time")
+                    label = "CMIP6 members" if i == 0 else "_nolegend_"
+                    ax.plot(months, clim.values * scale,
+                            color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                            label=label)
+
+            # CMIP6 MMM
+            if cmip6_ts and key in cmip6_ts:
+                clim = cmip6_ts[key].groupby("time.month").mean("time")
+                ax.plot(months, clim.values * scale,
+                        marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+                        linewidth=1.5, linestyle="--")
 
             # Models
             for model, mdata in model_ts.items():
@@ -478,6 +828,7 @@ class SeaIceDiag(DiagnosticBase):
             plot_type="seasonal_cycle",
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
+            cmip6_info=cmip6_info,
         )
         return [(fig, meta)]
 
@@ -485,6 +836,7 @@ class SeaIceDiag(DiagnosticBase):
 
     def _plot_extremes(
         self, metric: str, model_ts: dict, obs_ts: dict,
+        cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot 2×2 extreme month trends for a given metric."""
         info = _METRICS[metric]
@@ -492,6 +844,10 @@ class SeaIceDiag(DiagnosticBase):
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         all_models = []
+        cmip6_individual_ts = cmip6_individual_ts or {}
+
+        if cmip6_individual_ts:
+            all_models.extend(cmip6_individual_ts.keys())
 
         panels = [
             (axes[0, 0], "nh", "max", _MINMAX_MONTHS["nh"]),
@@ -505,6 +861,40 @@ class SeaIceDiag(DiagnosticBase):
             month = months_info[extreme]
             month_label = months_info[f"{extreme}_label"]
             hemi_label = "NH" if hemi == "nh" else "SH"
+
+            # CMIP6 individual
+            for i, (_mname, mdata) in enumerate(
+                cmip6_individual_ts.items()
+            ):
+                if key in mdata:
+                    ts = mdata[key]
+                    monthly = ts.where(
+                        ts["time.month"] == month, drop=True,
+                    )
+                    if len(monthly) > 0:
+                        label = (
+                            "CMIP6 members" if i == 0 else "_nolegend_"
+                        )
+                        time_vals = _to_plot_time(monthly.time.values)
+                        ax.plot(
+                            time_vals, monthly.values * scale,
+                            color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
+                            label=label,
+                        )
+
+            # CMIP6 MMM
+            if cmip6_ts and key in cmip6_ts:
+                ts = cmip6_ts[key]
+                monthly = ts.where(
+                    ts["time.month"] == month, drop=True,
+                )
+                if len(monthly) > 0:
+                    time_vals = _to_plot_time(monthly.time.values)
+                    ax.plot(
+                        time_vals, monthly.values * scale,
+                        label="CMIP6 MMM", color=CMIP6_COLOR,
+                        linewidth=1.5, linestyle="--",
+                    )
 
             # Models
             for model, mdata in model_ts.items():
@@ -550,6 +940,7 @@ class SeaIceDiag(DiagnosticBase):
             plot_type="monthly_trends",
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
+            cmip6_info=cmip6_info,
         )
         return [(fig, meta)]
 

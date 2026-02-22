@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 378 unit tests + 4 integration tests.
+Current test count: 487 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -62,7 +62,8 @@ feather/                     # Package root
 │   ├── global_biases.py     # GlobalBiases: climatology bias maps
 │   ├── timeseries.py        # TimeseriesDiag: global-mean time series
 │   ├── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
-│   └── radiation_budget.py  # RadiationBudget: TOA/surface radiation vs CERES
+│   ├── radiation_budget.py  # RadiationBudget: TOA/surface radiation vs CERES
+│   └── sea_ice.py           # SeaIceDiag: sea ice area/extent/volume/spatial
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -224,7 +225,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `load_var()` returns `None` for missing data — diagnostics should handle gracefully
 - Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
-- All 4 diagnostics (timeseries, seasonal_cycle, global_biases, radiation_budget) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
+- All 5 diagnostics (timeseries, seasonal_cycle, global_biases, radiation_budget, sea_ice) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
 - `get_member_pairs()` public API for listing (model, variant) tuples
 
 ### GlobalBiases diagnostic
@@ -257,6 +258,22 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `cmip6_individual` support: individual CMIP6 scatter on Gregory plot (gray dots) + MMM regression (dashed)
 - 50 dedicated tests in `tests/test_radiation_budget.py`
 
+### SeaIceDiag diagnostic
+- 5th diagnostic: sea ice area, extent, volume evaluation against OSI-SAF and PIOMAS/GIOMAS
+- 13 figures across 4 groups: time series (A), seasonal cycles (B), March/September trends (C), spatial maps (D)
+- Uses nereus ice functions directly: `nr.ice_area_nh/sh()`, `nr.ice_extent_nh/sh()`, `nr.ice_volume_nh/sh()`
+- Spatial maps use `nr.plot(ax=ax, projection="np"/"sp")` for polar stereographic
+- Obs: OSI-SAF (EASE2 grid, concentration), PIOMAS/GIOMAS (curvilinear, thickness/volume)
+- CMIP6 integration: custom `_compute_cmip6_timeseries()` loads `siconc`/`sithick` from SImon table, computes hemisphere-specific metrics (not global-mean like base class helper)
+- CMIP6 data sanitization: fill values (1e20, 9.97e36) in siconc/sithick/areacello must be ZEROED not clipped — clipping converts land fill values to fake 100% ice. Uses `np.where(vals > threshold, 0.0, vals)` pattern.
+- Auto-detects siconc still in percentage (0-100) and re-normalizes to fraction (0-1)
+- `_CMIP6_SEA_ICE_EXCLUDE` blocklist: models with known unrealistic sea ice (currently FGOALS-g3) are skipped with WARNING-level log
+- Post-computation validation: models with any metric > 1e14 are excluded from MMM
+- Per-model diagnostic logging: prints mean/max of each metric in plot units for outlier detection
+- CMIP6 only on Groups A-C (time series/seasonal/trends); Group D (spatial maps) excluded — CMIP6 ~100km resolution too coarse for polar stereo alongside 5km DestinE
+- `cmip6_individual` support: individual CMIP6 model lines + MMM with 4-layer plotting convention
+- 106 dedicated tests in `tests/test_sea_ice.py`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
@@ -281,7 +298,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Also available as `python -m feather`
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
-- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`)
+- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`, `SeaIceDiag`)
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 

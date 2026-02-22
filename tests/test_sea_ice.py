@@ -804,3 +804,625 @@ class TestConstructor:
         )
         assert diag.output_dir.name == "sea_ice"
         assert "figures" in str(diag.output_dir)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CMIP6 Integration Tests
+# ══════════════════════════════════════════════════════════════════════
+
+
+# ── CMIP6 Fixtures ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def synth_cmip6_sea_ice():
+    """Synthetic CMIP6 sea ice dataset on 5-degree regular lat/lon grid.
+
+    Has 12 monthly timesteps, siconc (0-1 fraction), sithick (m),
+    and areacello (cos-lat weighted areas).
+    """
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+    time = xr.date_range(
+        "1990-01", periods=12, freq="MS", calendar="standard",
+    )
+
+    lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+
+    # Sea ice concentration: 0–1 fraction, high at poles, zero at equator
+    siconc_base = np.clip(0.8 * (np.abs(lat_grid) - 30) / 60.0, 0, 1)
+    seasonal = -0.2 * np.cos(2 * np.pi * np.arange(12) / 12)
+    siconc_3d = np.clip(
+        siconc_base[np.newaxis, :, :] + seasonal[:, np.newaxis, np.newaxis],
+        0, 1,
+    )
+
+    # Sea ice thickness: 0–4m, high at poles
+    sithick_base = np.clip(2.0 * (np.abs(lat_grid) - 30) / 60.0, 0, 4)
+    sithick_3d = np.clip(
+        sithick_base[np.newaxis, :, :] + seasonal[:, np.newaxis, np.newaxis] * 0.5,
+        0, 5,
+    )
+
+    # Cell areas (cos-lat weighting, approximate)
+    area_2d = np.cos(np.deg2rad(lat_grid)) * np.ones_like(lat_grid)
+    # Scale to realistic m² for nereus (roughly Earth-like)
+    area_2d = area_2d * 3.1e10  # ~31 billion m² per cell
+
+    ds = xr.Dataset(
+        {
+            "siconc": xr.DataArray(
+                siconc_3d, dims=("time", "lat", "lon"),
+                coords={"time": time, "lat": lats, "lon": lons},
+            ),
+            "sithick": xr.DataArray(
+                sithick_3d, dims=("time", "lat", "lon"),
+                coords={"time": time, "lat": lats, "lon": lons},
+            ),
+            "areacello": xr.DataArray(
+                area_2d, dims=("lat", "lon"),
+                coords={"lat": lats, "lon": lons},
+            ),
+        }
+    )
+    return ds
+
+
+class MockCMIP6LoaderSeaIce:
+    """Mock CMIP6Loader for sea ice tests.
+
+    Returns synthetic sea ice data (siconc, sithick, areacello) for two
+    models.  Follows the same API as the real CMIP6Loader.
+    """
+
+    def __init__(self, dataset, models=None):
+        self._ds = dataset
+        self._models = models or {
+            "ModelA": {"variants": ["r1i1p1f1"]},
+            "ModelB": {"variants": ["r1i1p1f1"]},
+        }
+
+    @property
+    def models(self):
+        return self._models
+
+    def load_var(self, cmip6_var, model, *, variant=None, table=None,
+                 period=None, season=None, time_mean=True):
+        if cmip6_var not in self._ds.data_vars:
+            return None
+        da = self._ds[cmip6_var]
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        if season and "time" in da.dims:
+            da = da.sel(time=da["time.season"] == season)
+        if time_mean and "time" in da.dims:
+            da = da.mean("time")
+        return da
+
+    def load_area(self, model, variant=None, table="Amon"):
+        if "areacello" in self._ds.data_vars:
+            return self._ds["areacello"]
+        return None
+
+    def get_member_pairs(self, ensemble_mode=None):
+        pairs = []
+        for m, cfg in self._models.items():
+            variants = cfg.get("variants", ["r1i1p1f1"])
+            pairs.append((m, variants[0]))
+        return pairs
+
+    def available_models(self, cmip6_var, table=None):
+        if cmip6_var in self._ds.data_vars:
+            return list(self._models)
+        return []
+
+
+@pytest.fixture
+def cmip6_sea_ice_loader(synth_cmip6_sea_ice):
+    return MockCMIP6LoaderSeaIce(synth_cmip6_sea_ice)
+
+
+@pytest.fixture
+def cmip6_sea_ice_config(tmp_path):
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ifs-fesom"],
+        obs_root="",
+        obs_datasets={},
+        cmip6={
+            "enabled": True,
+            "catalog_path": str(tmp_path / "fake_catalog.yaml"),
+            "models": {
+                "ModelA": {"variants": ["r1i1p1f1"]},
+                "ModelB": {"variants": ["r1i1p1f1"]},
+            },
+        },
+        dask={},
+        nereus={"influence_radius": 1_000_000, "resolution": 1.0},
+        output_dir=str(tmp_path / "output"),
+    )
+
+
+@pytest.fixture
+def sea_ice_diag_cmip6(sea_ice_model_loader, sea_ice_obs_loader,
+                        cmip6_sea_ice_config, cmip6_sea_ice_loader):
+    return SeaIceDiag(
+        sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+        cmip6_loader=cmip6_sea_ice_loader,
+    )
+
+
+@pytest.fixture
+def sea_ice_diag_cmip6_individual(sea_ice_model_loader, sea_ice_obs_loader,
+                                   cmip6_sea_ice_config,
+                                   cmip6_sea_ice_loader):
+    return SeaIceDiag(
+        sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+        cmip6_loader=cmip6_sea_ice_loader,
+        cmip6_individual=True,
+    )
+
+
+# ── CMIP6 Timeseries Computation ─────────────────────────────────────
+
+
+class TestCMIP6Timeseries:
+    """Tests for _compute_cmip6_timeseries()."""
+
+    def test_returns_three_dicts(self, sea_ice_diag_cmip6):
+        mmm, info, indiv = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert isinstance(mmm, dict)
+        assert isinstance(info, dict)
+        assert isinstance(indiv, dict)
+
+    def test_mmm_has_expected_keys(self, sea_ice_diag_cmip6):
+        mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        for key in ("area_nh", "area_sh", "extent_nh", "extent_sh"):
+            assert key in mmm, f"Missing key: {key}"
+
+    def test_mmm_has_volume_keys(self, sea_ice_diag_cmip6):
+        mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert "volume_nh" in mmm
+        assert "volume_sh" in mmm
+
+    def test_info_has_n_members(self, sea_ice_diag_cmip6):
+        _, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert info["n_members"] == 2
+
+    def test_info_has_models_used(self, sea_ice_diag_cmip6):
+        _, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert "ModelA" in info["models_used"]
+        assert "ModelB" in info["models_used"]
+
+    def test_mmm_has_time_dim(self, sea_ice_diag_cmip6):
+        mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert "time" in mmm["area_nh"].dims
+
+    def test_mmm_values_positive(self, sea_ice_diag_cmip6):
+        mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert float(mmm["area_nh"].mean()) >= 0
+
+    def test_individual_empty_when_disabled(self, sea_ice_diag_cmip6):
+        """cmip6_individual=False → individual_ts is empty."""
+        _, _, indiv = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert indiv == {}
+
+    def test_12_timesteps(self, sea_ice_diag_cmip6):
+        mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        assert len(mmm["area_nh"].time) == 12
+
+    def test_fill_values_sanitized(self, synth_cmip6_sea_ice,
+                                    sea_ice_model_loader,
+                                    sea_ice_obs_loader,
+                                    cmip6_sea_ice_config):
+        """Non-NaN fill values in siconc are zeroed, not clipped to 1.0.
+
+        CMIP6 zarr stores may use 1e20 fill values at land cells.
+        _normalise_siconc divides by 100, making fill values ~1e18.
+        These must be zeroed (not clipped to 1.0, which would create
+        fake 100% ice at land cells).
+        """
+        # Inject fill values into siconc at "land" cells (equatorial)
+        ds = synth_cmip6_sea_ice.copy(deep=True)
+        poisoned = ds["siconc"].values.copy()
+        # Set equatorial cells to a huge fill value
+        poisoned[:, 15:20, :] = 1e20
+        ds["siconc"].values[:] = poisoned
+
+        loader = MockCMIP6LoaderSeaIce(ds)
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        mmm, _, _ = diag._compute_cmip6_timeseries()
+        # Fill values zeroed → ice area must stay physically reasonable.
+        area_val = float(mmm["area_nh"].max())
+        assert area_val < 1e14, (
+            f"CMIP6 ice area {area_val:.2e} is unreasonably large — "
+            f"fill values not sanitized"
+        )
+        plt.close("all")
+
+    def test_areacello_fill_values_sanitized(self, synth_cmip6_sea_ice,
+                                              sea_ice_model_loader,
+                                              sea_ice_obs_loader,
+                                              cmip6_sea_ice_config):
+        """Fill values in areacello (e.g. 9.97e36) are zeroed."""
+        ds = synth_cmip6_sea_ice.copy(deep=True)
+        poisoned_area = ds["areacello"].values.copy()
+        # Inject float32 netCDF fill value at some cells
+        poisoned_area[15:20, :] = 9.96921e+36
+        ds["areacello"].values[:] = poisoned_area
+
+        loader = MockCMIP6LoaderSeaIce(ds)
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        mmm, _, _ = diag._compute_cmip6_timeseries()
+        area_val = float(mmm["area_nh"].max())
+        assert area_val < 1e14, (
+            f"CMIP6 ice area {area_val:.2e} with areacello fill values — "
+            f"areacello fill values not sanitized"
+        )
+        plt.close("all")
+
+    def test_sithick_fill_values_sanitized(self, synth_cmip6_sea_ice,
+                                            sea_ice_model_loader,
+                                            sea_ice_obs_loader,
+                                            cmip6_sea_ice_config):
+        """Fill values in sithick (e.g. 1e20) are zeroed, not clipped."""
+        ds = synth_cmip6_sea_ice.copy(deep=True)
+        poisoned_thick = ds["sithick"].values.copy()
+        # Inject fill values at polar cells where there IS ice
+        poisoned_thick[:, 0:5, :] = 1e20
+        ds["sithick"].values[:] = poisoned_thick
+
+        loader = MockCMIP6LoaderSeaIce(ds)
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        mmm, _, _ = diag._compute_cmip6_timeseries()
+        if "volume_nh" in mmm:
+            vol_val = float(mmm["volume_nh"].max())
+            assert vol_val < 1e14, (
+                f"CMIP6 ice volume {vol_val:.2e} with sithick fill — "
+                f"sithick fill values not sanitized"
+            )
+        plt.close("all")
+
+    def test_nan_values_handled(self, synth_cmip6_sea_ice,
+                                 sea_ice_model_loader,
+                                 sea_ice_obs_loader,
+                                 cmip6_sea_ice_config):
+        """NaN values in siconc are treated as 0 (no ice)."""
+        ds = synth_cmip6_sea_ice.copy(deep=True)
+        nan_conc = ds["siconc"].values.copy()
+        nan_conc[:, 15:20, :] = np.nan
+        ds["siconc"].values[:] = nan_conc
+
+        loader = MockCMIP6LoaderSeaIce(ds)
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        mmm, info, _ = diag._compute_cmip6_timeseries()
+        assert info["n_members"] == 2
+        assert "area_nh" in mmm
+        assert np.isfinite(float(mmm["area_nh"].mean()))
+        plt.close("all")
+
+
+class TestCMIP6TimeseriesDisabled:
+    """Tests for CMIP6 disabled case."""
+
+    def test_empty_when_disabled(self, sea_ice_diag):
+        """Returns empty dicts when CMIP6 is not enabled."""
+        mmm, info, indiv = sea_ice_diag._compute_cmip6_timeseries()
+        assert mmm == {}
+        assert info == {}
+        assert indiv == {}
+
+
+class TestCMIP6ExcludedModels:
+    """Tests for _CMIP6_SEA_ICE_EXCLUDE blocklist."""
+
+    def test_excluded_model_not_in_mmm(self, synth_cmip6_sea_ice,
+                                        sea_ice_model_loader,
+                                        sea_ice_obs_loader,
+                                        cmip6_sea_ice_config):
+        """FGOALS-g3 is excluded even when present in the loader."""
+        loader = MockCMIP6LoaderSeaIce(
+            synth_cmip6_sea_ice,
+            models={
+                "ModelA": {"variants": ["r1i1p1f1"]},
+                "FGOALS-g3": {"variants": ["r1i1p1f1"]},
+            },
+        )
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        _, info, _ = diag._compute_cmip6_timeseries()
+        assert "FGOALS-g3" not in info.get("models_used", [])
+        assert info["n_members"] == 1
+        plt.close("all")
+
+    def test_excluded_model_logged_as_warning(self, synth_cmip6_sea_ice,
+                                               sea_ice_model_loader,
+                                               sea_ice_obs_loader,
+                                               cmip6_sea_ice_config,
+                                               caplog):
+        """Excluding a model emits a WARNING-level log message."""
+        import logging
+
+        loader = MockCMIP6LoaderSeaIce(
+            synth_cmip6_sea_ice,
+            models={
+                "FGOALS-g3": {"variants": ["r1i1p1f1"]},
+                "ModelA": {"variants": ["r1i1p1f1"]},
+            },
+        )
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        with caplog.at_level(logging.WARNING, logger="feather.diag.sea_ice"):
+            diag._compute_cmip6_timeseries()
+        assert any("EXCLUDING" in msg and "FGOALS-g3" in msg
+                    for msg in caplog.messages)
+        plt.close("all")
+
+    def test_all_excluded_returns_empty(self, synth_cmip6_sea_ice,
+                                         sea_ice_model_loader,
+                                         sea_ice_obs_loader,
+                                         cmip6_sea_ice_config):
+        """If all models are excluded, returns empty dicts gracefully."""
+        loader = MockCMIP6LoaderSeaIce(
+            synth_cmip6_sea_ice,
+            models={"FGOALS-g3": {"variants": ["r1i1p1f1"]}},
+        )
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader,
+            cmip6_sea_ice_config, cmip6_loader=loader,
+        )
+        mmm, info, indiv = diag._compute_cmip6_timeseries()
+        assert mmm == {}
+        assert info == {}
+        assert indiv == {}
+        plt.close("all")
+
+
+class TestCMIP6Individual:
+    """Tests for cmip6_individual mode."""
+
+    def test_individual_populated(self, sea_ice_diag_cmip6_individual):
+        _, _, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        assert "ModelA" in indiv
+        assert "ModelB" in indiv
+
+    def test_individual_has_area_keys(self, sea_ice_diag_cmip6_individual):
+        _, _, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        for key in ("area_nh", "area_sh"):
+            assert key in indiv["ModelA"]
+
+    def test_individual_has_time_dim(self, sea_ice_diag_cmip6_individual):
+        _, _, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        assert "time" in indiv["ModelA"]["area_nh"].dims
+
+
+# ── CMIP6 Plotting Tests ────────────────────────────────────────────
+
+
+class TestCMIP6PlotTimeseries:
+    """Tests for CMIP6 lines in _plot_timeseries()."""
+
+    def test_mmm_line_present(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        result = sea_ice_diag_cmip6._plot_timeseries(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )
+        fig, meta = result[0]
+        # Check that CMIP6 MMM label is in the legend of at least one axis
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 MMM" in all_labels
+        plt.close(fig)
+
+    def test_individual_lines_present(self, sea_ice_diag_cmip6_individual):
+        model_ts = sea_ice_diag_cmip6_individual._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6_individual._compute_obs_timeseries()
+        mmm, info, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        result = sea_ice_diag_cmip6_individual._plot_timeseries(
+            "area", model_ts, obs_ts,
+            cmip6_ts=mmm, cmip6_individual_ts=indiv, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 members" in all_labels
+        assert "CMIP6 MMM" in all_labels
+        plt.close(fig)
+
+    def test_backward_compat_no_cmip6(self, sea_ice_diag):
+        """Plotting without CMIP6 args still works."""
+        model_ts = sea_ice_diag._compute_model_timeseries()
+        obs_ts = sea_ice_diag._compute_obs_timeseries()
+        result = sea_ice_diag._plot_timeseries("area", model_ts, obs_ts)
+        assert len(result) == 1
+        plt.close("all")
+
+
+class TestCMIP6PlotSeasonalCycle:
+    """Tests for CMIP6 lines in _plot_seasonal_cycle()."""
+
+    def test_mmm_line_present(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        result = sea_ice_diag_cmip6._plot_seasonal_cycle(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 MMM" in all_labels
+        plt.close(fig)
+
+    def test_individual_lines_present(self, sea_ice_diag_cmip6_individual):
+        model_ts = sea_ice_diag_cmip6_individual._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6_individual._compute_obs_timeseries()
+        mmm, info, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        result = sea_ice_diag_cmip6_individual._plot_seasonal_cycle(
+            "extent", model_ts, obs_ts,
+            cmip6_ts=mmm, cmip6_individual_ts=indiv, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 members" in all_labels
+        plt.close(fig)
+
+
+class TestCMIP6PlotExtremes:
+    """Tests for CMIP6 lines in _plot_extremes()."""
+
+    def test_mmm_line_present(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        result = sea_ice_diag_cmip6._plot_extremes(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 MMM" in all_labels
+        plt.close(fig)
+
+    def test_individual_lines_present(self, sea_ice_diag_cmip6_individual):
+        model_ts = sea_ice_diag_cmip6_individual._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6_individual._compute_obs_timeseries()
+        mmm, info, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        result = sea_ice_diag_cmip6_individual._plot_extremes(
+            "volume", model_ts, obs_ts,
+            cmip6_ts=mmm, cmip6_individual_ts=indiv, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        all_labels = []
+        for ax in fig.get_axes():
+            all_labels.extend([t.get_text() for t in ax.get_legend().get_texts()])
+        assert "CMIP6 members" in all_labels
+        plt.close(fig)
+
+
+# ── CMIP6 Metadata Tests ────────────────────────────────────────────
+
+
+class TestCMIP6Metadata:
+    """Tests for cmip6_info in metadata."""
+
+    def test_cmip6_info_in_timeseries_meta(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        _, meta = sea_ice_diag_cmip6._plot_timeseries(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )[0]
+        assert meta.get("cmip6_info") is not None
+        assert meta["cmip6_info"]["n_members"] == 2
+        plt.close("all")
+
+    def test_cmip6_info_in_seasonal_meta(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        _, meta = sea_ice_diag_cmip6._plot_seasonal_cycle(
+            "extent", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )[0]
+        assert meta.get("cmip6_info") is not None
+        plt.close("all")
+
+    def test_cmip6_info_in_extremes_meta(self, sea_ice_diag_cmip6):
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        _, meta = sea_ice_diag_cmip6._plot_extremes(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )[0]
+        assert meta.get("cmip6_info") is not None
+        plt.close("all")
+
+    def test_no_cmip6_info_when_disabled(self, sea_ice_diag):
+        model_ts = sea_ice_diag._compute_model_timeseries()
+        obs_ts = sea_ice_diag._compute_obs_timeseries()
+        _, meta = sea_ice_diag._plot_timeseries(
+            "area", model_ts, obs_ts,
+        )[0]
+        assert meta.get("cmip6_info") is None
+        plt.close("all")
+
+    def test_cmip6_models_in_all_models(self, sea_ice_diag_cmip6_individual):
+        model_ts = sea_ice_diag_cmip6_individual._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6_individual._compute_obs_timeseries()
+        mmm, info, indiv = (
+            sea_ice_diag_cmip6_individual._compute_cmip6_timeseries()
+        )
+        _, meta = sea_ice_diag_cmip6_individual._plot_timeseries(
+            "area", model_ts, obs_ts,
+            cmip6_ts=mmm, cmip6_individual_ts=indiv, cmip6_info=info,
+        )[0]
+        assert "ModelA" in meta["models"]
+        assert "ModelB" in meta["models"]
+        plt.close("all")
+
+
+# ── CMIP6 compute/plot wrapper tests ────────────────────────────────
+
+
+class TestCMIP6ComputePlotWrappers:
+    """Tests for compute() and plot() with CMIP6 data."""
+
+    def test_compute_includes_cmip6(self, sea_ice_diag_cmip6):
+        result = sea_ice_diag_cmip6.compute()
+        assert "cmip6_ts" in result
+        assert "cmip6_info" in result
+        assert "cmip6_individual_ts" in result
+
+    def test_compute_cmip6_has_data(self, sea_ice_diag_cmip6):
+        result = sea_ice_diag_cmip6.compute()
+        assert result["cmip6_ts"]  # non-empty dict
+        assert result["cmip6_info"]["n_members"] == 2
+
+    @patch("nereus.plot")
+    def test_plot_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
+        results = sea_ice_diag_cmip6.compute()
+        figures = sea_ice_diag_cmip6.plot(results)
+        assert len(figures) == 13
+        plt.close("all")
+
+    @patch("nereus.plot")
+    def test_run_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
+        saved = sea_ice_diag_cmip6.run(skip_existing=False)
+        assert len(saved) == 13
+        plt.close("all")
