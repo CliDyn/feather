@@ -700,9 +700,10 @@ If your diagnostic uses variables not yet in `VARIABLE_REGISTRY`, add entries in
 ),
 ```
 
-### 8.2 Existing Variables (33 total)
+### 8.2 Existing Variables (34 total)
 
-**Surface atmospheric (18):** `avg_2t`, `avg_skt`, `avg_msl`, `avg_10u`, `avg_10v`, `avg_10ws`, `avg_tcc`, `avg_tcwv`, `avg_tclw`, `avg_tciw`, `avg_tprate`, `avg_ishf`, `avg_slhtf`, `avg_sdswrf`, `avg_sdlwrf`, `avg_snswrf`, `avg_snlwrf`, `avg_snswrfcs`, `avg_snlwrfcs`, `avg_tnswrf`, `avg_tnlwrf`, `avg_tnswrfcs`, `avg_tnlwrfcs`
+**Surface atmospheric (23):** `avg_2t`, `avg_skt`*, `avg_msl`, `avg_10u`, `avg_10v`, `avg_10ws`*, `avg_tcc`, `avg_tcwv`*, `avg_tclw`, `avg_tciw`, `avg_tprate`, `avg_ishf`, `avg_slhtf`, `avg_sdswrf`, `avg_sdlwrf`, `avg_snswrf`, `avg_snlwrf`, `avg_snswrfcs`, `avg_snlwrfcs`, `avg_tnswrf`, `avg_tnlwrf`, `avg_tnswrfcs`, `avg_tnlwrfcs`
+(*Note: 18 of these are fully validated for general use. `avg_skt` needs land-correction, `avg_10ws` needs derived-var support, `avg_tcwv` is currently missing an ERA5 file).*
 
 **Ocean 2D (5):** `avg_tos`, `avg_siconc`, `avg_sithick`, `avg_zos`, `avg_sos`
 
