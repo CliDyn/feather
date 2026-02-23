@@ -246,7 +246,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - CMIP6 individual series come from `_cmip6_global_mean_timeseries(return_individual=True)` on `DiagnosticBase`
 
 ### RadiationBudget diagnostic
-- 4th diagnostic: computes derived radiation quantities and produces budget bars, Gregory plot, imbalance time series, and bias maps
+- 4th diagnostic: computes derived radiation quantities and produces budget bars (two-panel: full budget + TOA Net zoom), Gregory plot, imbalance time series, and bias maps
 - Uses CERES EBAF as primary obs (not ERA5) — satellite gold standard for radiation, loaded via `ObsLoader.load_ceres()`
 - CERES files contain many variables per file — bypasses `VARIABLE_REGISTRY`, uses `config.obs_datasets["CERES_EBAF"]` with `toa`/`surface` file keys
 - Sign conventions: DestinE uses positive-downward (net into system); CERES OLR (`toa_lw_all_mon`) is positive upward — corrected via `ceres_sign=-1.0` in `_BUDGET_COMPONENTS`

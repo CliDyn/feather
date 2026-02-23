@@ -615,7 +615,7 @@ Existing patterns (follow these for consistency):
 - `"combined_bias_map"` — multi-panel obs + N bias panels
 - `"timeseries"` — time series line plot
 - `"seasonal_cycle"` — 12-month cycle
-- `"budget_bars"` — grouped bar chart
+- `"budget_bars"` — two-panel: grouped bar chart (left) + zoomed TOA Net (right)
 - `"gregory"` — scatter plot with regression
 
 ---

@@ -1407,7 +1407,7 @@ Next:
 
 ### Figure output (9 figures per run)
 
-- **Budget bar chart** (1): Global-mean radiation components for all models + CERES + CMIP6 MMM
+- **Budget bar chart** (1): Two-panel — left: global-mean radiation components for all models + CERES + CMIP6 MMM; right: zoomed TOA Net with per-source value annotations
 - **Gregory plot** (1): T2m vs net TOA scatter with regression lines (climate feedback parameter)
 - **Radiation imbalance time series** (1): Net TOA over time for models + CERES + CMIP6 — monthly as semi-transparent background, annual means as thick foreground lines
 - **Bias maps** (6): toa_net, sfc_net, toa_cre_sw, toa_cre_lw, sfc_net_sw, sfc_net_lw — all vs CERES

@@ -366,7 +366,7 @@ class RadiationBudget(DiagnosticBase):
     def _plot_budget(
         self, results: dict[str, Any],
     ) -> list[tuple[plt.Figure, dict]]:
-        """Plot budget bar chart."""
+        """Plot budget bar chart with zoomed TOA Net inset panel."""
         budget_data: dict[str, dict[str, float]] = {}
         all_models = []
 
@@ -389,10 +389,42 @@ class RadiationBudget(DiagnosticBase):
         if results.get("cmip6"):
             all_models.append("CMIP6 MMM")
 
-        fig, ax = plot_budget_bars(
-            budget_data,
-            title="Global Mean Radiation Budget",
+        # Two-panel figure: full budget (left) + TOA Net zoom (right)
+        fig, (ax_main, ax_zoom) = plt.subplots(
+            1, 2, figsize=(16, 6),
+            gridspec_kw={"width_ratios": [3, 1]},
         )
+
+        # Left panel: full budget bars
+        plot_budget_bars(budget_data, title="Global Mean Radiation Budget",
+                         ax=ax_main)
+
+        # Right panel: zoomed TOA Net
+        toa_net_data = budget_data.get("TOA Net", {})
+        if toa_net_data:
+            from feather.plot.lines import _budget_bar_color
+            sources = list(toa_net_data.keys())
+            values = [toa_net_data[s] for s in sources]
+            colors = [_budget_bar_color(s) for s in sources]
+            x = np.arange(len(sources))
+            ax_zoom.bar(x, values, color=colors, width=0.6)
+            ax_zoom.set_xticks(x)
+            ax_zoom.set_xticklabels(sources, rotation=30, ha="right",
+                                    fontsize=9)
+            ax_zoom.set_ylabel("W/m\u00b2")
+            ax_zoom.set_title("TOA Net (zoom)")
+            ax_zoom.grid(True, alpha=0.3, axis="y")
+            ax_zoom.axhline(0, color="k", linewidth=0.5)
+            # Add value annotations on bars
+            for i, v in enumerate(values):
+                ax_zoom.text(i, v + 0.05 * max(abs(min(values)), abs(max(values))),
+                             f"{v:.1f}", ha="center", va="bottom", fontsize=9)
+        else:
+            ax_zoom.set_title("TOA Net (zoom)")
+            ax_zoom.text(0.5, 0.5, "No data", transform=ax_zoom.transAxes,
+                         ha="center", va="center")
+
+        plt.tight_layout()
 
         meta = self._build_metadata(
             title="Global Mean Radiation Budget",
@@ -401,7 +433,9 @@ class RadiationBudget(DiagnosticBase):
             description=(
                 "Grouped bar chart of global-mean radiation budget components "
                 "(TOA SW/LW/Net, Surface SW/LW/Net, Atmospheric Absorption) "
-                "for DestinE models, CERES observations, and CMIP6 MMM."
+                "for DestinE models, CERES observations, and CMIP6 MMM. "
+                "Right panel zooms in on TOA Net radiation (~1 W/m\u00b2) "
+                "which is too small to distinguish in the full budget view."
             ),
             plot_type="budget_bars",
             period=self.period,

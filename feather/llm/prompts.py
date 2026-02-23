@@ -24,9 +24,12 @@ one model's bias.
 2. **Time series** — global-mean time series for each model vs observations.
 3. **Seasonal cycles** — monthly climatological cycles (Jan-Dec) for each \
 model vs observations.
-4. **Radiation budget bars** — grouped bar charts comparing global-mean \
-TOA and surface radiation components (SW, LW, Net, CRE, atmospheric \
-absorption) across models vs CERES EBAF observations.
+4. **Radiation budget bars** — two-panel figure: left panel is a grouped \
+bar chart comparing global-mean TOA and surface radiation components \
+(SW, LW, Net, CRE, atmospheric absorption) across models vs CERES EBAF \
+observations; right panel zooms in on TOA Net radiation (~1 W/m²), which \
+is too small to distinguish in the full budget view, with per-source \
+value annotations.
 5. **Gregory plot** — scatter of global-mean 2 m temperature vs net TOA \
 radiation with regression lines; used to diagnose radiative feedbacks \
 and equilibrium climate sensitivity.
