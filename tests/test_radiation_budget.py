@@ -99,15 +99,26 @@ def synth_ceres():
         base = np.full_like(lat_grid, base_val, dtype=float)
         return base[np.newaxis, :, :] + seasonal[:, np.newaxis, np.newaxis] * seasonal_amp
 
+    # Use real CERES EBAF sign conventions:
+    # - solar_mon: incoming solar, positive downward (~340 W/m²)
+    # - toa_sw_all_mon: reflected (upwelling) SW, positive upward (~100 W/m²)
+    # - toa_lw_all_mon: outgoing LW (OLR), positive upward (~238 W/m²)
+    # - toa_net_all_mon: net total TOA, positive downward (~2 W/m²)
+    # Net TOA SW = solar_mon - toa_sw_all_mon = 340 - 100 = 240 W/m²
+    # Net TOA = 340 - 100 - 238 = 2 W/m²
     ds = xr.Dataset(
         {
-            # TOA variables
+            # TOA variables (CERES convention)
+            "solar_mon": xr.DataArray(
+                _make_field(340.0), dims=("time", "lat", "lon"),
+                coords={"time": time, "lat": lats, "lon": lons},
+            ),
             "toa_sw_all_mon": xr.DataArray(
-                _make_field(240.0), dims=("time", "lat", "lon"),
+                _make_field(100.0), dims=("time", "lat", "lon"),
                 coords={"time": time, "lat": lats, "lon": lons},
             ),
             "toa_lw_all_mon": xr.DataArray(
-                _make_field(-238.0), dims=("time", "lat", "lon"),
+                _make_field(238.0), dims=("time", "lat", "lon"),
                 coords={"time": time, "lat": lats, "lon": lons},
             ),
             "toa_net_all_mon": xr.DataArray(
@@ -122,7 +133,7 @@ def synth_ceres():
                 _make_field(30.0), dims=("time", "lat", "lon"),
                 coords={"time": time, "lat": lats, "lon": lons},
             ),
-            # Surface variables
+            # Surface variables (already net, positive downward)
             "sfc_net_sw_all_mon": xr.DataArray(
                 _make_field(170.0), dims=("time", "lat", "lon"),
                 coords={"time": time, "lat": lats, "lon": lons},
@@ -381,6 +392,41 @@ class TestBudgetComputation:
         assert len(obs) > 0
         assert "TOA Net" in obs
         assert "Sfc Net" in obs
+
+    def test_ceres_toa_sw_is_net(self, rad_model_loader, rad_obs_loader,
+                                   rad_config):
+        """CERES TOA SW is net absorbed (solar - reflected), not reflected.
+
+        CERES toa_sw_all_mon is reflected/upwelling SW (~100 W/m²).
+        Net TOA SW = solar_mon (~340) - toa_sw_all_mon (~100) = ~240 W/m².
+        """
+        diag = RadiationBudget(rad_model_loader, rad_obs_loader, rad_config)
+        results = diag._compute_budget()
+
+        obs = results["obs"]
+        assert "TOA SW" in obs
+        # Should be ~240 W/m² (net absorbed), not ~100 (reflected)
+        assert obs["TOA SW"] > 200, (
+            f"CERES TOA SW = {obs['TOA SW']:.1f} W/m² — looks like reflected "
+            f"SW, not net. Expected ~240 W/m²."
+        )
+
+    def test_ceres_toa_lw_negative(self, rad_model_loader, rad_obs_loader,
+                                     rad_config):
+        """CERES TOA LW is negative (net downward convention).
+
+        CERES toa_lw_all_mon is OLR (positive upward, ~238 W/m²).
+        After sign flip: -238 W/m² (net downward = energy loss).
+        """
+        diag = RadiationBudget(rad_model_loader, rad_obs_loader, rad_config)
+        results = diag._compute_budget()
+
+        obs = results["obs"]
+        assert "TOA LW" in obs
+        assert obs["TOA LW"] < 0, (
+            f"CERES TOA LW = {obs['TOA LW']:.1f} W/m² — should be negative "
+            f"(OLR flipped to net-downward convention)."
+        )
 
     def test_budget_values_reasonable(self, rad_model_loader, rad_obs_loader,
                                        rad_config):

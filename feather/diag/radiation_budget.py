@@ -282,18 +282,38 @@ class RadiationBudget(DiagnosticBase):
         Applies sign corrections where CERES convention differs from
         DestinE (positive downward).  CERES ``toa_lw_all_mon`` is OLR
         (positive upward) — negated to match DestinE net-down convention.
+        CERES ``toa_sw_all_mon`` is *reflected* (upward) SW — net TOA SW
+        is computed as ``solar_mon - toa_sw_all_mon``.
         """
         budget: dict[str, float] = {}
         try:
             for comp_name, _, ceres_var, ceres_file, ceres_sign in _BUDGET_COMPONENTS:
                 if ceres_var is not None:
-                    da = self.obs_loader.load_ceres(
-                        ceres_var, period=self.period, file_key=ceres_file,
-                    )
-                    clim = climatology(da, self.period)
-                    budget[comp_name] = float(
-                        latlon_global_mean(clim).values
-                    ) * ceres_sign
+                    if comp_name == "TOA SW":
+                        # CERES toa_sw_all_mon is reflected (upward) SW,
+                        # not net.  Net TOA SW = solar - reflected.
+                        solar = self.obs_loader.load_ceres(
+                            "solar_mon", period=self.period, file_key="toa",
+                        )
+                        reflected = self.obs_loader.load_ceres(
+                            "toa_sw_all_mon", period=self.period,
+                            file_key="toa",
+                        )
+                        solar_clim = climatology(solar, self.period)
+                        reflected_clim = climatology(reflected, self.period)
+                        budget[comp_name] = float(
+                            latlon_global_mean(
+                                solar_clim - reflected_clim
+                            ).values
+                        )
+                    else:
+                        da = self.obs_loader.load_ceres(
+                            ceres_var, period=self.period, file_key=ceres_file,
+                        )
+                        clim = climatology(da, self.period)
+                        budget[comp_name] = float(
+                            latlon_global_mean(clim).values
+                        ) * ceres_sign
                 elif comp_name == "Atm Abs":
                     toa = budget.get("TOA Net")
                     sfc = budget.get("Sfc Net")
