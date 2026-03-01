@@ -132,6 +132,48 @@ class ObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
+    def load_esa_cci(self, product: str = "analysed_sst", period=None):
+        """Load ESA-CCI SST product.
+
+        Parameters
+        ----------
+        product : str
+            Config key: ``"analysed_sst"`` (monthly), ``"timemean"``,
+            or ``"ymonmean"``.
+        period : tuple of str, optional
+            Time slicing (relevant for monthly data).
+
+        Returns
+        -------
+        xr.DataArray
+            SST data (Kelvin, dims vary by product).
+        """
+        cfg = self._config.obs_datasets.get("ESA_CCI")
+        if cfg is None:
+            raise KeyError(
+                "ESA_CCI not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        path = Path(cfg["path"])
+        variables = cfg.get("variables", {})
+        if product not in variables:
+            raise FileNotFoundError(
+                f"Product {product!r} not in ESA_CCI config. "
+                f"Available: {list(variables.keys())}"
+            )
+
+        filepath = path / variables[product]
+        cache_key = f"ESA_CCI/{product}"
+        if cache_key not in self._cache:
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        da = ds["analysed_sst"]
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
     def load_osisaf(self, hemisphere: str, period=None):
         """Load OSI-SAF sea ice concentration dataset.
 
@@ -204,6 +246,67 @@ class ObsLoader:
 
         filepath = base_path / variables[product]
         cache_key = f"PSC/{product}"
+        if cache_key not in self._cache:
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        if period is not None and "time" in ds.dims:
+            ds = ds.sel(time=slice(period[0], period[1]))
+        return ds
+
+    def load_en4(self, variable: str = "thetao", period=None):
+        """Load EN4 v4.2.2 ocean variable.
+
+        Parameters
+        ----------
+        variable : str
+            ``"thetao"`` (temperature) or ``"so"`` (salinity).
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.DataArray
+            Data with dims ``(time, lev, lat, lon)``.
+        """
+        ds = self.load_en4_dataset(variable, period=period)
+        da = self._find_variable(ds, variable)
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
+    def load_en4_dataset(self, variable: str = "thetao", period=None):
+        """Load EN4 v4.2.2 as a full Dataset (includes ``lev_bnds``).
+
+        Parameters
+        ----------
+        variable : str
+            ``"thetao"`` or ``"so"`` — selects the file to open.
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.Dataset
+            Full dataset with ``lev``, ``lev_bnds``, etc.
+        """
+        ds_cfg = self._config.obs_datasets.get("EN4")
+        if ds_cfg is None:
+            raise KeyError(
+                "EN4 not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        base_path = Path(ds_cfg["path"])
+        variables = ds_cfg.get("variables", {})
+        if variable not in variables:
+            raise FileNotFoundError(
+                f"Variable {variable!r} not in EN4 config. "
+                f"Available: {list(variables.keys())}"
+            )
+
+        filepath = base_path / variables[variable]
+        cache_key = f"EN4/{variable}"
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 

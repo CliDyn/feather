@@ -13,6 +13,7 @@ def plot_bias_map(model_data, obs_data, *,
                   cmap="RdBu_r", bias_cmap="RdBu_r",
                   vmin=None, vmax=None, bias_vmax=None,
                   units="",
+                  land=False,
                   figsize_per_panel=(7, 5)):
     """Three-panel figure: model | observation | bias (model - obs).
 
@@ -102,6 +103,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=model_title,
+        land=land,
     )
 
     # --- Panel 2: Observation (same grid → reuse interpolator) ---
@@ -111,6 +113,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[1], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
+        land=land,
     )
 
     # --- Panel 3: Bias ---
@@ -122,6 +125,7 @@ def plot_bias_map(model_data, obs_data, *,
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_abs_max, vmax=bias_abs_max,
             colorbar=True, colorbar_label=units, title=bias_title,
+            land=land,
         )
     else:
         axes[2].text(
@@ -145,6 +149,7 @@ def plot_combined_bias_map(
     units="",
     projection="rob", resolution=0.25,
     max_cols=3,
+    land=False,
     figsize_per_panel=(7, 5),
 ):
     """Combined multi-panel figure: obs climatology + bias maps.
@@ -238,6 +243,7 @@ def plot_combined_bias_map(
         ax=axes_flat[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
+        land=land,
     )
 
     # --- Bias panels ---
@@ -249,6 +255,7 @@ def plot_combined_bias_map(
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_vmax, vmax=bias_vmax,
             colorbar=True, colorbar_label=units, title=f"Bias: {label}",
+            land=land,
         )
 
     # Hide unused axes

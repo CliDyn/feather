@@ -30,7 +30,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: 487 unit tests + 4 integration tests.
+Current test count: 658 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -63,7 +63,9 @@ feather/                     # Package root
 │   ├── timeseries.py        # TimeseriesDiag: global-mean time series
 │   ├── seasonal_cycle.py    # SeasonalCycleDiag: monthly climatological cycle
 │   ├── radiation_budget.py  # RadiationBudget: TOA/surface radiation vs CERES
-│   └── sea_ice.py           # SeaIceDiag: sea ice area/extent/volume/spatial
+│   ├── sea_ice.py           # SeaIceDiag: sea ice area/extent/volume/spatial
+│   ├── ocean_sst.py         # OceanSST: SST evaluation vs ESA-CCI
+│   └── ocean_en4.py         # OceanEN4: 3D ocean T/S evaluation vs EN4
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -225,7 +227,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `load_var()` returns `None` for missing data — diagnostics should handle gracefully
 - Calendar normalization (360_day, noleap, standard) → first-of-month pandas timestamps
 - Sea ice (`siconc`): auto-normalized from percentage (0-100) to fraction (0-1) if needed
-- All 5 diagnostics (timeseries, seasonal_cycle, global_biases, radiation_budget, sea_ice) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
+- All 7 diagnostics (timeseries, seasonal_cycle, global_biases, radiation_budget, sea_ice, ocean_sst, ocean_en4) integrated — CMIP6 MMM lines/bias maps added when `cmip6.enabled: true`
 - `get_member_pairs()` public API for listing (model, variant) tuples
 
 ### GlobalBiases diagnostic
@@ -274,6 +276,24 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - `cmip6_individual` support: individual CMIP6 model lines + MMM with 4-layer plotting convention
 - 106 dedicated tests in `tests/test_sea_ice.py`
 
+### OceanSST diagnostic
+- 6th diagnostic: SST evaluation against ESA-CCI L4 v3.0.1 satellite observations
+- 6 figures in 4 groups (A: 3 bias maps, B: timeseries, C: seasonal cycle, D: zonal mean)
+- All data K→°C; obs global mean uses cos(lat) weights (avoids 25.9M-cell mesh for 0.05° grid)
+- `ocean_influence_radius` (20km default) avoids coast contamination for ESA-CCI's 0.05° grid
+- `land=True` passed to `plot_combined_bias_map()` for ocean-only display
+- 102 dedicated tests in `tests/test_ocean_sst.py`
+
+### OceanEN4 diagnostic
+- 7th diagnostic: 3D ocean T/S evaluation against EN4 v4.2.2 (temperature + salinity)
+- 12 figures in 8 groups: A-B surface bias maps (3+3), C-F Hovmoller diagrams (1 combined each), G-H depth-layer time series (1 each)
+- Hovmoller figures are combined: EN4 + all models as subpanels with shared symmetric colorbar
+- Two anomaly types: anom1 (each minus own first timestep) and anomref (all minus EN4 first timestep)
+- Uses `nr.hovmoller()` with integer time indices (datetime64 buffer workaround), `nr.mesh_from_arrays()` for EN4 areas, `nr.volume_mean()` for depth-layer averaging
+- EN4 influence radius: 200km default (`en4_influence_radius`) for 1° grid; model HEALPix uses standard 80km
+- Depth levels stored in `config.ocean_3d` (FeatherConfig field); NEMO half-levels approximated from full levels
+- 100 dedicated tests in `tests/test_ocean_en4.py`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
@@ -298,7 +318,7 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py`:
 - Also available as `python -m feather`
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
-- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`, `SeaIceDiag`)
+- `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`, `SeaIceDiag`, `OceanSST`, `OceanEN4`)
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 

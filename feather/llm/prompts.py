@@ -47,6 +47,28 @@ long-term trends in sea ice metrics.
 10. **Sea ice spatial maps** — polar stereographic maps of sea ice \
 concentration or thickness for extreme months, comparing models and \
 observations.
+11. **SST bias maps** — spatial maps of model SST minus ESA-CCI \
+satellite SST climatology. Look for regional patterns: coastal biases \
+from influence radius effects, tropical cold tongue biases, Gulf Stream / \
+Kuroshio separation errors, warm biases in upwelling regions.
+12. **SST time series** — global-mean ocean SST over time, models vs \
+ESA-CCI satellite observations. Monthly as semi-transparent background, \
+annual means as thick foreground.
+13. **SST seasonal cycle** — 12-month climatological cycle of global-mean \
+SST for models vs ESA-CCI. Assess amplitude and phase differences.
+14. **SST zonal mean** — latitude profile of SST for models vs ESA-CCI. \
+Check warm pool position, mid-latitude gradients, polar SST.
+15. **Hovmoller (time-depth) diagrams** — show evolution of temperature \
+or salinity anomalies as a function of depth and time. Two anomaly \
+types: relative to first timestep (intrinsic drift) and relative to \
+EN4 first-year reference profile (model-obs departure). Look for signal \
+propagation depth, surface vs deep ocean trends, and comparison to \
+EN4 observational reference. Sqrt-scaled depth axis emphasizes upper ocean.
+16. **Depth-layer time series** — volume-weighted mean temperature or \
+salinity in three depth ranges (0-700m, 700-2000m, 2000m-bottom) \
+comparing models against EN4 v4.2.2. Monthly as semi-transparent \
+background, annual means as thick foreground. Assess warming/freshening \
+rates at different depths.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \

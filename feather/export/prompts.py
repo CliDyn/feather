@@ -33,6 +33,13 @@ analysis), imbalance time series, and radiation bias maps
 - **Sea ice**: Sea ice area, extent, and volume evaluation against \
 OSI-SAF (concentration/extent) and PIOMAS/GIOMAS (volume) — includes \
 time series, seasonal cycles, extreme month trends, and polar spatial maps
+- **Ocean SST**: Sea surface temperature evaluation against ESA-CCI L4 \
+v3.0.1 satellite observations — includes bias maps (annual/DJF/JJA), \
+global-mean time series, seasonal cycle, and zonal mean profile
+- **Ocean EN4**: 3D ocean temperature and salinity evaluation against \
+EN4 v4.2.2 — includes surface bias maps, Hovmoller (time-depth) \
+diagrams with two anomaly types, and depth-layer mean time series \
+(0-700m, 700-2000m, 2000m-bottom)
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

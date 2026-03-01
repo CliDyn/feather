@@ -11,6 +11,8 @@ Diagnostics:
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
 - :mod:`~feather.diag.radiation_budget` — radiation budget analysis
 - :mod:`~feather.diag.sea_ice` — sea ice evaluation (area/extent/volume/spatial)
+- :mod:`~feather.diag.ocean_sst` — ocean SST evaluation vs ESA-CCI
+- :mod:`~feather.diag.ocean_en4` — ocean 3D evaluation vs EN4 v4.2.2
 """
 
 from feather.diag.base import DiagnosticBase
@@ -23,3 +25,5 @@ import feather.diag.timeseries  # noqa: F401
 import feather.diag.seasonal_cycle  # noqa: F401
 import feather.diag.radiation_budget  # noqa: F401
 import feather.diag.sea_ice  # noqa: F401
+import feather.diag.ocean_sst  # noqa: F401
+import feather.diag.ocean_en4  # noqa: F401

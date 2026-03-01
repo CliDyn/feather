@@ -18,6 +18,7 @@ class FeatherConfig:
     dask: dict
     nereus: dict
     output_dir: str
+    ocean_3d: dict = field(default_factory=dict)
     llm: dict = field(default_factory=dict)
     website: dict = field(default_factory=dict)
     report: dict = field(default_factory=dict)
@@ -45,6 +46,7 @@ class FeatherConfig:
             dask=raw.get("dask", {}),
             nereus=raw.get("nereus", {}),
             output_dir=raw.get("output_dir", "./output"),
+            ocean_3d=raw.get("ocean_3d", {}),
             llm=raw.get("llm", {}),
             website=raw.get("website", {}),
             report=raw.get("report", {}),
