@@ -108,6 +108,19 @@ def main(argv: list[str] | None = None):
             datefmt="%H:%M:%S",
         )
 
+    # Allow comma-separated values (e.g. --diagnostics ocean_sst,ocean_en4)
+    def _split_csv(items):
+        if items is None:
+            return None
+        out = []
+        for item in items:
+            out.extend(item.split(","))
+        return out
+
+    args.diagnostics = _split_csv(args.diagnostics)
+    args.variables = _split_csv(args.variables)
+    args.steps = [s for item in args.steps for s in item.split(",")]
+
     cfg = FeatherConfig.from_yaml(args.config)
     if args.output:
         cfg.output_dir = args.output
