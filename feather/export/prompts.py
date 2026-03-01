@@ -40,6 +40,10 @@ global-mean time series, seasonal cycle, and zonal mean profile
 EN4 v4.2.2 — includes surface bias maps, Hovmoller (time-depth) \
 diagrams with two anomaly types, and depth-layer mean time series \
 (0-700m, 700-2000m, 2000m-bottom)
+- **Global trends**: Linear trend maps (units/decade) for 18 surface \
+variables — shows observation trends and model-obs trend differences \
+for annual, DJF, and JJA periods, revealing spatial patterns of \
+warming/cooling and inter-model agreement on trend magnitudes
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

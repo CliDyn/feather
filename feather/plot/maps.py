@@ -14,6 +14,7 @@ def plot_bias_map(model_data, obs_data, *,
                   vmin=None, vmax=None, bias_vmax=None,
                   units="",
                   land=False,
+                  method="nearest",
                   figsize_per_panel=(7, 5)):
     """Three-panel figure: model | observation | bias (model - obs).
 
@@ -53,6 +54,9 @@ def plot_bias_map(model_data, obs_data, *,
         cross-model comparison.
     units : str
         Colorbar label (e.g. ``'K'``).
+    method : str
+        Interpolation method for ``nereus.plot()`` (default ``"nearest"``).
+        Use ``"linear"`` for smoother rendering of coarse grids.
     figsize_per_panel : tuple
         ``(width, height)`` per panel in inches.
 
@@ -103,7 +107,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=model_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Panel 2: Observation (same grid → reuse interpolator) ---
@@ -113,7 +117,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[1], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Panel 3: Bias ---
@@ -125,7 +129,7 @@ def plot_bias_map(model_data, obs_data, *,
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_abs_max, vmax=bias_abs_max,
             colorbar=True, colorbar_label=units, title=bias_title,
-            land=land,
+            land=land, method=method,
         )
     else:
         axes[2].text(
@@ -150,6 +154,7 @@ def plot_combined_bias_map(
     projection="rob", resolution=0.25,
     max_cols=3,
     land=False,
+    method="nearest",
     figsize_per_panel=(7, 5),
 ):
     """Combined multi-panel figure: obs climatology + bias maps.
@@ -187,6 +192,9 @@ def plot_combined_bias_map(
         Nereus plotting resolution in degrees.
     max_cols : int
         Maximum columns before wrapping to a new row.
+    method : str
+        Interpolation method for ``nereus.plot()`` (default ``"nearest"``).
+        Use ``"linear"`` for smoother rendering of coarse grids.
     figsize_per_panel : tuple
         ``(width, height)`` per panel in inches.
 
@@ -243,7 +251,7 @@ def plot_combined_bias_map(
         ax=axes_flat[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Bias panels ---
@@ -255,7 +263,7 @@ def plot_combined_bias_map(
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_vmax, vmax=bias_vmax,
             colorbar=True, colorbar_label=units, title=f"Bias: {label}",
-            land=land,
+            land=land, method=method,
         )
 
     # Hide unused axes

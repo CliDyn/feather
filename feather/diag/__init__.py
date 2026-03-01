@@ -27,3 +27,4 @@ import feather.diag.radiation_budget  # noqa: F401
 import feather.diag.sea_ice  # noqa: F401
 import feather.diag.ocean_sst  # noqa: F401
 import feather.diag.ocean_en4  # noqa: F401
+import feather.diag.global_trends  # noqa: F401

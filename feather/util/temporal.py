@@ -1,5 +1,6 @@
-"""Temporal utilities: climatologies, anomalies, seasonal grouping."""
+"""Temporal utilities: climatologies, anomalies, seasonal grouping, trends."""
 
+import numpy as np
 import xarray as xr
 
 
@@ -107,3 +108,134 @@ def annual_mean(da: xr.DataArray) -> xr.DataArray:
         Annual means.
     """
     return da.resample(time="YE").mean()
+
+
+def linear_trend(da: xr.DataArray, dim: str = "time") -> xr.DataArray:
+    """Per-grid-point linear trend in original units per year.
+
+    Computes the OLS slope at each grid point by regressing values
+    against time expressed in decimal years.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data with a time (datetime64) or numeric dimension.
+        Must be materialized (not dask-backed) — call ``.compute()`` first.
+    dim : str
+        Name of the dimension to regress along.
+
+    Returns
+    -------
+    xr.DataArray
+        Linear trend (slope) at each grid point, in units per year.
+        Multiply by 10 for per-decade trends.
+    """
+    coord = da[dim]
+
+    # Convert time coordinate to decimal years
+    if np.issubdtype(coord.dtype, np.datetime64):
+        t0 = coord.values[0]
+        x = (coord.values - t0) / np.timedelta64(1, "D") / 365.25
+    else:
+        # Numeric coordinate (e.g. year integers from groupby)
+        x = coord.values.astype(np.float64)
+        x = x - x[0]
+
+    x = np.asarray(x, dtype=np.float64)
+    n = len(x)
+    if n < 2:
+        # Cannot compute trend with fewer than 2 points
+        other_dims = [d for d in da.dims if d != dim]
+        other_coords = {k: da.coords[k] for k in da.coords if k != dim}
+        shape = [da.sizes[d] for d in other_dims]
+        return xr.DataArray(
+            np.full(shape, np.nan) if shape else np.nan,
+            dims=other_dims or None,
+            coords=other_coords,
+        )
+
+    # Stack all non-dim dimensions into a flat array for vectorized regression
+    other_dims = [d for d in da.dims if d != dim]
+    if other_dims:
+        stacked = da.stack(flat=other_dims)  # (dim, flat)
+        y = np.asarray(stacked.values, dtype=np.float64)  # (n, m)
+    else:
+        y = np.asarray(da.values, dtype=np.float64).reshape(n, 1)
+
+    # Vectorized OLS: slope = (N*sum(x*y) - sum(x)*sum(y)) / (N*sum(x²) - sum(x)²)
+    sx = x.sum()
+    sxx = (x * x).sum()
+    denom = n * sxx - sx * sx
+
+    # einsum for (n,) × (n, m) → (m,)
+    sxy = np.einsum("i,ij->j", x, y)
+    sy = y.sum(axis=0)
+
+    slope = (n * sxy - sx * sy) / denom
+
+    if other_dims:
+        # Unstack back to original shape
+        result = stacked.isel({dim: 0}).drop_vars(dim, errors="ignore").copy(
+            data=slope,
+        )
+        return result.unstack("flat")
+    else:
+        return xr.DataArray(float(slope[0]))
+
+
+_SEASON_MONTHS = {
+    "DJF": [12, 1, 2],
+    "MAM": [3, 4, 5],
+    "JJA": [6, 7, 8],
+    "SON": [9, 10, 11],
+}
+
+
+def seasonal_annual_mean(
+    da: xr.DataArray,
+    season: str,
+    period: tuple[str, str] | None = None,
+) -> xr.DataArray:
+    """Annual means for a specific season (DJF, MAM, JJA, SON).
+
+    Filters to the season's months, groups by year, and computes
+    per-year means.  For DJF, December is assigned to the following
+    year (e.g. Dec 1990 → year 1991).
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data with a ``time`` dimension.
+    season : str
+        One of ``"DJF"``, ``"MAM"``, ``"JJA"``, ``"SON"``.
+    period : tuple of str, optional
+        (start, end) for time slicing before season selection.
+
+    Returns
+    -------
+    xr.DataArray
+        Seasonal annual means with ``year`` coordinate (integer years).
+    """
+    if period is not None:
+        da = da.sel(time=slice(period[0], period[1]))
+
+    months = _SEASON_MONTHS[season.upper()]
+
+    # Filter to season months
+    month_vals = da["time.month"]
+    mask = month_vals.isin(months)
+    da_season = da.sel(time=mask)
+
+    if len(da_season.time) == 0:
+        return da_season
+
+    # Assign year: for DJF, shift December to the following year
+    years = da_season["time.year"].values.copy()
+    if season.upper() == "DJF":
+        month_arr = da_season["time.month"].values
+        years[month_arr == 12] += 1
+
+    # Group by year and mean
+    year_coord = xr.DataArray(years, dims="time")
+    grouped = da_season.groupby(year_coord).mean(dim="time")
+    return grouped.rename({"group": "year"})

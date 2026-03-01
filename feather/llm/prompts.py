@@ -69,6 +69,11 @@ salinity in three depth ranges (0-700m, 700-2000m, 2000m-bottom) \
 comparing models against EN4 v4.2.2. Monthly as semi-transparent \
 background, annual means as thick foreground. Assess warming/freshening \
 rates at different depths.
+17. **Trend maps** — Combined multi-panel figure showing linear trends \
+(units/decade) over the analysis period. First panel shows observation \
+trends, subsequent panels show model-obs trend differences. Look for: \
+spatial patterns of warming/cooling, precipitation changes, trend \
+magnitude comparison across models, regions of agreement/disagreement.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
