@@ -16,11 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-import warnings
-
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from feather.config import FeatherConfig
 from feather.llm.prompts import (
@@ -35,15 +32,15 @@ logger = logging.getLogger(__name__)
 
 
 class FigureAnalyzer:
-    """Analyse diagnostic figures using Gemini.
+    """Analyse diagnostic figures using Gemini via Vertex AI Express.
 
     Parameters
     ----------
     config : FeatherConfig
         Feather configuration (for output paths and LLM settings).
     api_key : str or None
-        Gemini API key. Falls back to the env var specified in config
-        (``llm.figure_analysis.api_key_env``, default ``GEMINI_API_KEY``).
+        Vertex AI API key. Falls back to the env var specified in config
+        (``llm.figure_analysis.api_key_env``, default ``VERTEX_API_KEY``).
     """
 
     def __init__(
@@ -61,16 +58,18 @@ class FigureAnalyzer:
         self.max_retries = fa_config.get("max_retries", 3)
         self.retry_delay = fa_config.get("retry_delay", 10)
         self.skip_existing_default = fa_config.get("skip_existing", True)
+        self.thinking_budget = fa_config.get("thinking_budget", 0)
 
-        # Configure Gemini API key
-        api_key_env = fa_config.get("api_key_env", "GEMINI_API_KEY")
+        # Configure Vertex AI client
+        api_key_env = fa_config.get("api_key_env", "VERTEX_API_KEY")
         key = api_key or os.getenv(api_key_env)
         if not key:
             raise RuntimeError(
-                f"Gemini API key not found. Set the '{api_key_env}' "
+                f"Vertex AI API key not found. Set the '{api_key_env}' "
                 "environment variable or pass api_key= to FigureAnalyzer."
             )
-        genai.configure(api_key=key)
+        self.client = genai.Client(vertexai=True, api_key=key)
+        logger.info("Using Gemini model: %s (Vertex AI Express)", self.model_name)
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -180,11 +179,13 @@ class FigureAnalyzer:
             metadata = json.load(f)
 
         user_prompt = build_figure_prompt(metadata)
-        uploaded_file = genai.upload_file(str(png_path))
+        image_part = types.Part.from_bytes(
+            data=png_path.read_bytes(), mime_type="image/png"
+        )
 
         response_text = self._call_gemini(
             system_instruction=build_figure_analysis_system(),
-            contents=[uploaded_file, user_prompt],
+            contents=[image_part, user_prompt],
         )
 
         analysis_data = self._parse_json_response(response_text)
@@ -250,15 +251,22 @@ class FigureAnalyzer:
         system_instruction: str,
         contents: list,
     ) -> str:
-        """Call Gemini with retry on transient errors."""
-        model = genai.GenerativeModel(
-            self.model_name,
-            system_instruction=system_instruction,
-        )
+        """Call Gemini via Vertex AI Express with retry on transient errors."""
+        config_kwargs: dict[str, Any] = {
+            "system_instruction": system_instruction,
+        }
+        if self.thinking_budget > 0:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_budget=self.thinking_budget,
+            )
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = model.generate_content(contents)
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
                 return response.text
             except Exception as exc:
                 if attempt < self.max_retries:

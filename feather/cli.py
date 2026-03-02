@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--api-key",
         default=None,
-        help="Gemini API key for the analyze step",
+        help="Vertex AI API key for the analyze step",
     )
     parser.add_argument(
         "--openai-api-key",

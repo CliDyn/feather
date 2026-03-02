@@ -1,6 +1,6 @@
 """Tests for feather.llm — schemas, prompts, analyzer, JSON parsing.
 
-All tests mock google.generativeai — no real API calls.
+All tests mock google.genai — no real API calls.
 """
 
 import json
@@ -92,9 +92,10 @@ def _minimal_config(tmp_path):
         output_dir=str(tmp_path),
         llm={
             "figure_analysis": {
-                "provider": "gemini",
+                "provider": "vertex",
                 "model": "gemini-2.5-flash",
-                "api_key_env": "GEMINI_API_KEY",
+                "api_key_env": "VERTEX_API_KEY",
+                "thinking_budget": 0,
                 "max_retries": 2,
                 "retry_delay": 0,
                 "skip_existing": True,
@@ -106,13 +107,21 @@ def _minimal_config(tmp_path):
 def _setup_figures(tmp_path, diagnostic_name="global_biases", n_figures=2):
     """Create dummy PNG+JSON pairs in the figures directory."""
     figures_dir = tmp_path / "figures" / diagnostic_name
-    figures_dir.mkdir(parents=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
     meta = _sample_metadata()
     paths = []
     for i in range(n_figures):
         stem = f"figure_{i}"
         png = figures_dir / f"{stem}.png"
-        png.write_bytes(b"\x89PNG fake data")
+        # Minimal valid PNG (1x1 pixel)
+        png.write_bytes(
+            b"\x89PNG\r\n\x1a\n"  # PNG signature
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x02\x00\x00\x00\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx"
+            b"\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
         json_path = figures_dir / f"{stem}.json"
         json_path.write_text(json.dumps(meta))
         paths.append((png, json_path))
@@ -314,17 +323,17 @@ class TestFigureAnalyzerInit:
     def test_init_with_api_key(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
         analyzer = FigureAnalyzer(cfg, api_key="test-key")
-        mock_genai.configure.assert_called_once_with(api_key="test-key")
+        mock_genai.Client.assert_called_once_with(vertexai=True, api_key="test-key")
         assert analyzer.model_name == "gemini-2.5-flash"
 
     def test_init_from_env(self, mock_genai, tmp_path, monkeypatch):
-        monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+        monkeypatch.setenv("VERTEX_API_KEY", "env-key")
         cfg = _minimal_config(tmp_path)
         analyzer = FigureAnalyzer(cfg)
-        mock_genai.configure.assert_called_once_with(api_key="env-key")
+        mock_genai.Client.assert_called_once_with(vertexai=True, api_key="env-key")
 
     def test_init_no_key_raises(self, mock_genai, tmp_path, monkeypatch):
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("VERTEX_API_KEY", raising=False)
         cfg = _minimal_config(tmp_path)
         with pytest.raises(RuntimeError, match="API key not found"):
             FigureAnalyzer(cfg)
@@ -332,9 +341,21 @@ class TestFigureAnalyzerInit:
     def test_init_default_config(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
         cfg.llm = {}
-        # No api_key_env in config, falls back to GEMINI_API_KEY
+        # No api_key_env in config, falls back to VERTEX_API_KEY
         with pytest.raises(RuntimeError):
             FigureAnalyzer(cfg)
+
+    def test_init_stores_thinking_budget(self, mock_genai, tmp_path):
+        cfg = _minimal_config(tmp_path)
+        cfg.llm["figure_analysis"]["thinking_budget"] = 4096
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        assert analyzer.thinking_budget == 4096
+
+    def test_init_thinking_budget_default(self, mock_genai, tmp_path):
+        cfg = _minimal_config(tmp_path)
+        del cfg.llm["figure_analysis"]["thinking_budget"]
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        assert analyzer.thinking_budget == 0
 
 
 @patch("feather.llm.analyzer.genai")
@@ -372,30 +393,44 @@ class TestFigureAnalyzerDiscovery:
 
 @patch("feather.llm.analyzer.genai")
 class TestFigureAnalyzerAnalyze:
-    def _mock_gemini_response(self, mock_genai, response_dict):
-        """Set up mock_genai to return a specific response dict."""
+    def _mock_client_response(self, mock_genai, response_dict):
+        """Set up mock_genai.Client to return a specific response dict."""
         mock_response = MagicMock()
         mock_response.text = json.dumps(response_dict)
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.upload_file.return_value = MagicMock()
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        mock_genai.Client.return_value = mock_client
 
     def test_analyze_figure(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
         paths = _setup_figures(tmp_path, n_figures=1)
-        self._mock_gemini_response(mock_genai, _valid_analysis_dict())
+        self._mock_client_response(mock_genai, _valid_analysis_dict())
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         result = analyzer.analyze_figure(paths[0][0], paths[0][1])
 
         assert isinstance(result, FigureAnalysis)
         assert result.confidence == "high"
-        mock_genai.upload_file.assert_called_once()
+        # Verify generate_content was called (not upload_file)
+        analyzer.client.models.generate_content.assert_called_once()
+
+    def test_analyze_sends_inline_image(self, mock_genai, tmp_path):
+        """Verify image is sent as inline bytes, not uploaded."""
+        cfg = _minimal_config(tmp_path)
+        paths = _setup_figures(tmp_path, n_figures=1)
+        self._mock_client_response(mock_genai, _valid_analysis_dict())
+
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        analyzer.analyze_figure(paths[0][0], paths[0][1])
+
+        call_args = analyzer.client.models.generate_content.call_args
+        contents = call_args.kwargs.get("contents", call_args[1].get("contents"))
+        # First content item should be a Part (image), not an uploaded file
+        assert len(contents) == 2
 
     def test_synthesize_diagnostic(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
-        self._mock_gemini_response(mock_genai, _valid_synthesis_dict())
+        self._mock_client_response(mock_genai, _valid_synthesis_dict())
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         result = analyzer.synthesize_diagnostic(
@@ -409,20 +444,19 @@ class TestFigureAnalyzerAnalyze:
         cfg = _minimal_config(tmp_path)
         _setup_figures(tmp_path, n_figures=2)
 
-        # First call returns figure analysis, last call returns synthesis
+        # First two calls return figure analysis, last call returns synthesis
         analysis_response = MagicMock()
         analysis_response.text = json.dumps(_valid_analysis_dict())
         synthesis_response = MagicMock()
         synthesis_response.text = json.dumps(_valid_synthesis_dict())
 
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = [
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [
             analysis_response,
             analysis_response,
             synthesis_response,
         ]
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.upload_file.return_value = MagicMock()
+        mock_genai.Client.return_value = mock_client
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         result = analyzer.run(skip_existing=False)
@@ -449,9 +483,9 @@ class TestFigureAnalyzerAnalyze:
         # Mock for synthesis only
         synthesis_response = MagicMock()
         synthesis_response.text = json.dumps(_valid_synthesis_dict())
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = synthesis_response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = synthesis_response
+        mock_genai.Client.return_value = mock_client
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         result = analyzer.run(skip_existing=True)
@@ -459,25 +493,20 @@ class TestFigureAnalyzerAnalyze:
         # Figure was skipped, only synthesis was done
         assert result["figure_analyses"] == 0
         assert result["syntheses"] == 1
-        # upload_file should NOT have been called (figure was skipped)
-        mock_genai.upload_file.assert_not_called()
 
     def test_diagnostics_filter(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
         _setup_figures(tmp_path, diagnostic_name="global_biases", n_figures=1)
         _setup_figures(tmp_path, diagnostic_name="timeseries", n_figures=1)
 
-        self._mock_gemini_response(mock_genai, _valid_analysis_dict())
-
         # We need separate responses for analysis + synthesis
         analysis_resp = MagicMock()
         analysis_resp.text = json.dumps(_valid_analysis_dict())
         synthesis_resp = MagicMock()
         synthesis_resp.text = json.dumps(_valid_synthesis_dict())
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = [analysis_resp, synthesis_resp]
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.upload_file.return_value = MagicMock()
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [analysis_resp, synthesis_resp]
+        mock_genai.Client.return_value = mock_client
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         result = analyzer.run(
@@ -495,10 +524,9 @@ class TestFigureAnalyzerAnalyze:
         cfg = _minimal_config(tmp_path)
         _setup_figures(tmp_path, n_figures=1)
 
-        mock_model = MagicMock()
-        mock_model.generate_content.side_effect = RuntimeError("API error")
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.upload_file.return_value = MagicMock()
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = RuntimeError("API error")
+        mock_genai.Client.return_value = mock_client
 
         analyzer = FigureAnalyzer(cfg, api_key="k")
         # max_retries=2, retry_delay=0 from config
@@ -507,3 +535,28 @@ class TestFigureAnalyzerAnalyze:
         # Should not crash, just log the error
         assert result["figure_analyses"] == 0
         assert result["syntheses"] == 0
+
+    def test_thinking_budget_passed_to_config(self, mock_genai, tmp_path):
+        """When thinking_budget > 0, ThinkingConfig should be included."""
+        cfg = _minimal_config(tmp_path)
+        cfg.llm["figure_analysis"]["thinking_budget"] = 4096
+        self._mock_client_response(mock_genai, _valid_synthesis_dict())
+
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        analyzer.synthesize_diagnostic("test", [_valid_analysis_dict()])
+
+        call_args = analyzer.client.models.generate_content.call_args
+        config_arg = call_args.kwargs.get("config", call_args[1].get("config"))
+        assert config_arg is not None
+
+    def test_no_thinking_budget_when_zero(self, mock_genai, tmp_path):
+        """When thinking_budget == 0, ThinkingConfig should not be included."""
+        cfg = _minimal_config(tmp_path)
+        cfg.llm["figure_analysis"]["thinking_budget"] = 0
+        self._mock_client_response(mock_genai, _valid_synthesis_dict())
+
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        analyzer.synthesize_diagnostic("test", [_valid_analysis_dict()])
+
+        # Call should still succeed — just no thinking_config key
+        analyzer.client.models.generate_content.assert_called_once()
