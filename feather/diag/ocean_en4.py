@@ -16,13 +16,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from feather.data.loader import DataLoader
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import (
     compute_latlon_areas,
-    global_mean,
     latlon_global_mean,
 )
 from feather.util.temporal import (
@@ -284,7 +282,7 @@ class OceanEN4(DiagnosticBase):
 
             hov_data = self._compute_hovmoller(
                 var, model_3d, model_depths, model_thickness,
-                en4_data, en4_ds_cache,
+                en4_data, en4_ds_cache, model_coords=model_coords,
             )
 
             if a1_need:
@@ -301,7 +299,7 @@ class OceanEN4(DiagnosticBase):
                 continue
             ts_data = self._compute_depth_timeseries(
                 var, model_3d, model_depths, model_thickness,
-                en4_data, en4_ds_cache,
+                en4_data, en4_ds_cache, model_coords=model_coords,
             )
             for fig, meta in self._plot_depth_timeseries(var, ts_data):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -329,11 +327,11 @@ class OceanEN4(DiagnosticBase):
             )
             results[f"{var}_hov"] = self._compute_hovmoller(
                 var, model_3d, model_depths, model_thickness,
-                en4_data, en4_ds_cache,
+                en4_data, en4_ds_cache, model_coords=model_coords,
             )
             results[f"{var}_depth_ts"] = self._compute_depth_timeseries(
                 var, model_3d, model_depths, model_thickness,
-                en4_data, en4_ds_cache,
+                en4_data, en4_ds_cache, model_coords=model_coords,
             )
         return results
 
@@ -379,31 +377,28 @@ class OceanEN4(DiagnosticBase):
         model_thickness: dict[str, np.ndarray] = {}
 
         for model in self.config.models:
-            key = DataLoader.make_key(self.experiment, model, "o3d")
-            try:
-                ds = self.model_loader.load(key)
-            except KeyError:
-                logger.warning("o3d data not available for %s", model)
-                continue
-
             var_data = {}
+            coords_set = False
             for var in self.variables:
                 if var not in _VAR_CFG:
                     continue
-                destine_var = _VAR_CFG[var].get("destine_var", var)
                 try:
-                    da = self.model_loader.load_var(key, destine_var)
-                    if self.period and "time" in da.dims:
-                        da = da.sel(time=slice(*self.period))
+                    da = self._load_model_var(
+                        model, var, period=self.period,
+                    )
                     var_data[var] = da
-                except KeyError:
+                    if not coords_set:
+                        lon, lat = self._load_model_coords(model, var)
+                        model_coords[model] = (lon, lat)
+                        coords_set = True
+                except (KeyError, FileNotFoundError):
                     logger.warning("%s not available for %s", var, model)
 
             if not var_data:
+                logger.warning("o3d data not available for %s", model)
                 continue
 
             model_3d[model] = var_data
-            model_coords[model] = (ds["longitude"], ds["latitude"])
 
             try:
                 model_depths[model] = self._get_depth_levels(model)
@@ -497,6 +492,13 @@ class OceanEN4(DiagnosticBase):
             da = model_3d[model][variable]
             lon, lat = model_coords[model]
 
+            # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type != "healpix":
+                regrid_lon, regrid_lat = np.meshgrid(lon, lat)
+            else:
+                regrid_lon, regrid_lat = np.asarray(lon), np.asarray(lat)
+
             # Extract surface level and convert
             level_dim = "level" if "level" in da.dims else da.dims[1]
             model_sfc = convert(da.isel({level_dim: 0}))
@@ -513,7 +515,7 @@ class OceanEN4(DiagnosticBase):
             if model_interpolator is None:
                 _, model_interpolator = nr.regrid(
                     model_annual.values.ravel(),
-                    lon=np.asarray(lon), lat=np.asarray(lat),
+                    lon=regrid_lon.ravel(), lat=regrid_lat.ravel(),
                     resolution=resolution,
                     influence_radius=model_influence,
                     lon_bounds=(0.0, 360.0),
@@ -647,7 +649,8 @@ class OceanEN4(DiagnosticBase):
     # ── Groups C-F: Hovmoller diagrams ────────────────────────────────
 
     def _compute_hovmoller(self, variable, model_3d, model_depths,
-                           model_thickness, en4_data, en4_ds_cache):
+                           model_thickness, en4_data, en4_ds_cache,
+                           model_coords=None):
         """Compute raw Hovmoller (time-depth) data for models and EN4.
 
         Returns dict with model Hovmollers, EN4 Hovmoller, and EN4
@@ -672,13 +675,21 @@ class OceanEN4(DiagnosticBase):
             da = model_3d[model][variable]
             depth = model_depths[model]
 
-            # Load mesh area
-            ncells = da.sizes.get("values", da.shape[-1])
-            try:
-                mesh = nr.healpix.load_mesh(ncells)
-                area = mesh.area.values
-            except Exception:
-                area = np.ones(ncells) * (4 * np.pi / ncells)
+            # Load cell areas (grid-type dependent)
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type == "healpix":
+                ncells = da.sizes.get("values", da.shape[-1])
+                try:
+                    mesh = nr.healpix.load_mesh(ncells)
+                    area = mesh.area.values
+                except Exception:
+                    area = np.ones(ncells) * (4 * np.pi / ncells)
+            else:
+                # Latlon: compute areas from coordinates
+                lon, lat = model_coords[model]
+                area = compute_latlon_areas(
+                    np.asarray(lat), np.asarray(lon),
+                ).ravel()
 
             # Convert and compute — materialize once with .compute()
             da_conv = convert(da)
@@ -912,7 +923,8 @@ class OceanEN4(DiagnosticBase):
     # ── Groups G-H: Depth-layer time series ──────────────────────────
 
     def _compute_depth_timeseries(self, variable, model_3d, model_depths,
-                                  model_thickness, en4_data, en4_ds_cache):
+                                  model_thickness, en4_data, en4_ds_cache,
+                                  model_coords=None):
         """Compute volume-weighted depth-layer mean time series."""
         import nereus as nr
 
@@ -933,13 +945,21 @@ class OceanEN4(DiagnosticBase):
             depth = model_depths[model]
             thickness = model_thickness[model]
 
-            # Load mesh area
-            ncells = da.sizes.get("values", da.shape[-1])
-            try:
-                mesh = nr.healpix.load_mesh(ncells)
-                area = mesh.area.values
-            except Exception:
-                area = np.ones(ncells) * (4 * np.pi / ncells)
+            # Load cell areas (grid-type dependent)
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type == "healpix":
+                ncells = da.sizes.get("values", da.shape[-1])
+                try:
+                    mesh = nr.healpix.load_mesh(ncells)
+                    area = mesh.area.values
+                except Exception:
+                    area = np.ones(ncells) * (4 * np.pi / ncells)
+            else:
+                # Latlon: compute areas from coordinates
+                lon, lat = model_coords[model]
+                area = compute_latlon_areas(
+                    np.asarray(lat), np.asarray(lon),
+                ).ravel()
 
             da_conv = convert(da)
             logger.info("Loading %s 3D data for depth timeseries...", model)
@@ -1045,7 +1065,7 @@ class OceanEN4(DiagnosticBase):
                 if label not in layer_ts:
                     continue
                 ts = layer_ts[label]
-                color = MODEL_COLORS.get(model)
+                color = self.config.get_model_color(model)
                 time_vals = _to_plot_time(ts.time.values)
                 ax.plot(time_vals, ts.values, color=color, alpha=0.3,
                         linewidth=0.7)
@@ -1063,7 +1083,7 @@ class OceanEN4(DiagnosticBase):
                     continue
                 ts = layer_ts[label]
                 ts_annual = annual_mean(ts)
-                color = MODEL_COLORS.get(model)
+                color = self.config.get_model_color(model)
                 time_vals = _to_plot_time(ts_annual.time.values)
                 lbl = model if i == 0 else None
                 ax.plot(time_vals, ts_annual.values, label=lbl,

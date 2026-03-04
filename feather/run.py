@@ -169,7 +169,11 @@ def _run_diagnostics(
     for name in names:
         cls = get_diagnostic(name)
         # Build constructor kwargs — intersect user variables with diagnostic's
-        kwargs: dict[str, Any] = {"cmip6_loader": cmip6_loader}
+        kwargs: dict[str, Any] = {
+            "cmip6_loader": cmip6_loader,
+            "experiment": experiment,
+            "period": period,
+        }
         if cmip6_individual:
             import inspect
             sig = inspect.signature(cls.__init__)

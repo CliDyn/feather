@@ -17,7 +17,7 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
 from feather.util.spatial import compute_latlon_areas
 from feather.util.temporal import annual_mean
 
@@ -218,60 +218,72 @@ class SeaIceDiag(DiagnosticBase):
                           "extent_nh": ..., "volume_nh": ..., ...}}
         """
         import nereus as nr
-        from feather.data.loader import DataLoader
-        from feather.data.variables import get_var
 
         result: dict[str, dict] = {}
 
         for model in self.config.models:
             logger.info("Computing sea ice metrics for model: %s", model)
-            key = DataLoader.make_key(self.experiment, model, "o2d")
             try:
-                ds = self.model_loader.load(key)
-            except KeyError:
-                logger.warning("Model %s not available — skipping", model)
-                continue
-
-            siconc_destine = get_var("siconc").destine_variable or "siconc"
-            sithick_destine = get_var("sithick").destine_variable or "sithick"
-
-            if siconc_destine not in ds:
-                logger.warning(
-                    "%s not in %s dataset — skipping", siconc_destine, model,
+                siconc = self._load_model_var(
+                    model, "siconc", period=self.period,
                 )
+            except (KeyError, FileNotFoundError):
+                logger.warning("Model %s siconc not available — skipping", model)
                 continue
 
-            npoints = len(ds[siconc_destine].isel(time=0))
-            mesh = nr.healpix.load_mesh(npoints)
+            # Get coordinates and compute areas based on grid type
+            lon, lat = self._load_model_coords(model, "siconc")
+            grid_type = self.config.get_grid_type(model, self.domain)
+
+            if grid_type == "healpix":
+                npoints = len(siconc.isel(time=0))
+                mesh = nr.healpix.load_mesh(npoints)
+                area = mesh.area
+                lat_1d = mesh.lat
+            else:
+                # Latlon grid: compute areas and flatten
+                lat_2d, _ = np.meshgrid(lat, lon, indexing="ij")
+                area = compute_latlon_areas(lat, lon).ravel()
+                lat_1d = lat_2d.ravel()
+                # Flatten spatial dims to 1D
+                spatial_dims = [d for d in siconc.dims if d != "time"]
+                if len(spatial_dims) == 2:
+                    siconc = siconc.stack(
+                        points=tuple(spatial_dims),
+                    ).reset_index("points")
 
             model_data: dict[str, Any] = {}
 
             # Concentration metrics (area + extent)
-            siconc = ds[siconc_destine]
-            if self.period and "time" in siconc.dims:
-                siconc = siconc.sel(time=slice(self.period[0], self.period[1]))
-
             for hemi in ("nh", "sh"):
                 area_fn = getattr(nr, f"ice_area_{hemi}")
                 extent_fn = getattr(nr, f"ice_extent_{hemi}")
                 model_data[f"area_{hemi}"] = area_fn(
-                    siconc, mesh.area, mesh.lat, as_xarray=True,
+                    siconc, area, lat_1d, as_xarray=True,
                 ).compute()
                 model_data[f"extent_{hemi}"] = extent_fn(
-                    siconc, mesh.area, mesh.lat, as_xarray=True,
+                    siconc, area, lat_1d, as_xarray=True,
                 ).compute()
 
             # Volume (requires sithick)
-            if sithick_destine in ds:
-                sithick = ds[sithick_destine]
-                if self.period and "time" in sithick.dims:
-                    sithick = sithick.sel(
-                        time=slice(self.period[0], self.period[1]),
-                    )
+            try:
+                sithick = self._load_model_var(
+                    model, "sithick", period=self.period,
+                )
+            except (KeyError, FileNotFoundError):
+                sithick = None
+
+            if sithick is not None:
+                if grid_type != "healpix":
+                    spatial_dims = [d for d in sithick.dims if d != "time"]
+                    if len(spatial_dims) == 2:
+                        sithick = sithick.stack(
+                            points=tuple(spatial_dims),
+                        ).reset_index("points")
                 for hemi in ("nh", "sh"):
                     vol_fn = getattr(nr, f"ice_volume_{hemi}")
                     model_data[f"volume_{hemi}"] = vol_fn(
-                        sithick, mesh.area, mesh.lat, as_xarray=True,
+                        sithick, area, lat_1d, as_xarray=True,
                     ).compute()
 
             result[model] = model_data
@@ -673,7 +685,7 @@ class SeaIceDiag(DiagnosticBase):
             for model, mdata in model_ts.items():
                 if key in mdata:
                     ts = mdata[key]
-                    color = MODEL_COLORS.get(model)
+                    color = self.config.get_model_color(model)
                     time_vals = _to_plot_time(ts.time.values)
                     ax.plot(time_vals, ts.values * scale,
                             color=color, alpha=0.3, linewidth=0.7)
@@ -711,7 +723,7 @@ class SeaIceDiag(DiagnosticBase):
             for model, mdata in model_ts.items():
                 if key in mdata:
                     ts = mdata[key]
-                    color = MODEL_COLORS.get(model)
+                    color = self.config.get_model_color(model)
                     annual = annual_mean(ts)
                     time_vals = _to_plot_time(annual.time.values)
                     ax.plot(time_vals, annual.values * scale,
@@ -798,7 +810,7 @@ class SeaIceDiag(DiagnosticBase):
             for model, mdata in model_ts.items():
                 if key in mdata:
                     clim = mdata[key].groupby("time.month").mean("time")
-                    color = MODEL_COLORS.get(model)
+                    color = self.config.get_model_color(model)
                     ax.plot(months, clim.values * scale,
                             marker="o", label=model, color=color)
                     if model not in all_models:
@@ -906,7 +918,7 @@ class SeaIceDiag(DiagnosticBase):
                     ts = mdata[key]
                     monthly = ts.where(ts["time.month"] == month, drop=True)
                     if len(monthly) > 0:
-                        color = MODEL_COLORS.get(model)
+                        color = self.config.get_model_color(model)
                         time_vals = _to_plot_time(monthly.time.values)
                         ax.plot(time_vals, monthly.values * scale,
                                 label=model, color=color, linewidth=1.5)
@@ -956,10 +968,6 @@ class SeaIceDiag(DiagnosticBase):
         """Plot polar spatial maps for March and September."""
         import cartopy.crs as ccrs
         import nereus as nr
-        from feather.data.loader import DataLoader
-        from feather.data.variables import get_var as _get_var
-        var_info = _get_var(var)
-        destine_var = var_info.destine_variable or var
 
         if pole == "np":
             proj = ccrs.NorthPolarStereo()
@@ -1001,26 +1009,28 @@ class SeaIceDiag(DiagnosticBase):
         # Load model spatial data for each month
         model_panel_data: dict[str, list] = {}
         for model in self.config.models:
-            key = DataLoader.make_key(self.experiment, model, "o2d")
             try:
-                ds = self.model_loader.load(key)
-            except KeyError:
+                da = self._load_model_var(model, var, period=self.period)
+            except (KeyError, FileNotFoundError):
                 continue
 
-            if destine_var not in ds:
-                continue
+            lon, lat = self._load_model_coords(model, var)
+            grid_type = self.config.get_grid_type(model, self.domain)
 
-            da = ds[destine_var]
-            if self.period and "time" in da.dims:
-                da = da.sel(time=slice(self.period[0], self.period[1]))
-            lon = np.asarray(ds["longitude"])
-            lat = np.asarray(ds["latitude"])
+            # For latlon grids, meshgrid and ravel for nr.plot()
+            if grid_type != "healpix":
+                lon_2d, lat_2d = np.meshgrid(lon, lat)
+                lon = lon_2d.ravel()
+                lat = lat_2d.ravel()
 
             model_months = []
             for month, mlabel in zip(months, month_labels):
                 clim = da.sel(time=da.time.dt.month == month).mean("time")
+                clim_vals = clim.values
+                if grid_type != "healpix":
+                    clim_vals = clim_vals.ravel()
                 model_months.append(
-                    (mlabel, model, clim.values, lon, lat)
+                    (mlabel, model, clim_vals, lon, lat)
                 )
             model_panel_data[model] = model_months
             models_used.append(model)

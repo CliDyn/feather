@@ -13,7 +13,6 @@ import nereus as nr
 import numpy as np
 import xarray as xr
 
-from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
@@ -98,14 +97,19 @@ class GlobalTrends(DiagnosticBase):
                 ])
                 continue
 
-            var_result = self._compute_variable(var)
-            if var_result is None:
-                continue
+            try:
+                var_result = self._compute_variable(var)
+                if var_result is None:
+                    continue
 
-            figures = self._plot_variable(var, var_result)
-            for fig, meta in figures:
-                paths = self._save(fig, meta, meta["figure_id"])
-                saved.append(paths)
+                figures = self._plot_variable(var, var_result)
+                for fig, meta in figures:
+                    paths = self._save(fig, meta, meta["figure_id"])
+                    saved.append(paths)
+            except Exception:
+                logger.warning(
+                    "Variable %s failed — skipping", var, exc_info=True,
+                )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -135,7 +139,6 @@ class GlobalTrends(DiagnosticBase):
         Returns None if no models have the variable.
         """
         var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_results: dict[str, dict] = {}
 
@@ -145,7 +148,7 @@ class GlobalTrends(DiagnosticBase):
 
         # Load observation (usually small regular grid)
         logger.info("  Loading observations for %s", var)
-        obs_data = self.obs_loader.load_for_model_var(var, self.period)
+        obs_data = self._load_obs_var(var, self.period)
 
         # Compute obs annual means and trend
         obs_annual = annual_mean(obs_data)
@@ -177,25 +180,22 @@ class GlobalTrends(DiagnosticBase):
         for model in self.config.models:
             logger.info("Computing trends for %s / %s ...", var, model)
 
-            key = DataLoader.make_key(
-                self.experiment, model, var_info.domain,
-            )
             try:
-                model_data = self.model_loader.load_var(key, destine_var)
-            except KeyError:
+                model_data = self._load_model_var(
+                    model, var, period=self.period,
+                )
+            except (KeyError, FileNotFoundError):
                 logger.warning(
                     "  Variable %s not available for %s — skipping",
                     var, model,
                 )
                 continue
-            ds = self.model_loader.load(key)
-            lon = ds["longitude"]
-            lat = ds["latitude"]
+            lon, lat = self._load_model_coords(model, var)
 
-            # Time-slice to period
-            model_data = model_data.sel(
-                time=slice(self.period[0], self.period[1]),
-            )
+            # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type != "healpix":
+                lon, lat = np.meshgrid(lon, lat)
 
             # Compute annual means, materialise dask, then trend
             model_annual = annual_mean(model_data).compute()

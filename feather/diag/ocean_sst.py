@@ -16,12 +16,10 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from feather.data.loader import DataLoader
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR
+from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import (
-    global_mean,
     latlon_global_mean,
     zonal_mean,
 )
@@ -205,23 +203,19 @@ class OceanSST(DiagnosticBase):
         model_coords : dict[str, tuple]
             Model name -> (lon, lat) coordinate arrays.
         """
-        from feather.data.variables import get_var
-
-        destine_var = get_var("tos").destine_variable or "tos"
         model_monthly = {}
         model_coords = {}
         for model in self.config.models:
-            key = DataLoader.make_key(self.experiment, model, "o2d")
             try:
-                da = self.model_loader.load_var(key, destine_var)
-                ds = self.model_loader.load(key)
-            except KeyError:
-                logger.warning("%s not available for %s", destine_var, model)
+                da = self._load_model_var(
+                    model, "tos", period=self.period,
+                )
+                lon, lat = self._load_model_coords(model, "tos")
+            except (KeyError, FileNotFoundError):
+                logger.warning("tos not available for %s", model)
                 continue
-            if self.period and "time" in da.dims:
-                da = da.sel(time=slice(*self.period))
             model_monthly[model] = _to_celsius(da)
-            model_coords[model] = (ds["longitude"], ds["latitude"])
+            model_coords[model] = (lon, lat)
         return model_monthly, model_coords
 
     def _load_obs_timemean(self):
@@ -295,6 +289,13 @@ class OceanSST(DiagnosticBase):
             da = model_monthly[model]
             lon, lat = model_coords[model]
 
+            # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type != "healpix":
+                regrid_lon, regrid_lat = np.meshgrid(lon, lat)
+            else:
+                regrid_lon, regrid_lat = np.asarray(lon), np.asarray(lat)
+
             # Compute model climatologies
             model_clim_annual = climatology(da, self.period).compute()
             model_seasonal = seasonal_climatology(da, self.period)
@@ -309,11 +310,11 @@ class OceanSST(DiagnosticBase):
                 else model_clim_annual
             )
 
-            # Build model interpolator once (HEALPix -> common grid)
+            # Build model interpolator once
             if model_interpolator is None:
                 _, model_interpolator = nr.regrid(
                     model_clim_annual.values.ravel(),
-                    lon=np.asarray(lon), lat=np.asarray(lat),
+                    lon=regrid_lon.ravel(), lat=regrid_lat.ravel(),
                     resolution=resolution,
                     influence_radius=self.ocean_influence_radius,
                     lon_bounds=(0.0, 360.0),
@@ -477,8 +478,7 @@ class OceanSST(DiagnosticBase):
         model_ts = {}
 
         for model, da in model_monthly.items():
-            # HEALPix equal-area: simple mean
-            ts = global_mean(da).compute()
+            ts = self._model_global_mean(da, model).compute()
             model_ts[model] = ts
 
         # Obs time series (cos-lat weighted)
@@ -498,7 +498,7 @@ class OceanSST(DiagnosticBase):
 
         # Monthly semi-transparent background
         for model, ts in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
             ax.plot(time_vals, ts.values, color=color, alpha=0.3,
                     linewidth=0.7)
@@ -511,7 +511,7 @@ class OceanSST(DiagnosticBase):
 
         # Annual thick foreground
         for model, ts in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values, label=model, color=color,
@@ -558,7 +558,7 @@ class OceanSST(DiagnosticBase):
         for model, da in model_monthly.items():
             # Monthly climatology then global mean
             mon_clim = monthly_climatology(da, self.period)
-            cycle = global_mean(mon_clim).compute()
+            cycle = self._model_global_mean(mon_clim, model).compute()
             model_cycles[model] = cycle
 
         # Obs seasonal cycle (cos-lat weighted per month)
@@ -602,7 +602,7 @@ class OceanSST(DiagnosticBase):
         all_models = []
 
         for model, cycle in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ax.plot(months, cycle.values, marker="o", label=model,
                     color=color)
             all_models.append(model)
@@ -647,7 +647,17 @@ class OceanSST(DiagnosticBase):
         for model, da in model_monthly.items():
             lon, lat = model_coords[model]
             clim = climatology(da, self.period).compute()
-            zm = zonal_mean(clim, lat)
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type == "healpix":
+                zm = zonal_mean(clim, lat)
+            else:
+                # Latlon: simple longitude mean
+                lon_dim = "lon" if "lon" in clim.dims else "longitude"
+                zm = clim.mean(lon_dim)
+                # Rename lat dim for consistent plotting
+                lat_dim = "lat" if "lat" in zm.dims else "latitude"
+                if lat_dim != "lat":
+                    zm = zm.rename({lat_dim: "lat"})
             model_zonal[model] = zm
 
         # Obs zonal mean (mean over lon, NaN excluded)
@@ -667,7 +677,7 @@ class OceanSST(DiagnosticBase):
         all_models = []
 
         for model, zm in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ax.plot(zm.values, zm.lat.values, label=model, color=color)
             all_models.append(model)
 

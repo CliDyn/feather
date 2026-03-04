@@ -11,12 +11,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
-from feather.util.spatial import global_mean, latlon_global_mean
+from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import annual_mean
 
 logger = logging.getLogger(__name__)
@@ -93,11 +92,18 @@ class TimeseriesDiag(DiagnosticBase):
                 ))
                 continue
 
-            results = self._compute_single(var)
-            figures = self._plot_single(var, results)
-            for fig, meta in figures:
-                paths = self._save(fig, meta, meta["figure_id"])
-                saved.append(paths)
+            try:
+                results = self._compute_single(var)
+                if results is None:
+                    continue
+                figures = self._plot_single(var, results)
+                for fig, meta in figures:
+                    paths = self._save(fig, meta, meta["figure_id"])
+                    saved.append(paths)
+            except Exception:
+                logger.warning(
+                    "Variable %s failed — skipping", var, exc_info=True,
+                )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -109,35 +115,32 @@ class TimeseriesDiag(DiagnosticBase):
     def _compute_single(self, var: str) -> dict[str, Any]:
         """Compute global-mean time series for a single variable."""
         var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_ts: dict[str, Any] = {}
 
         for model in self.config.models:
             logger.info("  Loading model data: %s", model)
-            key = DataLoader.make_key(
-                self.experiment, model, var_info.domain,
-            )
             try:
-                model_data = self.model_loader.load_var(key, destine_var)
-            except KeyError:
+                model_data = self._load_model_var(
+                    model, var, period=self.period,
+                )
+            except (KeyError, FileNotFoundError):
                 logger.warning(
                     "  Variable %s not available for %s — skipping",
                     var, model,
                 )
                 continue
 
-            if self.period is not None and "time" in model_data.dims:
-                model_data = model_data.sel(
-                    time=slice(self.period[0], self.period[1]),
-                )
-
-            ts = global_mean(model_data).compute()
+            ts = self._model_global_mean(model_data, model).compute()
             model_ts[model] = ts
             logger.info("    Global mean: %.2f %s", float(ts.mean()), var_info.units)
 
+        if not model_ts:
+            logger.warning("  No model data for %s — skipping variable", var)
+            return None
+
         logger.info("  Loading observations for %s", var)
-        obs_data = self.obs_loader.load_for_model_var(var, self.period)
+        obs_data = self._load_obs_var(var, self.period)
         obs_ts = latlon_global_mean(obs_data)
         logger.info("    Obs global mean: %.2f %s", float(obs_ts.mean()), var_info.units)
 
@@ -173,7 +176,9 @@ class TimeseriesDiag(DiagnosticBase):
         """
         results: dict[str, Any] = {}
         for var in self.variables:
-            results[var] = self._compute_single(var)
+            vr = self._compute_single(var)
+            if vr is not None:
+                results[var] = vr
         return results
 
     # ── Plotting ───────────────────────────────────────────────────────
@@ -225,7 +230,7 @@ class TimeseriesDiag(DiagnosticBase):
 
         # DestinE model monthly
         for model, ts in vr["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
             ax.plot(time_vals, ts.values,
                     color=color, alpha=0.3, linewidth=0.7)
@@ -257,7 +262,7 @@ class TimeseriesDiag(DiagnosticBase):
 
         # DestinE model annual
         for model, ts in vr["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values,

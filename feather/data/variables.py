@@ -19,6 +19,10 @@ CMIP6 uses the opposite convention for several variables:
 Variables where CMIP6 has a sign mismatch have ``cmip6_variable=""`` to
 prevent incorrect comparisons until sign-flip support is added.
 
+When comparing CMOR-convention model data (EERIE, CMIP6) against ERA5 obs,
+variables with ``cmor_obs_sign=-1.0`` need their obs values negated to match
+the CMOR sign convention (positive upward for surface fluxes).
+
 Naming convention
 ~~~~~~~~~~~~~~~~~
 Registry keys are CMOR-style canonical names (e.g., ``"tas"``, ``"pr"``).
@@ -49,6 +53,7 @@ class VarInfo:
     cmip6_table: str = ""
     obs_unit_factor: float = 1.0   # Multiply obs by this to match model units
     obs_unit_offset: float = 0.0   # Add after multiplying
+    cmor_obs_sign: float = 1.0    # Sign flip for obs when comparing vs CMOR data
     group: str = ""
 
 
@@ -176,7 +181,8 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         obs_dataset="ERA5", obs_variable="sshf",
         destine_variable="avg_ishf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
-        # CMIP6 hfss is positive upward — sign mismatch, omitted
+        cmor_obs_sign=-1.0,  # ERA5 positive downward → CMOR positive upward
+        # CMIP6 hfss is positive upward — sign mismatch with DestinE, omitted
         group="surface_fluxes",
     ),
     "hfls": VarInfo(
@@ -185,7 +191,8 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         obs_dataset="ERA5", obs_variable="slhf",
         destine_variable="avg_slhtf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
-        # CMIP6 hfls is positive upward — sign mismatch, omitted
+        cmor_obs_sign=-1.0,  # ERA5 positive downward → CMOR positive upward
+        # CMIP6 hfls is positive upward — sign mismatch with DestinE, omitted
         group="surface_fluxes",
     ),
 

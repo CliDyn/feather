@@ -12,7 +12,6 @@ import nereus as nr
 import numpy as np
 import xarray as xr
 
-from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
@@ -106,14 +105,19 @@ class GlobalBiases(DiagnosticBase):
                 ])
                 continue
 
-            var_result = self._compute_variable(var)
-            if var_result is None:
-                continue
+            try:
+                var_result = self._compute_variable(var)
+                if var_result is None:
+                    continue
 
-            figures = self._plot_variable(var, var_result)
-            for fig, meta in figures:
-                paths = self._save(fig, meta, meta["figure_id"])
-                saved.append(paths)
+                figures = self._plot_variable(var, var_result)
+                for fig, meta in figures:
+                    paths = self._save(fig, meta, meta["figure_id"])
+                    saved.append(paths)
+            except Exception:
+                logger.warning(
+                    "Variable %s failed — skipping", var, exc_info=True,
+                )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -145,7 +149,6 @@ class GlobalBiases(DiagnosticBase):
         Returns None if no models have the variable.
         """
         var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_results: dict[str, dict] = {}
 
@@ -155,7 +158,7 @@ class GlobalBiases(DiagnosticBase):
 
         # Load observation (usually small regular grid)
         logger.info("  Loading observations for %s", var)
-        obs_data = self.obs_loader.load_for_model_var(var, self.period)
+        obs_data = self._load_obs_var(var, self.period)
         obs_clim = climatology(obs_data)
         obs_gmean = float(latlon_global_mean(obs_clim).values)
         obs_seasonal = seasonal_climatology(obs_data)
@@ -179,20 +182,20 @@ class GlobalBiases(DiagnosticBase):
         for model in self.config.models:
             logger.info("Computing biases for %s / %s ...", var, model)
 
-            key = DataLoader.make_key(
-                self.experiment, model, var_info.domain,
-            )
             try:
-                model_data = self.model_loader.load_var(key, destine_var)
-            except KeyError:
+                model_data = self._load_model_var(model, var)
+            except (KeyError, FileNotFoundError):
                 logger.warning(
                     "  Variable %s not available for %s — skipping",
                     var, model,
                 )
                 continue
-            ds = self.model_loader.load(key)
-            lon = ds["longitude"]
-            lat = ds["latitude"]
+            lon, lat = self._load_model_coords(model, var)
+
+            # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type != "healpix":
+                lon, lat = np.meshgrid(lon, lat)
 
             # Compute climatologies with dask, then materialise
             model_clim = climatology(model_data, self.period).compute()

@@ -15,13 +15,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from feather.data.loader import DataLoader
-from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.lines import plot_budget_bars, plot_gregory
-from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
-from feather.util.spatial import global_mean, latlon_global_mean
+from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import annual_mean, climatology
 
 logger = logging.getLogger(__name__)
@@ -266,16 +264,13 @@ class RadiationBudget(DiagnosticBase):
 
     def _model_global_mean_clim(self, model: str, var: str) -> float | None:
         """Load model var, compute climatology, then global mean."""
-        var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
-        key = DataLoader.make_key(self.experiment, model, var_info.domain)
         try:
-            da = self.model_loader.load_var(key, destine_var)
-        except KeyError:
+            da = self._load_model_var(model, var)
+        except (KeyError, FileNotFoundError):
             logger.warning("  %s not available for %s", var, model)
             return None
         clim = climatology(da, self.period).compute()
-        return float(global_mean(clim).values)
+        return float(self._model_global_mean(clim, model).values)
 
     def _compute_ceres_budget(self) -> dict[str, float]:
         """Compute obs budget from CERES.
@@ -481,16 +476,11 @@ class RadiationBudget(DiagnosticBase):
 
     def _model_global_mean_ts(self, model: str, var: str) -> xr.DataArray | None:
         """Load model variable and return global-mean monthly time series."""
-        var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
-        key = DataLoader.make_key(self.experiment, model, var_info.domain)
         try:
-            da = self.model_loader.load_var(key, destine_var)
-        except KeyError:
+            da = self._load_model_var(model, var, period=self.period)
+        except (KeyError, FileNotFoundError):
             return None
-        if self.period and "time" in da.dims:
-            da = da.sel(time=slice(self.period[0], self.period[1]))
-        return global_mean(da).compute()
+        return self._model_global_mean(da, model).compute()
 
     def _compute_gregory_obs(self) -> dict[str, Any] | None:
         """Compute obs data for Gregory plot (CERES TOA + ERA5 T2m)."""
@@ -655,7 +645,7 @@ class RadiationBudget(DiagnosticBase):
 
         # DestinE models (foreground)
         for model, mdata in results["models"].items():
-            color = MODEL_COLORS.get(model, None)
+            color = self.config.get_model_color(model)
             scatter_data.append({
                 "label": model,
                 "t2m_monthly": mdata["t2m_monthly"].values,
@@ -814,7 +804,7 @@ class RadiationBudget(DiagnosticBase):
 
         # DestinE model monthly
         for model, ts in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
             ax.plot(time_vals, ts.values,
                     color=color, alpha=0.3, linewidth=0.7)
@@ -838,7 +828,7 @@ class RadiationBudget(DiagnosticBase):
 
         # DestinE model annual
         for model, ts in results["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values,
@@ -933,11 +923,14 @@ class RadiationBudget(DiagnosticBase):
             if model_clim is None:
                 continue
 
-            ds = self.model_loader.load(
-                DataLoader.make_key(self.experiment, model, "sfc")
-            )
-            lon = ds["longitude"]
-            lat = ds["latitude"]
+            # Get coords for regridding — use first component variable
+            first_var = dq_info["components"][0]
+            lon, lat = self._load_model_coords(model, first_var)
+
+            # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
+            grid_type = self.config.get_grid_type(model, self.domain)
+            if grid_type != "healpix":
+                lon, lat = np.meshgrid(lon, lat)
 
             if interpolator is None:
                 annual_regrid, interpolator = nr.regrid(
@@ -1013,12 +1006,9 @@ class RadiationBudget(DiagnosticBase):
 
         arrays = []
         for var in components:
-            var_info = get_var(var)
-            destine_var = var_info.destine_variable or var
-            key = DataLoader.make_key(self.experiment, model, var_info.domain)
             try:
-                da = self.model_loader.load_var(key, destine_var)
-            except KeyError:
+                da = self._load_model_var(model, var)
+            except (KeyError, FileNotFoundError):
                 return None
             arrays.append(climatology(da, self.period).compute())
 

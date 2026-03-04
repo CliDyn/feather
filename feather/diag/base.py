@@ -306,6 +306,26 @@ class DiagnosticBase(ABC):
         from feather.util.spatial import latlon_global_mean
         return latlon_global_mean(da)
 
+    def _load_obs_var(
+        self, variable: str, period: tuple[str, str] | None = None,
+    ) -> "xr.DataArray":
+        """Load observation data with sign correction for CMOR sources.
+
+        When the model data source is CMOR (e.g. EERIE), variables like
+        ``hfss`` and ``hfls`` need their ERA5 obs values negated to match
+        the CMOR sign convention (positive upward for surface fluxes).
+        """
+        from feather.data.variables import get_var
+
+        da = self.obs_loader.load_for_model_var(variable, period)
+
+        if self.config.get_data_source_type() == "cmor":
+            vinfo = get_var(variable)
+            if vinfo.cmor_obs_sign != 1.0:
+                da = da * vinfo.cmor_obs_sign
+
+        return da
+
     def _cmip6_global_mean_timeseries(
         self,
         var: str,

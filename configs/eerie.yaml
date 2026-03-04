@@ -2,7 +2,7 @@ project:
   name: "EERIE"
   description: "EERIE HighResMIP hist-1950 high-resolution model evaluation"
   experiment: "hist-1950"
-  period: ["1990", "2014"]
+  period: ["1980", "2014"]
 
 data_source:
   type: "cmor"
@@ -156,7 +156,7 @@ report:
 
 website:
   title: "Feather — EERIE Model Evaluation"
-  subtitle: "EERIE HighResMIP hist-1950 Simulations vs Observations (1990-2014)"
+  subtitle: "EERIE HighResMIP hist-1950 Simulations vs Observations (1980-2014)"
   group_order:
     - evaluation
     - temperature

@@ -10,12 +10,11 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
-from feather.util.spatial import global_mean, latlon_global_mean
+from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import monthly_climatology
 
 logger = logging.getLogger(__name__)
@@ -92,11 +91,18 @@ class SeasonalCycleDiag(DiagnosticBase):
                 ))
                 continue
 
-            vr = self._compute_single(var)
-            figures = self._plot_single(var, vr)
-            for fig, meta in figures:
-                paths = self._save(fig, meta, meta["figure_id"])
-                saved.append(paths)
+            try:
+                vr = self._compute_single(var)
+                if vr is None:
+                    continue
+                figures = self._plot_single(var, vr)
+                for fig, meta in figures:
+                    paths = self._save(fig, meta, meta["figure_id"])
+                    saved.append(paths)
+            except Exception:
+                logger.warning(
+                    "Variable %s failed — skipping", var, exc_info=True,
+                )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -108,30 +114,32 @@ class SeasonalCycleDiag(DiagnosticBase):
     def _compute_single(self, var: str) -> dict[str, Any]:
         """Compute monthly climatological cycle for a single variable."""
         var_info = get_var(var)
-        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_monthly: dict[str, Any] = {}
 
         for model in self.config.models:
             logger.info("  Loading model data: %s", model)
-            key = DataLoader.make_key(
-                self.experiment, model, var_info.domain,
-            )
             try:
-                model_data = self.model_loader.load_var(key, destine_var)
-            except KeyError:
+                model_data = self._load_model_var(
+                    model, var, period=self.period,
+                )
+            except (KeyError, FileNotFoundError):
                 logger.warning(
                     "  Variable %s not available for %s — skipping",
                     var, model,
                 )
                 continue
 
-            ts = global_mean(model_data).compute()
+            ts = self._model_global_mean(model_data, model).compute()
             monthly = monthly_climatology(ts, self.period)
             model_monthly[model] = monthly
 
+        if not model_monthly:
+            logger.warning("  No model data for %s — skipping variable", var)
+            return None
+
         logger.info("  Loading observations for %s", var)
-        obs_data = self.obs_loader.load_for_model_var(var, self.period)
+        obs_data = self._load_obs_var(var, self.period)
         obs_ts = latlon_global_mean(obs_data)
         obs_monthly = monthly_climatology(obs_ts, self.period)
 
@@ -172,7 +180,9 @@ class SeasonalCycleDiag(DiagnosticBase):
         """
         results: dict[str, Any] = {}
         for var in self.variables:
-            results[var] = self._compute_single(var)
+            vr = self._compute_single(var)
+            if vr is not None:
+                results[var] = vr
         return results
 
     # ── Plotting ───────────────────────────────────────────────────────
@@ -224,7 +234,7 @@ class SeasonalCycleDiag(DiagnosticBase):
 
         # Layer 3: DestinE model lines (foreground)
         for model, monthly in vr["models"].items():
-            color = MODEL_COLORS.get(model)
+            color = self.config.get_model_color(model)
             ax.plot(
                 months, monthly.values,
                 marker="o", label=model, color=color,
