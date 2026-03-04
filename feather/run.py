@@ -211,12 +211,18 @@ def _run_diagnostics(
 
 
 def _create_model_loader(config: FeatherConfig):
-    """Create a model data loader from catalog paths in config.
+    """Create a model data loader from config.
 
-    Opens all intake catalogs listed in ``config.model_catalogs``
-    (typically ``2d`` and ``3d``) and returns a loader that searches
-    across all of them.
+    Dispatches based on ``config.data_source.type``:
+
+    - ``"cmor"``: creates a :class:`CMORLoader` for CMOR directory trees
+    - ``"destine_catalog"`` (default): opens intake catalogs from
+      ``config.model_catalogs``
     """
+    if config.get_data_source_type() == "cmor":
+        from feather.data.cmor_loader import CMORLoader
+        return CMORLoader(config)
+
     from feather.data.loader import DataLoader
 
     catalogs = config.model_catalogs

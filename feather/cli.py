@@ -46,15 +46,15 @@ def main(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--experiment",
-        default="baseline_hist",
-        help="Model experiment key (default: baseline_hist)",
+        default=None,
+        help="Model experiment key (default: from config, or baseline_hist)",
     )
     parser.add_argument(
         "--period",
         nargs=2,
-        default=["1990", "2014"],
+        default=None,
         metavar=("START", "END"),
-        help="Time period (default: 1990 2014)",
+        help="Time period (default: from config, or 1990 2014)",
     )
     parser.add_argument(
         "--output",
@@ -125,6 +125,12 @@ def main(argv: list[str] | None = None):
     if args.output:
         cfg.output_dir = args.output
 
+    # Derive experiment and period from config if not set on CLI
+    experiment = args.experiment or cfg.get_experiment()
+    period = tuple(args.period) if args.period else cfg.get_period()
+
+    project_name = cfg.project.get("name", "DestinE")
+    print(f"Project:     {project_name}")
     print(f"Config:      {args.config}")
     print(f"Output:      {cfg.output_dir}")
     print(f"Steps:       {args.steps}")
@@ -136,8 +142,8 @@ def main(argv: list[str] | None = None):
         steps=args.steps,
         diagnostics=args.diagnostics,
         variables=args.variables,
-        experiment=args.experiment,
-        period=tuple(args.period),
+        experiment=experiment,
+        period=period,
         api_key=args.api_key,
         openai_api_key=args.openai_api_key,
         skip_existing=not args.no_skip_existing,

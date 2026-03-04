@@ -5,7 +5,7 @@ from pathlib import Path
 import xarray as xr
 
 from feather.config import FeatherConfig
-from feather.data.variables import VARIABLE_REGISTRY
+from feather.data.variables import get_var
 
 
 class ObsLoader:
@@ -70,10 +70,7 @@ class ObsLoader:
 
         Uses VARIABLE_REGISTRY to find obs_dataset + obs_variable.
         """
-        if model_var not in VARIABLE_REGISTRY:
-            raise KeyError(f"No registry entry for model variable {model_var!r}")
-
-        var_info = VARIABLE_REGISTRY[model_var]
+        var_info = get_var(model_var)
         da = self.load(var_info.obs_dataset, var_info.obs_variable, period=period)
 
         # Apply unit conversion if needed

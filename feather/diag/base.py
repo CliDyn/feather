@@ -202,6 +202,110 @@ class DiagnosticBase(ABC):
         d = self.output_dir
         return (d / f"{figure_id}.png").exists() and (d / f"{figure_id}.json").exists()
 
+    def _load_model_var(
+        self,
+        model: str,
+        variable: str,
+        *,
+        experiment: str = "",
+        period: tuple[str, str] | None = None,
+        time_mean: bool = False,
+    ) -> "xr.DataArray":
+        """Load a model variable, dispatching to the correct loader.
+
+        For DestinE (HEALPix/catalog), uses ``self.model_loader`` with
+        ``DataLoader.make_key()``.  For CMOR (lat/lon), uses
+        ``self.model_loader.load_var()`` directly.
+
+        Parameters
+        ----------
+        model : str
+            Model name.
+        variable : str
+            CMOR variable name (e.g. ``"tas"``).
+        experiment : str
+            Experiment key (DestinE only, defaults to config).
+        period : tuple of str, optional
+            (start, end) for time slicing.
+        time_mean : bool
+            Whether to compute time mean.
+
+        Returns
+        -------
+        xr.DataArray
+        """
+        from feather.data.variables import get_var
+
+        if self.config.get_data_source_type() == "cmor":
+            return self.model_loader.load_var(
+                model, variable, period=period, time_mean=time_mean,
+            )
+
+        # DestinE path: build catalog key, look up DestinE variable name
+        vinfo = get_var(variable)
+        destine_var = vinfo.destine_variable or variable
+        exp = experiment or self.config.get_experiment()
+        key = DataLoader.make_key(exp, model, vinfo.domain)
+        da = self.model_loader.load_var(key, destine_var)
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        if time_mean and "time" in da.dims:
+            da = da.mean("time")
+        return da
+
+    def _load_model_coords(
+        self, model: str, variable: str, *, experiment: str = "",
+    ) -> tuple["np.ndarray", "np.ndarray"]:
+        """Load lon/lat coordinates for a model variable.
+
+        Returns
+        -------
+        (lon, lat) : tuple of np.ndarray
+            1D longitude and latitude arrays.
+        """
+        import numpy as np
+
+        from feather.data.variables import get_var
+
+        if self.config.get_data_source_type() == "cmor":
+            da = self.model_loader.load_var(model, variable)
+            return np.asarray(da.lon), np.asarray(da.lat)
+
+        # DestinE: coords are in the Dataset
+        vinfo = get_var(variable)
+        exp = experiment or self.config.get_experiment()
+        key = DataLoader.make_key(exp, model, vinfo.domain)
+        ds = self.model_loader.load(key)
+        return np.asarray(ds["longitude"]), np.asarray(ds["latitude"])
+
+    def _model_global_mean(
+        self, da: "xr.DataArray", model: str,
+    ) -> "xr.DataArray":
+        """Compute area-weighted global mean, dispatching by grid type.
+
+        HEALPix: simple ``.mean("values")`` (equal-area cells).
+        Lat/lon: ``latlon_global_mean()`` with cos-lat weighting.
+
+        Parameters
+        ----------
+        da : xr.DataArray
+            Model data array.
+        model : str
+            Model name (for grid type lookup).
+
+        Returns
+        -------
+        xr.DataArray
+            Scalar or time series of global means.
+        """
+        grid_type = self.config.get_grid_type(model, self.domain)
+        if grid_type == "healpix":
+            from feather.util.spatial import global_mean
+            return global_mean(da)
+
+        from feather.util.spatial import latlon_global_mean
+        return latlon_global_mean(da)
+
     def _cmip6_global_mean_timeseries(
         self,
         var: str,
@@ -217,7 +321,7 @@ class DiagnosticBase(ABC):
         Parameters
         ----------
         var : str
-            Feather variable name (e.g. ``"avg_2t"``).
+            Feather variable name (e.g. ``"tas"``).
         period : tuple of str, optional
             (start, end) for time slicing.
         return_individual : bool, optional

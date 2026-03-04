@@ -34,23 +34,23 @@ class SeasonalCycleDiag(DiagnosticBase):
     domain = "sfc"
     variables = [
         # Temperature & pressure
-        "avg_2t", "avg_msl",
+        "tas", "psl",
         # Wind
-        "avg_10u", "avg_10v",
+        "uas", "vas",
         # Cloud cover
-        "avg_tcc",
+        "clt",
         # Precipitation
-        "avg_tprate",
+        "pr",
         # Surface heat fluxes
-        "avg_ishf", "avg_slhtf",
+        "hfss", "hfls",
         # Surface downwelling radiation
-        "avg_sdswrf", "avg_sdlwrf",
+        "rsds", "rlds",
         # Surface net radiation (all-sky + clear-sky)
-        "avg_snswrf", "avg_snlwrf",
-        "avg_snswrfcs", "avg_snlwrfcs",
+        "rss", "rls",
+        "rsscs", "rlscs",
         # TOA net radiation (all-sky + clear-sky)
-        "avg_tnswrf", "avg_tnlwrf",
-        "avg_tnswrfcs", "avg_tnlwrfcs",
+        "rst", "rlt",
+        "rstcs", "rltcs",
     ]
     group = "evaluation"
 
@@ -108,6 +108,7 @@ class SeasonalCycleDiag(DiagnosticBase):
     def _compute_single(self, var: str) -> dict[str, Any]:
         """Compute monthly climatological cycle for a single variable."""
         var_info = get_var(var)
+        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_monthly: dict[str, Any] = {}
 
@@ -117,7 +118,7 @@ class SeasonalCycleDiag(DiagnosticBase):
                 self.experiment, model, var_info.domain,
             )
             try:
-                model_data = self.model_loader.load_var(key, var)
+                model_data = self.model_loader.load_var(key, destine_var)
             except KeyError:
                 logger.warning(
                     "  Variable %s not available for %s — skipping",

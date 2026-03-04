@@ -129,12 +129,12 @@ class TestGlobalBiasesCompute:
         """compute() returns expected nested structure."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        assert "avg_2t" in results
-        vr = results["avg_2t"]
+        assert "tas" in results
+        vr = results["tas"]
         assert "models" in vr
         assert "obs" in vr
         assert "var_info" in vr
@@ -145,11 +145,11 @@ class TestGlobalBiasesCompute:
         """Each model entry has required fields."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        mdata = results["avg_2t"]["models"]["ifs-fesom"]
+        mdata = results["tas"]["models"]["ifs-fesom"]
         assert "annual_regrid" in mdata
         assert "annual_bias" in mdata
         assert "annual_bias_gmean" in mdata
@@ -163,11 +163,11 @@ class TestGlobalBiasesCompute:
         """Obs entry has required fields."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        obs = results["avg_2t"]["obs"]
+        obs = results["tas"]["obs"]
         assert "clim" in obs
         assert "global_mean" in obs
         assert isinstance(obs["global_mean"], float)
@@ -178,11 +178,11 @@ class TestGlobalBiasesCompute:
         """With matching synth data, global mean bias is small."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        mdata = results["avg_2t"]["models"]["ifs-fesom"]
+        mdata = results["tas"]["models"]["ifs-fesom"]
         # Synth model and obs have the same pattern -> small bias
         assert abs(mdata["annual_bias_gmean"]) < 3.0
 
@@ -192,11 +192,11 @@ class TestGlobalBiasesCompute:
         """RMSE is small when model matches obs."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        mdata = results["avg_2t"]["models"]["ifs-fesom"]
+        mdata = results["tas"]["models"]["ifs-fesom"]
         assert mdata["annual_rmse"] < 5.0
 
     def test_seasonal_biases_computed(
@@ -205,11 +205,11 @@ class TestGlobalBiasesCompute:
         """Seasonal biases are computed for DJF and JJA."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        seasonal = results["avg_2t"]["models"]["ifs-fesom"]["seasonal_biases"]
+        seasonal = results["tas"]["models"]["ifs-fesom"]["seasonal_biases"]
         assert "DJF" in seasonal
         assert "JJA" in seasonal
 
@@ -218,9 +218,9 @@ class TestGlobalBiasesCompute:
         """Constructor variables= overrides class default."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
-        assert diag.variables == ["avg_2t"]
+        assert diag.variables == ["tas"]
 
 
 # -- GlobalBiases skip_existing tests --------------------------------------
@@ -234,12 +234,12 @@ class TestGlobalBiasesSkipExisting:
         """run() skips variable when all 3 period figures exist."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         # Pre-create all 3 period figures
         diag.output_dir.mkdir(parents=True, exist_ok=True)
         for period in ["annual", "djf", "jja"]:
-            fid = f"avg_2t_{period}_bias_combined"
+            fid = f"tas_{period}_bias_combined"
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
 
@@ -255,11 +255,11 @@ class TestGlobalBiasesSkipExisting:
         """run(skip_existing=False) recomputes even when figures exist."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
         for period in ["annual", "djf", "jja"]:
-            fid = f"avg_2t_{period}_bias_combined"
+            fid = f"tas_{period}_bias_combined"
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
 
@@ -277,11 +277,11 @@ class TestGlobalBiasesSkipExisting:
         """run() recomputes when only some period figures exist."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
         # Only create annual, not DJF and JJA
-        fid = "avg_2t_annual_bias_combined"
+        fid = "tas_annual_bias_combined"
         (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
         (diag.output_dir / f"{fid}.json").write_text("{}")
 
@@ -300,7 +300,7 @@ class TestGlobalBiasesSkipExisting:
         """run() saves figures after each variable (incremental)."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
 
         def _make_saveable_fig():
@@ -334,7 +334,7 @@ class TestGlobalBiasesPlot:
         from feather.util.spatial import global_mean
         from feather.util.temporal import climatology, seasonal_climatology
 
-        var = "avg_2t"
+        var = "tas"
         var_info = get_var(var)
         ds = synth_healpix
         model_clim = climatology(ds["avg_2t"])
@@ -406,7 +406,7 @@ class TestGlobalBiasesPlot:
         )
 
         return {
-            "avg_2t": {
+            "tas": {
                 "models": model_results,
                 "obs": {
                     "clim": obs_clim_common,
@@ -432,7 +432,7 @@ class TestGlobalBiasesPlot:
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
@@ -457,7 +457,7 @@ class TestGlobalBiasesPlot:
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
@@ -469,7 +469,7 @@ class TestGlobalBiasesPlot:
 
         # Check annual bias metadata
         _, meta = pairs[0]
-        assert meta["figure_id"] == "avg_2t_annual_bias_combined"
+        assert meta["figure_id"] == "tas_annual_bias_combined"
         assert meta["plot_type"] == "combined_bias_map"
         assert "ifs-fesom" in meta["summary_statistics"]
         assert "global_mean_bias" in meta["summary_statistics"]["ifs-fesom"]
@@ -484,7 +484,7 @@ class TestGlobalBiasesPlot:
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
@@ -495,9 +495,9 @@ class TestGlobalBiasesPlot:
             pairs = diag.plot(results)
 
         figure_ids = [meta["figure_id"] for _, meta in pairs]
-        assert "avg_2t_annual_bias_combined" in figure_ids
-        assert "avg_2t_djf_bias_combined" in figure_ids
-        assert "avg_2t_jja_bias_combined" in figure_ids
+        assert "tas_annual_bias_combined" in figure_ids
+        assert "tas_djf_bias_combined" in figure_ids
+        assert "tas_jja_bias_combined" in figure_ids
 
     def test_plot_models_list_in_metadata(
         self, synth_healpix, synth_obs, minimal_config,
@@ -508,7 +508,7 @@ class TestGlobalBiasesPlot:
 
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
 
         mock_fig = MagicMock(spec=plt.Figure)
@@ -533,12 +533,12 @@ class TestGlobalBiasesCMIP6:
         """When CMIP6 is disabled, cmip6_data is empty."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        assert results["avg_2t"]["cmip6_data"] == {}
-        assert results["avg_2t"]["cmip6_info"] == {}
+        assert results["tas"]["cmip6_data"] == {}
+        assert results["tas"]["cmip6_info"] == {}
 
     def test_cmip6_enabled_has_bias_data(
         self, mock_model_loader, mock_obs_loader,
@@ -548,11 +548,11 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        cmip6_data = results["avg_2t"]["cmip6_data"]
+        cmip6_data = results["tas"]["cmip6_data"]
         assert "annual" in cmip6_data
         assert "regrid" in cmip6_data["annual"]
         assert "bias" in cmip6_data["annual"]
@@ -566,11 +566,11 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        cmip6_data = results["avg_2t"]["cmip6_data"]
+        cmip6_data = results["tas"]["cmip6_data"]
         assert abs(cmip6_data["annual"]["bias_gmean"]) < 5.0
 
     def test_cmip6_seasonal_biases(
@@ -581,11 +581,11 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        cmip6_data = results["avg_2t"]["cmip6_data"]
+        cmip6_data = results["tas"]["cmip6_data"]
         assert "DJF" in cmip6_data
         assert "JJA" in cmip6_data
         assert "bias" in cmip6_data["DJF"]
@@ -599,11 +599,11 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        info = results["avg_2t"]["cmip6_info"]
+        info = results["tas"]["cmip6_info"]
         assert info["n_members"] >= 1
         assert len(info["models_used"]) >= 1
 
@@ -615,7 +615,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
@@ -629,12 +629,12 @@ class TestGlobalBiasesCMIP6:
         # Still 3 combined figures (annual + DJF + JJA), CMIP6 is inside them
         assert len(pairs) == 3
         figure_ids = [meta["figure_id"] for _, meta in pairs]
-        assert "avg_2t_annual_bias_combined" in figure_ids
+        assert "tas_annual_bias_combined" in figure_ids
 
         # CMIP6 MMM should appear in models list
         annual_meta = next(
             meta for _, meta in pairs
-            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+            if meta["figure_id"] == "tas_annual_bias_combined"
         )
         assert "CMIP6 MMM" in annual_meta["models"]
         assert "CMIP6 MMM" in annual_meta["summary_statistics"]
@@ -647,7 +647,7 @@ class TestGlobalBiasesCMIP6:
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
@@ -661,7 +661,7 @@ class TestGlobalBiasesCMIP6:
         # Annual combined figure should have cmip6_info
         annual_meta = next(
             meta for _, meta in pairs
-            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+            if meta["figure_id"] == "tas_annual_bias_combined"
         )
         assert annual_meta.get("cmip6_info") is not None
         assert annual_meta["cmip6_info"]["n_members"] >= 1
@@ -762,11 +762,11 @@ class TestGlobalBiasesCMIP6Individual:
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
             cmip6_individual=True,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        ind_data = results["avg_2t"]["cmip6_individual_data"]
+        ind_data = results["tas"]["cmip6_individual_data"]
         assert "annual" in ind_data
         # Should have entries for individual models
         assert len(ind_data["annual"]) >= 1
@@ -780,14 +780,14 @@ class TestGlobalBiasesCMIP6Individual:
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
             cmip6_individual=True,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
         # MMM is also computed alongside individual models
-        assert "annual" in results["avg_2t"]["cmip6_data"]
+        assert "annual" in results["tas"]["cmip6_data"]
         # Individual data is present too
-        assert results["avg_2t"]["cmip6_individual_data"] != {}
+        assert results["tas"]["cmip6_individual_data"] != {}
 
     def test_individual_models_in_combined_figure(
         self, mock_model_loader, mock_obs_loader,
@@ -798,7 +798,7 @@ class TestGlobalBiasesCMIP6Individual:
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
             cmip6_individual=True,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
@@ -814,7 +814,7 @@ class TestGlobalBiasesCMIP6Individual:
 
         annual_meta = next(
             meta for _, meta in pairs
-            if meta["figure_id"] == "avg_2t_annual_bias_combined"
+            if meta["figure_id"] == "tas_annual_bias_combined"
         )
         # Should include DestinE model + individual CMIP6 models
         assert "ifs-fesom" in annual_meta["models"]
@@ -833,7 +833,7 @@ class TestGlobalBiasesCMIP6Individual:
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
             cmip6_individual=True,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
@@ -855,10 +855,10 @@ class TestGlobalBiasesCMIP6Individual:
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
             cmip6_individual=True,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        ind_data = results["avg_2t"]["cmip6_individual_data"]
+        ind_data = results["tas"]["cmip6_individual_data"]
         assert "DJF" in ind_data
         assert "JJA" in ind_data

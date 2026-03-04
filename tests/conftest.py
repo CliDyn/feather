@@ -6,7 +6,7 @@ import xarray as xr
 
 from feather.config import FeatherConfig
 from feather.data.loader import DataLoader
-from feather.data.variables import VARIABLE_REGISTRY
+from feather.data.variables import VARIABLE_REGISTRY, get_var
 
 
 # ── Synthetic data fixtures ──────────────────────────────────────────
@@ -220,8 +220,11 @@ class MockCMIP6Loader:
         return da
 
     def load_var_for_model_var(self, model_var, model, **kwargs):
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return None
+        if not vinfo.cmip6_variable:
             return None
         return self.load_var(vinfo.cmip6_variable, model, **kwargs)
 
@@ -244,8 +247,11 @@ class MockCMIP6Loader:
         return da, info
 
     def load_mmm_for_model_var(self, model_var, **kwargs):
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return None, {"n_members": 0, "models_used": [], "models_skipped": []}
+        if not vinfo.cmip6_variable:
             return None, {"n_members": 0, "models_used": [], "models_skipped": []}
         return self.load_multi_model_mean(vinfo.cmip6_variable, **kwargs)
 
@@ -281,8 +287,11 @@ class MockCMIP6Loader:
         ]
 
     def available_models_for_model_var(self, model_var):
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return []
+        if not vinfo.cmip6_variable:
             return []
         return self.available_models(vinfo.cmip6_variable)
 

@@ -144,10 +144,10 @@ class TestRunPipeline:
             run_pipeline(
                 pipeline_config,
                 steps=["diagnostics"],
-                variables=["avg_2t"],
+                variables=["tas"],
             )
             call_kwargs = mock_diag.call_args
-            assert call_kwargs.kwargs["variables"] == ["avg_2t"]
+            assert call_kwargs.kwargs["variables"] == ["tas"]
 
     def test_skip_existing_passed(self, pipeline_config):
         """skip_existing flag is forwarded to sub-steps."""

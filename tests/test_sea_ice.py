@@ -223,8 +223,8 @@ class TestRegistration:
         assert SeaIceDiag.group == "sea_ice"
 
     def test_variables(self):
-        assert "avg_siconc" in SeaIceDiag.variables
-        assert "avg_sithick" in SeaIceDiag.variables
+        assert "siconc" in SeaIceDiag.variables
+        assert "sithick" in SeaIceDiag.variables
 
 
 # ── Test Model Time Series Computation ───────────────────────────────
@@ -474,7 +474,7 @@ class TestPlotSpatial:
 
     def test_siconc_nh_returns_fig(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_nh_spatial", "avg_siconc", "np",
+            "siconc_nh_spatial", "siconc", "np",
         )
         assert len(result) == 1
         fig, meta = result[0]
@@ -483,28 +483,28 @@ class TestPlotSpatial:
 
     def test_siconc_sh_returns_fig(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_sh_spatial", "avg_siconc", "sp",
+            "siconc_sh_spatial", "siconc", "sp",
         )
         assert len(result) == 1
         plt.close("all")
 
     def test_sithick_nh_returns_fig(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "sithick_nh_spatial", "avg_sithick", "np",
+            "sithick_nh_spatial", "sithick", "np",
         )
         assert len(result) == 1
         plt.close("all")
 
     def test_sithick_sh_returns_fig(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "sithick_sh_spatial", "avg_sithick", "sp",
+            "sithick_sh_spatial", "sithick", "sp",
         )
         assert len(result) == 1
         plt.close("all")
 
     def test_figure_id_correct(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_nh_spatial", "avg_siconc", "np",
+            "siconc_nh_spatial", "siconc", "np",
         )
         _, meta = result[0]
         assert meta["figure_id"] == "siconc_nh_spatial"
@@ -512,7 +512,7 @@ class TestPlotSpatial:
 
     def test_plot_type(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_nh_spatial", "avg_siconc", "np",
+            "siconc_nh_spatial", "siconc", "np",
         )
         _, meta = result[0]
         assert meta["plot_type"] == "spatial_map"
@@ -520,7 +520,7 @@ class TestPlotSpatial:
 
     def test_spatial_extent_nh(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_nh_spatial", "avg_siconc", "np",
+            "siconc_nh_spatial", "siconc", "np",
         )
         _, meta = result[0]
         assert meta["spatial_extent"] == "NH"
@@ -528,7 +528,7 @@ class TestPlotSpatial:
 
     def test_spatial_extent_sh(self, sea_ice_diag):
         result = sea_ice_diag._plot_spatial(
-            "siconc_sh_spatial", "avg_siconc", "sp",
+            "siconc_sh_spatial", "siconc", "sp",
         )
         _, meta = result[0]
         assert meta["spatial_extent"] == "SH"

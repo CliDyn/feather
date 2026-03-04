@@ -1,3 +1,12 @@
+project:
+  name: "DestinE"
+  description: "Destination Earth high-resolution climate model evaluation"
+  experiment: "baseline_hist"
+  period: ["1990", "2014"]
+
+data_source:
+  type: "destine_catalog"
+
 model_catalogs:
   2d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/2D/catalog.yaml"
   3d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/3D/catalog.yaml"

@@ -409,3 +409,171 @@ class TestRegistry:
         assert info["domain"] == "pl"
         assert info["group"] == "circulation"
         assert info["variables"] == ["avg_t", "avg_u"]
+
+
+# ── Base class helpers (Phase 3) ─────────────────────────────────────
+
+
+class TestModelGlobalMean:
+    """Tests for _model_global_mean() dispatch."""
+
+    def test_healpix_dispatch(self, tmp_path, synth_healpix):
+        """HEALPix data dispatches to global_mean()."""
+        from feather.config import ModelConfig
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["ifs-fesom"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            model_configs={
+                "ifs-fesom": ModelConfig(
+                    name="ifs-fesom",
+                    grids={"sfc": "healpix"},
+                ),
+            },
+        )
+        diag = _MockDiagnostic(None, None, cfg)
+        da = synth_healpix["avg_2t"]
+        result = diag._model_global_mean(da, "ifs-fesom")
+        assert "values" not in result.dims
+        assert 260 < float(result.mean()) < 300
+
+    def test_latlon_dispatch(self, tmp_path, synth_obs):
+        """Lat/lon data dispatches to latlon_global_mean()."""
+        from feather.config import ModelConfig
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["MyModel"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            model_configs={
+                "MyModel": ModelConfig(
+                    name="MyModel",
+                    grids={"sfc": "latlon"},
+                ),
+            },
+        )
+        diag = _MockDiagnostic(None, None, cfg)
+        da = synth_obs["t2m"]
+        result = diag._model_global_mean(da, "MyModel")
+        assert "lat" not in result.dims
+        assert "lon" not in result.dims
+        assert 260 < float(result.mean()) < 300
+
+
+class TestLoadModelVar:
+    """Tests for _load_model_var() dispatch."""
+
+    def test_cmor_dispatch(self, tmp_path):
+        """CMOR data source dispatches to model_loader.load_var(model, var)."""
+        from unittest.mock import MagicMock
+
+        from feather.config import ModelConfig
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["TestModel"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor"},
+            model_configs={
+                "TestModel": ModelConfig(
+                    name="TestModel", grids={"sfc": "latlon"},
+                ),
+            },
+        )
+
+        mock_loader = MagicMock()
+        mock_loader.load_var.return_value = "fake_data"
+        diag = _MockDiagnostic(mock_loader, None, cfg)
+
+        result = diag._load_model_var("TestModel", "tas")
+        mock_loader.load_var.assert_called_once_with(
+            "TestModel", "tas", period=None, time_mean=False,
+        )
+        assert result == "fake_data"
+
+    def test_destine_dispatch(self, tmp_path):
+        """DestinE data source dispatches to load_var(key, destine_var)."""
+        from unittest.mock import MagicMock
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["ifs-fesom"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            project={"experiment": "baseline_hist"},
+        )
+
+        mock_loader = MagicMock()
+        mock_da = MagicMock()
+        mock_da.dims = ()  # no time dim
+        mock_loader.load_var.return_value = mock_da
+        diag = _MockDiagnostic(mock_loader, None, cfg)
+
+        diag._load_model_var("ifs-fesom", "tas", experiment="baseline_hist")
+
+        # Should call with DestinE catalog key and DestinE variable name
+        call_args = mock_loader.load_var.call_args
+        key = call_args[0][0]
+        var = call_args[0][1]
+        assert "ifs-fesom" in key
+        assert var == "avg_2t"  # DestinE name for tas
+
+
+class TestLoadModelCoords:
+    """Tests for _load_model_coords() dispatch."""
+
+    def test_cmor_coords(self, tmp_path):
+        """CMOR loader returns lat/lon from DataArray coords."""
+        from unittest.mock import MagicMock
+
+        from feather.config import ModelConfig
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["TestModel"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor"},
+            model_configs={
+                "TestModel": ModelConfig(
+                    name="TestModel", grids={"sfc": "latlon"},
+                ),
+            },
+        )
+
+        import xarray as xr
+
+        lats = np.arange(-90, 91, 5.0)
+        lons = np.arange(0, 360, 5.0)
+        da = xr.DataArray(
+            np.zeros((len(lats), len(lons))),
+            dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        mock_loader = MagicMock()
+        mock_loader.load_var.return_value = da
+        diag = _MockDiagnostic(mock_loader, None, cfg)
+
+        lon, lat = diag._load_model_coords("TestModel", "tas")
+        assert len(lon) == 72
+        assert len(lat) == 37
+
+    def test_destine_coords(self, tmp_path, synth_healpix):
+        """DestinE loader returns lon/lat from Dataset variables."""
+        from unittest.mock import MagicMock
+
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["ifs-fesom"],
+            obs_root="", obs_datasets={}, cmip6={"enabled": False},
+            dask={}, nereus={}, output_dir=str(tmp_path / "output"),
+            project={"experiment": "baseline_hist"},
+        )
+
+        mock_loader = MagicMock()
+        mock_loader.load.return_value = synth_healpix
+        diag = _MockDiagnostic(mock_loader, None, cfg)
+
+        lon, lat = diag._load_model_coords(
+            "ifs-fesom", "tas", experiment="baseline_hist",
+        )
+        assert len(lon) == 768  # nside=8
+        assert len(lat) == 768

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _DERIVED_QUANTITIES = {
     "toa_net": {
         "long_name": "TOA Net Radiation",
-        "components": ("avg_tnswrf", "avg_tnlwrf"),
+        "components": ("rst", "rlt"),
         "ceres_var": "toa_net_all_mon",
         "ceres_file": "toa",
         "units": "W/m\u00b2",
@@ -38,7 +38,7 @@ _DERIVED_QUANTITIES = {
     },
     "sfc_net": {
         "long_name": "Surface Net Radiation",
-        "components": ("avg_snswrf", "avg_snlwrf"),
+        "components": ("rss", "rls"),
         "ceres_var": "sfc_net_tot_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
@@ -46,7 +46,7 @@ _DERIVED_QUANTITIES = {
     },
     "toa_cre_sw": {
         "long_name": "TOA CRE Shortwave",
-        "components": ("avg_tnswrf", "avg_tnswrfcs"),
+        "components": ("rst", "rstcs"),
         "operation": "subtract",
         "ceres_var": "toa_cre_sw_mon",
         "ceres_file": "toa",
@@ -55,7 +55,7 @@ _DERIVED_QUANTITIES = {
     },
     "toa_cre_lw": {
         "long_name": "TOA CRE Longwave",
-        "components": ("avg_tnlwrf", "avg_tnlwrfcs"),
+        "components": ("rlt", "rltcs"),
         "operation": "subtract",
         "ceres_var": "toa_cre_lw_mon",
         "ceres_file": "toa",
@@ -64,7 +64,7 @@ _DERIVED_QUANTITIES = {
     },
     "sfc_net_sw": {
         "long_name": "Surface Net Shortwave",
-        "components": ("avg_snswrf",),
+        "components": ("rss",),
         "ceres_var": "sfc_net_sw_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
@@ -72,7 +72,7 @@ _DERIVED_QUANTITIES = {
     },
     "sfc_net_lw": {
         "long_name": "Surface Net Longwave",
-        "components": ("avg_snlwrf",),
+        "components": ("rls",),
         "ceres_var": "sfc_net_lw_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
@@ -85,11 +85,11 @@ _DERIVED_QUANTITIES = {
 # ceres_sign: multiply CERES value by this to match DestinE convention
 # (positive downward = into system). CERES OLR is positive upward → negate.
 _BUDGET_COMPONENTS = [
-    ("TOA SW", "avg_tnswrf", "toa_sw_all_mon", "toa", 1.0),
-    ("TOA LW", "avg_tnlwrf", "toa_lw_all_mon", "toa", -1.0),  # CERES OLR positive up
+    ("TOA SW", "rst", "toa_sw_all_mon", "toa", 1.0),
+    ("TOA LW", "rlt", "toa_lw_all_mon", "toa", -1.0),  # CERES OLR positive up
     ("TOA Net", None, "toa_net_all_mon", "toa", 1.0),  # derived
-    ("Sfc SW", "avg_snswrf", "sfc_net_sw_all_mon", "surface", 1.0),
-    ("Sfc LW", "avg_snlwrf", "sfc_net_lw_all_mon", "surface", 1.0),
+    ("Sfc SW", "rss", "sfc_net_sw_all_mon", "surface", 1.0),
+    ("Sfc LW", "rls", "sfc_net_lw_all_mon", "surface", 1.0),
     ("Sfc Net", None, "sfc_net_tot_all_mon", "surface", 1.0),  # derived
     ("Atm Abs", None, None, None, 1.0),  # TOA Net - Sfc Net
 ]
@@ -110,12 +110,12 @@ class RadiationBudget(DiagnosticBase):
     title = "Radiation Budget"
     domain = "sfc"
     variables = [
-        "avg_tnswrf", "avg_tnlwrf",
-        "avg_tnswrfcs", "avg_tnlwrfcs",
-        "avg_snswrf", "avg_snlwrf",
-        "avg_snswrfcs", "avg_snlwrfcs",
-        "avg_sdswrf", "avg_sdlwrf",
-        "avg_2t",
+        "rst", "rlt",
+        "rstcs", "rltcs",
+        "rss", "rls",
+        "rsscs", "rlscs",
+        "rsds", "rlds",
+        "tas",
     ]
     group = "radiation"
 
@@ -267,9 +267,10 @@ class RadiationBudget(DiagnosticBase):
     def _model_global_mean_clim(self, model: str, var: str) -> float | None:
         """Load model var, compute climatology, then global mean."""
         var_info = get_var(var)
+        destine_var = var_info.destine_variable or var
         key = DataLoader.make_key(self.experiment, model, var_info.domain)
         try:
-            da = self.model_loader.load_var(key, var)
+            da = self.model_loader.load_var(key, destine_var)
         except KeyError:
             logger.warning("  %s not available for %s", var, model)
             return None
@@ -451,9 +452,9 @@ class RadiationBudget(DiagnosticBase):
         model_data: dict[str, dict] = {}
 
         for model in self.config.models:
-            t2m_ts = self._model_global_mean_ts(model, "avg_2t")
-            sw_ts = self._model_global_mean_ts(model, "avg_tnswrf")
-            lw_ts = self._model_global_mean_ts(model, "avg_tnlwrf")
+            t2m_ts = self._model_global_mean_ts(model, "tas")
+            sw_ts = self._model_global_mean_ts(model, "rst")
+            lw_ts = self._model_global_mean_ts(model, "rlt")
 
             if t2m_ts is not None and sw_ts is not None and lw_ts is not None:
                 # Align times before adding
@@ -481,9 +482,10 @@ class RadiationBudget(DiagnosticBase):
     def _model_global_mean_ts(self, model: str, var: str) -> xr.DataArray | None:
         """Load model variable and return global-mean monthly time series."""
         var_info = get_var(var)
+        destine_var = var_info.destine_variable or var
         key = DataLoader.make_key(self.experiment, model, var_info.domain)
         try:
-            da = self.model_loader.load_var(key, var)
+            da = self.model_loader.load_var(key, destine_var)
         except KeyError:
             return None
         if self.period and "time" in da.dims:
@@ -500,7 +502,7 @@ class RadiationBudget(DiagnosticBase):
             toa_ts = latlon_global_mean(toa_da)
 
             # ERA5 T2m
-            t2m_da = self.obs_loader.load_for_model_var("avg_2t", self.period)
+            t2m_da = self.obs_loader.load_for_model_var("tas", self.period)
             t2m_ts = latlon_global_mean(t2m_da)
 
             # Align times
@@ -570,7 +572,7 @@ class RadiationBudget(DiagnosticBase):
     def _compute_gregory_cmip6_mmm(self) -> dict[str, Any] | None:
         """Compute CMIP6 MMM for Gregory plot."""
         t2m_mmm, _ = self._cmip6_global_mean_timeseries(
-            "avg_2t", period=self.period,
+            "tas", period=self.period,
         )
         if t2m_mmm is None:
             return None
@@ -690,7 +692,7 @@ class RadiationBudget(DiagnosticBase):
             title="Gregory Plot",
             figure_id="gregory_plot",
             models=all_models,
-            variables=["avg_2t", "avg_tnswrf", "avg_tnlwrf"],
+            variables=["tas", "rst", "rlt"],
             description=(
                 "Scatter plot of global-mean 2m temperature vs net TOA "
                 "radiation. Monthly values as small dots, annual means as "
@@ -715,8 +717,8 @@ class RadiationBudget(DiagnosticBase):
         model_ts: dict[str, xr.DataArray] = {}
 
         for model in self.config.models:
-            sw_ts = self._model_global_mean_ts(model, "avg_tnswrf")
-            lw_ts = self._model_global_mean_ts(model, "avg_tnlwrf")
+            sw_ts = self._model_global_mean_ts(model, "rst")
+            lw_ts = self._model_global_mean_ts(model, "rlt")
             if sw_ts is not None and lw_ts is not None:
                 sw_ts, lw_ts = xr.align(sw_ts, lw_ts, join="inner")
                 model_ts[model] = sw_ts + lw_ts
@@ -873,7 +875,7 @@ class RadiationBudget(DiagnosticBase):
             title="Radiation Imbalance Time Series",
             figure_id="radiation_imbalance_timeseries",
             models=all_models,
-            variables=["avg_tnswrf", "avg_tnlwrf"],
+            variables=["rst", "rlt"],
             description=(
                 "Time series of global-mean net TOA radiation for DestinE "
                 "models, CERES observations, and CMIP6 MMM. Monthly values "
@@ -1012,9 +1014,10 @@ class RadiationBudget(DiagnosticBase):
         arrays = []
         for var in components:
             var_info = get_var(var)
+            destine_var = var_info.destine_variable or var
             key = DataLoader.make_key(self.experiment, model, var_info.domain)
             try:
-                da = self.model_loader.load_var(key, var)
+                da = self.model_loader.load_var(key, destine_var)
             except KeyError:
                 return None
             arrays.append(climatology(da, self.period).compute())

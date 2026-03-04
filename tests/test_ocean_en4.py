@@ -279,8 +279,8 @@ class TestRegistration:
         assert OceanEN4.domain == "o3d"
 
     def test_variables_attribute(self):
-        assert "avg_thetao" in OceanEN4.variables
-        assert "avg_so" in OceanEN4.variables
+        assert "thetao" in OceanEN4.variables
+        assert "so" in OceanEN4.variables
 
     def test_group_attribute(self):
         assert OceanEN4.group == "ocean_3d"
@@ -362,8 +362,8 @@ class TestDataLoading:
     def test_load_model_data_shape(self, en4_diag):
         model_3d, coords, depths, thickness = en4_diag._load_model_data()
         assert "ifs-fesom" in model_3d
-        assert "avg_thetao" in model_3d["ifs-fesom"]
-        da = model_3d["ifs-fesom"]["avg_thetao"]
+        assert "thetao" in model_3d["ifs-fesom"]
+        da = model_3d["ifs-fesom"]["thetao"]
         assert "time" in da.dims
         assert "level" in da.dims
 
@@ -381,12 +381,12 @@ class TestDataLoading:
 
     def test_load_en4_data(self, en4_diag):
         en4_data, en4_ds = en4_diag._load_en4_data()
-        assert "avg_thetao" in en4_data
-        assert "avg_so" in en4_data
+        assert "thetao" in en4_data
+        assert "so" in en4_data
 
     def test_load_en4_shape(self, en4_diag):
         en4_data, _ = en4_diag._load_en4_data()
-        da = en4_data["avg_thetao"]
+        da = en4_data["thetao"]
         assert "time" in da.dims
         assert "lev" in da.dims
         assert "lat" in da.dims
@@ -394,7 +394,7 @@ class TestDataLoading:
 
     def test_load_en4_dataset_includes_lev_bnds(self, en4_diag):
         _, en4_ds = en4_diag._load_en4_data()
-        ds = en4_ds["avg_thetao"]
+        ds = en4_ds["thetao"]
         assert "lev_bnds" in ds
 
     def test_load_model_missing_variable(self, synth_ocean_3d_healpix,
@@ -405,8 +405,8 @@ class TestDataLoading:
         obs_loader = MockEN4ObsLoader(synth_en4)
         diag = OceanEN4(model_loader, obs_loader, ocean_3d_config)
         model_3d, _, _, _ = diag._load_model_data()
-        assert "avg_thetao" in model_3d["ifs-fesom"]
-        assert "avg_so" not in model_3d["ifs-fesom"]
+        assert "thetao" in model_3d["ifs-fesom"]
+        assert "so" not in model_3d["ifs-fesom"]
 
     def test_load_en4_missing_graceful(self, synth_ocean_3d_healpix,
                                        ocean_3d_config):
@@ -433,21 +433,21 @@ class TestConversion:
     """Test K->C and salinity identity conversion."""
 
     def test_thetao_convert_kelvin_to_celsius(self):
-        convert = _VAR_CFG["avg_thetao"]["convert"]
+        convert = _VAR_CFG["thetao"]["convert"]
         da = xr.DataArray([300.0, 273.15])
         result = convert(da)
         assert result.values[0] == pytest.approx(300.0 - _K_TO_C)
         assert result.values[1] == pytest.approx(0.0)
 
     def test_so_convert_identity(self):
-        convert = _VAR_CFG["avg_so"]["convert"]
+        convert = _VAR_CFG["so"]["convert"]
         da = xr.DataArray([35.0, 34.5])
         result = convert(da)
         np.testing.assert_array_equal(result.values, [35.0, 34.5])
 
     def test_var_cfg_keys(self):
-        assert "avg_thetao" in _VAR_CFG
-        assert "avg_so" in _VAR_CFG
+        assert "thetao" in _VAR_CFG
+        assert "so" in _VAR_CFG
 
     def test_var_cfg_has_required_fields(self):
         for var, cfg in _VAR_CFG.items():
@@ -468,7 +468,7 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         assert "models" in results
         assert "periods" in results
 
@@ -476,7 +476,7 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         periods = results["periods"]
         assert "annual" in periods
         assert "djf" in periods
@@ -486,7 +486,7 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         assert "ifs-fesom" in results["models"]
         model_r = results["models"]["ifs-fesom"]
         assert "annual" in model_r
@@ -498,7 +498,7 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         bias = results["models"]["ifs-fesom"]["annual"]["bias"]
         # Some NaN from ocean masking is OK, but not all NaN
         assert np.isfinite(bias.values).any()
@@ -507,7 +507,7 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         gmean = results["models"]["ifs-fesom"]["annual"]["bias_gmean"]
         assert isinstance(gmean, float)
 
@@ -515,20 +515,20 @@ class TestBiasMapComputation:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_so", model_3d, coords, en4_data)
+            "so", model_3d, coords, en4_data)
         assert "ifs-fesom" in results["models"]
 
     def test_bias_maps_empty_en4(self, en4_diag):
         model_3d, coords, _, _ = en4_diag._load_model_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, {})
+            "thetao", model_3d, coords, {})
         assert results["models"] == {}
 
     def test_obs_common_coords(self, en4_diag):
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         obs_common = results["periods"]["annual"]["obs_common"]
         assert "lat" in obs_common.coords
         assert "lon" in obs_common.coords
@@ -544,7 +544,7 @@ class TestHovmollerComputation:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         assert "models" in hov
         assert "en4_hov" in hov
@@ -554,7 +554,7 @@ class TestHovmollerComputation:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         en4_hov = hov["en4_hov"]
         assert en4_hov is not None
@@ -566,21 +566,21 @@ class TestHovmollerComputation:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_so", model_3d, depths, thickness,
+            "so", model_3d, depths, thickness,
             en4_data, en4_ds)
         assert hov["en4_hov"] is not None
 
     def test_hovmoller_no_en4(self, en4_diag):
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness, {}, {})
+            "thetao", model_3d, depths, thickness, {}, {})
         assert hov["en4_hov"] is None
 
     def test_en4_hovmoller_values_finite(self, en4_diag):
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         en4_hov = hov["en4_hov"]
         assert np.isfinite(en4_hov.values).all()
@@ -590,7 +590,7 @@ class TestHovmollerComputation:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         en4_hov = hov["en4_hov"]
         first_profile = en4_hov.values[0, :]
@@ -615,7 +615,7 @@ class TestDepthTimeseries:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         assert "models" in ts
         assert "en4" in ts
@@ -624,7 +624,7 @@ class TestDepthTimeseries:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         en4_ts = ts["en4"]
         # At least some depth ranges should have data
@@ -634,7 +634,7 @@ class TestDepthTimeseries:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
         for label, da in ts["en4"].items():
             assert np.isfinite(da.values).any(), f"All NaN in EN4 {label}"
@@ -643,14 +643,14 @@ class TestDepthTimeseries:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_so", model_3d, depths, thickness,
+            "so", model_3d, depths, thickness,
             en4_data, en4_ds)
         assert len(ts["en4"]) > 0
 
     def test_depth_timeseries_no_en4(self, en4_diag):
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness, {}, {})
+            "thetao", model_3d, depths, thickness, {}, {})
         assert ts["en4"] == {}
 
 
@@ -664,8 +664,8 @@ class TestPlotting:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         assert len(figs) == 3  # annual, djf, jja
         for fig, meta in figs:
             assert isinstance(fig, plt.Figure)
@@ -675,9 +675,9 @@ class TestPlotting:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_hovmoller_anom1("avg_thetao", hov)
+        figs = en4_diag._plot_hovmoller_anom1("thetao", hov)
         # One combined figure with EN4 + models as subpanels
         assert len(figs) == 1
         fig, meta = figs[0]
@@ -691,9 +691,9 @@ class TestPlotting:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_hovmoller_anomref("avg_thetao", hov)
+        figs = en4_diag._plot_hovmoller_anomref("thetao", hov)
         assert len(figs) == 1
         fig, meta = figs[0]
         assert isinstance(fig, plt.Figure)
@@ -705,9 +705,9 @@ class TestPlotting:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_depth_timeseries("avg_thetao", ts)
+        figs = en4_diag._plot_depth_timeseries("thetao", ts)
         assert len(figs) == 1
         fig, meta = figs[0]
         assert isinstance(fig, plt.Figure)
@@ -717,9 +717,9 @@ class TestPlotting:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_depth_timeseries("avg_thetao", ts)
+        figs = en4_diag._plot_depth_timeseries("thetao", ts)
         fig, _ = figs[0]
         axes = fig.get_axes()
         assert len(axes) == 3
@@ -732,9 +732,9 @@ class TestPlotting:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_hovmoller_anom1("avg_thetao", hov)
+        figs = en4_diag._plot_hovmoller_anom1("thetao", hov)
         fig, _ = figs[0]
         # Collect clims from QuadMesh objects (the pcolormesh data)
         clims = []
@@ -762,8 +762,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         _, meta = figs[0]
         assert meta["diagnostic_name"] == "ocean_en4"
         assert meta["plot_type"] == "combined_bias_map"
@@ -775,9 +775,9 @@ class TestMetadata:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_hovmoller_anom1("avg_thetao", hov)
+        figs = en4_diag._plot_hovmoller_anom1("thetao", hov)
         _, meta = figs[0]
         assert meta["plot_type"] == "hovmoller"
         assert "hovmoller" in meta["figure_id"]
@@ -787,9 +787,9 @@ class TestMetadata:
         model_3d, _, depths, thickness = en4_diag._load_model_data()
         en4_data, en4_ds = en4_diag._load_en4_data()
         ts = en4_diag._compute_depth_timeseries(
-            "avg_thetao", model_3d, depths, thickness,
+            "thetao", model_3d, depths, thickness,
             en4_data, en4_ds)
-        figs = en4_diag._plot_depth_timeseries("avg_thetao", ts)
+        figs = en4_diag._plot_depth_timeseries("thetao", ts)
         _, meta = figs[0]
         assert meta["plot_type"] == "depth_timeseries"
         assert "depth_timeseries" in meta["figure_id"]
@@ -799,8 +799,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         fig_ids = [meta["figure_id"] for _, meta in figs]
         assert "en4_sst_annual_bias_combined" in fig_ids
         assert "en4_sst_djf_bias_combined" in fig_ids
@@ -811,8 +811,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_so", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_so", results)
+            "so", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("so", results)
         fig_ids = [meta["figure_id"] for _, meta in figs]
         assert "en4_sss_annual_bias_combined" in fig_ids
         plt.close("all")
@@ -821,8 +821,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         _, meta = figs[0]
         assert meta["period"] == ["1990", "2014"]
         plt.close("all")
@@ -831,8 +831,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         _, meta = figs[0]
         assert "ifs-fesom" in meta["models"]
         plt.close("all")
@@ -841,8 +841,8 @@ class TestMetadata:
         model_3d, coords, _, _ = en4_diag._load_model_data()
         en4_data, _ = en4_diag._load_en4_data()
         results = en4_diag._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
-        figs = en4_diag._plot_bias_maps("avg_thetao", results)
+            "thetao", model_3d, coords, en4_data)
+        figs = en4_diag._plot_bias_maps("thetao", results)
         _, meta = figs[0]
         assert "summary_statistics" in meta
         stats = meta["summary_statistics"]
@@ -890,7 +890,7 @@ class TestRunOrchestration:
             MockOcean3DModelLoader(synth_ocean_3d_healpix),
             MockEN4ObsLoader(synth_en4),
             ocean_3d_config,
-            variables=["avg_thetao"],
+            variables=["thetao"],
         )
         saved = diag.run(skip_existing=False)
         fig_ids = []
@@ -924,9 +924,9 @@ class TestBackwardCompat:
 
     def test_compute_has_variable_keys(self, en4_diag):
         results = en4_diag.compute()
-        assert "avg_thetao_bias" in results
-        assert "avg_thetao_hov" in results
-        assert "avg_thetao_depth_ts" in results
+        assert "thetao_bias" in results
+        assert "thetao_hov" in results
+        assert "thetao_depth_ts" in results
 
     def test_plot_returns_figures(self, en4_diag):
         results = en4_diag.compute()
@@ -944,7 +944,7 @@ class TestConstructorOptions:
     """Test constructor parameter handling."""
 
     def test_default_variables(self, en4_diag):
-        assert en4_diag.variables == ["avg_thetao", "avg_so"]
+        assert en4_diag.variables == ["thetao", "so"]
 
     def test_custom_variables(self, synth_ocean_3d_healpix, synth_en4,
                                ocean_3d_config):
@@ -952,9 +952,9 @@ class TestConstructorOptions:
             MockOcean3DModelLoader(synth_ocean_3d_healpix),
             MockEN4ObsLoader(synth_en4),
             ocean_3d_config,
-            variables=["avg_thetao"],
+            variables=["thetao"],
         )
-        assert diag.variables == ["avg_thetao"]
+        assert diag.variables == ["thetao"]
 
     def test_experiment_kwarg(self, en4_diag):
         assert en4_diag.experiment == "baseline_hist"
@@ -1017,7 +1017,7 @@ class TestGracefulHandling:
         en4_data, en4_ds = en4_diag._load_en4_data()
         # Pass empty depths
         hov = en4_diag._compute_hovmoller(
-            "avg_thetao", model_3d, {}, thickness,
+            "thetao", model_3d, {}, thickness,
             en4_data, en4_ds)
         assert len(hov["models"]) == 0
 
@@ -1028,7 +1028,7 @@ class TestGracefulHandling:
             "en4_hov": None,
             "en4_depth": None,
         }
-        figs = en4_diag._plot_hovmoller_anomref("avg_thetao", hov_data)
+        figs = en4_diag._plot_hovmoller_anomref("thetao", hov_data)
         assert figs == []
 
 
@@ -1195,7 +1195,7 @@ class TestMultiModel:
         model_3d, coords, _, _ = en4_diag_multi._load_model_data()
         en4_data, _ = en4_diag_multi._load_en4_data()
         results = en4_diag_multi._compute_bias_maps(
-            "avg_thetao", model_3d, coords, en4_data)
+            "thetao", model_3d, coords, en4_data)
         # All 3 models should have results
         assert len(results["models"]) == 3
 

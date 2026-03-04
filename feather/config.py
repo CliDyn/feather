@@ -5,6 +5,40 @@ from pathlib import Path
 
 import yaml
 
+# Default palette for models without explicit colors
+_DEFAULT_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+    "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+]
+
+
+@dataclass
+class ModelConfig:
+    """Per-model metadata.
+
+    Attributes
+    ----------
+    name : str
+        Display name for the model.
+    institution : str
+        Modelling centre (e.g. ``"ECMWF"``, ``"AWI"``).
+    experiment : str
+        Experiment identifier (e.g. ``"hist-1950"``).
+    variant : str
+        Variant label (e.g. ``"r1i1p1f1"``).
+    grids : dict[str, str]
+        Mapping of domain → grid type (``"healpix"`` or ``"latlon"``).
+    color : str
+        Hex color for plot lines/bars.
+    """
+
+    name: str
+    institution: str = ""
+    experiment: str = ""
+    variant: str = ""
+    grids: dict[str, str] = field(default_factory=dict)
+    color: str = ""
+
 
 @dataclass
 class FeatherConfig:
@@ -23,9 +57,76 @@ class FeatherConfig:
     website: dict = field(default_factory=dict)
     report: dict = field(default_factory=dict)
 
+    # New structured fields (Phase 2)
+    project: dict = field(default_factory=dict)
+    model_configs: dict[str, ModelConfig] = field(default_factory=dict)
+    data_source: dict = field(default_factory=dict)
+
+    # ── Helper methods ─────────────────────────────────────────────────
+
+    def get_grid_type(self, model: str, domain: str = "sfc") -> str:
+        """Return grid type for a model/domain pair.
+
+        Returns ``"healpix"`` or ``"latlon"``.  Falls back to
+        ``"healpix"`` for legacy DestinE configs.
+        """
+        mc = self.model_configs.get(model)
+        if mc and mc.grids:
+            return mc.grids.get(domain, mc.grids.get("sfc", "healpix"))
+        return "healpix"
+
+    def get_model_color(self, model: str) -> str:
+        """Return hex color for a model.
+
+        Checks ``model_configs`` first, then assigns from a default
+        palette based on position in ``models`` list.
+        """
+        mc = self.model_configs.get(model)
+        if mc and mc.color:
+            return mc.color
+        # Fallback: index into default palette
+        try:
+            idx = self.models.index(model)
+        except ValueError:
+            idx = 0
+        return _DEFAULT_PALETTE[idx % len(_DEFAULT_PALETTE)]
+
+    def get_period(self) -> tuple[str, str]:
+        """Return the default analysis period from project config.
+
+        Falls back to ``("1990", "2014")`` for legacy configs.
+        """
+        period = self.project.get("period")
+        if period and len(period) == 2:
+            return (str(period[0]), str(period[1]))
+        return ("1990", "2014")
+
+    def get_experiment(self) -> str:
+        """Return the default experiment from project config.
+
+        Falls back to ``"baseline_hist"`` for legacy DestinE configs.
+        """
+        return self.project.get("experiment", "baseline_hist")
+
+    def get_data_source_type(self) -> str:
+        """Return data source type: ``"destine_catalog"`` or ``"cmor"``."""
+        return self.data_source.get("type", "destine_catalog")
+
+    # ── YAML loading ───────────────────────────────────────────────────
+
     @classmethod
     def from_yaml(cls, path: str) -> "FeatherConfig":
-        """Load configuration from a YAML file."""
+        """Load configuration from a YAML file.
+
+        Supports two formats:
+
+        **Legacy** (DestinE): ``models`` is a list of strings.
+        Auto-populates ``model_configs`` with HEALPix grid defaults.
+
+        **New** (structured): ``models`` is a dict mapping model names
+        to metadata.  Builds ``ModelConfig`` instances and derives the
+        ``models`` list from the dict keys.
+        """
         with open(path) as f:
             raw = yaml.safe_load(f)
 
@@ -37,9 +138,23 @@ class FeatherConfig:
             if "path" in ds_cfg and "{obs_root}" in ds_cfg["path"]:
                 ds_cfg["path"] = ds_cfg["path"].replace("{obs_root}", obs_root)
 
+        # Detect config format: list → legacy, dict → new structured
+        raw_models = raw.get("models", [])
+        project = raw.get("project", {})
+        data_source = raw.get("data_source", {})
+
+        if isinstance(raw_models, list):
+            # Legacy format: models is a list of strings
+            models = raw_models
+            model_configs = _build_legacy_model_configs(models)
+        else:
+            # New structured format: models is a dict
+            models = list(raw_models.keys())
+            model_configs = _build_model_configs(raw_models)
+
         return cls(
             model_catalogs=raw.get("model_catalogs", {}),
-            models=raw.get("models", []),
+            models=models,
             obs_root=obs_root,
             obs_datasets=obs_datasets,
             cmip6=raw.get("cmip6", {"enabled": False}),
@@ -50,4 +165,47 @@ class FeatherConfig:
             llm=raw.get("llm", {}),
             website=raw.get("website", {}),
             report=raw.get("report", {}),
+            project=project,
+            model_configs=model_configs,
+            data_source=data_source,
         )
+
+
+def _build_legacy_model_configs(
+    models: list[str],
+) -> dict[str, ModelConfig]:
+    """Build ModelConfig entries for legacy DestinE format.
+
+    Assumes HEALPix grids for all domains.
+    """
+    from feather.plot.styles import MODEL_COLORS
+
+    configs = {}
+    for model in models:
+        configs[model] = ModelConfig(
+            name=model,
+            grids={"sfc": "healpix", "o2d": "healpix",
+                   "pl": "healpix", "o3d": "healpix"},
+            color=MODEL_COLORS.get(model, ""),
+        )
+    return configs
+
+
+def _build_model_configs(
+    raw_models: dict,
+) -> dict[str, ModelConfig]:
+    """Build ModelConfig entries from new structured YAML format."""
+    configs = {}
+    for name, cfg in raw_models.items():
+        if cfg is None:
+            cfg = {}
+        grids = cfg.get("grids", {})
+        configs[name] = ModelConfig(
+            name=name,
+            institution=cfg.get("institution", ""),
+            experiment=cfg.get("experiment", ""),
+            variant=cfg.get("variant", ""),
+            grids=grids,
+            color=cfg.get("color", ""),
+        )
+    return configs

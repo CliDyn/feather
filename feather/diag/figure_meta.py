@@ -103,7 +103,7 @@ def build_metadata(
     figure_id : str
         Unique figure identifier used as the filename stem.
     variables_used : list of str
-        Model variable names used (e.g. ``["avg_2t"]``).
+        Model variable names used (e.g. ``["tas"]``).
     models : list of str
         Model names included in the figure.
     description : str

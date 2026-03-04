@@ -57,7 +57,7 @@ class SeaIceDiag(DiagnosticBase):
     name = "sea_ice"
     title = "Sea Ice"
     domain = "o2d"
-    variables = ["avg_siconc", "avg_sithick"]
+    variables = ["siconc", "sithick"]
     group = "sea_ice"
 
     def __init__(self, model_loader, obs_loader, config, *,
@@ -140,10 +140,10 @@ class SeaIceDiag(DiagnosticBase):
 
         # Group D: Spatial maps (4 figures)
         spatial_figs = [
-            ("siconc_nh_spatial", "avg_siconc", "np"),
-            ("siconc_sh_spatial", "avg_siconc", "sp"),
-            ("sithick_nh_spatial", "avg_sithick", "np"),
-            ("sithick_sh_spatial", "avg_sithick", "sp"),
+            ("siconc_nh_spatial", "siconc", "np"),
+            ("siconc_sh_spatial", "siconc", "sp"),
+            ("sithick_nh_spatial", "sithick", "np"),
+            ("sithick_sh_spatial", "sithick", "sp"),
         ]
         for fid, var, pole in spatial_figs:
             if skip_existing and self._figure_exists(fid):
@@ -198,10 +198,10 @@ class SeaIceDiag(DiagnosticBase):
                 metric, model_ts, obs_ts, **cmip6_kw,
             ))
         for fid, var, pole in [
-            ("siconc_nh_spatial", "avg_siconc", "np"),
-            ("siconc_sh_spatial", "avg_siconc", "sp"),
-            ("sithick_nh_spatial", "avg_sithick", "np"),
-            ("sithick_sh_spatial", "avg_sithick", "sp"),
+            ("siconc_nh_spatial", "siconc", "np"),
+            ("siconc_sh_spatial", "siconc", "sp"),
+            ("sithick_nh_spatial", "sithick", "np"),
+            ("sithick_sh_spatial", "sithick", "sp"),
         ]:
             figures.extend(self._plot_spatial(fid, var, pole))
         return figures
@@ -219,6 +219,7 @@ class SeaIceDiag(DiagnosticBase):
         """
         import nereus as nr
         from feather.data.loader import DataLoader
+        from feather.data.variables import get_var
 
         result: dict[str, dict] = {}
 
@@ -231,19 +232,22 @@ class SeaIceDiag(DiagnosticBase):
                 logger.warning("Model %s not available — skipping", model)
                 continue
 
-            if "avg_siconc" not in ds:
+            siconc_destine = get_var("siconc").destine_variable or "siconc"
+            sithick_destine = get_var("sithick").destine_variable or "sithick"
+
+            if siconc_destine not in ds:
                 logger.warning(
-                    "avg_siconc not in %s dataset — skipping", model,
+                    "%s not in %s dataset — skipping", siconc_destine, model,
                 )
                 continue
 
-            npoints = len(ds["avg_siconc"].isel(time=0))
+            npoints = len(ds[siconc_destine].isel(time=0))
             mesh = nr.healpix.load_mesh(npoints)
 
             model_data: dict[str, Any] = {}
 
             # Concentration metrics (area + extent)
-            siconc = ds["avg_siconc"]
+            siconc = ds[siconc_destine]
             if self.period and "time" in siconc.dims:
                 siconc = siconc.sel(time=slice(self.period[0], self.period[1]))
 
@@ -258,8 +262,8 @@ class SeaIceDiag(DiagnosticBase):
                 ).compute()
 
             # Volume (requires sithick)
-            if "avg_sithick" in ds:
-                sithick = ds["avg_sithick"]
+            if sithick_destine in ds:
+                sithick = ds[sithick_destine]
                 if self.period and "time" in sithick.dims:
                     sithick = sithick.sel(
                         time=slice(self.period[0], self.period[1]),
@@ -953,6 +957,9 @@ class SeaIceDiag(DiagnosticBase):
         import cartopy.crs as ccrs
         import nereus as nr
         from feather.data.loader import DataLoader
+        from feather.data.variables import get_var as _get_var
+        var_info = _get_var(var)
+        destine_var = var_info.destine_variable or var
 
         if pole == "np":
             proj = ccrs.NorthPolarStereo()
@@ -1000,10 +1007,10 @@ class SeaIceDiag(DiagnosticBase):
             except KeyError:
                 continue
 
-            if var not in ds:
+            if destine_var not in ds:
                 continue
 
-            da = ds[var]
+            da = ds[destine_var]
             if self.period and "time" in da.dims:
                 da = da.sel(time=slice(self.period[0], self.period[1]))
             lon = np.asarray(ds["longitude"])

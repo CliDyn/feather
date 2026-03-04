@@ -44,20 +44,22 @@ _DEPTH_RANGES = [
 
 # Variable display configuration
 _VAR_CFG = {
-    "avg_thetao": {
+    "thetao": {
         "long_name": "Temperature",
         "short": "T",
         "units": "\u00b0C",
         "en4_var": "thetao",
+        "destine_var": "avg_thetao",
         "convert": lambda da: da - _K_TO_C,
         "cmap": "RdBu_r",
         "bias_cmap": "RdBu_r",
     },
-    "avg_so": {
+    "so": {
         "long_name": "Salinity",
         "short": "S",
         "units": "PSU",
         "en4_var": "so",
+        "destine_var": "avg_so",
         "convert": lambda da: da,  # no conversion needed
         "cmap": "YlGnBu",
         "bias_cmap": "RdBu_r",
@@ -92,7 +94,7 @@ class OceanEN4(DiagnosticBase):
     name = "ocean_en4"
     title = "Ocean Evaluation (EN4)"
     domain = "o3d"
-    variables = ["avg_thetao", "avg_so"]
+    variables = ["thetao", "so"]
     group = "ocean_3d"
 
     def __init__(self, model_loader, obs_loader, config, *,
@@ -176,10 +178,10 @@ class OceanEN4(DiagnosticBase):
         bias_b_ids = [f"en4_sss_{p}_bias_combined"
                       for p in ("annual", "djf", "jja")]
 
-        need_a = "avg_thetao" in self.variables and (
+        need_a = "thetao" in self.variables and (
             not skip_existing or not all(
                 self._figure_exists(f) for f in bias_a_ids))
-        need_b = "avg_so" in self.variables and (
+        need_b = "so" in self.variables and (
             not skip_existing or not all(
                 self._figure_exists(f) for f in bias_b_ids))
 
@@ -208,13 +210,13 @@ class OceanEN4(DiagnosticBase):
 
         # Collect already-existing paths
         if not need_a:
-            if "avg_thetao" in self.variables:
+            if "thetao" in self.variables:
                 logger.info("Skipping SST bias maps -- figures exist")
                 saved.extend([
                     (out / f"{f}.png", out / f"{f}.json") for f in bias_a_ids
                 ])
         if not need_b:
-            if "avg_so" in self.variables:
+            if "so" in self.variables:
                 logger.info("Skipping SSS bias maps -- figures exist")
                 saved.extend([
                     (out / f"{f}.png", out / f"{f}.json") for f in bias_b_ids
@@ -259,17 +261,17 @@ class OceanEN4(DiagnosticBase):
         # ── Group A: SST bias maps ───────────────────────────────────
         if need_a:
             results = self._compute_bias_maps(
-                "avg_thetao", model_3d, model_coords, en4_data,
+                "thetao", model_3d, model_coords, en4_data,
             )
-            for fig, meta in self._plot_bias_maps("avg_thetao", results):
+            for fig, meta in self._plot_bias_maps("thetao", results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
         # ── Group B: SSS bias maps ───────────────────────────────────
         if need_b:
             results = self._compute_bias_maps(
-                "avg_so", model_3d, model_coords, en4_data,
+                "so", model_3d, model_coords, en4_data,
             )
-            for fig, meta in self._plot_bias_maps("avg_so", results):
+            for fig, meta in self._plot_bias_maps("so", results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
         # ── Groups C-F: Hovmoller diagrams ───────────────────────────
@@ -388,8 +390,9 @@ class OceanEN4(DiagnosticBase):
             for var in self.variables:
                 if var not in _VAR_CFG:
                     continue
+                destine_var = _VAR_CFG[var].get("destine_var", var)
                 try:
-                    da = self.model_loader.load_var(key, var)
+                    da = self.model_loader.load_var(key, destine_var)
                     if self.period and "time" in da.dims:
                         da = da.sel(time=slice(*self.period))
                     var_data[var] = da
@@ -584,7 +587,7 @@ class OceanEN4(DiagnosticBase):
         from feather.plot.maps import plot_combined_bias_map
 
         vcfg = _VAR_CFG[variable]
-        prefix = "sst" if variable == "avg_thetao" else "sss"
+        prefix = "sst" if variable == "thetao" else "sss"
         figures = []
         periods_data = results["periods"]
 

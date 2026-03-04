@@ -272,7 +272,7 @@ class TestClassAttributes:
         assert OceanSST.domain == "o2d"
 
     def test_variables(self):
-        assert OceanSST.variables == ["avg_tos"]
+        assert OceanSST.variables == ["tos"]
 
     def test_group(self):
         assert OceanSST.group == "ocean_surface"
@@ -295,7 +295,7 @@ class TestDataLoading:
 
     def test_load_model_data_missing_model(self, mock_esa_cci_obs_loader,
                                             ocean_sst_config):
-        """Model missing avg_tos should be skipped."""
+        """Model missing tos should be skipped."""
         empty_ds = xr.Dataset()
         loader = MockOceanModelLoader(empty_ds)
         # Override load_var to raise KeyError
@@ -777,9 +777,9 @@ class TestConstructor:
             model_loader=mock_ocean_model_loader,
             obs_loader=mock_esa_cci_obs_loader,
             config=ocean_sst_config,
-            variables=["avg_tos"],
+            variables=["tos"],
         )
-        assert diag.variables == ["avg_tos"]
+        assert diag.variables == ["tos"]
 
 
 # ── Output directory ─────────────────────────────────────────────────

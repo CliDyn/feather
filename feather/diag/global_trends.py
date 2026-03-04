@@ -38,23 +38,23 @@ class GlobalTrends(DiagnosticBase):
     domain = "sfc"
     variables = [
         # Temperature & pressure
-        "avg_2t", "avg_msl",
+        "tas", "psl",
         # Wind
-        "avg_10u", "avg_10v",
+        "uas", "vas",
         # Cloud cover
-        "avg_tcc",
+        "clt",
         # Precipitation
-        "avg_tprate",
+        "pr",
         # Surface heat fluxes
-        "avg_ishf", "avg_slhtf",
+        "hfss", "hfls",
         # Surface downwelling radiation
-        "avg_sdswrf", "avg_sdlwrf",
+        "rsds", "rlds",
         # Surface net radiation (all-sky + clear-sky)
-        "avg_snswrf", "avg_snlwrf",
-        "avg_snswrfcs", "avg_snlwrfcs",
+        "rss", "rls",
+        "rsscs", "rlscs",
         # TOA net radiation (all-sky + clear-sky)
-        "avg_tnswrf", "avg_tnlwrf",
-        "avg_tnswrfcs", "avg_tnlwrfcs",
+        "rst", "rlt",
+        "rstcs", "rltcs",
     ]
     group = "evaluation"
 
@@ -135,6 +135,7 @@ class GlobalTrends(DiagnosticBase):
         Returns None if no models have the variable.
         """
         var_info = get_var(var)
+        destine_var = var_info.destine_variable or var
         logger.info("Processing variable: %s (%s)", var, var_info.long_name)
         model_results: dict[str, dict] = {}
 
@@ -180,7 +181,7 @@ class GlobalTrends(DiagnosticBase):
                 self.experiment, model, var_info.domain,
             )
             try:
-                model_data = self.model_loader.load_var(key, var)
+                model_data = self.model_loader.load_var(key, destine_var)
             except KeyError:
                 logger.warning(
                     "  Variable %s not available for %s — skipping",
@@ -312,10 +313,35 @@ class GlobalTrends(DiagnosticBase):
             )
             return None
 
+        # CMIP6 trends (optional)
+        cmip6_data = {}
+        cmip6_info = {}
+        cmip6_individual_data: dict[str, dict] = {}
+        if self.cmip6_enabled and interpolator is not None:
+            if self.cmip6_individual:
+                cmip6_individual_data = self._compute_cmip6_individual_trends(
+                    var, target_lats, target_lons,
+                    obs_trend_common, obs_seasonal_trends_common,
+                    common_area,
+                )
+                cmip6_data, cmip6_info = self._compute_cmip6_mmm_trends(
+                    var, target_lats, target_lons,
+                    obs_trend_common, obs_seasonal_trends_common,
+                    common_area,
+                )
+            else:
+                cmip6_data, cmip6_info = self._compute_cmip6_mmm_trends(
+                    var, target_lats, target_lons,
+                    obs_trend_common, obs_seasonal_trends_common,
+                    common_area,
+                )
+
         # Compute shared colorbar ranges across all models per period
         logger.info("  Computing shared colorbar ranges")
         colorbar_ranges = self._compute_colorbar_ranges(
             model_results, obs_trend_common, obs_seasonal_trends_common,
+            cmip6_data=cmip6_data,
+            cmip6_individual_data=cmip6_individual_data,
         )
 
         return {
@@ -331,7 +357,260 @@ class GlobalTrends(DiagnosticBase):
             },
             "var_info": var_info,
             "colorbar_ranges": colorbar_ranges,
+            "cmip6_data": cmip6_data,
+            "cmip6_info": cmip6_info,
+            "cmip6_individual_data": cmip6_individual_data,
         }
+
+    # -- CMIP6 computation helpers ------------------------------------------
+
+    def _compute_cmip6_mmm_trends(
+        self, var, target_lats, target_lons,
+        obs_trend_common, obs_seasonal_trends_common,
+        common_area,
+    ):
+        """Compute CMIP6 multi-model mean trends.
+
+        Loads per-model time series (time_mean=False), computes
+        annual_mean → linear_trend → regrid for each, then averages
+        across models to get the MMM trend.
+
+        Returns (cmip6_data, cmip6_info).
+        """
+        cmip6_data = {}
+        cmip6_info = {}
+        influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0,
+        )
+        resolution = abs(float(target_lats[1] - target_lats[0]))
+        cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
+
+        logger.info("  Computing CMIP6 MMM trends for %s...", var)
+        member_pairs = self.cmip6_loader.get_member_pairs()
+
+        # -- Annual trends per model --
+        annual_trends = []
+        seasonal_trends: dict[str, list] = {"DJF": [], "JJA": []}
+        models_used = []
+
+        for model, variant in member_pairs:
+            label = f"{model}/{variant}"
+            da = self.cmip6_loader.load_var_for_model_var(
+                var, model, variant=variant,
+                period=self.period, time_mean=False,
+            )
+            if da is None:
+                logger.debug("  Skipping %s — no data", label)
+                continue
+            if "time" not in da.dims or da.sizes["time"] < 2:
+                logger.debug("  Skipping %s — insufficient time steps", label)
+                continue
+
+            # Annual mean → materialise → linear trend
+            da_annual = annual_mean(da)
+            if hasattr(da_annual, "compute"):
+                da_annual = da_annual.compute()
+            model_trend = linear_trend(da_annual) * 10  # per decade
+
+            regridded = self._regrid_to_target(
+                model_trend, target_lats, target_lons,
+                resolution, influence_radius, cmip6_interp_cache,
+            )
+            annual_trends.append(regridded)
+            models_used.append(label)
+
+            # Seasonal trends
+            for season in ["DJF", "JJA"]:
+                da_s = seasonal_annual_mean(da, season)
+                if hasattr(da_s, "compute"):
+                    da_s = da_s.compute()
+                if len(da_s.year) < 2:
+                    continue
+                s_trend = linear_trend(da_s, dim="year") * 10
+                s_regridded = self._regrid_to_target(
+                    s_trend, target_lats, target_lons,
+                    resolution, influence_radius, cmip6_interp_cache,
+                )
+                seasonal_trends[season].append(s_regridded)
+
+        if not annual_trends:
+            logger.info("  No CMIP6 models available for %s", var)
+            return cmip6_data, cmip6_info
+
+        cmip6_info = {
+            "n_members": len(models_used),
+            "models_used": models_used,
+        }
+
+        # MMM annual trend
+        stacked = xr.concat(annual_trends, dim="member")
+        mmm_trend = stacked.mean("member")
+        trend_diff = mmm_trend - obs_trend_common
+        trend_diff_gmean = float(
+            latlon_global_mean(trend_diff, area=common_area).values,
+        )
+        rmse = float(np.sqrt(
+            latlon_global_mean(trend_diff ** 2, area=common_area).values,
+        ))
+        cmip6_data["annual"] = {
+            "regrid": mmm_trend,
+            "trend_diff": trend_diff,
+            "trend_diff_gmean": trend_diff_gmean,
+            "rmse": rmse,
+        }
+
+        # MMM seasonal trends
+        for season in ["DJF", "JJA"]:
+            if not seasonal_trends[season]:
+                continue
+            s_stacked = xr.concat(seasonal_trends[season], dim="member")
+            s_mmm = s_stacked.mean("member")
+            if season in obs_seasonal_trends_common:
+                s_diff = s_mmm - obs_seasonal_trends_common[season]
+                cmip6_data[season] = {
+                    "regrid": s_mmm,
+                    "trend_diff": s_diff,
+                    "trend_diff_gmean": float(
+                        latlon_global_mean(
+                            s_diff, area=common_area,
+                        ).values,
+                    ),
+                }
+
+        return cmip6_data, cmip6_info
+
+    def _compute_cmip6_individual_trends(
+        self, var, target_lats, target_lons,
+        obs_trend_common, obs_seasonal_trends_common,
+        common_area,
+    ):
+        """Compute per-model CMIP6 trend differences.
+
+        Same as MMM but keeps per-model trends separate instead of
+        averaging.
+
+        Returns cmip6_individual_data dict structured as
+        {period: {label: {regrid, trend_diff, trend_diff_gmean, rmse}}}.
+        """
+        cmip6_individual_data: dict[str, dict] = {}
+        influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0,
+        )
+        resolution = abs(float(target_lats[1] - target_lats[0]))
+        cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
+
+        logger.info(
+            "  Computing individual CMIP6 trends for %s...", var,
+        )
+        member_pairs = self.cmip6_loader.get_member_pairs()
+
+        for model, variant in member_pairs:
+            label = f"{model}/{variant}"
+            da = self.cmip6_loader.load_var_for_model_var(
+                var, model, variant=variant,
+                period=self.period, time_mean=False,
+            )
+            if da is None:
+                logger.debug("  Skipping %s — no data", label)
+                continue
+            if "time" not in da.dims or da.sizes["time"] < 2:
+                logger.debug("  Skipping %s — insufficient time steps", label)
+                continue
+
+            # Annual
+            da_annual = annual_mean(da)
+            if hasattr(da_annual, "compute"):
+                da_annual = da_annual.compute()
+            model_trend = linear_trend(da_annual) * 10
+            regridded = self._regrid_to_target(
+                model_trend, target_lats, target_lons,
+                resolution, influence_radius, cmip6_interp_cache,
+            )
+            trend_diff = regridded - obs_trend_common
+            rmse = float(np.sqrt(
+                latlon_global_mean(
+                    trend_diff ** 2, area=common_area,
+                ).values,
+            ))
+            cmip6_individual_data.setdefault("annual", {})[label] = {
+                "regrid": regridded,
+                "trend_diff": trend_diff,
+                "trend_diff_gmean": float(
+                    latlon_global_mean(
+                        trend_diff, area=common_area,
+                    ).values,
+                ),
+                "rmse": rmse,
+            }
+
+            # Seasonal
+            for season in ["DJF", "JJA"]:
+                da_s = seasonal_annual_mean(da, season)
+                if hasattr(da_s, "compute"):
+                    da_s = da_s.compute()
+                if len(da_s.year) < 2:
+                    continue
+                s_trend = linear_trend(da_s, dim="year") * 10
+                s_regridded = self._regrid_to_target(
+                    s_trend, target_lats, target_lons,
+                    resolution, influence_radius, cmip6_interp_cache,
+                )
+                if season not in obs_seasonal_trends_common:
+                    continue
+                s_diff = s_regridded - obs_seasonal_trends_common[season]
+                cmip6_individual_data.setdefault(season, {})[label] = {
+                    "regrid": s_regridded,
+                    "trend_diff": s_diff,
+                    "trend_diff_gmean": float(
+                        latlon_global_mean(
+                            s_diff, area=common_area,
+                        ).values,
+                    ),
+                }
+
+        return cmip6_individual_data
+
+    # -- Regridding helper --------------------------------------------------
+
+    @staticmethod
+    def _regrid_to_target(da, target_lats, target_lons,
+                          resolution, influence_radius,
+                          interp_cache):
+        """Regrid a regular lat/lon DataArray to the target grid via nereus NN.
+
+        Uses *interp_cache* (keyed by grid shape) to avoid rebuilding
+        the KDTree for models that share the same native grid.
+
+        For coarse-resolution source grids (e.g. CMIP6 at 1-2°) the
+        configured *influence_radius* (tuned for 5 km HEALPix) is too
+        small.  We use 250 km as the floor.
+        """
+        # 250 km floor — covers CMIP6 grids up to ~2° at the equator
+        ir = max(influence_radius, 250_000.0)
+
+        lat_name = "lat" if "lat" in da.coords else "latitude"
+        lon_name = "lon" if "lon" in da.coords else "longitude"
+        lat_arr = da[lat_name].values
+        lon_arr = da[lon_name].values
+
+        grid_key = (len(lat_arr), len(lon_arr))
+
+        if grid_key not in interp_cache:
+            lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
+            _, interp_cache[grid_key] = nr.regrid(
+                da.values.ravel(),
+                lon=lon_2d.ravel(), lat=lat_2d.ravel(),
+                resolution=resolution,
+                influence_radius=ir,
+                lon_bounds=(0.0, 360.0),
+                as_xarray=True,
+            )
+
+        regridded = interp_cache[grid_key](da.values.ravel())
+        return xr.DataArray(
+            regridded, dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
 
     # -- Colorbar range computation -----------------------------------------
 
@@ -340,14 +619,25 @@ class GlobalTrends(DiagnosticBase):
         model_results: dict[str, dict],
         obs_trend_common: xr.DataArray,
         obs_seasonal_trends_common: dict[str, xr.DataArray],
+        cmip6_data: dict[str, dict] | None = None,
+        cmip6_individual_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
+
+        Parameters
+        ----------
+        cmip6_data : dict, optional
+            CMIP6 MMM trend data.
+        cmip6_individual_data : dict, optional
+            Individual CMIP6 model trend data.
 
         Returns a dict keyed by period name ("annual", "DJF", "JJA")
         with ``vmin``, ``vmax`` (field panels) and ``bias_vmax``
         (symmetric trend difference panel) values.
         """
         ranges: dict[str, dict] = {}
+        cmip6_data = cmip6_data or {}
+        cmip6_individual_data = cmip6_individual_data or {}
 
         def _finite_vals(arrays):
             parts = []
@@ -373,6 +663,12 @@ class GlobalTrends(DiagnosticBase):
         field_arrays = [mr["annual_regrid"] for mr in model_results.values()]
         field_arrays.append(obs_trend_common)
         diff_arrays = [mr["annual_trend_diff"] for mr in model_results.values()]
+        if "annual" in cmip6_data:
+            field_arrays.append(cmip6_data["annual"]["regrid"])
+            diff_arrays.append(cmip6_data["annual"]["trend_diff"])
+        if "annual" in cmip6_individual_data:
+            for member_data in cmip6_individual_data["annual"].values():
+                diff_arrays.append(member_data["trend_diff"])
         vmin, vmax = _symmetric_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -395,6 +691,12 @@ class GlobalTrends(DiagnosticBase):
                 continue
             if season in obs_seasonal_trends_common:
                 s_fields.append(obs_seasonal_trends_common[season])
+            if season in cmip6_data:
+                s_fields.append(cmip6_data[season]["regrid"])
+                s_diffs.append(cmip6_data[season]["trend_diff"])
+            if season in cmip6_individual_data:
+                for member_data in cmip6_individual_data[season].values():
+                    s_diffs.append(member_data["trend_diff"])
             vmin, vmax = _symmetric_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
@@ -426,6 +728,9 @@ class GlobalTrends(DiagnosticBase):
         var_info = vr["var_info"]
         obs_trend = vr["obs"]["trend"]
         cb = vr["colorbar_ranges"]
+        cmip6_data = vr.get("cmip6_data", {})
+        cmip6_info = vr.get("cmip6_info", {})
+        cmip6_individual_data = vr.get("cmip6_individual_data", {})
 
         periods = [("annual", "Annual")]
         for season in ["DJF", "JJA"]:
@@ -456,6 +761,30 @@ class GlobalTrends(DiagnosticBase):
                         continue
                 trend_diff_dict[model] = diff_field
                 all_models.append(model)
+
+            # Add CMIP6 MMM if available
+            if period_key in cmip6_data:
+                c_data = cmip6_data[period_key]
+                trend_diff_dict["CMIP6 MMM"] = c_data["trend_diff"]
+                all_models.append("CMIP6 MMM")
+                summary_stats["CMIP6 MMM"] = {
+                    "global_mean_trend_diff": c_data["trend_diff_gmean"],
+                    "trend_rmse": c_data.get("rmse"),
+                }
+
+            # Add individual CMIP6 models if available
+            if period_key in cmip6_individual_data:
+                for label, c_data in (
+                    cmip6_individual_data[period_key].items()
+                ):
+                    trend_diff_dict[label] = c_data["trend_diff"]
+                    all_models.append(label)
+                    summary_stats[label] = {
+                        "global_mean_trend_diff": c_data[
+                            "trend_diff_gmean"
+                        ],
+                        "trend_rmse": c_data.get("rmse"),
+                    }
 
             if not trend_diff_dict:
                 continue
@@ -498,6 +827,7 @@ class GlobalTrends(DiagnosticBase):
                 ),
                 plot_type="combined_trend_map",
                 period=self.period,
+                cmip6_info=cmip6_info or None,
                 summary_statistics=summary_stats,
                 extra={"units": trend_units},
             )

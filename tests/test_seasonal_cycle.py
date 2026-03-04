@@ -16,12 +16,12 @@ class TestSeasonalCycleCompute:
         """compute() returns expected nested structure."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        assert "avg_2t" in results
-        vr = results["avg_2t"]
+        assert "tas" in results
+        vr = results["tas"]
         assert "models" in vr
         assert "obs" in vr
         assert "var_info" in vr
@@ -31,11 +31,11 @@ class TestSeasonalCycleCompute:
         """Model monthly climatology has 12 values."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        monthly = results["avg_2t"]["models"]["ifs-fesom"]
+        monthly = results["tas"]["models"]["ifs-fesom"]
         assert len(monthly) == 12
         assert "month" in monthly.dims
 
@@ -44,11 +44,11 @@ class TestSeasonalCycleCompute:
         """Obs monthly climatology has 12 values."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        obs_monthly = results["avg_2t"]["obs"]
+        obs_monthly = results["tas"]["obs"]
         assert len(obs_monthly) == 12
 
     def test_seasonal_variation(self, mock_model_loader, mock_obs_loader,
@@ -56,11 +56,11 @@ class TestSeasonalCycleCompute:
         """Monthly climatology shows seasonal variation."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        monthly = results["avg_2t"]["models"]["ifs-fesom"]
+        monthly = results["tas"]["models"]["ifs-fesom"]
         monthly_range = float(monthly.max() - monthly.min())
         assert monthly_range > 1.0  # Synth data has +-5K cycle
 
@@ -69,11 +69,11 @@ class TestSeasonalCycleCompute:
         """Monthly values are in reasonable temperature range."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        monthly = results["avg_2t"]["models"]["ifs-fesom"]
+        monthly = results["tas"]["models"]["ifs-fesom"]
         assert np.all(monthly.values > 260)
         assert np.all(monthly.values < 310)
 
@@ -86,7 +86,7 @@ class TestSeasonalCyclePlot:
         """plot() returns (fig, meta) pairs."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -102,13 +102,13 @@ class TestSeasonalCyclePlot:
         """Metadata has correct fields."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
 
         _, meta = pairs[0]
-        assert meta["figure_id"] == "avg_2t_seasonal_cycle"
+        assert meta["figure_id"] == "tas_seasonal_cycle"
         assert meta["plot_type"] == "seasonal_cycle"
         assert meta["diagnostic_name"] == "seasonal_cycle"
         assert "ifs-fesom" in meta["models"]
@@ -119,7 +119,7 @@ class TestSeasonalCyclePlot:
         """run() saves PNG + JSON."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         saved = diag.run()
 
@@ -139,17 +139,17 @@ class TestSeasonalCycleSkipExisting:
         """run() skips computation when figure already exists on disk."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        (diag.output_dir / "avg_2t_seasonal_cycle.png").write_bytes(b"fake")
-        (diag.output_dir / "avg_2t_seasonal_cycle.json").write_text("{}")
+        (diag.output_dir / "tas_seasonal_cycle.png").write_bytes(b"fake")
+        (diag.output_dir / "tas_seasonal_cycle.json").write_text("{}")
 
         saved = diag.run(skip_existing=True)
 
         assert len(saved) == 1
         png_path, json_path = saved[0]
-        assert png_path == diag.output_dir / "avg_2t_seasonal_cycle.png"
+        assert png_path == diag.output_dir / "tas_seasonal_cycle.png"
         assert png_path.read_bytes() == b"fake"
 
     def test_no_skip_when_disabled(self, mock_model_loader, mock_obs_loader,
@@ -157,11 +157,11 @@ class TestSeasonalCycleSkipExisting:
         """run(skip_existing=False) recomputes even when figure exists."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        (diag.output_dir / "avg_2t_seasonal_cycle.png").write_bytes(b"fake")
-        (diag.output_dir / "avg_2t_seasonal_cycle.json").write_text("{}")
+        (diag.output_dir / "tas_seasonal_cycle.png").write_bytes(b"fake")
+        (diag.output_dir / "tas_seasonal_cycle.json").write_text("{}")
 
         saved = diag.run(skip_existing=False)
 
@@ -175,10 +175,10 @@ class TestSeasonalCycleSkipExisting:
         """run() does NOT skip when only PNG exists (JSON missing)."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        (diag.output_dir / "avg_2t_seasonal_cycle.png").write_bytes(b"fake")
+        (diag.output_dir / "tas_seasonal_cycle.png").write_bytes(b"fake")
 
         saved = diag.run(skip_existing=True)
 
@@ -195,12 +195,12 @@ class TestSeasonalCycleCMIP6:
         """When CMIP6 is disabled, cmip6_monthly is None."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        assert results["avg_2t"]["cmip6_monthly"] is None
-        assert results["avg_2t"]["cmip6_info"] == {}
+        assert results["tas"]["cmip6_monthly"] is None
+        assert results["tas"]["cmip6_info"] == {}
 
     def test_cmip6_enabled_has_monthly(
         self, mock_model_loader, mock_obs_loader,
@@ -210,11 +210,11 @@ class TestSeasonalCycleCMIP6:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        cmip6_monthly = results["avg_2t"]["cmip6_monthly"]
+        cmip6_monthly = results["tas"]["cmip6_monthly"]
         assert cmip6_monthly is not None
         assert len(cmip6_monthly) == 12
 
@@ -226,11 +226,11 @@ class TestSeasonalCycleCMIP6:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        cmip6_monthly = results["avg_2t"]["cmip6_monthly"]
+        cmip6_monthly = results["tas"]["cmip6_monthly"]
         assert np.all(cmip6_monthly.values > 260)
         assert np.all(cmip6_monthly.values < 310)
 
@@ -242,11 +242,11 @@ class TestSeasonalCycleCMIP6:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
 
-        info = results["avg_2t"]["cmip6_info"]
+        info = results["tas"]["cmip6_info"]
         assert info["n_members"] >= 1
         assert len(info["models_used"]) >= 1
 
@@ -258,7 +258,7 @@ class TestSeasonalCycleCMIP6:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -277,7 +277,7 @@ class TestSeasonalCycleCMIP6:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
         results = diag.compute()
         pairs = diag.plot(results)
@@ -299,12 +299,12 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results = diag.compute()
 
-        indiv = results["avg_2t"]["cmip6_individual_monthly"]
+        indiv = results["tas"]["cmip6_individual_monthly"]
         assert len(indiv) > 0
         for mname, monthly in indiv.items():
             assert len(monthly) == 12
@@ -317,13 +317,13 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results = diag.compute()
 
-        assert results["avg_2t"]["cmip6_monthly"] is not None
-        assert len(results["avg_2t"]["cmip6_individual_monthly"]) > 0
+        assert results["tas"]["cmip6_monthly"] is not None
+        assert len(results["tas"]["cmip6_individual_monthly"]) > 0
 
     def test_individual_false_no_data(
         self, mock_model_loader, mock_obs_loader,
@@ -333,12 +333,12 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=False,
         )
         results = diag.compute()
 
-        assert results["avg_2t"]["cmip6_individual_monthly"] == {}
+        assert results["tas"]["cmip6_individual_monthly"] == {}
 
     def test_individual_plot_has_member_legend(
         self, mock_model_loader, mock_obs_loader,
@@ -348,7 +348,7 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results = diag.compute()
@@ -369,7 +369,7 @@ class TestSeasonalCycleCMIP6Individual:
         diag_no = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=False,
         )
         results_no = diag_no.compute()
@@ -379,7 +379,7 @@ class TestSeasonalCycleCMIP6Individual:
         diag_yes = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results_yes = diag_yes.compute()
@@ -397,12 +397,12 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results = diag.compute()
 
-        for mname, monthly in results["avg_2t"]["cmip6_individual_monthly"].items():
+        for mname, monthly in results["tas"]["cmip6_individual_monthly"].items():
             assert np.all(monthly.values > 260)
             assert np.all(monthly.values < 310)
 
@@ -414,14 +414,14 @@ class TestSeasonalCycleCMIP6Individual:
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
-            variables=["avg_2t"],
+            variables=["tas"],
             cmip6_individual=True,
         )
         results = diag.compute()
         pairs = diag.plot(results)
 
         _, meta = pairs[0]
-        cmip6_models = list(results["avg_2t"]["cmip6_individual_monthly"].keys())
+        cmip6_models = list(results["tas"]["cmip6_individual_monthly"].keys())
         for cm in cmip6_models:
             assert cm in meta["models"]
         plt.close("all")
@@ -433,15 +433,15 @@ class TestSeasonalCycleMultiVariable:
     def test_default_variables_expanded(self):
         """Class-level variable list has 18 entries."""
         assert len(SeasonalCycleDiag.variables) == 18
-        assert "avg_2t" in SeasonalCycleDiag.variables
-        assert "avg_msl" in SeasonalCycleDiag.variables
-        assert "avg_tnlwrfcs" in SeasonalCycleDiag.variables
+        assert "tas" in SeasonalCycleDiag.variables
+        assert "psl" in SeasonalCycleDiag.variables
+        assert "rltcs" in SeasonalCycleDiag.variables
 
     def test_custom_variables_override(self, mock_model_loader, mock_obs_loader,
                                         minimal_config):
         """Constructor variables= overrides the default list."""
         diag = SeasonalCycleDiag(
             mock_model_loader, mock_obs_loader, minimal_config,
-            variables=["avg_2t"],
+            variables=["tas"],
         )
-        assert diag.variables == ["avg_2t"]
+        assert diag.variables == ["tas"]

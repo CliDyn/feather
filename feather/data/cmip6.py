@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from feather.data.variables import VARIABLE_REGISTRY
+from feather.data.variables import VARIABLE_REGISTRY, get_var
 
 logger = logging.getLogger(__name__)
 
@@ -163,12 +163,13 @@ class CMIP6Loader:
     ) -> xr.DataArray | None:
         """Load CMIP6 data mapped from a feather model variable name.
 
-        Maps e.g. "avg_2t" -> CMIP6 "tas" / "Amon" via VARIABLE_REGISTRY.
+        Maps e.g. "tas" (or legacy "avg_2t") -> CMIP6 "tas" / "Amon"
+        via VARIABLE_REGISTRY.
 
         Parameters
         ----------
         model_var : str
-            Feather variable name (e.g. "avg_2t").
+            Feather variable name (CMOR or DestinE, e.g. "tas").
         model : str
             CMIP6 model name.
         **kwargs
@@ -178,8 +179,11 @@ class CMIP6Loader:
         -------
         xr.DataArray or None
         """
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return None
+        if not vinfo.cmip6_variable:
             return None
         return self.load_var(
             vinfo.cmip6_variable,
@@ -323,7 +327,7 @@ class CMIP6Loader:
         Parameters
         ----------
         model_var : str
-            Feather variable name (e.g. "avg_2t").
+            Feather variable name (CMOR or DestinE, e.g. "tas").
         **kwargs
             Passed to :meth:`load_multi_model_mean`.
 
@@ -331,8 +335,11 @@ class CMIP6Loader:
         -------
         (mmm, info) : tuple
         """
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return None, {"n_members": 0, "models_used": [], "models_skipped": []}
+        if not vinfo.cmip6_variable:
             return None, {"n_members": 0, "models_used": [], "models_skipped": []}
         return self.load_multi_model_mean(
             vinfo.cmip6_variable,
@@ -472,8 +479,11 @@ class CMIP6Loader:
 
     def available_models_for_model_var(self, model_var: str) -> list[str]:
         """Convenience: available models mapped from a feather variable name."""
-        vinfo = VARIABLE_REGISTRY.get(model_var)
-        if vinfo is None or not vinfo.cmip6_variable:
+        try:
+            vinfo = get_var(model_var)
+        except KeyError:
+            return []
+        if not vinfo.cmip6_variable:
             return []
         return self.available_models(
             vinfo.cmip6_variable,

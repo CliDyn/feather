@@ -72,7 +72,7 @@ class OceanSST(DiagnosticBase):
     name = "ocean_sst"
     title = "Ocean SST Evaluation"
     domain = "o2d"
-    variables = ["avg_tos"]
+    variables = ["tos"]
     group = "ocean_surface"
 
     def __init__(self, model_loader, obs_loader, config, *,
@@ -205,15 +205,18 @@ class OceanSST(DiagnosticBase):
         model_coords : dict[str, tuple]
             Model name -> (lon, lat) coordinate arrays.
         """
+        from feather.data.variables import get_var
+
+        destine_var = get_var("tos").destine_variable or "tos"
         model_monthly = {}
         model_coords = {}
         for model in self.config.models:
             key = DataLoader.make_key(self.experiment, model, "o2d")
             try:
-                da = self.model_loader.load_var(key, "avg_tos")
+                da = self.model_loader.load_var(key, destine_var)
                 ds = self.model_loader.load(key)
             except KeyError:
-                logger.warning("avg_tos not available for %s", model)
+                logger.warning("%s not available for %s", destine_var, model)
                 continue
             if self.period and "time" in da.dims:
                 da = da.sel(time=slice(*self.period))
