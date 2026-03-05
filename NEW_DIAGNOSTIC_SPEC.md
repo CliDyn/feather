@@ -8,7 +8,12 @@ This document provides everything needed to implement a new diagnostic for the F
 
 ### 1.1 What Feather Does
 
-Feather evaluates three high-resolution (~5 km) DestinE coupled climate models — **IFS-FESOM**, **IFS-NEMO**, **ICON** — against observations (ERA5, CERES, EN4, etc.) on native HEALPix grids. Optionally, it includes CMIP6 multi-model mean (MMM) as a conventional-resolution (~100 km) baseline for context.
+Feather evaluates high-resolution coupled climate models against observations (ERA5, CERES, EN4, etc.). It supports multiple model sets:
+
+- **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
+- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm / ~5-10 km ocean, 0.25° lat/lon, CMOR directory tree)
+
+The framework is **grid-agnostic**: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model configuration. Optionally, it includes CMIP6 multi-model mean (MMM) as a conventional-resolution (~100 km) baseline for context.
 
 The pipeline has 4 stages:
 1. **Diagnostics** — compute and plot figures with JSON metadata sidecars
@@ -59,12 +64,10 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from feather.data.loader import DataLoader
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
-from feather.util.spatial import global_mean, latlon_global_mean
+from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
 from feather.util.temporal import climatology
 
 logger = logging.getLogger(__name__)
@@ -77,19 +80,19 @@ class MyDiagnostic(DiagnosticBase):
     name = "my_diagnostic"       # Unique ID — used in filenames, CLI, registry
     title = "My Diagnostic"      # Human-readable — used in plot titles
     domain = "sfc"               # "sfc", "o2d", "pl", "o3d"
-    variables = ["avg_2t"]       # Model variable names from VARIABLE_REGISTRY
+    variables = ["tas"]          # CMOR canonical names from VARIABLE_REGISTRY
     group = "evaluation"         # Dashboard nav group
 
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
-                 experiment="baseline_hist", period=("1990", "2014"),
+                 experiment=None, period=None,
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader)
         if variables is not None:
             self.variables = list(variables)
-        self.experiment = experiment
-        self.period = period
+        self.experiment = experiment or config.get_experiment()
+        self.period = period or config.get_period()
         self.cmip6_individual = cmip6_individual
 ```
 
@@ -99,8 +102,8 @@ class MyDiagnostic(DiagnosticBase):
 |-----------|------|---------|
 | `name` | `str` | Unique machine ID. Used in filenames, CLI `--diagnostics` flag, registry lookup. Must be non-empty. |
 | `title` | `str` | Human-readable title for plot suptitles. |
-| `domain` | `str` | Data domain: `"sfc"` (surface), `"o2d"` (ocean 2D), `"pl"` (pressure levels), `"o3d"` (ocean 3D). Determines which intake catalog key suffix to use. |
-| `variables` | `list[str]` | Model variable names this diagnostic uses. Must exist in `VARIABLE_REGISTRY`. |
+| `domain` | `str` | Data domain: `"sfc"` (surface), `"o2d"` (ocean 2D), `"pl"` (pressure levels), `"o3d"` (ocean 3D). Used for grid-type lookup and catalog key construction. |
+| `variables` | `list[str]` | CMOR canonical variable names this diagnostic uses (e.g., `"tas"` not `"avg_2t"`). Must exist in `VARIABLE_REGISTRY`. |
 | `group` | `str` | Thematic group for the web dashboard sidebar. Existing groups: `"evaluation"`, `"radiation"`, `"temperature"`, `"ocean_surface"`, `"sea_ice"`, `"circulation"`, `"wind"`, `"clouds"`, `"precipitation"`, `"moisture"`, `"surface_fluxes"`. |
 
 **Required constructor parameters:**
@@ -181,36 +184,37 @@ def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
 
 ### 2.4 Implement `_compute_single()` — The Computation Core
 
+Use the grid-agnostic base class helpers instead of direct loader calls. These automatically dispatch between HEALPix and lat/lon grids:
+
 ```python
 def _compute_single(self, var: str) -> dict[str, Any]:
     var_info = get_var(var)
     logger.info("Processing variable: %s (%s)", var, var_info.long_name)
     model_data = {}
 
-    # ── Load DestinE models ──
+    # ── Load models (grid-agnostic) ──
     for model in self.config.models:
-        key = DataLoader.make_key(self.experiment, model, var_info.domain)
         try:
-            da = self.model_loader.load_var(key, var)
-        except KeyError:
+            mdata = self._load_model_var(model, var)  # Returns ModelData
+        except (KeyError, FileNotFoundError):
             logger.warning("Variable %s not available for %s — skipping", var, model)
             continue
 
+        da = mdata.data
         # Time slicing
         if self.period and "time" in da.dims:
             da = da.sel(time=slice(self.period[0], self.period[1]))
 
-        # Compute your quantity (calls .compute() to materialize dask arrays)
-        result = global_mean(da).compute()
+        # Grid-agnostic global mean (HEALPix: simple .mean(), latlon: area-weighted)
+        result = self._model_global_mean(da, model).compute()
         model_data[model] = result
 
-    # ── Load observations ──
-    obs = self.obs_loader.load_for_model_var(var, self.period)
-    obs_result = latlon_global_mean(obs)
+    # ── Load observations (sign-convention aware) ──
+    obs = self._load_obs_var(var)
+    if self.period and "time" in obs.dims:
+        obs = obs.sel(time=slice(self.period[0], self.period[1]))
 
     # ── Load CMIP6 (optional) ──
-    cmip6_result = None
-    cmip6_info = {}
     cmip6_result, cmip6_info = self._cmip6_global_mean_timeseries(
         var, period=self.period,
         return_individual=self.cmip6_individual,
@@ -218,12 +222,18 @@ def _compute_single(self, var: str) -> dict[str, Any]:
 
     return {
         "models": model_data,
-        "obs": obs_result,
+        "obs": obs,
         "var_info": var_info,
         "cmip6_result": cmip6_result,
         "cmip6_info": cmip6_info,
     }
 ```
+
+**Key base class helpers:**
+- `_load_model_var(model, var)` → `ModelData(data, lon, lat)` — dispatches to intake (DestinE) or CMOR loader (EERIE) based on config
+- `_model_global_mean(da, model)` → area-weighted mean — HEALPix uses simple `.mean()`, latlon uses cos(lat) weighting
+- `_load_obs_var(var)` → obs DataArray — applies sign convention flip for CMOR data sources (e.g., `hfss`/`hfls`)
+- `_load_model_coords(model)` → `(lon, lat)` — coordinate arrays for any grid type
 
 ### 2.5 Implement `_plot_single()` — The Plotting Core
 
@@ -234,9 +244,9 @@ def _plot_single(self, var: str, vr: dict[str, Any]) -> list[tuple[plt.Figure, d
 
     fig, ax = plt.subplots(figsize=(12, 5))
 
-    # Plot DestinE models
+    # Plot models (config-driven colors work for any model set)
     for model, data in vr["models"].items():
-        color = MODEL_COLORS.get(model)
+        color = self.config.get_model_color(model)
         ax.plot(data.time.values, data.values, label=model, color=color, linewidth=2.0)
 
     # Plot CMIP6 MMM (dashed gray)
@@ -282,7 +292,40 @@ That's it. The pipeline will auto-discover it.
 
 ## 3. Data Access Patterns
 
-### 3.1 Model Data (DestinE on HEALPix)
+### 3.1 Model Data (Grid-Agnostic)
+
+**Recommended: use base class helpers** — they dispatch to the correct loader automatically:
+
+```python
+# Grid-agnostic loading (works for DestinE HEALPix and EERIE lat/lon):
+mdata = self._load_model_var(model, "tas")  # Returns ModelData(data, lon, lat)
+da = mdata.data    # xr.DataArray
+lon = mdata.lon    # 1D array
+lat = mdata.lat    # 1D array
+
+# Grid-agnostic global mean:
+gm = self._model_global_mean(da, model)  # HEALPix: .mean(), latlon: cos-weighted
+
+# Grid-agnostic coordinates:
+lon, lat = self._load_model_coords(model)
+```
+
+**Error handling:** CMOR raises `FileNotFoundError`, DestinE raises `KeyError` — always catch both:
+```python
+try:
+    mdata = self._load_model_var(model, var)
+except (KeyError, FileNotFoundError):
+    logger.warning("Variable %s not available for %s — skipping", var, model)
+    continue
+```
+
+**Under the hood**, the base class dispatches based on `config.get_data_source_type()`:
+- `"destine_catalog"` → `DataLoader` (intake catalogs, HEALPix, `values` dim)
+- `"cmor"` → `CMORLoader` (CMOR directory tree, regular lat/lon, `(time, lat, lon)` dims)
+
+#### Direct loader access (advanced)
+
+For DestinE-specific use cases, you can still access the catalog directly:
 
 ```python
 from feather.data.loader import DataLoader
@@ -301,6 +344,8 @@ da = self.model_loader.load_var(key, var)  # Single variable
 # No area variable — HEALPix cells are equal area
 ```
 
+However, **new diagnostics should use the base class helpers** above — they work across all model sets.
+
 **Critical: dask arrays.** Model data is dask-backed. After reductions (climatology, mean), call `.compute()` before passing to numpy ops or storing:
 ```python
 clim = climatology(da, period).compute()  # ← .compute() materializes
@@ -308,10 +353,12 @@ clim = climatology(da, period).compute()  # ← .compute() materializes
 
 ### 3.2 Observation Data
 
+**Recommended: use base class helper** for sign-convention awareness:
+
 ```python
-# Via VARIABLE_REGISTRY mapping (recommended):
-obs_da = self.obs_loader.load_for_model_var("avg_2t", period)
-# Automatically applies obs_unit_factor and obs_unit_offset
+# Via base class helper (recommended — handles CMOR sign conventions):
+obs_da = self._load_obs_var("tas")
+# Applies obs_unit_factor, obs_unit_offset, AND cmor_obs_sign when data_source is "cmor"
 
 # Direct access (for datasets not in VARIABLE_REGISTRY):
 da = self.obs_loader.load("ERA5", "t2m", period=("1990", "2014"))
@@ -327,7 +374,12 @@ da = self.obs_loader.load_ceres("toa_net_all_mon", period=period, file_key="toa"
 - Radiation/flux vars are **daily accumulations** (J/m\u00b2/day), not W/m\u00b2. Conversion handled by `obs_unit_factor` in `VARIABLE_REGISTRY`
 - Precipitation is m/day → multiply by 1000/86400 for kg/m\u00b2/s (also in registry)
 - Cloud cover is 0-1 fraction; DestinE is 0-100% (factor=100 in registry)
-- Sign convention: positive downward (same as DestinE/IFS)
+
+**Sign convention gotcha (CMOR vs ERA5):**
+- ERA5 & DestinE (IFS): surface heat fluxes **positive downward** (into surface)
+- CMOR/CMIP6/EERIE: surface heat fluxes **positive upward** (away from surface)
+- `_load_obs_var()` applies sign flip automatically for `hfss`/`hfls` when `data_source == "cmor"`
+- Always use `_load_obs_var()` instead of direct `obs_loader.load_for_model_var()` to get correct signs
 
 ### 3.3 CMIP6 Data (Optional)
 
@@ -383,6 +435,12 @@ cmip6_ts, info = self._cmip6_global_mean_timeseries(
 
 ### 4.1 Global Means
 
+**Recommended: use the base class helper** — it dispatches automatically:
+```python
+gm = self._model_global_mean(da, model)  # HEALPix: .mean(), latlon: cos-weighted
+```
+
+For direct use outside a diagnostic class:
 ```python
 from feather.util.spatial import global_mean, latlon_global_mean
 
@@ -398,7 +456,11 @@ gm = latlon_global_mean(obs_da, area=precomputed_area)  # Faster with precompute
 
 **CRITICAL: cos(lat) on HEALPix is ~3K too warm.** Always use simple `.mean()` for equal-area data.
 
-### 4.2 Regridding (HEALPix → Regular Grid for Bias Maps)
+### 4.2 Regridding (for Bias Maps)
+
+For HEALPix data, regridding uses `nr.regrid()` with nearest-neighbor interpolation. For lat/lon data (EERIE), use `np.meshgrid(lon, lat)` before `nr.regrid()` — HEALPix per-pixel coordinate arrays pass directly.
+
+**HEALPix → regular grid:**
 
 ```python
 import nereus as nr
@@ -428,8 +490,23 @@ regridded_da = xr.DataArray(
 obs_common = obs_clim.interp({lat_name: target_lats, lon_name: target_lons})
 ```
 
+**Lat/lon → regular grid (EERIE):**
+```python
+# For lat/lon grids, create 2D coordinate arrays first:
+lon_2d, lat_2d = np.meshgrid(lon_1d, lat_1d)
+regridded, interpolator = nr.regrid(
+    model_clim.values.ravel(),
+    lon=lon_2d.ravel(), lat=lat_2d.ravel(),
+    resolution=obs_res,
+    influence_radius=influence_radius,
+    lon_bounds=(0.0, 360.0),
+    as_xarray=True,
+)
+```
+
 **Influence radius must match source data density:**
-- Production (nside=1024, ~5 km): 80,000 m (80 km)
+- DestinE production (nside=1024, ~5 km): 80,000 m (80 km)
+- EERIE (0.25 deg, ~25 km): 80,000 m (80 km)
 - Tests (nside=8, ~815 km): 1,000,000 m (1000 km)
 - CMIP6 (~1-2 deg): 1,000,000 m
 - Config: `config.nereus["influence_radius"]` for diagnostics, `config.cmip6["influence_radius"]` for CMIP6
@@ -469,12 +546,16 @@ anom = anomaly(ts, clim)                               # Deviations from climato
 ### 5.1 Color Scheme
 
 ```python
-from feather.plot.styles import MODEL_COLORS, OBS_COLOR, CMIP6_COLOR
+from feather.plot.styles import OBS_COLOR, CMIP6_COLOR
 
-# MODEL_COLORS = {"ifs-fesom": "#1f77b4", "ifs-nemo": "#ff7f0e", "icon": "#2ca02c"}
+# Model colors are config-driven (work for any model set):
+color = self.config.get_model_color(model)  # Returns hex color from config
+
 # OBS_COLOR = "black"
 # CMIP6_COLOR = "#888888"
 ```
+
+**Do not hardcode model colors.** Use `self.config.get_model_color(model)` — this reads from the config YAML and falls back to a color cycle for models without explicit colors.
 
 ### 5.2 Layering Order (z-order for line/scatter plots)
 
@@ -681,35 +762,42 @@ Variables with sign mismatches have `cmip6_variable=""` in `VARIABLE_REGISTRY` t
 
 ### 8.1 Adding New Variables
 
+Variables use **CMOR canonical names** as keys (e.g., `"tas"` not `"avg_2t"`). The `destine_variable` field maps back to DestinE names for backward compatibility.
+
 If your diagnostic uses variables not yet in `VARIABLE_REGISTRY`, add entries in `feather/data/variables.py`:
 
 ```python
-"avg_newvar": VarInfo(
-    name="avg_newvar",
-    long_name="My New Variable",
+"tas": VarInfo(
+    name="tas",                      # CMOR canonical name (registry key)
+    long_name="2m Temperature",
     units="K",
     domain="sfc",
     cmap="RdBu_r",
     obs_dataset="ERA5",
-    obs_variable="newvar",
-    cmip6_variable="newvar_cmip6",  # "" if no CMIP6 mapping
-    cmip6_table="Amon",             # "" if no CMIP6 mapping
-    obs_unit_factor=1.0,            # Multiply obs by this to match model units
-    obs_unit_offset=0.0,            # Add after multiplying
+    obs_variable="t2m",
+    destine_variable="avg_2t",       # DestinE catalog name (empty if N/A)
+    cmip6_variable="tas",            # "" if no CMIP6 mapping
+    cmip6_table="Amon",              # "" if no CMIP6 mapping
+    obs_unit_factor=1.0,             # Multiply obs by this to match model units
+    obs_unit_offset=0.0,             # Add after multiplying
+    cmor_obs_sign=1.0,               # -1.0 for hfss/hfls (ERA5→CMOR sign flip)
     group="temperature",
 ),
 ```
 
-### 8.2 Existing Variables (34 total)
+`get_var()` accepts both CMOR and DestinE names via `_DESTINE_TO_CANONICAL` fallback.
 
-**Surface atmospheric (23):** `avg_2t`, `avg_skt`*, `avg_msl`, `avg_10u`, `avg_10v`, `avg_10ws`*, `avg_tcc`, `avg_tcwv`*, `avg_tclw`, `avg_tciw`, `avg_tprate`, `avg_ishf`, `avg_slhtf`, `avg_sdswrf`, `avg_sdlwrf`, `avg_snswrf`, `avg_snlwrf`, `avg_snswrfcs`, `avg_snlwrfcs`, `avg_tnswrf`, `avg_tnlwrf`, `avg_tnswrfcs`, `avg_tnlwrfcs`
-(*Note: 18 of these are fully validated for general use. `avg_skt` needs land-correction, `avg_10ws` needs derived-var support, `avg_tcwv` is currently missing an ERA5 file).*
+### 8.2 Existing Variables (33 total)
 
-**Ocean 2D (5):** `avg_tos`, `avg_siconc`, `avg_sithick`, `avg_zos`, `avg_sos`
+**Surface atmospheric (23):** `tas`, `ts`, `psl`, `uas`, `vas`, `sfcWind`, `clt`, `prw`, `clwvi`, `clivi`, `pr`, `hfss`, `hfls`, `rsds`, `rlds`, `rss`, `rls`, `rsscs`, `rlscs`, `rst`, `rlt`, `rstcs`, `rltcs`
 
-**Ocean 3D (2):** `avg_thetao`, `avg_so`
+**Ocean 2D (5):** `tos`, `siconc`, `sithick`, `zos`, `sos`
 
-**Pressure levels (4):** `avg_t`, `avg_u`, `avg_v`, `avg_q`
+**Ocean 3D (2):** `thetao`, `so`
+
+**Pressure levels (4):** `ta`, `ua`, `va`, `hus`
+
+Variables confirmed available in EERIE: `tas`, `clt`, `hfls`, `hfss`, `pr`, `psl`, `rlds`, `rsds`, `tos`, `thetao`, `so`, `siconc`, `sithick`. Net radiation variables (`rss`, `rls`, etc.) are auto-derived from CMOR component fluxes.
 
 ---
 
@@ -731,11 +819,10 @@ In `feather/run.py` → `_run_diagnostics()`:
 | Flag | Effect |
 |------|--------|
 | `--diagnostics my_diagnostic` | Only run your diagnostic |
-| `--variables avg_2t avg_msl` | Intersect with your `variables` list |
+| `--variables tas psl` | Intersect with your `variables` list (CMOR names) |
 | `--cmip6-individual` | Passed as kwarg if your `__init__` accepts it |
 | `--no-skip-existing` | Forces regeneration of all figures |
-| `--experiment baseline_hist` | Passed to constructor |
-| `--period 1990 2014` | Passed to constructor |
+| `--config configs/eerie.yaml` | Use a different model set config |
 
 ### 9.3 What You Don't Need to Touch
 
@@ -983,7 +1070,8 @@ pytest tests/ -v -m "not integration"           # All unit tests
 
 | Data Type | Correct Method | Wrong Method | Error |
 |-----------|---------------|--------------|-------|
-| HEALPix model data | `global_mean(da)` (simple .mean) | cos(lat) weights | ~+3K warm bias |
+| HEALPix model data | `_model_global_mean(da, model)` or `global_mean(da)` | cos(lat) weights | ~+3K warm bias |
+| Regular lat/lon model data (EERIE) | `_model_global_mean(da, model)` or `latlon_global_mean(da)` | Unweighted .mean | ~-8K cold bias |
 | Regular lat/lon obs | `latlon_global_mean(da)` | Unweighted .mean | ~-8K cold bias |
 | CMIP6 data | `latlon_global_mean(da, area=areacella)` | cos(lat) | Grid-dependent |
 
@@ -1009,11 +1097,11 @@ clim = climatology(da, period).compute()
 
 **Problem:** Not all models have all variables. ICON lacks `avg_tcc`, for example.
 
-**Solution:** Always wrap model loading in try/except:
+**Solution:** Always wrap model loading in try/except (catch both exception types):
 ```python
 try:
-    da = self.model_loader.load_var(key, var)
-except KeyError:
+    mdata = self._load_model_var(model, var)
+except (KeyError, FileNotFoundError):
     logger.warning("Variable %s not available for %s — skipping", var, model)
     continue
 ```
@@ -1089,8 +1177,8 @@ Always accept `cmip6_individual` as a keyword argument if your diagnostic should
 - [ ] **Override** `run()` with per-variable incremental saving
 - [ ] **Implement** `compute()` and `plot()` as thin wrappers
 - [ ] **Implement** `_compute_single()` / `_compute_variable()` with:
-  - DestinE model loading with `try/except KeyError`
-  - Obs loading via `obs_loader.load_for_model_var()` or `load_ceres()`
+  - Model loading via `_load_model_var()` with `try/except (KeyError, FileNotFoundError)`
+  - Obs loading via `_load_obs_var()` (sign-convention aware) or `load_ceres()`
   - CMIP6 loading guarded by `self.cmip6_enabled`
   - `.compute()` calls on dask arrays after reductions
 - [ ] **Implement** `_plot_single()` / `_plot_variable()` with:
@@ -1115,12 +1203,18 @@ Always accept `cmip6_individual` as a keyword argument if your diagnostic should
 
 ## 15. Reference: Existing Diagnostics
 
-| Diagnostic | File | Lines | Figure Types | Saving Pattern |
-|-----------|------|-------|--------------|----------------|
-| `global_biases` | `diag/global_biases.py` | ~672 | Combined bias maps (per var per period) | Per-variable (3 figures per var) |
-| `timeseries` | `diag/timeseries.py` | ~305 | Global-mean time series | Per-variable (1 figure per var) |
-| `seasonal_cycle` | `diag/seasonal_cycle.py` | ~261 | 12-month cycle | Per-variable (1 figure per var) |
-| `radiation_budget` | `diag/radiation_budget.py` | ~1107 | Budget bars, Gregory, imbalance TS, bias maps | Per-figure-group |
+| Diagnostic | File | Figure Types | Saving Pattern |
+|-----------|------|--------------|----------------|
+| `global_biases` | `diag/global_biases.py` | Combined bias maps (per var per period) | Per-variable (3 figures per var) |
+| `timeseries` | `diag/timeseries.py` | Global-mean time series | Per-variable (1 figure per var) |
+| `seasonal_cycle` | `diag/seasonal_cycle.py` | 12-month cycle | Per-variable (1 figure per var) |
+| `radiation_budget` | `diag/radiation_budget.py` | Budget bars, Gregory, imbalance TS, bias maps | Per-figure-group |
+| `sea_ice` | `diag/sea_ice.py` | Area/extent/volume TS, seasonal cycles, trends, polar maps | Per-figure-group |
+| `ocean_sst` | `diag/ocean_sst.py` | SST bias maps, TS, seasonal cycle, zonal mean | Per-figure-group |
+| `ocean_en4` | `diag/ocean_en4.py` | Surface bias maps, Hovmoller, depth-layer TS | Per-figure-group |
+| `global_trends` | `diag/global_trends.py` | Per-grid-point linear trend maps | Per-variable |
+
+All diagnostics are grid-agnostic and work with both DestinE (HEALPix) and EERIE (lat/lon) model sets.
 
 Use `timeseries.py` as the simplest template for line-plot diagnostics.
 Use `global_biases.py` as the template for bias-map diagnostics.

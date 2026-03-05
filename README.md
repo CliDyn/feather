@@ -1,8 +1,14 @@
 # Feather
 
-Lightweight climate model evaluation framework for [DestinE](https://destination-earth.eu/) high-resolution simulations.
+Lightweight climate model evaluation framework supporting multiple high-resolution model sets.
 
-Feather compares three climate models (IFS-FESOM, IFS-NEMO, ICON) running on HEALPix grids at ~5 km resolution against observations (ERA5, CERES, EN4, etc.) and a CMIP6 multi-model mean. It generates diagnostic figures, LLM-analyzed results, a LaTeX report, and a static web dashboard.
+Feather compares high-resolution climate models against observations (ERA5, CERES, EN4, ESA-CCI, OSI-SAF, PIOMAS/GIOMAS) and a CMIP6 multi-model mean. It generates diagnostic figures, LLM-analyzed results, a LaTeX report, and a static web dashboard.
+
+Currently supported model sets:
+- **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
+- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm / ~5-10 km ocean, 0.25° regular lat/lon, CMOR directory tree)
+
+The framework is **grid-agnostic**: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model configuration.
 
 ## Quick start
 
@@ -27,8 +33,11 @@ diagnostics  →  analyze  →  report  →  website
 ### Run the full pipeline
 
 ```bash
-feather -v
+# DestinE (default config)
 feather --config configs/default.yaml -v
+
+# EERIE
+feather --config configs/eerie.yaml -v
 ```
 
 ### Run individual steps
@@ -56,8 +65,11 @@ feather --steps analyze report website -v
 # Filter diagnostics by name
 feather --diagnostics global_biases timeseries -v
 
-# Filter by variable
-feather --variables avg_2t -v
+# Filter by variable (CMOR canonical names)
+feather --variables tas pr -v
+
+# Include individual CMIP6 model lines/biases alongside MMM
+feather --cmip6-individual -v
 
 # Custom output directory
 feather --output ./my_output -v
@@ -77,7 +89,8 @@ python -m feather --steps report -v
 ```python
 from feather import FeatherConfig, run_pipeline
 
-cfg = FeatherConfig.from_yaml("configs/default.yaml")
+# Load any config (DestinE or EERIE)
+cfg = FeatherConfig.from_yaml("configs/eerie.yaml")
 
 # Full pipeline
 result = run_pipeline(cfg, steps="all", api_key="...", openai_api_key="...")
@@ -91,20 +104,6 @@ print(result)
 # {"figures": 12, "analyses": 12, "syntheses": 3, "report": Path(...), "site_dir": Path(...)}
 ```
 
-Or use classes directly:
-
-```python
-from feather import FeatherConfig, DataLoader, ObsLoader
-from feather.diag.global_biases import GlobalBiases
-
-cfg = FeatherConfig.from_yaml("configs/default.yaml")
-model_loader = DataLoader.from_catalog(cfg.model_catalogs["2d"])
-obs_loader = ObsLoader(cfg)
-
-diag = GlobalBiases(model_loader, obs_loader, cfg, variables=["avg_2t"])
-saved_files = diag.run()  # returns [(png_path, json_path), ...]
-```
-
 ## Available diagnostics
 
 | Diagnostic | Class | What it produces |
@@ -113,13 +112,88 @@ saved_files = diag.run()  # returns [(png_path, json_path), ...]
 | `timeseries` | `TimeseriesDiag` | Global-mean time series, all models + obs overlaid |
 | `seasonal_cycle` | `SeasonalCycleDiag` | 12-month climatological cycle, all models + obs overlaid |
 | `radiation_budget` | `RadiationBudget` | TOA/surface radiation budget bars, Gregory plot, imbalance time series, bias maps vs CERES EBAF |
-| `sea_ice` | `SeaIceDiag` | Sea ice area/extent/volume time series, seasonal cycles, March & September trends, polar spatial maps vs OSI-SAF + PIOMAS/GIOMAS |
+| `sea_ice` | `SeaIceDiag` | Sea ice area/extent/volume time series, seasonal cycles, trends, polar spatial maps vs OSI-SAF + PIOMAS/GIOMAS |
+| `ocean_sst` | `OceanSST` | SST evaluation vs ESA-CCI: bias maps, time series, seasonal cycle, zonal mean |
+| `ocean_en4` | `OceanEN4` | 3D ocean T/S evaluation vs EN4: surface bias maps, Hovmoller diagrams, depth-layer time series |
+| `global_trends` | `GlobalTrends` | Per-grid-point linear trends over the evaluation period |
 
 All diagnostics accept these constructor arguments:
 
-- `variables=["avg_2t", ...]` — which model variables to evaluate (default: `["avg_2t"]`)
-- `experiment="baseline_hist"` — catalog experiment key
-- `period=("1990", "2014")` — time period for climatologies
+- `variables=["tas", ...]` — which variables to evaluate (CMOR canonical names)
+- `experiment="hist-1950"` — experiment identifier
+- `period=("1980", "2014")` — time period for climatologies (read from config by default)
+
+## Configuration
+
+Feather uses YAML configuration files. Two configs are provided:
+
+### DestinE (`configs/default.yaml`)
+
+```yaml
+project:
+  name: "DestinE"
+  resolution: "high-resolution (~5 km)"
+  experiment: "baseline_hist"
+  period: ["1990", "2014"]
+
+data_source:
+  type: "destine_catalog"
+
+models: [ifs-fesom, ifs-nemo, icon]   # List format → HEALPix grid defaults
+```
+
+- **Model data:** intake catalogs (HEALPix grids, zarr format)
+- **Grid:** nside=1024 (12.6M cells), 1D `values` dimension
+
+### EERIE (`configs/eerie.yaml`)
+
+```yaml
+project:
+  name: "EERIE"
+  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
+  experiment: "hist-1950"
+  period: ["1980", "2014"]
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:                              # Dict format → per-model config
+  IFS-FESOM2-SR:
+    institution: AWI
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#1f77b4"
+  IFS-NEMO-ER:
+    institution: BSC
+    # ...
+```
+
+- **Model data:** CMOR directory tree (NetCDF, standard dims)
+- **Grid:** 0.25° regular lat/lon (721x1440), standard `(time, lat, lon)` dims
+
+### Common config sections
+
+Both configs share:
+- **Observations:** ERA5, CERES, EN4, ESA-CCI, OSI-SAF at `/work/bb1153/b382289/data/aqua-dvc/datasets/`
+- **CMIP6:** 12 models from `/work/ab0995/a270088/DestinE/cmip6/zarr/`
+- **LLM analysis:** Gemini (`GEMINI_API_KEY` / `VERTEX_API_KEY`)
+- **Report generation:** OpenAI (`OPENAI_API_KEY`)
+- **Output:** configurable via `output_dir`
+
+## Adding a new model set
+
+1. Create a config YAML using the structured format (see `configs/eerie.yaml` as template)
+2. Set `data_source.type` to `"cmor"` (or `"destine_catalog"` for intake catalogs)
+3. Define `models` as a dict with per-model `institution`, `experiment`, `variant`, `grids`, `color`
+4. Set `project.name`, `project.period`, `project.experiment`, `project.resolution`
+5. Run: `feather --config configs/my_project.yaml -v`
+
+If your data format is not CMOR or intake catalogs, implement a new loader class (see `CMORLoader` in `feather/data/cmor_loader.py` as template).
 
 ## Output structure
 
@@ -127,22 +201,24 @@ All diagnostics accept these constructor arguments:
 output/
   figures/                          # Diagnostic figures + JSON metadata
     global_biases/
-      avg_2t_annual_bias_ifs-fesom.png
-      avg_2t_annual_bias_ifs-fesom.json
+      tas_annual_bias_combined.png
+      tas_annual_bias_combined.json
       ...
     timeseries/
     seasonal_cycle/
+    radiation_budget/
     sea_ice/
+    ocean_sst/
+    ocean_en4/
+    global_trends/
   analysis/                         # LLM analysis (Gemini)
     global_biases/
-      avg_2t_annual_bias_ifs-fesom_analysis.json
+      tas_annual_bias_combined_analysis.json
       synthesis.json
     ...
   publication/                      # LaTeX report (OpenAI)
     structure.json                  # Stage 1: editorial curation
     sections/                       # Stage 2: per-section prose
-      01_temperature.json
-      ...
     figures/                        # Copied figures for LaTeX
     report.tex                      # Final LaTeX document
     report.pdf                      # (if --compile-pdf)
@@ -157,39 +233,43 @@ output/
 ```
 feather/
   cli.py                 # CLI entry point (feather command)
-  config.py              # FeatherConfig (YAML loading)
+  config.py              # FeatherConfig + ModelConfig dataclasses
   run.py                 # Pipeline orchestration (run_pipeline)
   __main__.py            # python -m feather support
   data/
-    loader.py            # DataLoader (intake catalogs + file paths)
+    loader.py            # DataLoader (intake catalogs, DestinE)
+    cmor_loader.py       # CMORLoader (CMOR directory tree, EERIE)
     obs.py               # ObsLoader (observations)
     cmip6.py             # CMIP6Loader (multi-model mean from zarr)
-    variables.py         # VARIABLE_REGISTRY (33 variables)
+    variables.py         # VARIABLE_REGISTRY (33 vars, CMOR canonical names)
   util/
-    spatial.py           # Zonal/global means, NN regridding
+    spatial.py           # Zonal/global means, NN regridding, latlon areas
     temporal.py          # Climatology, seasonal/monthly grouping
     units.py             # Unit conversions
   plot/
-    maps.py              # Bias maps (nereus), single maps
+    maps.py              # Bias maps (nereus), combined multi-panel maps
     lines.py             # Time series, seasonal cycle, zonal profiles
     styles.py            # Model colors, plot defaults
   diag/
-    base.py              # DiagnosticBase ABC
+    base.py              # DiagnosticBase ABC + grid-agnostic helpers
     registry.py          # @register decorator
     figure_meta.py       # Figure metadata sidecar system
-    global_biases.py     # Bias map diagnostic
-    timeseries.py        # Time series diagnostic
-    seasonal_cycle.py    # Seasonal cycle diagnostic
-    radiation_budget.py  # Radiation budget diagnostic (CERES EBAF)
-    sea_ice.py           # Sea ice diagnostic (OSI-SAF, PIOMAS/GIOMAS)
+    global_biases.py     # Climatology bias maps
+    timeseries.py        # Global-mean time series
+    seasonal_cycle.py    # Monthly climatological cycle
+    radiation_budget.py  # Radiation budget (CERES EBAF)
+    sea_ice.py           # Sea ice (OSI-SAF, PIOMAS/GIOMAS)
+    ocean_sst.py         # SST evaluation (ESA-CCI)
+    ocean_en4.py         # 3D ocean T/S (EN4 v4.2.2)
+    global_trends.py     # Per-grid-point linear trends
   llm/
     analyzer.py          # FigureAnalyzer (Gemini)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis
-    prompts.py           # Gemini prompts
+    prompts.py           # Gemini prompts (config-parameterized)
   export/
     report.py            # ReportGenerator (OpenAI, 3-stage)
     schemas.py           # ReportStructure, WrittenSection
-    prompts.py           # OpenAI prompts (curation + writing)
+    prompts.py           # OpenAI prompts (config-parameterized)
     openai_client.py     # Thin OpenAI wrapper with retry
     latex_builder.py     # LaTeX escaping, template rendering, PDF
     templates/           # Jinja2 LaTeX template
@@ -198,6 +278,38 @@ feather/
     templates/           # Jinja2 HTML templates
     static/              # CSS
 ```
+
+## Adding a new diagnostic
+
+Use CMOR canonical variable names and grid-agnostic base class helpers:
+
+```python
+from feather.diag.base import DiagnosticBase
+from feather.diag.registry import register
+
+@register
+class MyDiagnostic(DiagnosticBase):
+    name = "my_diagnostic"
+    title = "My Diagnostic"
+    domain = "sfc"
+    variables = ["tas"]         # CMOR canonical names
+    group = "temperature"
+
+    def compute(self):
+        for model in self.config.models:
+            mdata = self._load_model_var(model, "tas")      # Grid-agnostic
+            ts = self._model_global_mean(mdata.data, model)  # HEALPix or latlon
+            # ...
+        obs = self._load_obs_var("tas")                      # Sign-convention aware
+        return {"model_ts": ..., "obs_ts": ...}
+
+    def plot(self, results):
+        fig, ax = plt.subplots()
+        meta = self._build_metadata(title="...", figure_id="...", models=[...])
+        return [(fig, meta)]
+```
+
+Then import the module in `feather/diag/__init__.py` so `@register` fires. See `NEW_DIAGNOSTIC_SPEC.md` for the full implementation guide.
 
 ## Testing
 
@@ -214,45 +326,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-451 unit tests + 4 integration tests.
-
-## Configuration
-
-Default config at `configs/default.yaml` points to Levante data paths:
-
-- **Model data:** intake catalogs at `/work/ab0995/a270088/DestinE/GENERATION2_joint/{2D,3D}/`
-- **Observations:** ERA5, CERES, EN4, ESA-CCI, MSWEP, OSI-SAF at `/work/bb1153/b382289/data/aqua-dvc/datasets/`
-- **CMIP6:** 12 models from `/work/ab0995/a270088/DestinE/cmip6/zarr/`
-- **LLM analysis:** Gemini 2.5 Flash (`GEMINI_API_KEY`)
-- **Report generation:** GPT-4o (`OPENAI_API_KEY`)
-- **Output:** `./output/` (configurable)
-
-## Adding a new diagnostic
-
-```python
-from feather.diag.base import DiagnosticBase
-from feather.diag.registry import register
-
-@register
-class MyDiagnostic(DiagnosticBase):
-    name = "my_diagnostic"
-    title = "My Diagnostic"
-    domain = "sfc"
-    variables = ["avg_2t"]
-    group = "temperature"
-
-    def compute(self):
-        # Load data, return results dict
-        return {"model_clim": ..., "obs_clim": ...}
-
-    def plot(self, results):
-        # Create figures, return [(fig, metadata_dict), ...]
-        fig, ax = plt.subplots()
-        meta = self._build_metadata(title="...", figure_id="...", models=[...])
-        return [(fig, meta)]
-```
-
-Then import the module in `feather/diag/__init__.py` so `@register` fires.
+847 unit tests + 4 integration tests.
 
 ## Requirements
 

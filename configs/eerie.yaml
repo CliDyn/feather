@@ -3,6 +3,7 @@ project:
   description: "EERIE HighResMIP hist-1950 high-resolution model evaluation"
   experiment: "hist-1950"
   period: ["1980", "2014"]
+  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
 
 data_source:
   type: "cmor"

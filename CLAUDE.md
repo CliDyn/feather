@@ -6,7 +6,7 @@ Feather is a lightweight climate model evaluation framework supporting multiple 
 
 Currently supported model sets:
 - **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
-- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (0.25° lat/lon, CMOR directory tree)
+- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree)
 
 The framework is grid-agnostic: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model config.
 
@@ -36,7 +36,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~830 unit tests + 4 integration tests.
+Current test count: ~847 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -129,6 +129,7 @@ project:
   description: "EERIE HighResMIP evaluation"
   experiment: "hist-1950"
   period: ["1980", "2014"]
+  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"  # used in LLM prompts
 
 data_source:
   type: "cmor"                        # "cmor" or "destine_catalog"

@@ -3,6 +3,7 @@ project:
   description: "Destination Earth high-resolution climate model evaluation"
   experiment: "baseline_hist"
   period: ["1990", "2014"]
+  resolution: "high-resolution (~5 km)"
 
 data_source:
   type: "destine_catalog"
