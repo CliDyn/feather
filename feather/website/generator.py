@@ -297,7 +297,7 @@ class SiteGenerator:
         )
         site_subtitle = ws.get(
             "subtitle",
-            "Climate Model Simulations vs Observations",
+            "Climate Model Evaluation",
         )
 
         # Period from config

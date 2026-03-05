@@ -909,6 +909,7 @@ class GlobalBiases(DiagnosticBase):
             fig, axes = plot_combined_bias_map(
                 obs_period, bias_dict,
                 title=f"{var_info.long_name} {period_label}",
+                obs_title=var_info.obs_dataset,
                 cmap=var_info.cmap,
                 bias_cmap="RdBu_r",
                 vmin=p_cb.get("vmin"),

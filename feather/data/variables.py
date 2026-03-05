@@ -67,7 +67,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "tas": VarInfo(
         name="tas", long_name="2m Temperature", units="K",
-        domain="sfc", cmap="RdBu_r",
+        domain="sfc", cmap="cmo.thermal",
         obs_dataset="ERA5", obs_variable="t2m",
         destine_variable="avg_2t",
         cmip6_variable="tas", cmip6_table="Amon",
@@ -75,7 +75,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "ts": VarInfo(
         name="ts", long_name="Skin Temperature", units="K",
-        domain="sfc", cmap="RdBu_r",
+        domain="sfc", cmap="cmo.thermal",
         obs_dataset="ERA5", obs_variable="sst",
         destine_variable="avg_skt",
         # NOTE: ERA5 sst is SST (ocean-only); skt is global skin temp.
@@ -85,7 +85,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "psl": VarInfo(
         name="psl", long_name="Mean Sea Level Pressure", units="Pa",
-        domain="sfc", cmap="RdBu_r",
+        domain="sfc", cmap="viridis",
         obs_dataset="ERA5", obs_variable="msl",
         destine_variable="avg_msl",
         cmip6_variable="psl", cmip6_table="Amon",
@@ -96,7 +96,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "uas": VarInfo(
         name="uas", long_name="10m U Wind", units="m/s",
-        domain="sfc", cmap="RdBu_r",
+        domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="u10",
         destine_variable="avg_10u",
         cmip6_variable="uas", cmip6_table="Amon",
@@ -104,7 +104,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "vas": VarInfo(
         name="vas", long_name="10m V Wind", units="m/s",
-        domain="sfc", cmap="RdBu_r",
+        domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="v10",
         destine_variable="avg_10v",
         cmip6_variable="vas", cmip6_table="Amon",
@@ -177,7 +177,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "hfss": VarInfo(
         name="hfss", long_name="Surface Sensible Heat Flux",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="sshf",
         destine_variable="avg_ishf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -187,7 +187,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "hfls": VarInfo(
         name="hfls", long_name="Surface Latent Heat Flux",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="slhf",
         destine_variable="avg_slhtf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -222,7 +222,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "rss": VarInfo(
         name="rss", long_name="Surface Net Shortwave Radiation",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="ssr",
         destine_variable="avg_snswrf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -230,7 +230,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "rls": VarInfo(
         name="rls", long_name="Surface Net Longwave Radiation",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="str",
         destine_variable="avg_snlwrf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -239,7 +239,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     "rsscs": VarInfo(
         name="rsscs",
         long_name="Surface Net Shortwave Radiation (Clear-Sky)",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="ssrc",
         destine_variable="avg_snswrfcs",
         obs_unit_factor=_ACCUM_FACTOR,
@@ -248,7 +248,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     "rlscs": VarInfo(
         name="rlscs",
         long_name="Surface Net Longwave Radiation (Clear-Sky)",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="strc",
         destine_variable="avg_snlwrfcs",
         obs_unit_factor=_ACCUM_FACTOR,
@@ -261,7 +261,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "rst": VarInfo(
         name="rst", long_name="TOA Net Shortwave Radiation",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="tsr",
         destine_variable="avg_tnswrf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -270,7 +270,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "rlt": VarInfo(
         name="rlt", long_name="TOA Net Longwave Radiation",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="ttr",
         destine_variable="avg_tnlwrf",
         obs_unit_factor=_ACCUM_FACTOR,  # J/m²/day → W/m²
@@ -280,7 +280,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     "rstcs": VarInfo(
         name="rstcs",
         long_name="TOA Net Shortwave Radiation (Clear-Sky)",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="tsrc",
         destine_variable="avg_tnswrfcs",
         obs_unit_factor=_ACCUM_FACTOR,
@@ -289,7 +289,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     "rltcs": VarInfo(
         name="rltcs",
         long_name="TOA Net Longwave Radiation (Clear-Sky)",
-        units="W/m2", domain="sfc", cmap="RdBu_r",
+        units="W/m2", domain="sfc", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="ttrc",
         destine_variable="avg_tnlwrfcs",
         obs_unit_factor=_ACCUM_FACTOR,
@@ -302,7 +302,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "tos": VarInfo(
         name="tos", long_name="Sea Surface Temperature", units="K",
-        domain="o2d", cmap="RdBu_r",
+        domain="o2d", cmap="cmo.thermal",
         obs_dataset="ESA_CCI", obs_variable="analysed_sst",
         destine_variable="avg_tos",
         cmip6_variable="tos", cmip6_table="Omon",
@@ -327,7 +327,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
     ),
     "zos": VarInfo(
         name="zos", long_name="Sea Surface Height", units="m",
-        domain="o2d", cmap="RdBu_r",
+        domain="o2d", cmap="coolwarm",
         obs_dataset="AVISO", obs_variable="adt",
         destine_variable="avg_zos",
         cmip6_variable="zos", cmip6_table="Omon",
@@ -348,7 +348,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "thetao": VarInfo(
         name="thetao", long_name="Ocean Temperature", units="K",
-        domain="o3d", cmap="RdBu_r",
+        domain="o3d", cmap="cmo.thermal",
         obs_dataset="EN4", obs_variable="thetao",
         destine_variable="avg_thetao",
         group="ocean_3d",
@@ -367,21 +367,21 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
 
     "ta": VarInfo(
         name="ta", long_name="Temperature (pressure levels)", units="K",
-        domain="pl", cmap="RdBu_r",
+        domain="pl", cmap="cmo.thermal",
         obs_dataset="ERA5", obs_variable="t2m",  # placeholder
         destine_variable="avg_t",
         group="atmosphere_3d",
     ),
     "ua": VarInfo(
         name="ua", long_name="Zonal Wind (pressure levels)", units="m/s",
-        domain="pl", cmap="RdBu_r",
+        domain="pl", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="u10",  # placeholder
         destine_variable="avg_u",
         group="atmosphere_3d",
     ),
     "va": VarInfo(
         name="va", long_name="Meridional Wind (pressure levels)",
-        units="m/s", domain="pl", cmap="RdBu_r",
+        units="m/s", domain="pl", cmap="coolwarm",
         obs_dataset="ERA5", obs_variable="v10",  # placeholder
         destine_variable="avg_v",
         group="atmosphere_3d",

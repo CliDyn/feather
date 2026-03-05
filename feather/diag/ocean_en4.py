@@ -49,7 +49,7 @@ _VAR_CFG = {
         "en4_var": "thetao",
         "destine_var": "avg_thetao",
         "convert": lambda da: da - _K_TO_C,
-        "cmap": "RdBu_r",
+        "cmap": "cmo.thermal",
         "bias_cmap": "RdBu_r",
     },
     "so": {

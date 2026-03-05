@@ -826,7 +826,7 @@ class GlobalTrends(DiagnosticBase):
                 obs_period, trend_diff_dict,
                 title=f"{var_info.long_name} {period_label} Trend",
                 obs_title="ERA5 Trend",
-                cmap="RdBu_r",
+                cmap="coolwarm",
                 bias_cmap="RdBu_r",
                 vmin=p_cb.get("vmin"),
                 vmax=p_cb.get("vmax"),

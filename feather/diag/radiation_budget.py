@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+import nereus as nr
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -32,7 +33,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "toa_net_all_mon",
         "ceres_file": "toa",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
     "sfc_net": {
         "long_name": "Surface Net Radiation",
@@ -40,7 +41,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "sfc_net_tot_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
     "toa_cre_sw": {
         "long_name": "TOA CRE Shortwave",
@@ -49,7 +50,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "toa_cre_sw_mon",
         "ceres_file": "toa",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
     "toa_cre_lw": {
         "long_name": "TOA CRE Longwave",
@@ -58,7 +59,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "toa_cre_lw_mon",
         "ceres_file": "toa",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
     "sfc_net_sw": {
         "long_name": "Surface Net Shortwave",
@@ -66,7 +67,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "sfc_net_sw_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
     "sfc_net_lw": {
         "long_name": "Surface Net Longwave",
@@ -74,7 +75,7 @@ _DERIVED_QUANTITIES = {
         "ceres_var": "sfc_net_lw_all_mon",
         "ceres_file": "surface",
         "units": "W/m\u00b2",
-        "cmap": "RdBu_r",
+        "cmap": "coolwarm",
     },
 }
 
@@ -105,6 +106,36 @@ _CMOR_NET_DERIVATIONS = {
     "rls":   (("rlds", "rlus"),     lambda a, b: a - b),      # rlds - rlus
     "rsscs": (("rsdscs", "rsuscs"), lambda a, b: a - b),
     "rlscs": (("rldscs", "rluscs"), lambda a, b: a - b),
+}
+
+# CMIP6 component formulas for derived radiation quantities.
+# Each entry maps a derived-quantity key (matching _DERIVED_QUANTITIES)
+# to the CMIP6 component variables and a formula to combine them.
+_CMIP6_DERIVED = {
+    "toa_net": {
+        "vars": ["rsdt", "rsut", "rlut"],
+        "formula": lambda r: r[0] - r[1] - r[2],
+    },
+    "sfc_net": {
+        "vars": ["rsds", "rsus", "rlds", "rlus"],
+        "formula": lambda r: (r[0] - r[1]) + (r[2] - r[3]),
+    },
+    "toa_cre_sw": {
+        "vars": ["rsutcs", "rsut"],
+        "formula": lambda r: r[0] - r[1],
+    },
+    "toa_cre_lw": {
+        "vars": ["rlutcs", "rlut"],
+        "formula": lambda r: r[0] - r[1],
+    },
+    "sfc_net_sw": {
+        "vars": ["rsds", "rsus"],
+        "formula": lambda r: r[0] - r[1],
+    },
+    "sfc_net_lw": {
+        "vars": ["rlds", "rlus"],
+        "formula": lambda r: r[0] - r[1],
+    },
 }
 
 
@@ -141,6 +172,7 @@ class RadiationBudget(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── CMOR net-radiation derivation ─────────────────────────────────
 
@@ -742,7 +774,7 @@ class RadiationBudget(DiagnosticBase):
         if results.get("obs") is not None:
             obs = results["obs"]
             scatter_data.append({
-                "label": "Obs (CERES+ERA5)",
+                "label": "CERES + ERA5",
                 "t2m_monthly": obs["t2m_monthly"].values,
                 "toa_monthly": obs["toa_monthly"].values,
                 "t2m_annual": obs["t2m_annual"].values,
@@ -751,7 +783,7 @@ class RadiationBudget(DiagnosticBase):
                 "alpha": 0.5,
                 "show_regression": True,
             })
-            all_models.append("Obs")
+            all_models.append("CERES + ERA5")
 
         fig, ax = plot_gregory(
             scatter_data,
@@ -964,9 +996,6 @@ class RadiationBudget(DiagnosticBase):
         self, dq_key: str, dq_info: dict,
     ) -> dict[str, Any] | None:
         """Compute bias map data for a derived radiation quantity."""
-        import nereus as nr
-
-        from feather.plot.maps import plot_combined_bias_map
         from feather.util.spatial import compute_latlon_areas
 
         logger.info("Computing bias map for %s...", dq_info["long_name"])
@@ -1064,12 +1093,12 @@ class RadiationBudget(DiagnosticBase):
         # CMIP6 MMM bias (optional)
         cmip6_bias_data = {}
         if self.cmip6_enabled and target_lats is not None:
-            cmip6_clim = self._compute_cmip6_derived(dq_key, dq_info)
-            if cmip6_clim is not None:
-                cmip6_common = cmip6_clim.interp(
-                    lat=target_lats, lon=target_lons,
-                )
-                cmip6_bias = cmip6_common - obs_clim_common
+            cmip6_ir = self.config.nereus.get("influence_radius", 80_000.0)
+            cmip6_mmm = self._compute_cmip6_mmm_regridded(
+                dq_key, target_lats, target_lons, obs_res, cmip6_ir,
+            )
+            if cmip6_mmm is not None:
+                cmip6_bias = cmip6_mmm - obs_clim_common
                 cmip6_bias_data["CMIP6 MMM"] = {
                     "bias": cmip6_bias,
                     "bias_gmean": float(
@@ -1105,80 +1134,116 @@ class RadiationBudget(DiagnosticBase):
         else:
             return sum(arrays)
 
-    def _compute_cmip6_derived(
-        self, dq_key: str, dq_info: dict,
+    @staticmethod
+    def _regrid_to_target(da, target_lats, target_lons,
+                          resolution, influence_radius,
+                          interp_cache, method="nearest"):
+        """Regrid a regular lat/lon DataArray to the target grid via nereus.
+
+        Uses *interp_cache* (keyed by grid shape) to avoid rebuilding
+        the KDTree for models that share the same native grid.
+
+        Source longitudes are converted to -180..180 and the target grid
+        uses ``lon_bounds=(-180, 180)`` so that Delaunay triangulation
+        (used by ``method="linear"`` / ``"cubic"``) does not produce a
+        NaN stripe at the prime meridian.  The output columns are rolled
+        back to 0..360 to match *target_lons*.
+        """
+        ir = max(influence_radius, 250_000.0)
+
+        lat_name = "lat" if "lat" in da.coords else "latitude"
+        lon_name = "lon" if "lon" in da.coords else "longitude"
+        lat_arr = da[lat_name].values
+        lon_arr = da[lon_name].values
+
+        lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+        sort_idx = np.argsort(lon_arr)
+        lon_arr = lon_arr[sort_idx]
+
+        grid_key = (len(lat_arr), len(lon_arr))
+
+        if grid_key not in interp_cache:
+            lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
+            _, interp_cache[grid_key] = nr.regrid(
+                da.values[:, sort_idx].ravel(),
+                lon=lon_2d.ravel(), lat=lat_2d.ravel(),
+                resolution=resolution,
+                method=method,
+                influence_radius=ir,
+                lon_bounds=(-180.0, 180.0),
+                as_xarray=True,
+            )
+
+        regridded = interp_cache[grid_key](da.values[:, sort_idx].ravel())
+
+        n_roll = regridded.shape[1] // 2
+        regridded = np.roll(regridded, -n_roll, axis=1)
+
+        return xr.DataArray(
+            regridded, dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
+
+    def _compute_cmip6_mmm_regridded(
+        self, dq_key: str, target_lats, target_lons, obs_res,
+        cmip6_influence_radius,
     ) -> xr.DataArray | None:
-        """Compute CMIP6 MMM of a derived quantity."""
-        if dq_key == "toa_net":
-            return self._cmip6_derived_toa_net()
-        elif dq_key == "sfc_net":
-            return self._cmip6_derived_sfc_net()
-        elif dq_key == "toa_cre_sw":
-            return self._cmip6_derived_toa_cre("sw")
-        elif dq_key == "toa_cre_lw":
-            return self._cmip6_derived_toa_cre("lw")
-        elif dq_key == "sfc_net_sw":
-            return self._cmip6_derived_sfc_component("sw")
-        elif dq_key == "sfc_net_lw":
-            return self._cmip6_derived_sfc_component("lw")
-        return None
+        """Compute CMIP6 MMM of a derived quantity, regridded to target grid.
 
-    def _cmip6_derived_toa_net(self) -> xr.DataArray | None:
-        """CMIP6 MMM net TOA = rsdt - rsut - rlut."""
-        rsdt, _ = self.cmip6_loader.load_multi_model_mean(
-            "rsdt", period=self.period,
-        )
-        rsut, _ = self.cmip6_loader.load_multi_model_mean(
-            "rsut", period=self.period,
-        )
-        rlut, _ = self.cmip6_loader.load_multi_model_mean(
-            "rlut", period=self.period,
-        )
-        if all(v is not None for v in [rsdt, rsut, rlut]):
-            return rsdt - rsut - rlut
-        return None
+        For each CMIP6 (model, variant) pair:
+        1. Load all component variables
+        2. Derive the quantity on the CMIP6 native grid
+        3. Regrid to target grid using ``_regrid_to_target``
+        Then average the regridded fields to form the MMM.
 
-    def _cmip6_derived_sfc_net(self) -> xr.DataArray | None:
-        """CMIP6 MMM net surface = (rsds-rsus) + (rlds-rlus)."""
-        rsds, _ = self.cmip6_loader.load_multi_model_mean("rsds", period=self.period)
-        rsus, _ = self.cmip6_loader.load_multi_model_mean("rsus", period=self.period)
-        rlds, _ = self.cmip6_loader.load_multi_model_mean("rlds", period=self.period)
-        rlus, _ = self.cmip6_loader.load_multi_model_mean("rlus", period=self.period)
-        if all(v is not None for v in [rsds, rsus, rlds, rlus]):
-            return (rsds - rsus) + (rlds - rlus)
-        return None
+        Returns the regridded MMM DataArray, or None if no data.
+        """
+        if dq_key not in _CMIP6_DERIVED:
+            return None
 
-    def _cmip6_derived_toa_cre(self, band: str) -> xr.DataArray | None:
-        """CMIP6 MMM TOA CRE. band='sw' or 'lw'."""
-        # CRE = all-sky - clear-sky
-        # For CMIP6: CRE_SW = rsdt - rsut - (rsdt - rsutcs) = rsutcs - rsut
-        # Simpler: load all-sky net and clear-sky net, subtract
-        # Actually: no direct net vars in CMIP6, use component approach
-        if band == "sw":
-            rsut, _ = self.cmip6_loader.load_multi_model_mean("rsut", period=self.period)
-            rsutcs, _ = self.cmip6_loader.load_multi_model_mean("rsutcs", period=self.period)
-            if rsut is not None and rsutcs is not None:
-                return rsutcs - rsut  # CRE_SW = reflected_clear - reflected_all (positive = clouds reflect less)
-        elif band == "lw":
-            rlut, _ = self.cmip6_loader.load_multi_model_mean("rlut", period=self.period)
-            rlutcs, _ = self.cmip6_loader.load_multi_model_mean("rlutcs", period=self.period)
-            if rlut is not None and rlutcs is not None:
-                return rlutcs - rlut  # CRE_LW = OLR_clear - OLR_all (positive = clouds trap LW)
-        return None
+        derived_info = _CMIP6_DERIVED[dq_key]
+        component_vars = derived_info["vars"]
+        formula = derived_info["formula"]
 
-    def _cmip6_derived_sfc_component(self, band: str) -> xr.DataArray | None:
-        """CMIP6 MMM surface net component (SW or LW)."""
-        if band == "sw":
-            rsds, _ = self.cmip6_loader.load_multi_model_mean("rsds", period=self.period)
-            rsus, _ = self.cmip6_loader.load_multi_model_mean("rsus", period=self.period)
-            if rsds is not None and rsus is not None:
-                return rsds - rsus
-        elif band == "lw":
-            rlds, _ = self.cmip6_loader.load_multi_model_mean("rlds", period=self.period)
-            rlus, _ = self.cmip6_loader.load_multi_model_mean("rlus", period=self.period)
-            if rlds is not None and rlus is not None:
-                return rlds - rlus
-        return None
+        member_pairs = self.cmip6_loader.get_member_pairs()
+        cmip6_interp_cache: dict[tuple, "nr.RegridInterpolator"] = {}
+        regridded_fields = []
+
+        for model, variant in member_pairs:
+            label = f"{model}/{variant}"
+            components = []
+            all_ok = True
+
+            for cvar in component_vars:
+                da = self.cmip6_loader.load_var(
+                    cvar, model, variant=variant,
+                    period=self.period, time_mean=True,
+                )
+                if da is None:
+                    all_ok = False
+                    break
+                components.append(da)
+
+            if not all_ok:
+                logger.debug(
+                    "  Skipping CMIP6 %s for %s — missing components", label, dq_key,
+                )
+                continue
+
+            derived = formula(components)
+
+            regridded = self._regrid_to_target(
+                derived, target_lats, target_lons,
+                obs_res, cmip6_influence_radius, cmip6_interp_cache,
+                method=self._regrid_method,
+            )
+            regridded_fields.append(regridded)
+
+        if not regridded_fields:
+            return None
+
+        mmm = xr.concat(regridded_fields, dim="member").mean("member")
+        return mmm
 
     def _plot_bias_map(
         self, dq_key: str, dq_info: dict, results: dict[str, Any],
@@ -1209,9 +1274,11 @@ class RadiationBudget(DiagnosticBase):
         fig, axes = plot_combined_bias_map(
             obs_clim, bias_dict,
             title=f"{dq_info['long_name']} Annual Mean",
-            cmap=dq_info.get("cmap", "RdBu_r"),
+            obs_title="CERES",
+            cmap=dq_info.get("cmap", "coolwarm"),
             bias_cmap="RdBu_r",
             units=dq_info.get("units", "W/m\u00b2"),
+            method=self._regrid_method,
         )
 
         meta = self._build_metadata(

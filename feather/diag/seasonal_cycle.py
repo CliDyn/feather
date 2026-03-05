@@ -244,7 +244,8 @@ class SeasonalCycleDiag(DiagnosticBase):
         obs_monthly = vr["obs"]
         ax.plot(
             months, obs_monthly.values,
-            marker="s", label="Obs", color=OBS_COLOR, linewidth=2,
+            marker="s", label=var_info.obs_dataset, color=OBS_COLOR,
+            linewidth=2,
         )
 
         ax.set_xticks(months)

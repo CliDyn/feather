@@ -1,5 +1,6 @@
 """Map plotting wrappers using nereus."""
 
+import cmocean  # noqa: F401  — registers cmo.* colormaps with matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
@@ -7,8 +8,8 @@ import xarray as xr
 
 def plot_bias_map(model_data, obs_data, *,
                   bias_data=None,
-                  title="", model_title="Model", obs_title="Observation",
-                  bias_title="Bias (Model \u2212 Obs)",
+                  title="", model_title="Model", obs_title="Reference",
+                  bias_title="Bias (Model \u2212 Ref)",
                   projection="rob", resolution=0.25,
                   cmap="RdBu_r", bias_cmap="RdBu_r",
                   vmin=None, vmax=None, bias_vmax=None,
@@ -147,7 +148,7 @@ def plot_bias_map(model_data, obs_data, *,
 
 def plot_combined_bias_map(
     obs_data, bias_dict, *,
-    title="", obs_title="Observation",
+    title="", obs_title="Reference",
     cmap="RdBu_r", bias_cmap="RdBu_r",
     vmin=None, vmax=None, bias_vmax=None,
     units="",

@@ -272,7 +272,7 @@ class TimeseriesDiag(DiagnosticBase):
         obs_annual = annual_mean(obs_ts)
         obs_annual_time = _to_plot_time(obs_annual.time.values)
         ax.plot(obs_annual_time, obs_annual.values,
-                label="Obs", color=OBS_COLOR, linewidth=2.5)
+                label=var_info.obs_dataset, color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title(f"{var_info.long_name} \u2014 Global Mean")
         ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")

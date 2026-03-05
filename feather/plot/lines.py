@@ -8,7 +8,7 @@ from feather.plot.styles import CMIP6_COLOR, MODEL_COLORS, OBS_COLOR
 
 def plot_timeseries(time, model_values, obs_values=None, *,
                     title="", ylabel="", model_label="Model",
-                    obs_label="Obs", ax=None, **kwargs):
+                    obs_label="Reference", ax=None, **kwargs):
     """Line plot of a time series, optionally with obs overlay.
 
     Parameters
@@ -52,7 +52,7 @@ def plot_timeseries(time, model_values, obs_values=None, *,
 
 def plot_seasonal_cycle(model_monthly, obs_monthly=None, *,
                         title="", ylabel="", model_label="Model",
-                        obs_label="Obs", ax=None, **kwargs):
+                        obs_label="Reference", ax=None, **kwargs):
     """12-month cycle (Jan-Dec) line plot.
 
     Parameters
@@ -98,7 +98,7 @@ def plot_seasonal_cycle(model_monthly, obs_monthly=None, *,
 
 def plot_zonal_profile(lats, model_values, obs_values=None, *,
                        title="", xlabel="", model_label="Model",
-                       obs_label="Obs", ax=None, **kwargs):
+                       obs_label="Reference", ax=None, **kwargs):
     """Zonal mean profile: latitude on y-axis, variable on x-axis.
 
     Parameters
@@ -280,7 +280,7 @@ def _budget_bar_color(source: str) -> str:
     """Pick bar color for a radiation budget source label."""
     if source in MODEL_COLORS:
         return MODEL_COLORS[source]
-    if source.lower() in ("obs", "ceres"):
+    if source.lower() in ("obs", "ceres", "ceres + era5"):
         return OBS_COLOR
     if "cmip6" in source.lower():
         return CMIP6_COLOR

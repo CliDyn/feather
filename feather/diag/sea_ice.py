@@ -650,6 +650,7 @@ class SeaIceDiag(DiagnosticBase):
         """Plot NH/SH time series for a given metric."""
         info = _METRICS[metric]
         scale = info["scale"]
+        obs_label = "PIOMAS" if metric == "volume" else "OSI-SAF"
         fig, (ax_nh, ax_sh) = plt.subplots(1, 2, figsize=(14, 5))
         all_models = []
         cmip6_individual_ts = cmip6_individual_ts or {}
@@ -737,7 +738,7 @@ class SeaIceDiag(DiagnosticBase):
                 annual = annual_mean(ts)
                 time_vals = _to_plot_time(annual.time.values)
                 ax.plot(time_vals, annual.values * scale,
-                        label="Obs", color=OBS_COLOR, linewidth=2.5)
+                        label=obs_label, color=OBS_COLOR, linewidth=2.5)
 
             ax.set_title(f"{hemi_label}")
             ax.set_ylabel(f"{info['long_name']} ({info['units']})")
@@ -771,6 +772,7 @@ class SeaIceDiag(DiagnosticBase):
         """Plot NH/SH seasonal cycle for a given metric."""
         info = _METRICS[metric]
         scale = info["scale"]
+        obs_label = "PIOMAS" if metric == "volume" else "OSI-SAF"
         month_labels = ["J", "F", "M", "A", "M", "J",
                         "J", "A", "S", "O", "N", "D"]
         months = np.arange(1, 13)
@@ -820,7 +822,7 @@ class SeaIceDiag(DiagnosticBase):
             if key in obs_ts:
                 clim = obs_ts[key].groupby("time.month").mean("time")
                 ax.plot(months, clim.values * scale,
-                        marker="s", label="Obs", color=OBS_COLOR,
+                        marker="s", label=obs_label, color=OBS_COLOR,
                         linewidth=2)
 
             ax.set_xticks(months)
@@ -857,6 +859,7 @@ class SeaIceDiag(DiagnosticBase):
         """Plot 2×2 extreme month trends for a given metric."""
         info = _METRICS[metric]
         scale = info["scale"]
+        obs_label = "PIOMAS" if metric == "volume" else "OSI-SAF"
 
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         all_models = []
@@ -932,7 +935,7 @@ class SeaIceDiag(DiagnosticBase):
                 if len(monthly) > 0:
                     time_vals = _to_plot_time(monthly.time.values)
                     ax.plot(time_vals, monthly.values * scale,
-                            label="Obs", color=OBS_COLOR, linewidth=2)
+                            label=obs_label, color=OBS_COLOR, linewidth=2)
 
             ax.set_title(f"{hemi_label} {month_label}")
             ax.set_ylabel(f"{info['long_name']} ({info['units']})")
@@ -983,6 +986,7 @@ class SeaIceDiag(DiagnosticBase):
             hemi_label = "Antarctic"
 
         is_conc = "siconc" in var
+        obs_label = "OSI-SAF" if is_conc else "PIOMAS"
         if is_conc:
             cmap = "Blues_r"
             vmin, vmax = 0, 1
@@ -1004,7 +1008,7 @@ class SeaIceDiag(DiagnosticBase):
         for month, mlabel in zip(months, month_labels):
             obs_data = self._load_obs_spatial(var, pole, month)
             if obs_data is not None:
-                obs_panels.append((mlabel, "Obs", *obs_data))
+                obs_panels.append((mlabel, obs_label, *obs_data))
 
         # Load model spatial data for each month
         model_panel_data: dict[str, list] = {}
@@ -1064,7 +1068,7 @@ class SeaIceDiag(DiagnosticBase):
                 nr.plot(data, lon, lat, ax=ax, projection=pole,
                         extent=extent, cmap=cmap, vmin=vmin, vmax=vmax,
                         land=True, resolution=resolution,
-                        title=f"Obs {mlabel}", colorbar=False)
+                        title=f"{label} {mlabel}", colorbar=False)
             col += 1
 
         # Plot model columns
