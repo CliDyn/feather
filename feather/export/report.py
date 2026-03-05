@@ -64,6 +64,14 @@ class ReportGenerator:
         self.n_highlights = report_cfg.get("n_highlights", 10)
         self.client = OpenAIClient(report_cfg, api_key=api_key)
 
+        # Extract prompt context from config for templated system prompts
+        self._prompt_models = config.models
+        self._prompt_project = config.project.get("name") if config.project else None
+        self._prompt_resolution = config.project.get(
+            "resolution"
+        ) if config.project else None
+        self._prompt_period = config.get_period()
+
     def run(self, *, skip_existing: bool = True) -> Path:
         """Run the full report pipeline.
 
@@ -142,7 +150,13 @@ class ReportGenerator:
                 n_highlights=self.n_highlights,
             )
             data = self.client.chat_json(
-                system=build_curation_system(), user=user_prompt,
+                system=build_curation_system(
+                    models=self._prompt_models,
+                    project_name=self._prompt_project,
+                    resolution=self._prompt_resolution,
+                    period=self._prompt_period,
+                ),
+                user=user_prompt,
             )
 
             # Validate with Pydantic
@@ -254,7 +268,12 @@ class ReportGenerator:
                 sec, sec_figures, figure_analyses, syntheses,
             )
             data = self.client.chat_json(
-                system=build_section_system(), user=user_prompt,
+                system=build_section_system(
+                    models=self._prompt_models,
+                    resolution=self._prompt_resolution,
+                    period=self._prompt_period,
+                ),
+                user=user_prompt,
             )
 
             # Validate

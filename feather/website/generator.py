@@ -23,17 +23,23 @@ def _humanize(name: str) -> str:
     return name.replace("_", " ").title()
 
 
-# Model names that should be displayed in uppercase
-_UPPERCASE_MODELS = {"ifs-fesom", "ifs-nemo", "icon"}
+# Legacy DestinE model names that should be displayed in uppercase
+_LEGACY_UPPERCASE_MODELS = {"ifs-fesom", "ifs-nemo", "icon"}
 
 
-def _model_display_name(name: str) -> str:
-    """Return display-friendly model name, preserving proper case.
+def _model_display_name(name: str, config: "FeatherConfig | None" = None) -> str:
+    """Return display-friendly model name.
 
-    DestinE model names (ifs-fesom, ifs-nemo, icon) are uppercased;
-    everything else (CMIP6 MMM, ACCESS-CM2/r1i1p1f1, ...) is kept as-is.
+    If *config* provides a ``ModelConfig`` for *name*, uses its stored
+    display name.  Otherwise falls back to uppercasing known legacy
+    DestinE model names and keeping everything else as-is.
     """
-    if name.lower() in _UPPERCASE_MODELS:
+    if config and config.model_configs:
+        mc = config.model_configs.get(name)
+        if mc:
+            return mc.name
+    # Legacy fallback
+    if name.lower() in _LEGACY_UPPERCASE_MODELS:
         return name.upper()
     return name
 
@@ -68,7 +74,11 @@ class SiteGenerator:
             loader=FileSystemLoader(str(template_dir)),
             autoescape=True,
         )
-        self.env.filters["model_display_name"] = _model_display_name
+        # Bind config to the display name filter so templates get
+        # config-driven model names automatically.
+        self.env.filters["model_display_name"] = (
+            lambda name: _model_display_name(name, config)
+        )
 
     # ── Registry lookup ───────────────────────────────────────────────
 
@@ -287,15 +297,24 @@ class SiteGenerator:
         )
         site_subtitle = ws.get(
             "subtitle",
-            "DestinE High-Resolution Simulations vs Observations",
+            "Climate Model Simulations vs Observations",
         )
+
+        # Period from config
+        period = self.config.get_period()
+        period_str = f"{period[0]}\u2013{period[1]}"
+
+        # Display-friendly model names
+        display_models = [
+            _model_display_name(m, self.config) for m in self.config.models
+        ]
 
         # Common template context
         base_ctx = {
             "diagnostics": diagnostics,
             "groups": groups,
-            "models": self.config.models,
-            "period": "1990\u20132014",
+            "models": display_models,
+            "period": period_str,
             "site_title": site_title,
             "site_subtitle": site_subtitle,
         }

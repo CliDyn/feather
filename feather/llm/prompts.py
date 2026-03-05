@@ -10,10 +10,9 @@ import json
 # ── Figure-level analysis prompt ─────────────────────────────────────
 
 _FIGURE_ANALYSIS_SYSTEM = """\
-You are a climate scientist evaluating diagnostic figures from high-resolution \
-(~5 km) coupled climate model simulations. The three models under evaluation \
-are IFS-FESOM, IFS-NEMO, and ICON, all running on HEALPix grids as part of \
-the Destination Earth (DestinE) initiative.
+You are a climate scientist evaluating diagnostic figures from \
+{resolution} coupled climate model simulations. The models under evaluation \
+are {model_list}{project_context}.
 
 Figures compare model output against observational datasets (ERA5, CERES, \
 EN4, etc.) using these diagnostic figure types:
@@ -77,7 +76,7 @@ magnitude comparison across models, regions of agreement/disagreement.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
-capture the same features? This helps assess whether DestinE's high \
+capture the same features? This helps assess whether the evaluated models' \
 resolution adds value.
 
 Your task is to provide a rigorous, publication-quality scientific analysis \
@@ -86,7 +85,7 @@ of the figure shown. Focus on:
 - Model-observation agreement (which model performs best? where?)
 - Inter-model differences (do models agree? where do they diverge?)
 - Physical mechanisms driving any patterns
-- Features that may relate to model resolution (~5 km vs ~100 km)
+- Features that may relate to model resolution
 - For radiation figures: compare against CERES EBAF (the satellite gold \
 standard), note sign conventions (positive = energy into the system), \
 assess cloud radiative effects, and for Gregory plots interpret the \
@@ -98,7 +97,7 @@ Avoid vague statements.
 Respond **only** with a valid JSON object matching this exact schema \
 (no markdown fencing, no commentary outside the JSON):
 
-{
+{{
   "summary": "1-2 sentence overview of the figure",
   "key_findings": ["finding 1", "finding 2", "finding 3"],
   "spatial_patterns": "description of notable spatial or temporal patterns",
@@ -106,13 +105,58 @@ Respond **only** with a valid JSON object matching this exact schema \
   "physical_interpretation": "physical mechanisms driving the patterns",
   "caveats": ["caveat 1", "caveat 2"],
   "confidence": "high|medium|low"
-}
+}}
 """
 
 
-def build_figure_analysis_system() -> str:
-    """Return the figure analysis system prompt."""
-    return _FIGURE_ANALYSIS_SYSTEM
+def _format_model_list(models: list[str]) -> str:
+    """Format a list of model names as a natural-language enumeration.
+
+    >>> _format_model_list(["A", "B", "C"])
+    'A, B, and C'
+    """
+    if len(models) == 1:
+        return models[0]
+    if len(models) == 2:
+        return f"{models[0]} and {models[1]}"
+    return ", ".join(models[:-1]) + f", and {models[-1]}"
+
+
+def build_figure_analysis_system(
+    *,
+    models: list[str] | None = None,
+    project_name: str | None = None,
+    resolution: str | None = None,
+) -> str:
+    """Return the figure analysis system prompt.
+
+    Parameters
+    ----------
+    models : list of str or None
+        Model names to mention. Defaults to DestinE models.
+    project_name : str or None
+        Project/initiative name (e.g. ``"EERIE HighResMIP"``).
+        Defaults to ``"Destination Earth (DestinE)"``.
+    resolution : str or None
+        Resolution description (e.g. ``"high-resolution"``).
+        Defaults to ``"high-resolution (~5 km)"``.
+    """
+    if models is None:
+        models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
+    if resolution is None:
+        resolution = "high-resolution (~5 km)"
+
+    model_list = _format_model_list(models)
+    if project_name:
+        project_context = f", as part of the {project_name} project"
+    else:
+        project_context = ", as part of the Destination Earth (DestinE) initiative"
+
+    return _FIGURE_ANALYSIS_SYSTEM.format(
+        model_list=model_list,
+        project_context=project_context,
+        resolution=resolution,
+    )
 
 
 def build_figure_prompt(metadata: dict) -> str:
@@ -201,9 +245,9 @@ def build_figure_prompt(metadata: dict) -> str:
 
 _SYNTHESIS_SYSTEM = """\
 You are a climate scientist writing a synthesis of multiple diagnostic \
-figures from high-resolution coupled climate model evaluations. The models \
-are IFS-FESOM, IFS-NEMO, and ICON (~5 km, HEALPix grids) evaluated against \
-observations (ERA5, CERES, EN4, etc.) as part of Destination Earth (DestinE).
+figures from {resolution} coupled climate model evaluations. The models \
+are {model_list} evaluated against \
+observations (ERA5, CERES, EN4, etc.){project_context}.
 
 When CMIP6 multi-model mean context is present, it provides a baseline from \
 conventional-resolution (~100 km) models for comparison.
@@ -212,7 +256,7 @@ Given the individual figure analyses below, write a coherent scientific \
 synthesis for the entire diagnostic. Consider:
 1. Overall model skill — which model(s) perform best?
 2. Systematic biases — are there common patterns across all models?
-3. Resolution-dependent features — do the ~5 km models capture features \
+3. Resolution-dependent features — do the evaluated models capture features \
 that ~100 km CMIP6 models miss?
 4. Physical consistency — are the findings physically coherent?
 5. Radiation budget closure — do models conserve energy at TOA/surface? \
@@ -221,17 +265,47 @@ Are cloud radiative effects realistic?
 Respond **only** with a valid JSON object matching this exact schema \
 (no markdown fencing, no commentary outside the JSON):
 
-{
+{{
   "narrative": "2-3 paragraph synthesis (scientific, specific, quantitative)",
   "headline_finding": "one-sentence executive summary",
   "connections": ["related diagnostic 1", "related diagnostic 2"]
-}
+}}
 """
 
 
-def build_synthesis_system() -> str:
-    """Return the synthesis system prompt."""
-    return _SYNTHESIS_SYSTEM
+def build_synthesis_system(
+    *,
+    models: list[str] | None = None,
+    project_name: str | None = None,
+    resolution: str | None = None,
+) -> str:
+    """Return the synthesis system prompt.
+
+    Parameters
+    ----------
+    models : list of str or None
+        Model names. Defaults to DestinE models.
+    project_name : str or None
+        Project/initiative name. Defaults to DestinE.
+    resolution : str or None
+        Resolution description. Defaults to ``"high-resolution (~5 km)"``.
+    """
+    if models is None:
+        models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
+    if resolution is None:
+        resolution = "high-resolution (~5 km)"
+
+    model_list = _format_model_list(models)
+    if project_name:
+        project_context = f" as part of the {project_name} project"
+    else:
+        project_context = " as part of Destination Earth (DestinE)"
+
+    return _SYNTHESIS_SYSTEM.format(
+        model_list=model_list,
+        project_context=project_context,
+        resolution=resolution,
+    )
 
 
 def build_synthesis_prompt(

@@ -304,7 +304,7 @@ class TestEerieConfig:
         cfg = FeatherConfig.from_yaml(str(eerie_path))
         assert cfg.models == ["IFS-FESOM2-SR", "IFS-NEMO-ER", "ICON-ESM-ER"]
         assert cfg.project["name"] == "EERIE"
-        assert cfg.get_period() == ("1990", "2014")
+        assert cfg.get_period() == ("1980", "2014")
         assert cfg.get_experiment() == "hist-1950"
         assert cfg.get_data_source_type() == "cmor"
         assert cfg.get_grid_type("IFS-FESOM2-SR", "sfc") == "latlon"

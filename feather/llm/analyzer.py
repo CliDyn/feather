@@ -71,6 +71,13 @@ class FigureAnalyzer:
         self.client = genai.Client(vertexai=True, api_key=key)
         logger.info("Using Gemini model: %s (Vertex AI Express)", self.model_name)
 
+        # Extract prompt context from config for templated system prompts
+        self._prompt_models = config.models
+        self._prompt_project = config.project.get("name") if config.project else None
+        self._prompt_resolution = config.project.get(
+            "resolution"
+        ) if config.project else None
+
     # ── Public API ───────────────────────────────────────────────────
 
     def run(
@@ -184,7 +191,11 @@ class FigureAnalyzer:
         )
 
         response_text = self._call_gemini(
-            system_instruction=build_figure_analysis_system(),
+            system_instruction=build_figure_analysis_system(
+                models=self._prompt_models,
+                project_name=self._prompt_project,
+                resolution=self._prompt_resolution,
+            ),
             contents=[image_part, user_prompt],
         )
 
@@ -212,7 +223,11 @@ class FigureAnalyzer:
         user_prompt = build_synthesis_prompt(diagnostic_name, figure_analyses)
 
         response_text = self._call_gemini(
-            system_instruction=build_synthesis_system(),
+            system_instruction=build_synthesis_system(
+                models=self._prompt_models,
+                project_name=self._prompt_project,
+                resolution=self._prompt_resolution,
+            ),
             contents=[user_prompt],
         )
 

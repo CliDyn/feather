@@ -7,18 +7,26 @@ Stage 2: Section writing — write scientific prose for each section.
 import json
 
 
+def _format_model_list(models: list[str]) -> str:
+    """Format a list of model names as a natural-language enumeration."""
+    if len(models) == 1:
+        return models[0]
+    if len(models) == 2:
+        return f"{models[0]} and {models[1]}"
+    return ", ".join(models[:-1]) + f", and {models[-1]}"
+
+
 # ── Stage 1: Editorial Curation ──────────────────────────────────────
 
-CURATION_SYSTEM = """\
+_CURATION_SYSTEM = """\
 You are a senior climate scientist and science editor preparing a concise \
-technical report evaluating high-resolution climate models from the DestinE \
-initiative against observations.
+technical report evaluating {resolution} climate models{project_context} \
+against observations.
 
-The report covers results from three coupled models — IFS-FESOM, IFS-NEMO, \
-and ICON — running at ~5 km resolution on native HEALPix grids. These are \
-compared against observational datasets (ERA5, CERES, EN4) and optionally \
-against a CMIP6 multi-model mean ensemble. The evaluation period is \
-1990-2014 (historical).
+The report covers results from {n_models} coupled models — {model_list}. \
+These are compared against observational datasets (ERA5, CERES, EN4) and \
+optionally against a CMIP6 multi-model mean ensemble. The evaluation \
+period is {period} (historical).
 
 Available diagnostics:
 - **Global biases**: Spatial bias maps (model minus obs climatology) for \
@@ -54,40 +62,77 @@ Selection criteria:
 2. Clear, visually striking results
 3. Thematic coherence within sections
 4. Balance across climate system components (atmosphere, ocean, ice)
-5. Stories where high-resolution models agree or disagree with each other \
+5. Stories where the models agree or disagree with each other \
 and with CMIP6
 
 Respond ONLY with a valid JSON object (no markdown fencing) matching this schema:
 
-{
+{{
   "title": "Report title",
   "abstract": "2-3 paragraph abstract summarising key findings",
   "introduction": "1-2 paragraph introduction setting the context",
   "sections": [
-    {
+    {{
       "section_id": "01_slug",
       "title": "Section Title",
       "narrative_hook": "1-2 sentence description of this section's story",
       "figure_ids": ["figure_stem_1", "figure_stem_2"],
       "diagnostics": ["diagnostic_directory_key_1", "diagnostic_directory_key_2"]
-    }
+    }}
   ],
   "selected_figures": [
-    {
+    {{
       "diagnostic": "diagnostic_directory_name (use the EXACT key from the section headers below, e.g. 'global_biases', 'radiation_budget', NOT the figure title)",
       "figure_id": "figure_stem",
       "caption": "Descriptive caption for this figure",
       "label": "fig:short_label"
-    }
+    }}
   ],
   "conclusion": "1-2 paragraph conclusion"
-}
+}}
 """
 
 
-def build_curation_system() -> str:
-    """Return the curation system prompt."""
-    return CURATION_SYSTEM
+def build_curation_system(
+    *,
+    models: list[str] | None = None,
+    project_name: str | None = None,
+    resolution: str | None = None,
+    period: tuple[str, str] | None = None,
+) -> str:
+    """Return the curation system prompt.
+
+    Parameters
+    ----------
+    models : list of str or None
+        Model names. Defaults to DestinE models.
+    project_name : str or None
+        Project/initiative name. Defaults to DestinE.
+    resolution : str or None
+        Resolution description. Defaults to ``"high-resolution (~5 km)"``.
+    period : tuple of str or None
+        Evaluation period. Defaults to ``("1990", "2014")``.
+    """
+    if models is None:
+        models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
+    if resolution is None:
+        resolution = "high-resolution (~5 km)"
+    if period is None:
+        period = ("1990", "2014")
+
+    model_list = _format_model_list(models)
+    if project_name:
+        project_context = f" from the {project_name} project"
+    else:
+        project_context = " from the DestinE initiative"
+
+    return _CURATION_SYSTEM.format(
+        model_list=model_list,
+        n_models=len(models),
+        project_context=project_context,
+        resolution=resolution,
+        period=f"{period[0]}-{period[1]}",
+    )
 
 
 def build_curation_prompt(
@@ -156,15 +201,15 @@ def build_curation_prompt(
 
 # ── Stage 2: Section Writing ─────────────────────────────────────────
 
-SECTION_SYSTEM = """\
+_SECTION_SYSTEM = """\
 You are a climate scientist writing a section of a technical report \
-evaluating high-resolution DestinE models (IFS-FESOM, IFS-NEMO, ICON, \
-~5 km) against observations (ERA5, CERES, EN4) for the period 1990-2014.
+evaluating {resolution} models ({model_list}) against observations \
+(ERA5, CERES, EN4) for the period {period}.
 
 Write in an IPCC-like style:
 - Factual, quantitative, cite specific magnitudes and regions
 - No speculation beyond what the data shows
-- Reference figures by their labels (e.g. "Figure~\\ref{fig:label}")
+- Reference figures by their labels (e.g. "Figure~\\ref{{fig:label}}")
 - Plain text only — NO LaTeX commands (except figure references as above)
 - NO markdown formatting
 
@@ -187,17 +232,45 @@ parameter and relate to equilibrium climate sensitivity.
 
 Respond ONLY with a valid JSON object (no markdown fencing):
 
-{
+{{
   "section_id": "USE THE EXACT section_id PROVIDED IN THE USER PROMPT",
   "title": "Section Title",
   "body": "2-4 paragraphs of detailed scientific prose..."
-}
+}}
 """
 
 
-def build_section_system() -> str:
-    """Return the section writing system prompt."""
-    return SECTION_SYSTEM
+def build_section_system(
+    *,
+    models: list[str] | None = None,
+    resolution: str | None = None,
+    period: tuple[str, str] | None = None,
+) -> str:
+    """Return the section writing system prompt.
+
+    Parameters
+    ----------
+    models : list of str or None
+        Model names. Defaults to DestinE models.
+    resolution : str or None
+        Resolution description. Defaults to ``"high-resolution (~5 km)"``.
+    period : tuple of str or None
+        Evaluation period. Defaults to ``("1990", "2014")``.
+    """
+    if models is None:
+        models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
+    if resolution is None:
+        resolution = "high-resolution (~5 km)"
+    if period is None:
+        period = ("1990", "2014")
+
+    model_list = _format_model_list(models)
+
+    return _SECTION_SYSTEM.format(
+        model_list=model_list,
+        resolution=resolution,
+        period=f"{period[0]}-{period[1]}",
+    )
 
 
 def build_section_prompt(
@@ -281,7 +354,7 @@ def build_section_prompt(
         "- Dedicate at least one full paragraph to EACH figure listed above\n"
         "- Describe what the figure shows in detail: spatial patterns, "
         "magnitudes, regional hotspots\n"
-        "- Compare IFS-FESOM vs IFS-NEMO vs ICON vs observations explicitly\n"
+        "- Compare models against each other and against observations explicitly\n"
         "- Explain physical mechanisms driving the patterns\n"
         "- Use quantitative values from the analyses\n"
         "- Reference each figure as Figure~\\ref{label}\n"

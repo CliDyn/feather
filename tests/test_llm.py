@@ -254,15 +254,32 @@ class TestSystemPrompts:
         system = build_figure_analysis_system()
         assert "evaluat" in system.lower()
 
-    def test_figure_system_mentions_healpix(self):
+    def test_figure_system_default_mentions_destine(self):
         system = build_figure_analysis_system()
-        assert "HEALPix" in system
+        assert "Destination Earth" in system
 
-    def test_figure_system_mentions_all_models(self):
+    def test_figure_system_default_mentions_all_models(self):
         system = build_figure_analysis_system()
         assert "IFS-FESOM" in system
         assert "IFS-NEMO" in system
         assert "ICON" in system
+
+    def test_figure_system_custom_models(self):
+        system = build_figure_analysis_system(
+            models=["IFS-FESOM2-SR", "IFS-NEMO-ER", "ICON-ESM-ER"],
+            project_name="EERIE HighResMIP",
+        )
+        assert "IFS-FESOM2-SR" in system
+        assert "IFS-NEMO-ER" in system
+        assert "ICON-ESM-ER" in system
+        assert "EERIE HighResMIP" in system
+        assert "Destination Earth" not in system
+
+    def test_figure_system_custom_resolution(self):
+        system = build_figure_analysis_system(
+            resolution="high-resolution (0.25 deg)",
+        )
+        assert "high-resolution (0.25 deg)" in system
 
     def test_figure_system_mentions_json_schema(self):
         system = build_figure_analysis_system()
@@ -272,6 +289,18 @@ class TestSystemPrompts:
     def test_synthesis_system_mentions_synthesis(self):
         system = build_synthesis_system()
         assert "synthesis" in system.lower()
+
+    def test_synthesis_system_custom_models(self):
+        system = build_synthesis_system(
+            models=["ModelA", "ModelB"],
+            project_name="MyProject",
+        )
+        assert "ModelA and ModelB" in system
+        assert "MyProject" in system
+
+    def test_synthesis_system_default_mentions_destine(self):
+        system = build_synthesis_system()
+        assert "Destination Earth" in system
 
 
 class TestSynthesisPrompt:

@@ -5,8 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from feather.config import FeatherConfig
-from feather.website.generator import SiteGenerator, _humanize, _load_json
+from feather.config import FeatherConfig, ModelConfig
+from feather.website.generator import (
+    SiteGenerator,
+    _humanize,
+    _load_json,
+    _model_display_name,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -506,3 +511,91 @@ class TestHelpers:
     def test_load_json_missing(self, tmp_path):
         path = tmp_path / "missing.json"
         assert _load_json(path) == {}
+
+
+# ── Model Display Name Tests ────────────────────────────────────────
+
+
+class TestModelDisplayName:
+    def test_legacy_destine_uppercased(self):
+        assert _model_display_name("ifs-fesom") == "IFS-FESOM"
+        assert _model_display_name("ifs-nemo") == "IFS-NEMO"
+        assert _model_display_name("icon") == "ICON"
+
+    def test_cmip6_kept_as_is(self):
+        assert _model_display_name("ACCESS-CM2") == "ACCESS-CM2"
+        assert _model_display_name("CMIP6 MMM") == "CMIP6 MMM"
+
+    def test_config_driven_display_name(self):
+        cfg = FeatherConfig(
+            model_catalogs={},
+            models=["IFS-FESOM2-SR"],
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={},
+            output_dir="/tmp",
+            model_configs={
+                "IFS-FESOM2-SR": ModelConfig(
+                    name="IFS-FESOM2-SR", color="#1f77b4",
+                ),
+            },
+        )
+        assert _model_display_name("IFS-FESOM2-SR", cfg) == "IFS-FESOM2-SR"
+
+    def test_config_fallback_for_unknown_model(self):
+        cfg = FeatherConfig(
+            model_catalogs={},
+            models=["ModelA"],
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={},
+            output_dir="/tmp",
+            model_configs={
+                "ModelA": ModelConfig(name="ModelA"),
+            },
+        )
+        # Model not in config → legacy fallback (not a known DestinE name)
+        assert _model_display_name("CMIP6 MMM", cfg) == "CMIP6 MMM"
+
+    def test_no_config_uses_legacy(self):
+        assert _model_display_name("ifs-fesom", None) == "IFS-FESOM"
+
+
+# ── Config-driven Period Tests ──────────────────────────────────────
+
+
+class TestConfigDrivenPeriod:
+    def test_period_from_config(self, tmp_path):
+        cfg = _make_config(
+            tmp_path,
+            project={"name": "EERIE", "period": ["1980", "2014"]},
+        )
+        gen = SiteGenerator(cfg)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature"},
+        )
+
+        site_dir = gen.build()
+        index_html = (site_dir / "index.html").read_text()
+        assert "1980" in index_html
+        assert "2014" in index_html
+
+    def test_default_period(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature"},
+        )
+
+        site_dir = gen.build()
+        index_html = (site_dir / "index.html").read_text()
+        assert "1990" in index_html
+        assert "2014" in index_html
