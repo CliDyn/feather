@@ -942,3 +942,96 @@ class TestEdgeCases:
         times = np.array(["2000-01-01", "2000-02-01"], dtype="datetime64")
         result = _to_plot_time(times)
         assert len(result) == 2
+
+
+# ── CMOR K→°C conversion ────────────────────────────────────────────
+
+
+class TestCMORConversion:
+    """CMOR (EERIE) tos is already in °C — no K→°C conversion needed."""
+
+    @pytest.fixture
+    def synth_latlon_tos_celsius(self):
+        """Synthetic latlon tos data already in °C (as CMOR stores it)."""
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range(
+            "1990-01", periods=12, freq="MS", calendar="standard",
+        )
+        lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+        # SST in °C: warm equator (~27°C), cold poles (~-3°C)
+        temp_base = 27 - 30 * np.abs(lat_grid / 90.0)
+        seasonal = 3 * np.sin(2 * np.pi * (np.arange(12) - 3) / 12)
+        temp_3d = (
+            temp_base[np.newaxis, :, :]
+            + seasonal[:, np.newaxis, np.newaxis]
+        )
+        da = xr.DataArray(
+            temp_3d, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        )
+        return da
+
+    @pytest.fixture
+    def cmor_config(self, tmp_path):
+        """Config with CMOR data source (like EERIE)."""
+        return FeatherConfig(
+            model_catalogs={},
+            models={
+                "IFS-FESOM2-SR": {
+                    "institution": "AWI",
+                    "experiment": "hist-1950",
+                    "variant": "r1i1p1f1",
+                    "grids": {"sfc": "latlon", "o2d": "latlon", "o3d": "latlon"},
+                    "color": "#1f77b4",
+                },
+            },
+            obs_root="",
+            obs_datasets={
+                "ESA_CCI": {
+                    "path": "/fake",
+                    "variables": {
+                        "analysed_sst": "monthly.nc",
+                        "timemean": "timemean.nc",
+                        "ymonmean": "ymonmean.nc",
+                    },
+                },
+            },
+            cmip6={"enabled": False},
+            dask={},
+            nereus={
+                "influence_radius": 1_000_000,
+                "ocean_influence_radius": 1_000_000,
+                "resolution": 5.0,
+            },
+            output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor", "root": "/fake"},
+        )
+
+    def test_cmor_skips_kelvin_conversion(
+        self, synth_latlon_tos_celsius, mock_esa_cci_obs_loader, cmor_config,
+    ):
+        """CMOR tos is already °C — should NOT subtract 273.15."""
+        mock_loader = MagicMock()
+        mock_loader.load_var.return_value = synth_latlon_tos_celsius
+
+        diag = OceanSST(
+            model_loader=mock_loader,
+            obs_loader=mock_esa_cci_obs_loader,
+            config=cmor_config,
+        )
+        model_monthly, _ = diag._load_model_data()
+        da = model_monthly["IFS-FESOM2-SR"]
+        # Mean should be around 12°C (not -261°C from double subtraction)
+        assert float(da.mean().values) > -10
+        assert float(da.mean().values) < 40
+
+    def test_destine_applies_kelvin_conversion(
+        self, ocean_sst_diag,
+    ):
+        """DestinE tos is in K — should subtract 273.15."""
+        model_monthly, _ = ocean_sst_diag._load_model_data()
+        da = model_monthly["ifs-fesom"]
+        # Original synth data is ~270-300K, Celsius should be ~-3 to 27
+        assert float(da.mean().values) < 40
+        assert float(da.mean().values) > -10

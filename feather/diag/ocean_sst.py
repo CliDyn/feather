@@ -203,6 +203,8 @@ class OceanSST(DiagnosticBase):
         model_coords : dict[str, tuple]
             Model name -> (lon, lat) coordinate arrays.
         """
+        # CMOR (EERIE) tos is already in °C; DestinE tos is in Kelvin
+        is_cmor = self.config.get_data_source_type() == "cmor"
         model_monthly = {}
         model_coords = {}
         for model in self.config.models:
@@ -214,7 +216,7 @@ class OceanSST(DiagnosticBase):
             except (KeyError, FileNotFoundError):
                 logger.warning("tos not available for %s", model)
                 continue
-            model_monthly[model] = _to_celsius(da)
+            model_monthly[model] = da if is_cmor else _to_celsius(da)
             model_coords[model] = (lon, lat)
         return model_monthly, model_coords
 

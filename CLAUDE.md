@@ -398,10 +398,11 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 ### OceanSST diagnostic
 - 6th diagnostic: SST evaluation against ESA-CCI L4 v3.0.1 satellite observations
 - 6 figures in 4 groups (A: 3 bias maps, B: timeseries, C: seasonal cycle, D: zonal mean)
-- All data K→°C; obs global mean uses cos(lat) weights (avoids 25.9M-cell mesh for 0.05° grid)
+- K→°C conversion: CMOR model `tos` is already in °C (skip conversion), DestinE `tos` is in K (convert). ESA-CCI obs always in K (always convert).
+- Obs global mean uses cos(lat) weights (avoids 25.9M-cell mesh for 0.05° grid)
 - `ocean_influence_radius` (20km default) avoids coast contamination for ESA-CCI's 0.05° grid
 - `land=True` passed to `plot_combined_bias_map()` for ocean-only display
-- 102 dedicated tests in `tests/test_ocean_sst.py`
+- 104 dedicated tests in `tests/test_ocean_sst.py`
 
 ### OceanEN4 diagnostic
 - 7th diagnostic: 3D ocean T/S evaluation against EN4 v4.2.2 (temperature + salinity)
