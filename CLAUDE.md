@@ -182,6 +182,7 @@ class ModelConfig:
 - `llm` — LLM provider config (per-purpose: `figure_analysis` uses Gemini)
 - `report` — report generation config (model, max_tokens, temperature, api_key_env, n_highlights)
 - `website` — site title, subtitle, group ordering
+- `nereus` — nereus interpolation settings: `projection`, `resolution`, `influence_radius`, `ocean_influence_radius`, `method` (interpolation method: `"nearest"`, `"idw"`, `"linear"`, `"cubic"` — used for CMIP6 regridding only)
 
 The `{obs_root}` placeholder in obs dataset paths is resolved at load time.
 
@@ -352,6 +353,9 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - `--cmip6-individual` CLI flag enables individual CMIP6 model bias panels **plus** MMM (both computed together)
 - Without the flag, only CMIP6 MMM is shown (default behavior)
 - `--variables` CLI flag intersects with diagnostic's supported list; warns about unsupported variables
+- **CMIP6 interpolation method**: configurable via `nereus.method` (default `"nearest"`, recommended `"linear"` for smoother CMIP6 maps). Only applies to CMIP6 regridding; model/obs stay nearest neighbor.
+- CMIP6 source lons converted to -180..180 before interpolation to avoid NaN stripe at prime meridian (Delaunay triangulation gap)
+- MMM computed as "regrid each model individually then average" — when `cmip6_individual=True`, MMM reuses already-regridded individual fields (`_mmm_from_individual()`) to avoid double interpolation
 
 ### Timeseries & SeasonalCycle diagnostics
 - Both share the same 18-variable list as GlobalBiases (temperature, pressure, wind, clouds, precipitation, radiation, heat fluxes)

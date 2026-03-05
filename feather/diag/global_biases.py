@@ -67,6 +67,7 @@ class GlobalBiases(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # -- Orchestration (per-variable incremental) ----------------------------
 
@@ -318,14 +319,14 @@ class GlobalBiases(DiagnosticBase):
         cmip6_individual_data: dict[str, dict] = {}
         if self.cmip6_enabled and interpolator is not None:
             if self.cmip6_individual:
-                # Individual CMIP6 models + MMM
+                # Individual CMIP6 models + MMM from same regridded fields
                 cmip6_individual_data = self._compute_cmip6_individual(
                     var, target_lats, target_lons,
                     obs_clim_common, obs_seasonal_common,
                     common_area,
                 )
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm(
-                    var, target_lats, target_lons,
+                cmip6_data, cmip6_info = self._mmm_from_individual(
+                    cmip6_individual_data,
                     obs_clim_common, obs_seasonal_common,
                     common_area,
                 )
@@ -364,57 +365,166 @@ class GlobalBiases(DiagnosticBase):
     def _compute_cmip6_mmm(self, var, target_lats, target_lons,
                            obs_clim_common, obs_seasonal_common,
                            common_area):
-        """Compute CMIP6 multi-model mean biases."""
+        """Compute CMIP6 multi-model mean biases.
+
+        Loads per-model climatologies, regrids each individually (so
+        that the configured interpolation method is applied per model),
+        then averages the regridded fields to form the MMM.
+        """
         cmip6_data = {}
         cmip6_info = {}
-
-        logger.info("  Loading CMIP6 multi-model mean for %s...", var)
-        mmm, info = self.cmip6_loader.load_mmm_for_model_var(
-            var, period=self.period,
+        influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0,
         )
-        if mmm is not None:
-            cmip6_common = mmm.interp(
-                lat=target_lats, lon=target_lons,
-            )
-            cmip6_bias = cmip6_common - obs_clim_common
-            cmip6_bias_gmean = float(
-                latlon_global_mean(cmip6_bias, area=common_area).values
-            )
-            cmip6_rmse = float(np.sqrt(
-                latlon_global_mean(
-                    cmip6_bias ** 2, area=common_area,
-                ).values
-            ))
+        resolution = abs(float(target_lats[1] - target_lats[0]))
+        cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-            cmip6_data["annual"] = {
-                "regrid": cmip6_common,
-                "bias": cmip6_bias,
-                "bias_gmean": cmip6_bias_gmean,
-                "rmse": cmip6_rmse,
-            }
-            cmip6_info = info
+        logger.info("  Computing CMIP6 MMM for %s...", var)
+        member_pairs = self.cmip6_loader.get_member_pairs()
 
-            # Seasonal CMIP6 MMM biases
-            logger.info("  Loading CMIP6 seasonal MMM (DJF, JJA)...")
+        annual_fields = []
+        seasonal_fields: dict[str, list] = {"DJF": [], "JJA": []}
+        models_used = []
+
+        for model, variant in member_pairs:
+            label = f"{model}/{variant}"
+            da = self.cmip6_loader.load_var_for_model_var(
+                var, model, variant=variant, period=self.period,
+            )
+            if da is None:
+                logger.debug("  Skipping %s — no data", label)
+                continue
+
+            regridded = self._regrid_to_target(
+                da, target_lats, target_lons,
+                resolution, influence_radius, cmip6_interp_cache,
+                method=self._regrid_method,
+            )
+            annual_fields.append(regridded)
+            models_used.append(label)
+
             for season in ["DJF", "JJA"]:
-                mmm_s, _ = self.cmip6_loader.load_mmm_for_model_var(
-                    var, period=self.period, season=season,
+                da_s = self.cmip6_loader.load_var_for_model_var(
+                    var, model, variant=variant,
+                    period=self.period, season=season,
                 )
-                if mmm_s is not None and season in obs_seasonal_common:
-                    cmip6_s = mmm_s.interp(
-                        lat=target_lats, lon=target_lons,
+                if da_s is not None:
+                    s_regridded = self._regrid_to_target(
+                        da_s, target_lats, target_lons,
+                        resolution, influence_radius, cmip6_interp_cache,
+                        method=self._regrid_method,
                     )
-                    cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
-                    cmip6_data[season] = {
-                        "regrid": cmip6_s,
-                        "bias": cmip6_s_bias,
-                        "bias_gmean": float(
-                            latlon_global_mean(
-                                cmip6_s_bias, area=common_area,
-                            ).values
-                        ),
-                    }
+                    seasonal_fields[season].append(s_regridded)
 
+        if not annual_fields:
+            logger.info("  No CMIP6 models available for %s", var)
+            return cmip6_data, cmip6_info
+
+        cmip6_info = {
+            "n_members": len(models_used),
+            "models_used": models_used,
+        }
+
+        # MMM annual
+        mmm = xr.concat(annual_fields, dim="member").mean("member")
+        cmip6_bias = mmm - obs_clim_common
+        cmip6_bias_gmean = float(
+            latlon_global_mean(cmip6_bias, area=common_area).values
+        )
+        cmip6_rmse = float(np.sqrt(
+            latlon_global_mean(
+                cmip6_bias ** 2, area=common_area,
+            ).values
+        ))
+        cmip6_data["annual"] = {
+            "regrid": mmm,
+            "bias": cmip6_bias,
+            "bias_gmean": cmip6_bias_gmean,
+            "rmse": cmip6_rmse,
+        }
+
+        # MMM seasonal
+        for season in ["DJF", "JJA"]:
+            if not seasonal_fields[season]:
+                continue
+            if season not in obs_seasonal_common:
+                continue
+            s_mmm = xr.concat(
+                seasonal_fields[season], dim="member",
+            ).mean("member")
+            s_bias = s_mmm - obs_seasonal_common[season]
+            cmip6_data[season] = {
+                "regrid": s_mmm,
+                "bias": s_bias,
+                "bias_gmean": float(
+                    latlon_global_mean(
+                        s_bias, area=common_area,
+                    ).values
+                ),
+            }
+
+        return cmip6_data, cmip6_info
+
+    @staticmethod
+    def _mmm_from_individual(cmip6_individual_data,
+                             obs_clim_common, obs_seasonal_common,
+                             common_area):
+        """Derive MMM from already-regridded individual CMIP6 fields.
+
+        Avoids regridding each model a second time when both individual
+        and MMM results are needed (``cmip6_individual=True``).
+        """
+        cmip6_data = {}
+
+        if "annual" not in cmip6_individual_data:
+            return cmip6_data, {}
+
+        annual_entries = cmip6_individual_data["annual"]
+        models_used = list(annual_entries.keys())
+        annual_fields = [e["regrid"] for e in annual_entries.values()]
+
+        mmm = xr.concat(annual_fields, dim="member").mean("member")
+        cmip6_bias = mmm - obs_clim_common
+        cmip6_bias_gmean = float(
+            latlon_global_mean(cmip6_bias, area=common_area).values
+        )
+        cmip6_rmse = float(np.sqrt(
+            latlon_global_mean(
+                cmip6_bias ** 2, area=common_area,
+            ).values
+        ))
+        cmip6_data["annual"] = {
+            "regrid": mmm,
+            "bias": cmip6_bias,
+            "bias_gmean": cmip6_bias_gmean,
+            "rmse": cmip6_rmse,
+        }
+
+        for season in ["DJF", "JJA"]:
+            if season not in cmip6_individual_data:
+                continue
+            if season not in obs_seasonal_common:
+                continue
+            s_fields = [
+                e["regrid"]
+                for e in cmip6_individual_data[season].values()
+            ]
+            s_mmm = xr.concat(s_fields, dim="member").mean("member")
+            s_bias = s_mmm - obs_seasonal_common[season]
+            cmip6_data[season] = {
+                "regrid": s_mmm,
+                "bias": s_bias,
+                "bias_gmean": float(
+                    latlon_global_mean(
+                        s_bias, area=common_area,
+                    ).values
+                ),
+            }
+
+        cmip6_info = {
+            "n_members": len(models_used),
+            "models_used": models_used,
+        }
         return cmip6_data, cmip6_info
 
     def _compute_cmip6_individual(self, var, target_lats, target_lons,
@@ -448,6 +558,7 @@ class GlobalBiases(DiagnosticBase):
             cmip6_common = self._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
+                method=self._regrid_method,
             )
             cmip6_bias = cmip6_common - obs_clim_common
             bias_gmean = float(
@@ -477,6 +588,7 @@ class GlobalBiases(DiagnosticBase):
                 cmip6_s = self._regrid_to_target(
                     da_s, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
+                    method=self._regrid_method,
                 )
                 cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
                 cmip6_individual_data.setdefault(season, {})[label] = {
@@ -491,13 +603,75 @@ class GlobalBiases(DiagnosticBase):
 
         return cmip6_individual_data
 
+    @staticmethod
+    def _mmm_from_individual(cmip6_individual_data, obs_clim_common,
+                             obs_seasonal_common, common_area):
+        """Derive MMM from already-regridded individual CMIP6 fields.
+
+        Avoids regridding a second time — reuses the ``"regrid"`` arrays
+        stored in *cmip6_individual_data*.
+
+        Returns (cmip6_data, cmip6_info) in the same format as
+        ``_compute_cmip6_mmm``.
+        """
+        cmip6_data = {}
+
+        if "annual" not in cmip6_individual_data:
+            return cmip6_data, {}
+
+        annual_members = cmip6_individual_data["annual"]
+        models_used = list(annual_members.keys())
+        annual_fields = [m["regrid"] for m in annual_members.values()]
+
+        mmm = xr.concat(annual_fields, dim="member").mean("member")
+        cmip6_bias = mmm - obs_clim_common
+        cmip6_data["annual"] = {
+            "regrid": mmm,
+            "bias": cmip6_bias,
+            "bias_gmean": float(
+                latlon_global_mean(cmip6_bias, area=common_area).values
+            ),
+            "rmse": float(np.sqrt(
+                latlon_global_mean(
+                    cmip6_bias ** 2, area=common_area,
+                ).values
+            )),
+        }
+
+        for season in ["DJF", "JJA"]:
+            if season not in cmip6_individual_data:
+                continue
+            if season not in obs_seasonal_common:
+                continue
+            s_fields = [
+                m["regrid"]
+                for m in cmip6_individual_data[season].values()
+            ]
+            s_mmm = xr.concat(s_fields, dim="member").mean("member")
+            s_bias = s_mmm - obs_seasonal_common[season]
+            cmip6_data[season] = {
+                "regrid": s_mmm,
+                "bias": s_bias,
+                "bias_gmean": float(
+                    latlon_global_mean(
+                        s_bias, area=common_area,
+                    ).values
+                ),
+            }
+
+        cmip6_info = {
+            "n_members": len(models_used),
+            "models_used": models_used,
+        }
+        return cmip6_data, cmip6_info
+
     # -- Regridding helper --------------------------------------------------
 
     @staticmethod
     def _regrid_to_target(da, target_lats, target_lons,
                           resolution, influence_radius,
-                          interp_cache):
-        """Regrid a regular lat/lon DataArray to the target grid via nereus NN.
+                          interp_cache, method="nearest"):
+        """Regrid a regular lat/lon DataArray to the target grid via nereus.
 
         Uses *interp_cache* (keyed by grid shape) to avoid rebuilding
         the KDTree for models that share the same native grid.
@@ -507,6 +681,12 @@ class GlobalBiases(DiagnosticBase):
         small.  We use 250 km as the floor, which is safe for the
         atmospheric variables handled by GlobalBiases.  Ocean diagnostics
         would need a more careful choice to avoid smearing across coasts.
+
+        Source longitudes are converted to -180..180 and the target grid
+        uses ``lon_bounds=(-180, 180)`` so that Delaunay triangulation
+        (used by ``method="linear"`` / ``"cubic"``) does not produce a
+        NaN stripe at the prime meridian.  The output columns are rolled
+        back to 0..360 to match *target_lons*.
         """
         # 250 km floor — covers CMIP6 grids up to ~2° at the equator
         ir = max(influence_radius, 250_000.0)
@@ -516,20 +696,31 @@ class GlobalBiases(DiagnosticBase):
         lat_arr = da[lat_name].values
         lon_arr = da[lon_name].values
 
+        # Convert to -180..180 to avoid gap at 0° in triangulation
+        lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+        sort_idx = np.argsort(lon_arr)
+        lon_arr = lon_arr[sort_idx]
+
         grid_key = (len(lat_arr), len(lon_arr))
 
         if grid_key not in interp_cache:
             lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
             _, interp_cache[grid_key] = nr.regrid(
-                da.values.ravel(),
+                da.values[:, sort_idx].ravel(),
                 lon=lon_2d.ravel(), lat=lat_2d.ravel(),
                 resolution=resolution,
+                method=method,
                 influence_radius=ir,
-                lon_bounds=(0.0, 360.0),
+                lon_bounds=(-180.0, 180.0),
                 as_xarray=True,
             )
 
-        regridded = interp_cache[grid_key](da.values.ravel())
+        regridded = interp_cache[grid_key](da.values[:, sort_idx].ravel())
+
+        # Roll from -180..180 to 0..360 order to match target_lons
+        n_roll = regridded.shape[1] // 2
+        regridded = np.roll(regridded, -n_roll, axis=1)
+
         return xr.DataArray(
             regridded, dims=("lat", "lon"),
             coords={"lat": target_lats, "lon": target_lons},
@@ -724,6 +915,7 @@ class GlobalBiases(DiagnosticBase):
                 vmax=p_cb.get("vmax"),
                 bias_vmax=p_cb.get("bias_vmax"),
                 units=var_info.units,
+                method=self._regrid_method,
             )
 
             meta = self._build_metadata(

@@ -135,6 +135,7 @@ nereus:
   resolution: 0.25
   influence_radius: 80000
   ocean_influence_radius: 20000
+  method: "linear"
 
 output_dir: "./output_eerie"
 

@@ -68,6 +68,7 @@ class GlobalTrends(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # -- Orchestration (per-variable incremental) ----------------------------
 
@@ -415,6 +416,7 @@ class GlobalTrends(DiagnosticBase):
             regridded = self._regrid_to_target(
                 model_trend, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
+                method=self._regrid_method,
             )
             annual_trends.append(regridded)
             models_used.append(label)
@@ -430,6 +432,7 @@ class GlobalTrends(DiagnosticBase):
                 s_regridded = self._regrid_to_target(
                     s_trend, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
+                    method=self._regrid_method,
                 )
                 seasonal_trends[season].append(s_regridded)
 
@@ -525,6 +528,7 @@ class GlobalTrends(DiagnosticBase):
             regridded = self._regrid_to_target(
                 model_trend, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
+                method=self._regrid_method,
             )
             trend_diff = regridded - obs_trend_common
             rmse = float(np.sqrt(
@@ -554,6 +558,7 @@ class GlobalTrends(DiagnosticBase):
                 s_regridded = self._regrid_to_target(
                     s_trend, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
+                    method=self._regrid_method,
                 )
                 if season not in obs_seasonal_trends_common:
                     continue
@@ -575,8 +580,8 @@ class GlobalTrends(DiagnosticBase):
     @staticmethod
     def _regrid_to_target(da, target_lats, target_lons,
                           resolution, influence_radius,
-                          interp_cache):
-        """Regrid a regular lat/lon DataArray to the target grid via nereus NN.
+                          interp_cache, method="nearest"):
+        """Regrid a regular lat/lon DataArray to the target grid via nereus.
 
         Uses *interp_cache* (keyed by grid shape) to avoid rebuilding
         the KDTree for models that share the same native grid.
@@ -584,6 +589,12 @@ class GlobalTrends(DiagnosticBase):
         For coarse-resolution source grids (e.g. CMIP6 at 1-2°) the
         configured *influence_radius* (tuned for 5 km HEALPix) is too
         small.  We use 250 km as the floor.
+
+        Source longitudes are converted to -180..180 and the target grid
+        uses ``lon_bounds=(-180, 180)`` so that Delaunay triangulation
+        (used by ``method="linear"`` / ``"cubic"``) does not produce a
+        NaN stripe at the prime meridian.  The output columns are rolled
+        back to 0..360 to match *target_lons*.
         """
         # 250 km floor — covers CMIP6 grids up to ~2° at the equator
         ir = max(influence_radius, 250_000.0)
@@ -593,20 +604,31 @@ class GlobalTrends(DiagnosticBase):
         lat_arr = da[lat_name].values
         lon_arr = da[lon_name].values
 
+        # Convert to -180..180 to avoid gap at 0° in triangulation
+        lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+        sort_idx = np.argsort(lon_arr)
+        lon_arr = lon_arr[sort_idx]
+
         grid_key = (len(lat_arr), len(lon_arr))
 
         if grid_key not in interp_cache:
             lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
             _, interp_cache[grid_key] = nr.regrid(
-                da.values.ravel(),
+                da.values[:, sort_idx].ravel(),
                 lon=lon_2d.ravel(), lat=lat_2d.ravel(),
                 resolution=resolution,
+                method=method,
                 influence_radius=ir,
-                lon_bounds=(0.0, 360.0),
+                lon_bounds=(-180.0, 180.0),
                 as_xarray=True,
             )
 
-        regridded = interp_cache[grid_key](da.values.ravel())
+        regridded = interp_cache[grid_key](da.values[:, sort_idx].ravel())
+
+        # Roll from -180..180 to 0..360 order to match target_lons
+        n_roll = regridded.shape[1] // 2
+        regridded = np.roll(regridded, -n_roll, axis=1)
+
         return xr.DataArray(
             regridded, dims=("lat", "lon"),
             coords={"lat": target_lats, "lon": target_lons},
@@ -810,6 +832,7 @@ class GlobalTrends(DiagnosticBase):
                 vmax=p_cb.get("vmax"),
                 bias_vmax=p_cb.get("bias_vmax"),
                 units=trend_units,
+                method=self._regrid_method,
             )
 
             meta = self._build_metadata(

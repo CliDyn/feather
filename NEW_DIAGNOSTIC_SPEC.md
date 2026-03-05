@@ -460,7 +460,11 @@ gm = latlon_global_mean(obs_da, area=precomputed_area)  # Faster with precompute
 
 For HEALPix data, regridding uses `nr.regrid()` with nearest-neighbor interpolation. For lat/lon data (EERIE), use `np.meshgrid(lon, lat)` before `nr.regrid()` — HEALPix per-pixel coordinate arrays pass directly.
 
-**HEALPix → regular grid:**
+**Interpolation method:** `nr.regrid()` and `nr.plot()` support a `method` parameter: `"nearest"`, `"idw"`, `"linear"`, `"cubic"`. The method is configured in YAML under `nereus.method` (default `"nearest"`). Read it in `__init__` as `self._regrid_method = self.config.nereus.get("method", "nearest")`.
+
+**Design principle — method applies only to CMIP6 regridding.** High-resolution model and obs data (DestinE ~5 km, EERIE ~25 km) always use nearest neighbor. Only CMIP6 (~100 km) benefits from smoother interpolation (linear/cubic) to reduce blocky artifacts in bias maps.
+
+**HEALPix → regular grid (model/obs — always nearest):**
 
 ```python
 import nereus as nr
@@ -490,7 +494,7 @@ regridded_da = xr.DataArray(
 obs_common = obs_clim.interp({lat_name: target_lats, lon_name: target_lons})
 ```
 
-**Lat/lon → regular grid (EERIE):**
+**Lat/lon → regular grid (EERIE — always nearest):**
 ```python
 # For lat/lon grids, create 2D coordinate arrays first:
 lon_2d, lat_2d = np.meshgrid(lon_1d, lat_1d)
@@ -504,11 +508,66 @@ regridded, interpolator = nr.regrid(
 )
 ```
 
+**CMIP6 → regular grid (uses configurable method):**
+
+CMIP6 regridding uses `_regrid_to_target()`, a shared static method that handles the longitude wrapping issue for linear/cubic interpolation.
+
+```python
+@staticmethod
+def _regrid_to_target(da, target_lats, target_lons,
+                      resolution, influence_radius,
+                      interp_cache, method="nearest"):
+    """Regrid a CMIP6 lat/lon DataArray to the common target grid.
+
+    CRITICAL: Source longitudes are converted from 0..360 to -180..180
+    before regridding. This prevents a NaN stripe at 0° (prime meridian)
+    caused by Delaunay triangulation not wrapping at 0°/360° boundary.
+    After regridding, the output is rolled back to 0..360 to match the
+    target grid used by model/obs data.
+    """
+    ir = max(influence_radius, 250_000.0)
+    lat_name = "lat" if "lat" in da.coords else "latitude"
+    lon_name = "lon" if "lon" in da.coords else "longitude"
+    lat_arr = da[lat_name].values
+    lon_arr = da[lon_name].values
+
+    # Convert to -180..180 to avoid gap at 0° in triangulation
+    lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+    sort_idx = np.argsort(lon_arr)
+    lon_arr = lon_arr[sort_idx]
+
+    grid_key = (len(lat_arr), len(lon_arr))
+    if grid_key not in interp_cache:
+        lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
+        _, interp_cache[grid_key] = nr.regrid(
+            da.values[:, sort_idx].ravel(),
+            lon=lon_2d.ravel(), lat=lat_2d.ravel(),
+            resolution=resolution, method=method,
+            influence_radius=ir, lon_bounds=(-180.0, 180.0),
+            as_xarray=True,
+        )
+    regridded = interp_cache[grid_key](da.values[:, sort_idx].ravel())
+
+    # Roll back to 0..360 to match target_lons
+    n_roll = regridded.shape[1] // 2
+    regridded = np.roll(regridded, -n_roll, axis=1)
+    return xr.DataArray(
+        regridded, dims=("lat", "lon"),
+        coords={"lat": target_lats, "lon": target_lons},
+    )
+```
+
+**Key points for `_regrid_to_target()`:**
+1. **Longitude wrapping:** Linear/cubic interpolation uses Delaunay triangulation which does NOT wrap at 0°/360°. Converting to -180..180 moves any gap to ±180° (antimeridian, at map edges in Robinson projection) instead of 0° (prime meridian, map center).
+2. **Sort columns:** After converting lons, sort data columns to match the new lon order.
+3. **Roll output:** After regridding with `lon_bounds=(-180, 180)`, roll the result by `n_cols//2` to match the 0..360 target grid used by model/obs data.
+4. **Interpolator caching:** Cache per `(n_lat, n_lon)` key — all CMIP6 models with the same grid shape reuse the interpolator.
+
 **Influence radius must match source data density:**
 - DestinE production (nside=1024, ~5 km): 80,000 m (80 km)
 - EERIE (0.25 deg, ~25 km): 80,000 m (80 km)
 - Tests (nside=8, ~815 km): 1,000,000 m (1000 km)
-- CMIP6 (~1-2 deg): 1,000,000 m
+- CMIP6 (~1-2 deg): ≥250,000 m (forced minimum in `_regrid_to_target`)
 - Config: `config.nereus["influence_radius"]` for diagnostics, `config.cmip6["influence_radius"]` for CMIP6
 
 ### 4.3 Zonal Means
@@ -594,6 +653,7 @@ fig, axes = plot_combined_bias_map(
     vmax=shared_vmax,
     bias_vmax=shared_bias_max,
     units="K",
+    method=self._regrid_method,  # Pass interpolation method to nr.plot()
 )
 ```
 
@@ -726,13 +786,56 @@ cmip6_ts, info = self._cmip6_global_mean_timeseries(
 
 ### 7.4 CMIP6 for Bias Map Diagnostics
 
+CMIP6 bias maps require regridding each CMIP6 model to the common target grid. The key design principle is **"regrid then average"** — regrid each model individually using `_regrid_to_target()` with the configurable method, then average the regridded fields to form the MMM. This ensures per-model interpolation quality and avoids artifacts from averaging on disparate native grids.
+
+**MMM computation (regrid per-model, then average):**
 ```python
-if self.cmip6_enabled:
-    mmm, info = self.cmip6_loader.load_mmm_for_model_var(var, period=self.period)
-    if mmm is not None:
-        cmip6_common = mmm.interp(lat=target_lats, lon=target_lons)
-        cmip6_bias = cmip6_common - obs_common
-        # Add "CMIP6 MMM" to bias_dict for plot_combined_bias_map
+def _compute_cmip6_mmm(self, var, obs_common, target_lats, target_lons,
+                        obs_res, cmip6_ir):
+    interp_cache = {}
+    fields, info = [], {}
+    for model, variant in self.cmip6_loader.get_member_pairs():
+        da = self.cmip6_loader.load_var_for_model_var(
+            var, model, variant=variant, period=self.period,
+        )
+        if da is None:
+            continue
+        regridded = self._regrid_to_target(
+            da, target_lats, target_lons,
+            obs_res, cmip6_ir, interp_cache,
+            method=self._regrid_method,      # configurable from nereus.method
+        )
+        fields.append(regridded)
+    if fields:
+        mmm = sum(fields) / len(fields)
+        return mmm, obs_common, info
+    return None, None, {}
+```
+
+**When `cmip6_individual=True`, reuse already-regridded fields:**
+```python
+@staticmethod
+def _mmm_from_individual(cmip6_individual_data, obs_common):
+    """Derive MMM from already-regridded individual fields (no double interpolation)."""
+    fields = [entry["regrid"] for entry in cmip6_individual_data.values()
+              if entry.get("regrid") is not None]
+    if not fields:
+        return None, None, {}
+    mmm = sum(fields) / len(fields)
+    return mmm, obs_common, {"n_members": len(fields)}
+```
+
+In `_compute_variable()`, call `_mmm_from_individual()` when individual CMIP6 data is already computed:
+```python
+if self.cmip6_individual and cmip6_individual_data:
+    cmip6_mmm_result = self._mmm_from_individual(cmip6_individual_data, obs_common)
+else:
+    cmip6_mmm_result = self._compute_cmip6_mmm(var, obs_common, ...)
+```
+
+**Plotting:** pass `method=self._regrid_method` to `plot_combined_bias_map()` so `nr.plot()` also uses the configured interpolation method for rendering:
+```python
+fig, axes = plot_combined_bias_map(..., method=self._regrid_method)
 ```
 
 ### 7.5 CMIP6 for Derived Quantities
@@ -1140,7 +1243,13 @@ for model in models:
         result = interpolator(data.values.ravel())
 ```
 
-### 13.8 CERES Loader Error Handling
+### 13.8 NaN Stripe at Prime Meridian with Linear/Cubic Interpolation
+
+**Problem:** When using `method="linear"` or `method="cubic"` with `nr.regrid()`, Delaunay triangulation does not wrap around the 0°/360° longitude boundary. This creates a NaN stripe at the prime meridian (center of Robinson projection maps).
+
+**Solution:** Convert source longitudes from 0..360 to -180..180 before interpolation, sort data columns accordingly, use `lon_bounds=(-180.0, 180.0)`, and roll the output back to 0..360 after regridding. The gap moves to ±180° (antimeridian, at map edges where it's invisible). See `_regrid_to_target()` in Section 4.2 for the full implementation.
+
+### 13.9 CERES Loader Error Handling
 
 **Problem:** `obs_loader.load_ceres()` raises `AttributeError` if the mock loader doesn't have it.
 
@@ -1152,11 +1261,11 @@ except (KeyError, FileNotFoundError, AttributeError) as e:
     logger.warning("CERES data not available: %s", e)
 ```
 
-### 13.9 `_figure_exists()` Partial Outputs
+### 13.10 `_figure_exists()` Partial Outputs
 
 The check requires **both** `.png` and `.json`. If only one exists (e.g., crash during save), the variable is reprocessed. This is intentional.
 
-### 13.10 inspect.signature() for Optional kwargs
+### 13.11 inspect.signature() for Optional kwargs
 
 The pipeline uses `inspect.signature()` to check if a diagnostic's `__init__` accepts `cmip6_individual` before passing it:
 ```python
