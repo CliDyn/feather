@@ -11,7 +11,9 @@ import xarray as xr
 from feather.config import FeatherConfig
 from feather.data.loader import DataLoader
 from feather.data.variables import VARIABLE_REGISTRY
-from feather.diag.radiation_budget import RadiationBudget, _BUDGET_COMPONENTS
+from feather.diag.radiation_budget import (
+    RadiationBudget, _BUDGET_COMPONENTS, _CMOR_NET_DERIVATIONS,
+)
 from feather.plot.lines import plot_budget_bars, plot_gregory
 from tests.conftest import MockCMIP6Loader, MockModelLoader, MockObsLoader
 
@@ -955,3 +957,388 @@ class TestComputePlotInterface:
             assert isinstance(meta, dict)
             assert "figure_id" in meta
         plt.close("all")
+
+
+# ── CMOR net-radiation derivation tests ──────────────────────────────
+
+
+class MockCMORModelLoader:
+    """Mock model loader for CMOR sources.
+
+    Accepts ``load_var(model, variable, ...)`` calls.  Returns synthetic
+    DataArrays for component flux variables and raises
+    ``FileNotFoundError`` for missing ones.
+    """
+
+    def __init__(self, available_vars: dict[str, xr.DataArray]):
+        self._vars = available_vars
+
+    def load_var(self, model: str, variable: str, *,
+                 table: str | None = None,
+                 period: tuple[str, str] | None = None,
+                 time_mean: bool = False) -> xr.DataArray:
+        key = f"{model}/{variable}"
+        # Try model-specific first, then variable-only
+        if key in self._vars:
+            da = self._vars[key]
+        elif variable in self._vars:
+            da = self._vars[variable]
+        else:
+            raise FileNotFoundError(
+                f"No CMOR file for {variable} / {model}"
+            )
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        if time_mean and "time" in da.dims:
+            da = da.mean("time")
+        return da
+
+
+@pytest.fixture
+def synth_cmor_radiation():
+    """Synthetic CMOR component flux DataArrays on 5° latlon grid.
+
+    Contains all CMOR radiation component variables:
+    rsdt, rsut, rsutcs, rlut, rlutcs, rsds, rsus, rlds, rlus, tas.
+    """
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+    time = xr.date_range("1990-01", periods=12, freq="MS", calendar="standard")
+
+    lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+    seasonal = 5 * np.sin(2 * np.pi * (np.arange(12) - 3) / 12)
+
+    def _make(val, amp=2.0):
+        base = np.full_like(lat_grid, val, dtype=float)
+        return xr.DataArray(
+            base[np.newaxis, :, :] + seasonal[:, np.newaxis, np.newaxis] * amp,
+            dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        )
+
+    return {
+        "rsdt":   _make(340.0),   # Incoming solar (down)
+        "rsut":   _make(100.0),   # Reflected SW (up)
+        "rsutcs": _make(50.0),    # Clear-sky reflected SW (up)
+        "rlut":   _make(238.0),   # Outgoing LW (up)
+        "rlutcs": _make(268.0),   # Clear-sky OLR (up)
+        "rsds":   _make(200.0),   # Surface downwelling SW
+        "rsus":   _make(30.0),    # Surface upwelling SW
+        "rlds":   _make(340.0),   # Surface downwelling LW
+        "rlus":   _make(400.0),   # Surface upwelling LW
+        "tas":    _make(288.0, amp=3.0),  # 2m temperature
+    }
+
+
+@pytest.fixture
+def cmor_model_loader(synth_cmor_radiation):
+    """MockCMORModelLoader with all radiation component variables."""
+    return MockCMORModelLoader(synth_cmor_radiation)
+
+
+@pytest.fixture
+def cmor_rad_config(tmp_path):
+    """FeatherConfig for CMOR data source with latlon grid."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ICON-ESM-ER"],
+        obs_root="",
+        obs_datasets={},
+        cmip6={"enabled": False},
+        dask={},
+        nereus={"influence_radius": 1_000_000},
+        output_dir=str(tmp_path / "output"),
+        data_source={"type": "cmor", "root": "/fake/cmor"},
+        model_configs={
+            "ICON-ESM-ER": type("MC", (), {
+                "name": "ICON-ESM-ER", "institution": "MPI-M",
+                "experiment": "hist-1950", "variant": "r1i1p1f1",
+                "grids": {"sfc": "latlon"}, "color": "#2ca02c",
+            })(),
+        },
+    )
+
+
+class TestCMORDerivation:
+    """Tests for _load_model_radiation_var CMOR derivation logic."""
+
+    def test_derive_rst(self, cmor_model_loader, rad_obs_loader,
+                        cmor_rad_config, synth_cmor_radiation):
+        """rst = rsdt - rsut is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rst")
+
+        expected = synth_cmor_radiation["rsdt"] - synth_cmor_radiation["rsut"]
+        np.testing.assert_allclose(da.values, expected.values)
+        assert da.name == "rst"
+
+    def test_derive_rlt(self, cmor_model_loader, rad_obs_loader,
+                        cmor_rad_config, synth_cmor_radiation):
+        """rlt = -rlut is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rlt")
+
+        expected = -synth_cmor_radiation["rlut"]
+        np.testing.assert_allclose(da.values, expected.values)
+        assert da.name == "rlt"
+
+    def test_derive_rss(self, cmor_model_loader, rad_obs_loader,
+                        cmor_rad_config, synth_cmor_radiation):
+        """rss = rsds - rsus is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rss")
+
+        expected = synth_cmor_radiation["rsds"] - synth_cmor_radiation["rsus"]
+        np.testing.assert_allclose(da.values, expected.values)
+
+    def test_derive_rls(self, cmor_model_loader, rad_obs_loader,
+                        cmor_rad_config, synth_cmor_radiation):
+        """rls = rlds - rlus is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rls")
+
+        expected = synth_cmor_radiation["rlds"] - synth_cmor_radiation["rlus"]
+        np.testing.assert_allclose(da.values, expected.values)
+
+    def test_derive_clearsky_sw(self, cmor_model_loader, rad_obs_loader,
+                                 cmor_rad_config, synth_cmor_radiation):
+        """rstcs = rsdt - rsutcs is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rstcs")
+
+        expected = synth_cmor_radiation["rsdt"] - synth_cmor_radiation["rsutcs"]
+        np.testing.assert_allclose(da.values, expected.values)
+
+    def test_derive_clearsky_lw(self, cmor_model_loader, rad_obs_loader,
+                                 cmor_rad_config, synth_cmor_radiation):
+        """rltcs = -rlutcs is correctly derived."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rltcs")
+
+        expected = -synth_cmor_radiation["rlutcs"]
+        np.testing.assert_allclose(da.values, expected.values)
+
+    def test_direct_load_preferred(self, rad_obs_loader, cmor_rad_config,
+                                    synth_cmor_radiation):
+        """When a net variable exists directly, derivation is not attempted."""
+        # Add "rst" as a directly loadable variable with a distinct value
+        vars_with_net = dict(synth_cmor_radiation)
+        direct_rst = synth_cmor_radiation["rsdt"] * 0 + 999.0
+        vars_with_net["rst"] = direct_rst
+        loader = MockCMORModelLoader(vars_with_net)
+
+        diag = RadiationBudget(loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rst")
+
+        # Should get the direct value (999.0), not rsdt - rsut
+        np.testing.assert_allclose(da.values, 999.0)
+
+    def test_missing_component_raises(self, rad_obs_loader, cmor_rad_config):
+        """Missing component variable propagates FileNotFoundError."""
+        # Only rsdt available, no rsut → rst derivation fails
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+        da = xr.DataArray(
+            np.ones((12, len(lats), len(lons))),
+            dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        )
+        loader = MockCMORModelLoader({"rsdt": da})
+
+        diag = RadiationBudget(loader, rad_obs_loader, cmor_rad_config)
+        with pytest.raises(FileNotFoundError):
+            diag._load_model_radiation_var("ICON-ESM-ER", "rst")
+
+    def test_unknown_var_raises(self, cmor_model_loader, rad_obs_loader,
+                                 cmor_rad_config):
+        """Unknown variable (not in derivation table) raises."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        with pytest.raises((KeyError, FileNotFoundError)):
+            diag._load_model_radiation_var("ICON-ESM-ER", "nonexistent_var")
+
+    def test_non_radiation_passthrough(self, cmor_model_loader, rad_obs_loader,
+                                        cmor_rad_config):
+        """Non-radiation variable (tas) loads directly without derivation."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "tas")
+        assert da is not None
+        assert "time" in da.dims
+
+    def test_derive_with_period(self, cmor_model_loader, rad_obs_loader,
+                                 cmor_rad_config):
+        """Derivation respects period parameter."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        da = diag._load_model_radiation_var(
+            "ICON-ESM-ER", "rst", period=("1990-01", "1990-06"),
+        )
+        assert len(da.time) == 6
+
+
+class TestCMORBudgetIntegration:
+    """Integration tests for full budget pipeline with CMOR derivation."""
+
+    def test_cmor_budget_has_all_components(self, cmor_model_loader,
+                                             rad_obs_loader, cmor_rad_config):
+        """Budget computed from derived CMOR vars has all components."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        results = diag._compute_budget()
+
+        mbud = results["models"]["ICON-ESM-ER"]
+        for comp_name, model_var, _, _, _ in _BUDGET_COMPONENTS:
+            assert comp_name in mbud, f"Missing {comp_name}"
+
+    def test_cmor_toa_net_physical(self, cmor_model_loader, rad_obs_loader,
+                                     cmor_rad_config):
+        """CMOR-derived TOA Net = TOA SW + TOA LW."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        results = diag._compute_budget()
+
+        mbud = results["models"]["ICON-ESM-ER"]
+        np.testing.assert_allclose(
+            mbud["TOA Net"], mbud["TOA SW"] + mbud["TOA LW"], atol=0.01,
+        )
+
+    def test_cmor_gregory(self, cmor_model_loader, rad_obs_loader,
+                           cmor_rad_config):
+        """Gregory plot works with CMOR-derived net radiation."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        results = diag._compute_gregory()
+
+        assert "ICON-ESM-ER" in results["models"]
+        mdata = results["models"]["ICON-ESM-ER"]
+        assert "t2m_monthly" in mdata
+        assert "toa_monthly" in mdata
+        assert len(mdata["t2m_monthly"]) == 12
+
+    def test_cmor_imbalance(self, cmor_model_loader, rad_obs_loader,
+                              cmor_rad_config):
+        """Imbalance time series works with CMOR-derived variables."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        results = diag._compute_imbalance_timeseries()
+
+        assert "ICON-ESM-ER" in results["models"]
+        ts = results["models"]["ICON-ESM-ER"]
+        assert "time" in ts.dims
+        # Net TOA should be small
+        assert np.all(np.abs(ts.values) < 200)
+
+    def test_cmor_sign_convention_rst(self, cmor_model_loader, rad_obs_loader,
+                                        cmor_rad_config):
+        """rst derivation produces positive values (net absorbed solar)."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        val = diag._model_global_mean_clim("ICON-ESM-ER", "rst")
+        assert val is not None
+        # rsdt=340, rsut=100 → rst=240 (positive = net downward)
+        assert val > 200
+
+    def test_cmor_sign_convention_rlt(self, cmor_model_loader, rad_obs_loader,
+                                        cmor_rad_config):
+        """rlt derivation produces negative values (net outgoing LW)."""
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        val = diag._model_global_mean_clim("ICON-ESM-ER", "rlt")
+        assert val is not None
+        # rlut=238 → rlt=-238 (negative = net outgoing)
+        assert val < 0
+
+
+class TestCMORPartialAvailability:
+    """Tests for models with partial CMOR component availability."""
+
+    def test_partial_model_graceful_skip(self, rad_obs_loader, cmor_rad_config):
+        """Model with missing components is skipped gracefully in budget."""
+        # Only rsds and rlds available (like AWI IFS-FESOM2-SR)
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+
+        def _make(val):
+            return xr.DataArray(
+                np.full((12, len(lats), len(lons)), val),
+                dims=("time", "lat", "lon"),
+                coords={"time": time, "lat": lats, "lon": lons},
+            )
+
+        loader = MockCMORModelLoader({
+            "rsds": _make(200.0),
+            "rlds": _make(340.0),
+            "tas": _make(288.0),
+        })
+
+        diag = RadiationBudget(loader, rad_obs_loader, cmor_rad_config)
+        results = diag._compute_budget()
+
+        mbud = results["models"].get("ICON-ESM-ER", {})
+        # TOA vars can't be derived → missing
+        assert "TOA SW" not in mbud
+        assert "TOA LW" not in mbud
+        # Surface vars also can't be derived (missing rsus, rlus)
+        assert "Sfc SW" not in mbud
+
+    def test_multi_model_mixed_availability(self, rad_obs_loader, tmp_path):
+        """Multi-model config: full ICON, partial BSC both handled."""
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+
+        def _make(val):
+            return xr.DataArray(
+                np.full((12, len(lats), len(lons)), val),
+                dims=("time", "lat", "lon"),
+                coords={"time": time, "lat": lats, "lon": lons},
+            )
+
+        # ICON has all components, BSC only has rsdt, rlut, rsds, rlds
+        loader = MockCMORModelLoader({
+            # Shared (both models get these)
+            "rsdt": _make(340.0), "rsds": _make(200.0),
+            "rlds": _make(340.0), "rlut": _make(238.0),
+            "tas": _make(288.0),
+            # ICON-only
+            "ICON-ESM-ER/rsut": _make(100.0),
+            "ICON-ESM-ER/rsus": _make(30.0),
+            "ICON-ESM-ER/rlus": _make(400.0),
+            "ICON-ESM-ER/rsdt": _make(340.0),
+            "ICON-ESM-ER/rlut": _make(238.0),
+            "ICON-ESM-ER/rsds": _make(200.0),
+            "ICON-ESM-ER/rlds": _make(340.0),
+            "ICON-ESM-ER/tas": _make(288.0),
+            # BSC partial
+            "IFS-NEMO-ER/rsdt": _make(340.0),
+            "IFS-NEMO-ER/rlut": _make(238.0),
+            "IFS-NEMO-ER/rsds": _make(200.0),
+            "IFS-NEMO-ER/rlds": _make(340.0),
+            "IFS-NEMO-ER/tas": _make(288.0),
+        })
+
+        MC = type("MC", (), {})
+        config = FeatherConfig(
+            model_catalogs={},
+            models=["ICON-ESM-ER", "IFS-NEMO-ER"],
+            obs_root="", obs_datasets={},
+            cmip6={"enabled": False},
+            dask={}, nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor", "root": "/fake"},
+            model_configs={
+                "ICON-ESM-ER": MC(),
+                "IFS-NEMO-ER": MC(),
+            },
+        )
+        config.model_configs["ICON-ESM-ER"].grids = {"sfc": "latlon"}
+        config.model_configs["ICON-ESM-ER"].color = "#2ca02c"
+        config.model_configs["IFS-NEMO-ER"].grids = {"sfc": "latlon"}
+        config.model_configs["IFS-NEMO-ER"].color = "#1f77b4"
+
+        diag = RadiationBudget(loader, rad_obs_loader, config)
+        results = diag._compute_budget()
+
+        # ICON should have full budget
+        icon_bud = results["models"].get("ICON-ESM-ER", {})
+        assert "TOA SW" in icon_bud
+        assert "Sfc SW" in icon_bud
+
+        # BSC should have TOA LW (= -rlut) but not TOA SW (missing rsut)
+        bsc_bud = results["models"].get("IFS-NEMO-ER", {})
+        assert "TOA LW" in bsc_bud
+        assert "TOA SW" not in bsc_bud

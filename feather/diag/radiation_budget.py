@@ -92,6 +92,21 @@ _BUDGET_COMPONENTS = [
     ("Atm Abs", None, None, None, 1.0),  # TOA Net - Sfc Net
 ]
 
+# Derivation rules for net radiation variables from CMOR component fluxes.
+# CMOR stores component fluxes (rsdt, rsut, rlut, rsds, rsus, rlds, rlus)
+# rather than net quantities (rst, rlt, rss, rls).  All derivations produce
+# positive-downward values (DestinE convention).
+_CMOR_NET_DERIVATIONS = {
+    "rst":   (("rsdt", "rsut"),     lambda a, b: a - b),      # rsdt - rsut
+    "rlt":   (("rlut",),            lambda a: -a),             # -rlut
+    "rstcs": (("rsdt", "rsutcs"),   lambda a, b: a - b),
+    "rltcs": (("rlutcs",),          lambda a: -a),
+    "rss":   (("rsds", "rsus"),     lambda a, b: a - b),      # rsds - rsus
+    "rls":   (("rlds", "rlus"),     lambda a, b: a - b),      # rlds - rlus
+    "rsscs": (("rsdscs", "rsuscs"), lambda a, b: a - b),
+    "rlscs": (("rldscs", "rluscs"), lambda a, b: a - b),
+}
+
 
 @register
 class RadiationBudget(DiagnosticBase):
@@ -126,6 +141,71 @@ class RadiationBudget(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+
+    # ── CMOR net-radiation derivation ─────────────────────────────────
+
+    def _load_model_radiation_var(
+        self,
+        model: str,
+        var: str,
+        *,
+        period: tuple[str, str] | None = None,
+        time_mean: bool = False,
+    ) -> "xr.DataArray":
+        """Load a radiation variable, deriving from CMOR components if needed.
+
+        Tries a direct load first (works for DestinE net variables).  On
+        failure, if the data source is CMOR and the variable has a known
+        derivation in ``_CMOR_NET_DERIVATIONS``, loads the component
+        fluxes and computes the net quantity.
+
+        Parameters
+        ----------
+        model, var, period, time_mean
+            Same as ``_load_model_var``.
+
+        Returns
+        -------
+        xr.DataArray
+
+        Raises
+        ------
+        KeyError, FileNotFoundError
+            When neither direct load nor derivation succeeds.
+        """
+        # 1) Try direct load (DestinE path, or CMOR var that exists directly)
+        try:
+            return self._load_model_var(
+                model, var, period=period, time_mean=time_mean,
+            )
+        except (KeyError, FileNotFoundError):
+            pass
+
+        # 2) Attempt derivation from CMOR components
+        if self.config.get_data_source_type() != "cmor":
+            raise KeyError(f"{var} not available for {model}")
+
+        if var not in _CMOR_NET_DERIVATIONS:
+            raise FileNotFoundError(
+                f"{var} not in CMOR derivation table for {model}"
+            )
+
+        component_names, formula = _CMOR_NET_DERIVATIONS[var]
+        components = []
+        for comp_var in component_names:
+            # Let FileNotFoundError propagate if a component is missing
+            da = self._load_model_var(
+                model, comp_var, period=period, time_mean=time_mean,
+            )
+            components.append(da)
+
+        result = formula(*components)
+        result.name = var
+        logger.debug(
+            "Derived %s for %s from components %s",
+            var, model, component_names,
+        )
+        return result
 
     # ── Orchestration (per-figure-group incremental) ──────────────────
 
@@ -265,7 +345,7 @@ class RadiationBudget(DiagnosticBase):
     def _model_global_mean_clim(self, model: str, var: str) -> float | None:
         """Load model var, compute climatology, then global mean."""
         try:
-            da = self._load_model_var(model, var)
+            da = self._load_model_radiation_var(model, var)
         except (KeyError, FileNotFoundError):
             logger.warning("  %s not available for %s", var, model)
             return None
@@ -477,7 +557,7 @@ class RadiationBudget(DiagnosticBase):
     def _model_global_mean_ts(self, model: str, var: str) -> xr.DataArray | None:
         """Load model variable and return global-mean monthly time series."""
         try:
-            da = self._load_model_var(model, var, period=self.period)
+            da = self._load_model_radiation_var(model, var, period=self.period)
         except (KeyError, FileNotFoundError):
             return None
         return self._model_global_mean(da, model).compute()
@@ -923,9 +1003,15 @@ class RadiationBudget(DiagnosticBase):
             if model_clim is None:
                 continue
 
-            # Get coords for regridding — use first component variable
+            # Get coords for regridding — use first component variable.
+            # For CMOR sources, net vars (rst, rlt, ...) don't exist as
+            # files, so resolve to the first CMOR component for coords.
             first_var = dq_info["components"][0]
-            lon, lat = self._load_model_coords(model, first_var)
+            coord_var = first_var
+            if (self.config.get_data_source_type() == "cmor"
+                    and first_var in _CMOR_NET_DERIVATIONS):
+                coord_var = _CMOR_NET_DERIVATIONS[first_var][0][0]
+            lon, lat = self._load_model_coords(model, coord_var)
 
             # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
             grid_type = self.config.get_grid_type(model, self.domain)
@@ -1007,7 +1093,7 @@ class RadiationBudget(DiagnosticBase):
         arrays = []
         for var in components:
             try:
-                da = self._load_model_var(model, var)
+                da = self._load_model_radiation_var(model, var)
             except (KeyError, FileNotFoundError):
                 return None
             arrays.append(climatology(da, self.period).compute())
