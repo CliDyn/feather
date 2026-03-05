@@ -107,20 +107,62 @@ class OceanEN4(DiagnosticBase):
         self.period = period
         self.cmip6_individual = cmip6_individual
 
+    # ── Unit conversion ────────────────────────────────────────────────
+
+    def _get_convert(self, variable: str, *, for_obs: bool = False):
+        """Return the appropriate unit conversion function.
+
+        For model data: CMOR (EERIE) thetao is already in °C — skip
+        conversion.  DestinE thetao is in Kelvin — convert to °C.
+
+        For obs data (EN4): thetao is always stored in Kelvin on
+        Levante, so always convert regardless of model data source.
+        """
+        if variable == "thetao" and not for_obs:
+            if self.config.get_data_source_type() == "cmor":
+                return lambda da: da  # CMOR model data already in °C
+        return _VAR_CFG[variable]["convert"]
+
     # ── Depth level helpers ────────────────────────────────────────────
 
-    def _get_depth_levels(self, model: str) -> np.ndarray:
-        """Look up full depth levels (cell centres) for a model from config."""
+    def _get_depth_levels(
+        self, model: str, da: xr.DataArray | None = None,
+    ) -> np.ndarray:
+        """Look up full depth levels (cell centres) for a model.
+
+        Priority:
+        1. Config ``ocean_3d.depth_levels`` (required for DestinE models
+           whose depth dimension uses integer indices, not real depths).
+        2. ``lev`` or ``depth`` coordinate from the loaded DataArray
+           (works for CMOR data that stores real depth values in metres).
+        """
         o3d_cfg = self.config.ocean_3d
         depth_levels = o3d_cfg.get("depth_levels", {})
-        if model not in depth_levels:
-            raise KeyError(
-                f"No depth levels configured for model {model!r}. "
-                f"Available: {list(depth_levels.keys())}"
-            )
-        return np.array(depth_levels[model], dtype=np.float64)
+        if model in depth_levels:
+            return np.array(depth_levels[model], dtype=np.float64)
 
-    def _get_layer_thickness(self, model: str) -> np.ndarray:
+        # Fallback: extract from data coordinate (CMOR files)
+        if da is not None:
+            for dim_name in ("lev", "depth"):
+                if dim_name in da.coords:
+                    values = da[dim_name].values.astype(np.float64)
+                    if len(values) > 1:
+                        logger.info(
+                            "Using '%s' coordinate from data for %s "
+                            "(%d levels, %.1f–%.1f m)",
+                            dim_name, model, len(values),
+                            values[0], values[-1],
+                        )
+                        return values
+
+        raise KeyError(
+            f"No depth levels configured for model {model!r}. "
+            f"Available: {list(depth_levels.keys())}"
+        )
+
+    def _get_layer_thickness(
+        self, model: str, da: xr.DataArray | None = None,
+    ) -> np.ndarray:
         """Compute layer thickness from half-levels or approximate from centres.
 
         Returns array of shape (n_levels,) with thickness in metres.
@@ -131,8 +173,21 @@ class OceanEN4(DiagnosticBase):
             hl = np.array(half_levels[model], dtype=np.float64)
             return np.diff(hl)
 
-        # NEMO or missing: compute from full level midpoints
-        depth = self._get_depth_levels(model)
+        # Try lev_bnds from the DataArray coordinates (CMOR files)
+        if da is not None:
+            for dim_name in ("lev", "depth"):
+                bnds_name = f"{dim_name}_bnds"
+                if bnds_name in da.coords:
+                    bnds = da[bnds_name].values
+                    thickness = bnds[:, 1] - bnds[:, 0]
+                    logger.info(
+                        "Using '%s' from data for %s layer thickness",
+                        bnds_name, model,
+                    )
+                    return thickness.astype(np.float64)
+
+        # Fallback: approximate from full level midpoints
+        depth = self._get_depth_levels(model, da=da)
         # Approximate half-levels as midpoints between full levels
         hl = np.zeros(len(depth) + 1)
         hl[0] = 0.0
@@ -400,9 +455,13 @@ class OceanEN4(DiagnosticBase):
 
             model_3d[model] = var_data
 
+            # Use first available DataArray for depth coordinate fallback
+            sample_da = next(iter(var_data.values()))
             try:
-                model_depths[model] = self._get_depth_levels(model)
-                model_thickness[model] = self._get_layer_thickness(model)
+                model_depths[model] = self._get_depth_levels(
+                    model, da=sample_da)
+                model_thickness[model] = self._get_layer_thickness(
+                    model, da=sample_da)
             except KeyError as e:
                 logger.warning("Depth levels not configured for %s: %s",
                                model, e)
@@ -444,7 +503,8 @@ class OceanEN4(DiagnosticBase):
         import nereus as nr
 
         vcfg = _VAR_CFG[variable]
-        convert = vcfg["convert"]
+        convert = self._get_convert(variable)
+        obs_convert = self._get_convert(variable, for_obs=True)
         en4_var = vcfg["en4_var"]
         logger.info("Computing %s surface bias maps...", vcfg["long_name"])
 
@@ -456,7 +516,7 @@ class OceanEN4(DiagnosticBase):
 
         # EN4 surface layer: take first lev index
         lev_dim = "lev" if "lev" in en4_da.dims else "depth"
-        en4_sfc = convert(en4_da.isel({lev_dim: 0}))
+        en4_sfc = obs_convert(en4_da.isel({lev_dim: 0}))
 
         # Compute EN4 climatologies
         obs_annual = climatology(en4_sfc, self.period).compute()
@@ -659,7 +719,8 @@ class OceanEN4(DiagnosticBase):
         import nereus as nr
 
         vcfg = _VAR_CFG[variable]
-        convert = vcfg["convert"]
+        convert = self._get_convert(variable)
+        obs_convert = self._get_convert(variable, for_obs=True)
         logger.info("Computing %s Hovmoller diagrams...", vcfg["long_name"])
 
         model_hovs: dict[str, dict] = {}
@@ -691,27 +752,20 @@ class OceanEN4(DiagnosticBase):
                     np.asarray(lat), np.asarray(lon),
                 ).ravel()
 
-            # Convert and compute — materialize once with .compute()
+            # Convert (lazy — stays dask-backed)
             da_conv = convert(da)
             time_vals = da_conv.time.values
-            logger.info("Loading %s 3D data for Hovmoller...", model)
-            data_np = da_conv.values  # single materialization for this model
 
-            # Compute Hovmoller via nereus (use integer time indices
-            # to avoid datetime buffer issues, reconstruct coords after)
+            # nr.hovmoller is dask-friendly: pass DataArray directly,
+            # nereus computes area-weighted means chunk by chunk
             try:
-                time_idx = np.arange(len(time_vals), dtype=np.float64)
-                hov_raw = nr.hovmoller(
-                    data_np, area, time_idx, depth,
-                    mode="depth", as_xarray=False,
-                )
-                # nr.hovmoller returns (time_out, depth_out, data_out)
-                _, _, hov_data_np = hov_raw
-                hov = xr.DataArray(
-                    hov_data_np,
-                    dims=("time", "depth"),
-                    coords={"time": time_vals, "depth": depth},
-                )
+                logger.info("Computing %s Hovmoller (dask)...", model)
+                hov = nr.hovmoller(
+                    da_conv, area, depth=depth,
+                    mode="depth", as_xarray=True,
+                ).compute()
+                # Ensure original time coordinates are assigned
+                hov = hov.assign_coords(time=time_vals)
             except Exception as e:
                 logger.warning("Hovmoller failed for %s/%s: %s",
                                model, variable, e)
@@ -723,12 +777,12 @@ class OceanEN4(DiagnosticBase):
                 "depth": depth,
             }
 
-        # EN4 Hovmoller — use nr.hovmoller() just like model data
+        # EN4 Hovmoller
         en4_hov = None
 
         en4_da = en4_data.get(variable)
         if en4_da is not None:
-            en4_conv = convert(en4_da)
+            en4_conv = obs_convert(en4_da)
 
             # EN4 depth coordinate
             lev_dim = "lev" if "lev" in en4_conv.dims else "depth"
@@ -742,22 +796,17 @@ class OceanEN4(DiagnosticBase):
             en4_area = en4_mesh.area.values  # 1D (npoints,)
 
             en4_time = en4_conv.time.values
-            logger.info("Loading EN4 data for Hovmoller...")
+            logger.info("Computing EN4 Hovmoller...")
 
             # nr.hovmoller auto-flattens 4D (time, lev, lat, lon)
-            # Use integer time indices to avoid datetime buffer issues
             try:
-                time_idx = np.arange(len(en4_time), dtype=np.float64)
-                hov_raw = nr.hovmoller(
-                    en4_conv.values, en4_area, time_idx, en4_depth,
-                    mode="depth", as_xarray=False,
+                en4_hov = nr.hovmoller(
+                    en4_conv, en4_area, depth=en4_depth,
+                    mode="depth", as_xarray=True,
                 )
-                _, _, en4_hov_data = hov_raw
-                en4_hov = xr.DataArray(
-                    en4_hov_data,
-                    dims=("time", "depth"),
-                    coords={"time": en4_time, "depth": en4_depth},
-                )
+                if hasattr(en4_hov, "compute"):
+                    en4_hov = en4_hov.compute()
+                en4_hov = en4_hov.assign_coords(time=en4_time)
             except Exception as e:
                 logger.warning("EN4 Hovmoller failed: %s", e)
 
@@ -929,7 +978,8 @@ class OceanEN4(DiagnosticBase):
         import nereus as nr
 
         vcfg = _VAR_CFG[variable]
-        convert = vcfg["convert"]
+        convert = self._get_convert(variable)
+        obs_convert = self._get_convert(variable, for_obs=True)
         logger.info("Computing %s depth-layer time series...",
                      vcfg["long_name"])
 
@@ -961,24 +1011,39 @@ class OceanEN4(DiagnosticBase):
                     np.asarray(lat), np.asarray(lon),
                 ).ravel()
 
+            # Convert (lazy — stays dask-backed)
             da_conv = convert(da)
-            logger.info("Loading %s 3D data for depth timeseries...", model)
-            data_np = da_conv.values  # single materialization
+            time_vals = da_conv.time.values
+
+            # Flatten spatial dims for nr.volume_mean which expects
+            # (ntime, nlevels, npoints) — 4D latlon needs stacking
+            lat_dim = next(
+                (d for d in da_conv.dims if d in ("lat", "latitude")), None)
+            lon_dim = next(
+                (d for d in da_conv.dims if d in ("lon", "longitude")), None)
+            if lat_dim and lon_dim:
+                da_flat = da_conv.stack(space=(lat_dim, lon_dim))
+            else:
+                da_flat = da_conv  # HEALPix: already 3D
+
+            logger.info("Computing %s depth timeseries (dask)...", model)
             layer_ts = {}
 
             for dmin, dmax, label in _DEPTH_RANGES:
                 dmax_eff = dmax if dmax is not None else float(depth[-1] + 1)
                 try:
                     ts = nr.volume_mean(
-                        data_np, area, thickness, depth,
+                        da_flat, area, thickness, depth,
                         depth_min=dmin, depth_max=dmax_eff,
                         as_xarray=True,
                     )
-                    # Assign time coordinate
+                    if hasattr(ts, "compute"):
+                        ts = ts.compute()
+                    # Assign time coordinate if missing
                     if isinstance(ts, xr.DataArray) and "time" not in ts.dims:
                         ts = xr.DataArray(
                             ts.values, dims="time",
-                            coords={"time": da_conv.time.values},
+                            coords={"time": time_vals},
                         )
                     layer_ts[label] = ts
                 except Exception as e:
@@ -995,7 +1060,7 @@ class OceanEN4(DiagnosticBase):
         en4_ts: dict[str, xr.DataArray] = {}
         en4_da = en4_data.get(variable)
         if en4_da is not None:
-            en4_conv = convert(en4_da)
+            en4_conv = obs_convert(en4_da)
             en4_ds = en4_ds_cache.get(variable)
 
             lev_dim = "lev" if "lev" in en4_conv.dims else "depth"
@@ -1019,12 +1084,17 @@ class OceanEN4(DiagnosticBase):
                 en4_conv[lon_name].values, en4_conv[lat_name].values)
             en4_area = en4_mesh.area.values  # 1D (npoints,)
 
-            # Flatten (time, lev, lat, lon) → (time, lev, npoints)
-            # for nr.volume_mean which expects last two dims = (lev, npoints)
-            logger.info("Loading EN4 data for depth-layer time series...")
-            en4_vals = en4_conv.values  # (time, lev, lat, lon)
-            nt, nz = en4_vals.shape[:2]
-            en4_flat = en4_vals.reshape(nt, nz, -1)  # (time, lev, npoints)
+            # Flatten spatial dims for volume_mean
+            logger.info("Computing EN4 depth-layer time series...")
+            en4_lat_dim = next(
+                (d for d in en4_conv.dims if d in ("lat", "latitude")), None)
+            en4_lon_dim = next(
+                (d for d in en4_conv.dims if d in ("lon", "longitude")), None)
+            if en4_lat_dim and en4_lon_dim:
+                en4_flat = en4_conv.stack(
+                    space=(en4_lat_dim, en4_lon_dim))
+            else:
+                en4_flat = en4_conv
 
             for dmin, dmax, label in _DEPTH_RANGES:
                 dmax_eff = dmax if dmax is not None else float(
@@ -1035,6 +1105,8 @@ class OceanEN4(DiagnosticBase):
                         depth_min=dmin, depth_max=dmax_eff,
                         as_xarray=True,
                     )
+                    if hasattr(ts, "compute"):
+                        ts = ts.compute()
                     if isinstance(ts, xr.DataArray) and "time" not in ts.dims:
                         ts = xr.DataArray(
                             ts.values, dims="time",

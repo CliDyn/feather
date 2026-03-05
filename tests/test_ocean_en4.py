@@ -352,6 +352,67 @@ class TestDepthLevels:
             thickness = en4_diag._get_layer_thickness(model)
             assert all(t > 0 for t in thickness), f"Negative thickness for {model}"
 
+    def test_depth_levels_from_data_lev_coord(self, en4_diag):
+        """When model not in config, fall back to 'lev' coordinate."""
+        lev_values = np.array([5.0, 50.0, 200.0, 1000.0, 3000.0])
+        da = xr.DataArray(
+            np.zeros((2, 5, 10)),
+            dims=("time", "lev", "x"),
+            coords={"lev": lev_values},
+        )
+        depth = en4_diag._get_depth_levels("unknown_model", da=da)
+        np.testing.assert_array_equal(depth, lev_values)
+        assert depth.dtype == np.float64
+
+    def test_depth_levels_from_data_depth_coord(self, en4_diag):
+        """Fallback also works with 'depth' coordinate name."""
+        depth_values = np.array([10.0, 100.0, 500.0])
+        da = xr.DataArray(
+            np.zeros((2, 3, 10)),
+            dims=("time", "depth", "x"),
+            coords={"depth": depth_values},
+        )
+        depth = en4_diag._get_depth_levels("unknown_model", da=da)
+        np.testing.assert_array_equal(depth, depth_values)
+
+    def test_depth_levels_config_takes_priority(self, en4_diag):
+        """Config depth levels should override data coordinate."""
+        da = xr.DataArray(
+            np.zeros((2, 3, 10)),
+            dims=("time", "lev", "x"),
+            coords={"lev": np.array([99.0, 999.0, 9999.0])},
+        )
+        # ifs-fesom IS in config, so config values should be used
+        depth = en4_diag._get_depth_levels("ifs-fesom", da=da)
+        assert depth[0] == 5.0  # from _SYNTH_DEPTHS, not 99.0
+
+    def test_depth_levels_no_config_no_data_raises(self, en4_diag):
+        """With no config and no DataArray, should raise KeyError."""
+        with pytest.raises(KeyError, match="No depth levels configured"):
+            en4_diag._get_depth_levels("unknown_model")
+
+    def test_depth_levels_no_config_wrong_coord_raises(self, en4_diag):
+        """DataArray with 'level' (integer index) should NOT be used."""
+        da = xr.DataArray(
+            np.zeros((2, 5, 10)),
+            dims=("time", "level", "x"),
+            coords={"level": np.arange(5)},
+        )
+        with pytest.raises(KeyError, match="No depth levels configured"):
+            en4_diag._get_depth_levels("unknown_model", da=da)
+
+    def test_layer_thickness_from_data_fallback(self, en4_diag):
+        """Thickness should be approximated from data lev coord."""
+        lev_values = np.array([5.0, 50.0, 200.0, 1000.0, 3000.0])
+        da = xr.DataArray(
+            np.zeros((2, 5, 10)),
+            dims=("time", "lev", "x"),
+            coords={"lev": lev_values},
+        )
+        thickness = en4_diag._get_layer_thickness("unknown_model", da=da)
+        assert len(thickness) == 5
+        assert all(t > 0 for t in thickness)
+
 
 # ── 3. Data loading ─────────────────────────────────────────────────
 
@@ -1094,7 +1155,88 @@ class TestHelperFunctions:
         np.testing.assert_array_equal(result, [1, 2, 3])
 
 
-# ── 16. Config integration ──────────────────────────────────────────
+# ── 16. Unit conversion ─────────────────────────────────────────────
+
+
+class TestUnitConversion:
+    """Test data-source-aware K→°C conversion."""
+
+    def test_destine_converts_thetao(self, en4_diag):
+        """DestinE (default) thetao should be converted K→°C."""
+        convert = en4_diag._get_convert("thetao")
+        da = xr.DataArray([300.0, 290.0])
+        result = convert(da)
+        np.testing.assert_allclose(result.values, [26.85, 16.85])
+
+    def test_destine_salinity_no_conversion(self, en4_diag):
+        """Salinity should never be converted."""
+        convert = en4_diag._get_convert("so")
+        da = xr.DataArray([35.0])
+        result = convert(da)
+        assert result.values[0] == 35.0
+
+    def test_cmor_skips_model_thetao_conversion(self, synth_ocean_3d_healpix,
+                                                synth_en4, tmp_path):
+        """CMOR data source should not convert model thetao."""
+        config = FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom"],
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000,
+                    "ocean_influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            ocean_3d={
+                "depth_levels": _SYNTH_DEPTHS,
+                "half_levels": _SYNTH_HALF_LEVELS,
+            },
+            data_source={"type": "cmor"},
+        )
+        diag = OceanEN4(
+            MockOcean3DModelLoader(synth_ocean_3d_healpix),
+            MockEN4ObsLoader(synth_en4),
+            config,
+        )
+        convert = diag._get_convert("thetao")
+        da = xr.DataArray([20.0, 15.0])
+        result = convert(da)
+        # Model data should NOT be converted
+        np.testing.assert_array_equal(result.values, [20.0, 15.0])
+
+    def test_cmor_still_converts_obs_thetao(self, synth_ocean_3d_healpix,
+                                             synth_en4, tmp_path):
+        """CMOR data source should still convert EN4 obs thetao (K to C)."""
+        config = FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom"],
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000,
+                    "ocean_influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            ocean_3d={
+                "depth_levels": _SYNTH_DEPTHS,
+                "half_levels": _SYNTH_HALF_LEVELS,
+            },
+            data_source={"type": "cmor"},
+        )
+        diag = OceanEN4(
+            MockOcean3DModelLoader(synth_ocean_3d_healpix),
+            MockEN4ObsLoader(synth_en4),
+            config,
+        )
+        obs_convert = diag._get_convert("thetao", for_obs=True)
+        da = xr.DataArray([300.0, 290.0])
+        result = obs_convert(da)
+        # EN4 obs should ALWAYS be converted K to C
+        np.testing.assert_allclose(result.values, [26.85, 16.85])
+
+
+# ── 17. Config integration ──────────────────────────────────────────
 
 
 class TestConfigIntegration:
