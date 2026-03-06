@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
 from feather.config import FeatherConfig
@@ -311,6 +312,55 @@ class ObsLoader:
         if period is not None and "time" in ds.dims:
             ds = ds.sel(time=slice(period[0], period[1]))
         return ds
+
+    def load_mswep(self, period=None) -> xr.DataArray:
+        """Load MSWEP v2.8 monthly precipitation (converted to kg/m²/s).
+
+        MSWEP data is stored as mm/month.  The conversion is time-varying
+        because months have different numbers of days.  Longitudes are
+        shifted from -180..180 to 0..360 to match the framework convention.
+
+        Parameters
+        ----------
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.DataArray
+            Precipitation in kg/m²/s on a 0.1° global grid.
+        """
+        ds_cfg = self._config.obs_datasets.get("MSWEP")
+        if ds_cfg is None:
+            raise KeyError(
+                "MSWEP not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        cache_key = "MSWEP/precipitation"
+        if cache_key not in self._cache:
+            base_path = Path(ds_cfg["path"])
+            variables = ds_cfg.get("variables", {})
+            filepath = base_path / variables.get(
+                "pr", "zarr/mswep280.past-nrt.monthly.zarr"
+            )
+            self._cache[cache_key] = xr.open_zarr(str(filepath))
+
+        da = self._cache[cache_key]["precipitation"]
+
+        # Convert mm/month -> kg/m²/s  (1 mm = 1 kg/m²)
+        seconds_in_month = da.time.dt.days_in_month * 86400
+        da = da / seconds_in_month
+
+        # Convert lons from -180..180 -> 0..360 (match ERA5/model convention)
+        lon = da.lon.values
+        lon_360 = np.where(lon < 0, lon + 360, lon)
+        sort_idx = np.argsort(lon_360)
+        da = da.isel(lon=sort_idx).assign_coords(lon=lon_360[sort_idx])
+
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
 
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""

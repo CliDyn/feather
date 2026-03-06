@@ -36,7 +36,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~847 unit tests + 4 integration tests.
+Current test count: ~998 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -73,7 +73,8 @@ feather/                     # Package root
 │   ├── sea_ice.py           # SeaIceDiag: sea ice area/extent/volume/spatial
 │   ├── ocean_sst.py         # OceanSST: SST evaluation vs ESA-CCI
 │   ├── ocean_en4.py         # OceanEN4: 3D ocean T/S evaluation vs EN4
-│   └── global_trends.py     # GlobalTrends: per-grid-point linear trends
+│   ├── global_trends.py     # GlobalTrends: per-grid-point linear trends
+│   └── precipitation_mswep.py # PrecipitationMSWEP: precip eval vs MSWEP v2.8
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -416,6 +417,19 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - K→°C conversion: `_get_convert(var)` for model (skips for CMOR), `_get_convert(var, for_obs=True)` for EN4 (always converts). EN4 thetao on Levante is stored in Kelvin, CMOR model thetao is in °C.
 - EN4 influence radius: 200km default (`en4_influence_radius`) for 1° grid; model uses standard 80km
 - 110 dedicated tests in `tests/test_ocean_en4.py`
+
+### PrecipitationMSWEP diagnostic
+- 11th diagnostic: dedicated precipitation evaluation against MSWEP v2.8
+- 8 figures in 6 groups: A (3 absolute bias maps), B (1 relative bias %), C (1 timeseries), D (1 seasonal cycle), E (1 zonal mean), F (1 intensity PDF)
+- MSWEP v2.8: merged gauge+satellite+reanalysis precipitation (0.1°, zarr, mm/month)
+- `ObsLoader.load_mswep()`: converts mm/month → kg/m²/s (time-varying days_in_month), shifts lons from -180..180 → 0..360
+- Relative bias: masked where obs < 0.1 mm/day threshold to avoid division artifacts in deserts
+- Intensity PDF: area-weighted histogram with log-scale bins, shows drizzle bias and heavy precip representation
+- Zonal mean: shows ITCZ position, subtropical dry zones, extratropical storm tracks
+- Enhanced statistics: pattern correlation, STD ratio, RMSE, tropical (30S-30N) and extratropical mean bias
+- CMIP6 support: MMM + individual model biases via `_regrid_to_target()`, `_mmm_from_individual()`
+- Per-group incremental saving (groups A-F independently saveable)
+- 102 dedicated tests in `tests/test_precipitation_mswep.py`
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`

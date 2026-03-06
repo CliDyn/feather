@@ -55,6 +55,10 @@ warming/cooling and inter-model agreement on trend magnitudes
 - **Climate variability**: Standard deviation of deseasonalised and \
 detrended monthly fields — STD maps and STD difference maps for 18 \
 surface variables, comparing models against ERA5
+- **Precipitation (MSWEP)**: Dedicated precipitation evaluation against \
+MSWEP v2.8 — includes absolute and relative bias maps (annual/DJF/JJA), \
+global-mean time series, seasonal cycle, zonal mean profile (ITCZ, \
+storm tracks), and precipitation intensity distribution (PDF)
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

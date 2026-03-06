@@ -990,6 +990,10 @@ The system prompt (`feather/llm/prompts.py`) describes these figure types:
 6. Radiation imbalance time series
 7. Climate variability STD maps (shared sequential colormap)
 8. Climate variability STD difference maps (obs STD + diverging diff panels)
+9. Precipitation bias maps (absolute, from `precipitation_mswep`)
+10. Relative precipitation bias maps (%, masked in arid regions)
+11. Precipitation intensity distribution (area-weighted PDF, log-scale)
+12. Precipitation zonal mean (ITCZ, storm tracks)
 
 **If your diagnostic produces a new plot type**, update `feather/llm/prompts.py` → `_FIGURE_ANALYSIS_SYSTEM` to add a description:
 ```python
@@ -1349,9 +1353,10 @@ Always accept `cmip6_individual` as a keyword argument if your diagnostic should
 | `ocean_en4` | `diag/ocean_en4.py` | Surface bias maps, Hovmoller, depth-layer TS | Per-figure-group |
 | `global_trends` | `diag/global_trends.py` | Per-grid-point linear trend maps | Per-variable |
 | `climate_variability` | `diag/climate_variability.py` | STD maps + STD diff maps (deseasonalised, detrended) | Per-variable (2 figures per var) |
+| `precipitation_mswep` | `diag/precipitation_mswep.py` | Abs/rel bias maps, TS, seasonal cycle, zonal mean, intensity PDF | Per-figure-group (6 groups, 8 figures) |
 
 All diagnostics are grid-agnostic and work with both DestinE (HEALPix) and EERIE (lat/lon) model sets.
 
 Use `timeseries.py` as the simplest template for line-plot diagnostics.
 Use `global_biases.py` as the template for bias-map diagnostics.
-Use `radiation_budget.py` as the template for complex multi-figure-type diagnostics.
+Use `radiation_budget.py` or `precipitation_mswep.py` as the template for complex multi-figure-type diagnostics.

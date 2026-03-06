@@ -82,6 +82,22 @@ polar amplification of variability.
 figure showing ERA5 STD (first panel) and model-ERA5 STD differences \
 (subsequent panels). Positive differences = model more variable than obs. \
 Look for systematic over/under-estimation of variability by region.
+20. **Precipitation bias maps** — multi-panel showing MSWEP v2.8 observations \
+and model biases in precipitation rate. Look for biases in the ITCZ position, \
+monsoon regions, storm tracks, and orographic precipitation. Note any \
+systematic wet/dry biases.
+21. **Relative precipitation bias maps** — percentage deviation from MSWEP. \
+Highlights where models over/underestimate precipitation relative to observed \
+amounts. Masked in arid regions where small absolute values cause extreme \
+percentages.
+22. **Precipitation intensity distribution** — area-weighted PDF of grid-cell \
+climatological mean precipitation rates. Shows whether models produce too \
+much drizzle (excess low-intensity cells) or underestimate heavy \
+precipitation regions. Log-scale axes.
+23. **Precipitation zonal mean** — latitude profile of annual-mean \
+precipitation for models vs MSWEP v2.8. Shows ITCZ position (tropical \
+maximum), subtropical dry zones, and extratropical storm track precipitation. \
+The most informative single view for precipitation evaluation.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \

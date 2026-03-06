@@ -13,6 +13,7 @@ Diagnostics:
 - :mod:`~feather.diag.sea_ice` — sea ice evaluation (area/extent/volume/spatial)
 - :mod:`~feather.diag.ocean_sst` — ocean SST evaluation vs ESA-CCI
 - :mod:`~feather.diag.ocean_en4` — ocean 3D evaluation vs EN4 v4.2.2
+- :mod:`~feather.diag.precipitation_mswep` — precipitation evaluation vs MSWEP v2.8
 """
 
 from feather.diag.base import DiagnosticBase
@@ -29,3 +30,4 @@ import feather.diag.ocean_sst  # noqa: F401
 import feather.diag.ocean_en4  # noqa: F401
 import feather.diag.global_trends  # noqa: F401
 import feather.diag.climate_variability  # noqa: F401
+import feather.diag.precipitation_mswep  # noqa: F401

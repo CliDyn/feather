@@ -61,6 +61,8 @@ obs_datasets:
       ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
   MSWEP:
     path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
   OSI_SAF:
     path: "{obs_root}/OSI-SAF/OSI-AQUA"
     variables:
