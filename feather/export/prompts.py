@@ -52,6 +52,9 @@ diagrams with two anomaly types, and depth-layer mean time series \
 variables — shows observation trends and model-obs trend differences \
 for annual, DJF, and JJA periods, revealing spatial patterns of \
 warming/cooling and inter-model agreement on trend magnitudes
+- **Climate variability**: Standard deviation of deseasonalised and \
+detrended monthly fields — STD maps and STD difference maps for 18 \
+surface variables, comparing models against ERA5
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

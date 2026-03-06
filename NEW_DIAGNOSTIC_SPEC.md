@@ -596,7 +596,13 @@ seasonal = seasonal_climatology(da, period)             # DJF, MAM, JJA, SON
 monthly = monthly_climatology(ts, period)               # 12-value Jan-Dec cycle
 ann = annual_mean(ts)                                   # Annual means from monthly
 anom = anomaly(ts, clim)                               # Deviations from climatology
+deseas = deseason(da, period)                           # Remove monthly seasonal cycle
+detrended = detrend(deseas)                             # Remove per-grid-point linear trend
 ```
+
+**`deseason(da, period=None)`** — thin wrapper combining `monthly_climatology()` + `anomaly()`. Returns deseasonalised anomalies.
+
+**`detrend(da, dim="time")`** — removes per-grid-point linear trend using `linear_trend()`. Data must be materialised (call `.compute()` first). Works on any dimensionality (1D, 2D+time).
 
 ---
 
@@ -656,6 +662,22 @@ fig, axes = plot_combined_bias_map(
     method=self._regrid_method,  # Pass interpolation method to nr.plot()
 )
 ```
+
+**Combined multi-panel map with shared colorbar (for always-positive fields like STD):**
+```python
+from feather.plot.maps import plot_combined_map
+
+fig, axes = plot_combined_map(
+    data_dict,       # OrderedDict of {label: DataArray} — all panels same cmap
+    title="My Title",
+    cmap="YlOrRd",
+    vmin=shared_vmin, vmax=shared_vmax,
+    units="K",
+    method=self._regrid_method,
+)
+```
+
+Unlike `plot_combined_bias_map`, all panels use the **same colormap and range** — no separate obs/bias split. Useful for fields that are always positive (STD, variance, etc.).
 
 **Shared colorbar ranges are essential.** Compute across all models:
 ```python
@@ -749,6 +771,7 @@ Existing patterns (follow these for consistency):
 - `{var}_seasonal_cycle` (seasonal_cycle)
 - `radiation_budget_bars`, `gregory_plot`, `radiation_imbalance_timeseries` (radiation_budget)
 - `{derived_key}_annual_bias` (radiation_budget bias maps)
+- `{var}_std_combined`, `{var}_std_diff_combined` (climate_variability)
 
 ### 6.5 Plot Types Used in Metadata
 
@@ -756,6 +779,7 @@ Existing patterns (follow these for consistency):
 - `"combined_bias_map"` — multi-panel obs + N bias panels
 - `"timeseries"` — time series line plot
 - `"seasonal_cycle"` — 12-month cycle
+- `"combined_map"` — multi-panel with shared colormap (all panels identical rendering)
 - `"budget_bars"` — two-panel: grouped bar chart (left) + zoomed TOA Net (right)
 - `"gregory"` — scatter plot with regression
 
@@ -964,6 +988,8 @@ The system prompt (`feather/llm/prompts.py`) describes these figure types:
 4. Radiation budget bars
 5. Gregory plot
 6. Radiation imbalance time series
+7. Climate variability STD maps (shared sequential colormap)
+8. Climate variability STD difference maps (obs STD + diverging diff panels)
 
 **If your diagnostic produces a new plot type**, update `feather/llm/prompts.py` → `_FIGURE_ANALYSIS_SYSTEM` to add a description:
 ```python
@@ -1322,6 +1348,7 @@ Always accept `cmip6_individual` as a keyword argument if your diagnostic should
 | `ocean_sst` | `diag/ocean_sst.py` | SST bias maps, TS, seasonal cycle, zonal mean | Per-figure-group |
 | `ocean_en4` | `diag/ocean_en4.py` | Surface bias maps, Hovmoller, depth-layer TS | Per-figure-group |
 | `global_trends` | `diag/global_trends.py` | Per-grid-point linear trend maps | Per-variable |
+| `climate_variability` | `diag/climate_variability.py` | STD maps + STD diff maps (deseasonalised, detrended) | Per-variable (2 figures per var) |
 
 All diagnostics are grid-agnostic and work with both DestinE (HEALPix) and EERIE (lat/lon) model sets.
 

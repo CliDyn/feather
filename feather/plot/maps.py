@@ -278,6 +278,106 @@ def plot_combined_bias_map(
     return fig, axes_flat[:n_panels]
 
 
+def plot_combined_map(
+    data_dict, *,
+    title="", cmap="YlOrRd",
+    vmin=None, vmax=None, units="",
+    projection="rob", resolution=0.25,
+    max_cols=3, land=False, method="nearest",
+    figsize_per_panel=(7, 5),
+):
+    """Combined multi-panel figure with shared colormap and range.
+
+    All panels use the same colormap and colorbar limits.  Useful for
+    fields that are always positive (e.g. standard deviation maps).
+
+    Parameters
+    ----------
+    data_dict : dict[str, xr.DataArray]
+        Ordered mapping of ``label -> field``.  Each entry becomes
+        one panel titled with the label.
+    title : str
+        Figure super-title.
+    cmap : str
+        Colormap for all panels.
+    vmin, vmax : float, optional
+        Shared colorbar limits.  If *None*, computed from the
+        2nd / 98th percentile across all fields.
+    units : str
+        Colorbar label.
+    projection : str
+        Map projection name (default Robinson).
+    resolution : float
+        Nereus plotting resolution in degrees.
+    max_cols : int
+        Maximum columns before wrapping to a new row.
+    land : bool
+        Whether to show land overlay.
+    method : str
+        Interpolation method for ``nereus.plot()``.
+    figsize_per_panel : tuple
+        ``(width, height)`` per panel in inches.
+
+    Returns
+    -------
+    fig, axes
+    """
+    import math
+
+    import nereus as nr
+    from nereus.plotting import get_projection
+
+    n_panels = len(data_dict)
+    ncols = min(n_panels, max_cols)
+    nrows = math.ceil(n_panels / ncols)
+
+    proj = get_projection(projection)
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(figsize_per_panel[0] * ncols, figsize_per_panel[1] * nrows),
+        subplot_kw={"projection": proj},
+    )
+
+    # Flatten axes to 1-D array for uniform indexing
+    if nrows == 1 and ncols == 1:
+        axes_flat = [axes]
+    else:
+        axes_flat = np.asarray(axes).ravel().tolist()
+
+    # Auto-compute shared vmin/vmax from all fields
+    if vmin is None or vmax is None:
+        all_vals = np.concatenate([
+            np.asarray(d).ravel()[np.isfinite(np.asarray(d).ravel())]
+            for d in data_dict.values()
+        ])
+        if vmin is None:
+            vmin = float(np.percentile(all_vals, 2))
+        if vmax is None:
+            vmax = float(np.percentile(all_vals, 98))
+
+    interpolator = None  # shared across all panels (same grid)
+
+    for i, (label, field) in enumerate(data_dict.items()):
+        vals, lons, lats = _flatten_latlon(field)
+        _, _, interpolator = nr.plot(
+            vals, lons, lats,
+            ax=axes_flat[i], projection=projection, resolution=resolution,
+            interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
+            colorbar=True, colorbar_label=units, title=label,
+            land=land, method=method,
+        )
+
+    # Hide unused axes
+    for j in range(n_panels, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    if title:
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig, axes_flat[:n_panels]
+
+
 def plot_single_map(data, lon, lat, *, title="", projection="rob",
                     resolution=0.25, interpolator=None, cmap="viridis",
                     **kwargs):

@@ -183,6 +183,54 @@ def linear_trend(da: xr.DataArray, dim: str = "time") -> xr.DataArray:
         return xr.DataArray(float(slope[0]))
 
 
+def deseason(da: xr.DataArray,
+             period: tuple[str, str] = None) -> xr.DataArray:
+    """Remove monthly seasonal cycle, returning anomalies.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data with a ``time`` dimension.
+    period : tuple of str, optional
+        (start, end) for climatology computation.
+
+    Returns
+    -------
+    xr.DataArray
+        Deseasonalised anomalies.
+    """
+    clim = monthly_climatology(da, period=period)
+    return anomaly(da, clim)
+
+
+def detrend(da: xr.DataArray, dim: str = "time") -> xr.DataArray:
+    """Remove per-grid-point linear trend, preserving variability.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data with a time or numeric dimension.
+        Must be materialised (not dask-backed) — call ``.compute()`` first.
+    dim : str
+        Name of the dimension to detrend along.
+
+    Returns
+    -------
+    xr.DataArray
+        Data with the linear trend removed.
+    """
+    slope = linear_trend(da, dim=dim)
+    coord = da[dim]
+    if np.issubdtype(coord.dtype, np.datetime64):
+        t0 = coord.values[0]
+        t = (coord.values - t0) / np.timedelta64(1, "D") / 365.25
+    else:
+        t = coord.values.astype(np.float64)
+        t = t - t[0]
+    t_da = xr.DataArray(t, dims=[dim], coords={dim: da[dim]})
+    return da - slope * t_da
+
+
 _SEASON_MONTHS = {
     "DJF": [12, 1, 2],
     "MAM": [3, 4, 5],

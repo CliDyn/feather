@@ -7,6 +7,9 @@ from feather.util.temporal import (
     annual_mean,
     anomaly,
     climatology,
+    deseason,
+    detrend,
+    linear_trend,
     monthly_climatology,
     seasonal_climatology,
 )
@@ -77,3 +80,101 @@ def test_annual_mean():
     da = _make_timeseries(n_years=3)
     am = annual_mean(da)
     assert am.sizes["time"] == 3
+
+
+# ── deseason tests ──────────────────────────────────────────────────
+
+
+def test_deseason_removes_seasonal_cycle():
+    """After deseason, groupby-month mean should be ~0."""
+    da = _make_timeseries(n_years=5)
+    deseas = deseason(da)
+    monthly_means = deseas.groupby("time.month").mean("time")
+    assert float(monthly_means.std()) < 0.1
+
+
+def test_deseason_with_period():
+    """deseason respects period slicing for climatology."""
+    da = _make_timeseries(n_years=5)
+    deseas = deseason(da, period=("1990", "1992"))
+    assert deseas.sizes["time"] == da.sizes["time"]
+
+
+def test_deseason_preserves_length():
+    """deseason output has same time length as input."""
+    da = _make_timeseries(n_years=3)
+    deseas = deseason(da)
+    assert deseas.sizes["time"] == da.sizes["time"]
+
+
+# ── detrend tests ──────────────────────────────────────────────────
+
+
+def test_detrend_removes_trend():
+    """After detrend, linear_trend should return ~0."""
+    da = _make_timeseries(n_years=5)
+    detrended = detrend(da)
+    residual_trend = linear_trend(detrended)
+    assert abs(float(residual_trend)) < 0.01
+
+
+def test_detrend_preserves_variability():
+    """std should be similar after detrending (slightly smaller ok)."""
+    da = _make_timeseries(n_years=5)
+    original_std = float(da.std())
+    detrended = detrend(da)
+    detrended_std = float(detrended.std())
+    # Should be close — trend is small relative to seasonal cycle
+    assert detrended_std > original_std * 0.5
+
+
+def test_detrend_constant_data():
+    """Detrending constant data returns the same values."""
+    time = xr.date_range("2000-01", periods=24, freq="MS")
+    da = xr.DataArray(
+        np.full(24, 5.0), dims="time", coords={"time": time},
+    )
+    detrended = detrend(da)
+    np.testing.assert_allclose(detrended.values, 5.0, atol=1e-10)
+
+
+def test_detrend_pure_trend():
+    """Detrending a pure linear trend should give constant residual."""
+    time = xr.date_range("2000-01", periods=36, freq="MS")
+    values = np.linspace(0, 3, 36)
+    da = xr.DataArray(values, dims="time", coords={"time": time})
+    detrended = detrend(da)
+    # Residual should have ~zero std
+    assert float(detrended.std()) < 0.01
+
+
+def test_deseason_detrend_pipeline():
+    """Chaining deseason + detrend works correctly."""
+    da = _make_timeseries(n_years=5)
+    deseas = deseason(da)
+    result = detrend(deseas)
+    # Should have much less variance than original
+    assert float(result.std()) < float(da.std())
+    # Monthly means should be ~0 (seasonal cycle removed)
+    monthly_means = result.groupby("time.month").mean("time")
+    assert float(monthly_means.std()) < 0.1
+
+
+def test_detrend_2d():
+    """detrend works on 2D arrays (time x space)."""
+    time = xr.date_range("2000-01", periods=36, freq="MS")
+    # 3 grid points with different trends
+    values = np.column_stack([
+        np.linspace(0, 3, 36),        # +1/yr trend
+        np.linspace(0, 6, 36),        # +2/yr trend
+        np.ones(36) * 10,             # no trend
+    ])
+    da = xr.DataArray(
+        values, dims=("time", "space"),
+        coords={"time": time},
+    )
+    detrended = detrend(da)
+    # Each grid point's trend should be ~0
+    for i in range(3):
+        trend = linear_trend(detrended.isel(space=i))
+        assert abs(float(trend)) < 0.01

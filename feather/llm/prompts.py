@@ -73,6 +73,15 @@ rates at different depths.
 trends, subsequent panels show model-obs trend differences. Look for: \
 spatial patterns of warming/cooling, precipitation changes, trend \
 magnitude comparison across models, regions of agreement/disagreement.
+18. **Climate variability STD maps** — Combined multi-panel figure showing \
+the standard deviation of deseasonalised and detrended monthly data. All \
+panels use the same colormap. Compare spatial patterns of variability \
+across models and ERA5: mid-latitude storm tracks, tropical variability, \
+polar amplification of variability.
+19. **Climate variability STD difference maps** — Combined multi-panel \
+figure showing ERA5 STD (first panel) and model-ERA5 STD differences \
+(subsequent panels). Positive differences = model more variable than obs. \
+Look for systematic over/under-estimation of variability by region.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
