@@ -98,6 +98,22 @@ precipitation regions. Log-scale axes.
 precipitation for models vs MSWEP v2.8. Shows ITCZ position (tropical \
 maximum), subtropical dry zones, and extratropical storm track precipitation. \
 The most informative single view for precipitation evaluation.
+24. **Temperature bias maps (Berkeley Earth)** — spatial maps of model 2m \
+temperature minus Berkeley Earth Land+Ocean climatology. Berkeley Earth is an \
+independent station-based dataset, providing a complementary reference to \
+ERA5 reanalysis. Look for cold/warm biases in polar regions, continents, and \
+systematic differences.
+25. **Temperature warming trend maps** — linear trends in 2m temperature \
+(K/decade) over the analysis period. Global Robinson projection shows \
+observation trends and model-obs trend differences; polar stereographic \
+projections (>50°N, <50°S) highlight Arctic amplification and Antarctic \
+warming patterns. Compare warming rates across models and observations.
+26. **Taylor diagram** — polar plot comparing spatial pattern correlation \
+(angular axis) vs normalised standard deviation (radial axis) of model \
+temperature fields against Berkeley Earth. Multiple seasons (ANN, DJF, JJA) \
+shown with different markers. Reference point at (1,0) represents perfect \
+match. CRMS contour circles indicate centred RMS error. Assess overall \
+spatial skill and seasonal dependence.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \

@@ -97,6 +97,10 @@ obs_datasets:
     path: "{obs_root}/MSWEP/v2.8"
     variables:
       pr: "zarr/mswep280.past-nrt.monthly.zarr"
+  BERKELEY_EARTH:
+    path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
 
 cmip6:
   enabled: true

@@ -276,6 +276,148 @@ def plot_gregory(scatter_data, *, title="Gregory Plot",
     return fig, ax
 
 
+def plot_taylor_diagram(
+    model_stats,
+    *,
+    title="Taylor Diagram",
+    obs_label="Obs",
+    cmip6_stats=None,
+    cmip6_individual_stats=None,
+    season_markers=None,
+    model_colors=None,
+    figsize=(8, 8),
+):
+    """Taylor diagram: pattern correlation vs normalised standard deviation.
+
+    Points are plotted on a polar axes where ``theta = arccos(correlation)``
+    and ``r = normalised_std`` (model STD / obs STD).  The reference
+    observation sits at (r=1, theta=0).  CRMS contours are centred on
+    the reference point.
+
+    Parameters
+    ----------
+    model_stats : dict[str, dict[str, dict]]
+        ``{model: {season: {"corr": R, "std_ratio": sigma_m/sigma_o}}}``.
+    title : str
+        Figure title.
+    obs_label : str
+        Label for the reference marker.
+    cmip6_stats : dict, optional
+        Same structure as *model_stats* for CMIP6 MMM.
+    cmip6_individual_stats : dict, optional
+        Same structure for individual CMIP6 models.
+    season_markers : dict, optional
+        ``{season: marker_char}``.  Defaults to ``{"ANN": "o", "DJF": "v", "JJA": "^"}``.
+    model_colors : dict, optional
+        ``{model: hex_color}``.
+    figsize : tuple
+        Figure size.
+
+    Returns
+    -------
+    fig, ax
+    """
+    if season_markers is None:
+        season_markers = {"ANN": "o", "DJF": "v", "JJA": "^"}
+    if model_colors is None:
+        model_colors = {}
+
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(111, polar=True)
+
+    # Restrict to first quadrant (corr >= 0 → theta 0..pi/2)
+    ax.set_thetamin(0)
+    ax.set_thetamax(90)
+    ax.set_theta_direction(-1)  # clockwise
+    ax.set_theta_offset(np.pi / 2)  # 0° at top
+
+    # Reference point (perfect model)
+    ax.plot(0.0, 1.0, marker="*", markersize=15, color=OBS_COLOR,
+            label=obs_label, zorder=10)
+
+    # CRMS contours centred on (r=1, theta=0)
+    max_r = 2.0
+    theta_grid = np.linspace(0, np.pi / 2, 100)
+    for crms_val in [0.25, 0.5, 0.75, 1.0, 1.5]:
+        r_contour = []
+        for th in theta_grid:
+            # CRMS² = 1 + r² - 2*r*cos(theta) → solve for r
+            # quadratic: r² - 2*cos(theta)*r + (1 - CRMS²) = 0
+            a_coeff = 1.0
+            b_coeff = -2.0 * np.cos(th)
+            c_coeff = 1.0 - crms_val ** 2
+            disc = b_coeff ** 2 - 4 * a_coeff * c_coeff
+            if disc < 0:
+                r_contour.append(np.nan)
+                continue
+            r1 = (-b_coeff + np.sqrt(disc)) / 2.0
+            r2 = (-b_coeff - np.sqrt(disc)) / 2.0
+            r_pos = r1 if r1 >= 0 else r2
+            if r_pos < 0 or r_pos > max_r:
+                r_contour.append(np.nan)
+            else:
+                r_contour.append(r_pos)
+        ax.plot(theta_grid, r_contour, color="gray", linewidth=0.5,
+                linestyle="--", alpha=0.5)
+
+    # Plot CMIP6 individual (background)
+    if cmip6_individual_stats:
+        first = True
+        for _model, seasons in cmip6_individual_stats.items():
+            for season, stats in seasons.items():
+                corr = stats["corr"]
+                std_r = stats["std_ratio"]
+                theta = np.arccos(np.clip(corr, 0.0, 1.0))
+                marker = season_markers.get(season, "o")
+                label = "CMIP6 members" if first else "_nolegend_"
+                ax.plot(theta, std_r, marker=marker, color=CMIP6_COLOR,
+                        alpha=0.3, markersize=5, linestyle="none",
+                        label=label)
+                first = False
+
+    # Plot CMIP6 MMM
+    if cmip6_stats:
+        for season, stats in cmip6_stats.items():
+            corr = stats["corr"]
+            std_r = stats["std_ratio"]
+            theta = np.arccos(np.clip(corr, 0.0, 1.0))
+            marker = season_markers.get(season, "o")
+            ax.plot(theta, std_r, marker=marker, color=CMIP6_COLOR,
+                    markersize=8, linestyle="none",
+                    label=f"CMIP6 MMM ({season})")
+
+    # Plot evaluated models
+    legend_seasons_done = set()
+    for model, seasons in model_stats.items():
+        color = model_colors.get(model, None)
+        for season, stats in seasons.items():
+            corr = stats["corr"]
+            std_r = stats["std_ratio"]
+            theta = np.arccos(np.clip(corr, 0.0, 1.0))
+            marker = season_markers.get(season, "o")
+            label = f"{model} ({season})"
+            ax.plot(theta, std_r, marker=marker, color=color,
+                    markersize=8, linestyle="none", label=label)
+
+    # Axis labels
+    ax.set_rlabel_position(0)
+    ax.set_ylabel("Normalised Standard Deviation", labelpad=30)
+
+    # Correlation labels on theta axis
+    corr_ticks = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]
+    ax.set_thetagrids(
+        [np.degrees(np.arccos(c)) for c in corr_ticks],
+        labels=[str(c) for c in corr_ticks],
+    )
+
+    ax.set_rmax(max_r)
+    ax.set_title(title, pad=20)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.0), fontsize=8)
+
+    plt.tight_layout()
+    return fig, ax
+
+
 def _budget_bar_color(source: str) -> str:
     """Pick bar color for a radiation budget source label."""
     if source in MODEL_COLORS:

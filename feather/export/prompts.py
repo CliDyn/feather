@@ -59,6 +59,11 @@ surface variables, comparing models against ERA5
 MSWEP v2.8 — includes absolute and relative bias maps (annual/DJF/JJA), \
 global-mean time series, seasonal cycle, zonal mean profile (ITCZ, \
 storm tracks), and precipitation intensity distribution (PDF)
+- **Temperature (Berkeley Earth)**: 2m temperature evaluation against \
+Berkeley Earth Land+Ocean (independent station-based dataset) — bias maps \
+(annual/DJF/JJA), timeseries, seasonal cycle, zonal mean, warming trend \
+maps (global + polar stereographic Arctic/Antarctic), and Taylor diagram \
+(pattern correlation vs normalised standard deviation)
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

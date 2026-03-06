@@ -456,7 +456,9 @@ gm = latlon_global_mean(obs_da, area=precomputed_area)  # Faster with precompute
 
 **CRITICAL: cos(lat) on HEALPix is ~3K too warm.** Always use simple `.mean()` for equal-area data.
 
-### 4.2 Regridding (for Bias Maps)
+### 4.2 Regridding to the Common Grid
+
+**Key principle: all spatial bias computations happen on the common nereus 0.25° grid.** Both model data and observation data are regridded to this common grid before computing biases. This ensures consistency regardless of the native resolution of model or obs data.
 
 For HEALPix data, regridding uses `nr.regrid()` with nearest-neighbor interpolation. For lat/lon data (EERIE), use `np.meshgrid(lon, lat)` before `nr.regrid()` — HEALPix per-pixel coordinate arrays pass directly.
 
@@ -464,49 +466,67 @@ For HEALPix data, regridding uses `nr.regrid()` with nearest-neighbor interpolat
 
 **Design principle — method applies only to CMIP6 regridding.** High-resolution model and obs data (DestinE ~5 km, EERIE ~25 km) always use nearest neighbor. Only CMIP6 (~100 km) benefits from smoother interpolation (linear/cubic) to reduce blocky artifacts in bias maps.
 
-**HEALPix → regular grid (model/obs — always nearest):**
+**The common grid pattern (used by ALL bias-map diagnostics):**
 
 ```python
 import nereus as nr
 
 influence_radius = self.config.nereus.get("influence_radius", 80_000.0)
+resolution = self.config.nereus.get("resolution", 0.25)
 
-# Build interpolator ONCE (expensive: ~30s at nside=1024, ~1s reuse):
-regridded, interpolator = nr.regrid(
-    model_clim.values.ravel(),
-    lon=np.asarray(lon), lat=np.asarray(lat),
-    resolution=obs_res,  # match obs grid resolution
-    influence_radius=influence_radius,
-    lon_bounds=(0.0, 360.0),
-    as_xarray=True,
-)
-target_lats = interpolator.target_lat[:, 0]
-target_lons = interpolator.target_lon[0, :]
+interpolator = None
+target_lats = None
+target_lons = None
 
-# Reuse for subsequent models/seasons:
-regridded_np = interpolator(model_clim_2.values.ravel())
-regridded_da = xr.DataArray(
-    regridded_np, dims=("lat", "lon"),
-    coords={"lat": target_lats, "lon": target_lons},
-)
+for model in self.config.models:
+    lon, lat = model_coords[model]
+    grid_type = self.config.get_grid_type(model, self.domain)
+    if grid_type != "healpix":
+        lon, lat = np.meshgrid(lon, lat)
 
-# Regrid obs to same common grid (for consistent bias maps):
-obs_common = obs_clim.interp({lat_name: target_lats, lon_name: target_lons})
+    if interpolator is None:
+        # Build interpolator ONCE from first model (defines common grid):
+        regridded, interpolator = nr.regrid(
+            model_clim.values.ravel(),
+            lon=np.asarray(lon).ravel(),
+            lat=np.asarray(lat).ravel(),
+            resolution=resolution,
+            influence_radius=influence_radius,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
+        )
+        target_lats = interpolator.target_lat[:, 0]
+        target_lons = interpolator.target_lon[0, :]
+
+        # Regrid obs to the SAME common grid (not obs native grid!):
+        obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
+        _, obs_interp = nr.regrid(
+            obs_clim.values.ravel(),
+            lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
+            resolution=resolution,
+            influence_radius=influence_radius,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
+        )
+        obs_common = xr.DataArray(
+            obs_interp(obs_clim.values.ravel()),
+            dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
+    else:
+        # Reuse interpolator for subsequent models:
+        regridded = interpolator(model_clim.values.ravel())
+
+    model_common = xr.DataArray(
+        regridded, dims=("lat", "lon"),
+        coords={"lat": target_lats, "lon": target_lons},
+    )
+    bias = model_common - obs_common
 ```
 
-**Lat/lon → regular grid (EERIE — always nearest):**
-```python
-# For lat/lon grids, create 2D coordinate arrays first:
-lon_2d, lat_2d = np.meshgrid(lon_1d, lat_1d)
-regridded, interpolator = nr.regrid(
-    model_clim.values.ravel(),
-    lon=lon_2d.ravel(), lat=lat_2d.ravel(),
-    resolution=obs_res,
-    influence_radius=influence_radius,
-    lon_bounds=(0.0, 360.0),
-    as_xarray=True,
-)
-```
+**CRITICAL: always regrid BOTH model AND obs data to the common nereus grid.** Even if they happen to share a resolution (e.g., EERIE 0.25° model and 0.25° nereus grid), always regrid for consistency. Do NOT assume grids match — different lat/lon grids with the same resolution can have different point counts (e.g., Berkeley Earth 1° has 181×360, EERIE 0.25° has 721×1440). Using `plot_combined_bias_map()` with a shared `interpolator` requires ALL panels to have the same grid shape, so everything must be on the common grid.
+
+**CRITICAL: `plot_combined_bias_map()` shares its interpolator across panels.** If the obs panel is on a 1° grid (65K points) and a bias panel is on a 0.25° grid (1M points), the shared interpolator will fail with `ValueError: different number of values and points`. The fix is always computing biases on the common grid in `_compute_*()`, not in `_plot_*()`.
 
 **CMIP6 → regular grid (uses configurable method):**
 
@@ -562,6 +582,9 @@ def _regrid_to_target(da, target_lats, target_lons,
 2. **Sort columns:** After converting lons, sort data columns to match the new lon order.
 3. **Roll output:** After regridding with `lon_bounds=(-180, 180)`, roll the result by `n_cols//2` to match the 0..360 target grid used by model/obs data.
 4. **Interpolator caching:** Cache per `(n_lat, n_lon)` key — all CMIP6 models with the same grid shape reuse the interpolator.
+5. **Full signature:** `_regrid_to_target(da, target_lats, target_lons, resolution, influence_radius, interp_cache, method="nearest")` — all 6 positional args are required.
+
+**CRITICAL: CMIP6 MMM must be "regrid first, then average" — never "average on native grids, then regrid".** CMIP6 models have different native grids (e.g., 1° vs 1.5°). Using `xr.align(*fields, join="inner")` on incompatible grids produces empty intersections (different lat/lon float values). Always regrid each CMIP6 model to the common target grid individually using `_regrid_to_target()`, then average the regridded fields:
 
 **Influence radius must match source data density:**
 - DestinE production (nside=1024, ~5 km): 80,000 m (80 km)
@@ -697,6 +720,7 @@ from feather.plot.lines import (
     plot_zonal_profile,    # Latitude vs variable
     plot_budget_bars,      # Grouped bar chart
     plot_gregory,          # Scatter: T2m vs TOA radiation
+    plot_taylor_diagram,   # Polar plot: pattern corr vs normalised STD
 )
 ```
 
@@ -782,6 +806,9 @@ Existing patterns (follow these for consistency):
 - `"combined_map"` — multi-panel with shared colormap (all panels identical rendering)
 - `"budget_bars"` — two-panel: grouped bar chart (left) + zoomed TOA Net (right)
 - `"gregory"` — scatter plot with regression
+- `"zonal_profile"` — latitude vs variable profile
+- `"polar_map"` — polar stereographic projection map
+- `"taylor_diagram"` — polar plot of pattern correlation vs normalised STD
 
 ---
 
@@ -994,6 +1021,9 @@ The system prompt (`feather/llm/prompts.py`) describes these figure types:
 10. Relative precipitation bias maps (%, masked in arid regions)
 11. Precipitation intensity distribution (area-weighted PDF, log-scale)
 12. Precipitation zonal mean (ITCZ, storm tracks)
+13. Temperature bias maps vs Berkeley Earth (independent station-based reference)
+14. Temperature warming trend maps (K/decade, global Robinson + polar stereographic)
+15. Taylor diagram (pattern correlation vs normalised standard deviation, multi-season)
 
 **If your diagnostic produces a new plot type**, update `feather/llm/prompts.py` → `_FIGURE_ANALYSIS_SYSTEM` to add a description:
 ```python
@@ -1306,6 +1336,76 @@ if "cmip6_individual" in sig.parameters:
 ```
 Always accept `cmip6_individual` as a keyword argument if your diagnostic should support it.
 
+### 13.12 Symmetric Colorbars for Trend Maps
+
+**Problem:** For trend maps (K/decade), the auto-computed `vmin`/`vmax` (2nd/98th percentile) are asymmetric — e.g., vmin=-0.1, vmax=0.5. With `RdBu_r` colormap, the blue dominates visually and gives a false impression of mostly negative trends.
+
+**Solution:** Use a symmetric colorbar centered on zero for the obs panel:
+```python
+obs_vals = np.asarray(obs_trend).ravel()
+obs_vals = obs_vals[np.isfinite(obs_vals)]
+obs_vmax = float(np.percentile(np.abs(obs_vals), 98)) or 0.5
+
+fig, axes = plot_combined_bias_map(
+    obs_trend, bias_dict,
+    vmin=-obs_vmax, vmax=obs_vmax,  # symmetric around zero
+    cmap="RdBu_r",
+    ...
+)
+```
+The bias panels (`bias_vmax`) are automatically symmetric. Only the obs panel needs explicit symmetric `vmin`/`vmax`.
+
+### 13.13 CMIP6 `xr.align()` Fails on Incompatible Grids
+
+**Problem:** Different CMIP6 models have different native grids (e.g., 1° vs 1.5°). Using `xr.align(*fields, join="inner")` takes the coordinate intersection, which can be **empty** when lat/lon float values don't match exactly. This produces `ValueError: No points given` in Delaunay triangulation.
+
+**Solution:** Always regrid each CMIP6 model to the common target grid individually using `_regrid_to_target()` before averaging. Never use `xr.align()` to combine fields from different native grids:
+```python
+# WRONG: align on native grids → empty intersection
+aligned = xr.align(*trend_fields, join="inner")
+mmm = sum(aligned) / len(aligned)
+
+# RIGHT: regrid each to common grid first
+for model, variant in member_pairs:
+    trend = linear_trend(da.compute()) * 10
+    regridded = GlobalBiases._regrid_to_target(
+        trend, target_lats, target_lons,
+        resolution, influence_radius, interp_cache,
+        method=self._regrid_method,
+    )
+    trend_fields.append(regridded)
+mmm = sum(trend_fields) / len(trend_fields)
+```
+
+### 13.14 Standalone Observation Loading (Non-VARIABLE_REGISTRY Datasets)
+
+**Problem:** Some diagnostics use observation datasets not mapped through `VARIABLE_REGISTRY` (e.g., Berkeley Earth for `temperature_berkeley`, MSWEP for `precipitation_mswep`). The base class `_load_obs_var()` only works with variables registered in the variable registry.
+
+**Solution:** Load directly via `self.obs_loader.load(dataset_name, var_name)` and handle unit conversion, dimension renaming, and longitude shifting manually:
+```python
+def _load_my_obs(self, period=None):
+    da = self.obs_loader.load("MY_DATASET", "var_name", period=period)
+    # Rename dims if needed (e.g., latitude→lat, longitude→lon)
+    if "latitude" in da.dims:
+        da = da.rename({"latitude": "lat", "longitude": "lon"})
+    # Shift lons from -180..180 → 0..360 if needed
+    if float(da.lon.min()) < 0:
+        da = da.assign_coords(lon=(da.lon % 360)).sortby("lon")
+    # Unit conversion (e.g., degC → K)
+    if float(da.mean()) < 200:  # heuristic: degC range
+        da = da + 273.15
+    return da
+```
+
+The dataset must be configured in the YAML config under `obs_datasets`:
+```yaml
+obs_datasets:
+  MY_DATASET:
+    path: "{obs_root}/MY-DATASET/subdir"
+    variables:
+      var_name: "filename.nc"
+```
+
 ---
 
 ## 14. Complete Checklist
@@ -1354,9 +1454,11 @@ Always accept `cmip6_individual` as a keyword argument if your diagnostic should
 | `global_trends` | `diag/global_trends.py` | Per-grid-point linear trend maps | Per-variable |
 | `climate_variability` | `diag/climate_variability.py` | STD maps + STD diff maps (deseasonalised, detrended) | Per-variable (2 figures per var) |
 | `precipitation_mswep` | `diag/precipitation_mswep.py` | Abs/rel bias maps, TS, seasonal cycle, zonal mean, intensity PDF | Per-figure-group (6 groups, 8 figures) |
+| `temperature_berkeley` | `diag/temperature_berkeley.py` | Bias maps, TS, seasonal cycle, zonal mean, warming trends (global + polar stereo), Taylor diagram | Per-figure-group (6 groups, 10 figures) |
 
 All diagnostics are grid-agnostic and work with both DestinE (HEALPix) and EERIE (lat/lon) model sets.
 
 Use `timeseries.py` as the simplest template for line-plot diagnostics.
 Use `global_biases.py` as the template for bias-map diagnostics.
 Use `radiation_budget.py` or `precipitation_mswep.py` as the template for complex multi-figure-type diagnostics.
+Use `temperature_berkeley.py` as the template for diagnostics with standalone obs loading, Taylor diagrams, polar stereographic maps, and trend analysis.

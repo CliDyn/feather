@@ -77,6 +77,8 @@ obs_datasets:
     path: "{obs_root}/AVISO/vDT2024"
   BERKELEY_EARTH:
     path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
 
 cmip6:
   enabled: true

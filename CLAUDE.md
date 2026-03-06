@@ -36,7 +36,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~998 unit tests + 4 integration tests.
+Current test count: ~1079 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -74,7 +74,8 @@ feather/                     # Package root
 │   ├── ocean_sst.py         # OceanSST: SST evaluation vs ESA-CCI
 │   ├── ocean_en4.py         # OceanEN4: 3D ocean T/S evaluation vs EN4
 │   ├── global_trends.py     # GlobalTrends: per-grid-point linear trends
-│   └── precipitation_mswep.py # PrecipitationMSWEP: precip eval vs MSWEP v2.8
+│   ├── precipitation_mswep.py # PrecipitationMSWEP: precip eval vs MSWEP v2.8
+│   └── temperature_berkeley.py # TemperatureBerkeley: T2m eval vs Berkeley Earth
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -430,6 +431,20 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - CMIP6 support: MMM + individual model biases via `_regrid_to_target()`, `_mmm_from_individual()`
 - Per-group incremental saving (groups A-F independently saveable)
 - 102 dedicated tests in `tests/test_precipitation_mswep.py`
+
+### TemperatureBerkeley diagnostic
+- 12th diagnostic: 2m temperature evaluation against Berkeley Earth Land+Ocean (independent station-based dataset)
+- 10 figures in 6 groups: A (3 bias maps: annual/DJF/JJA), B (1 timeseries), C (1 seasonal cycle), D (1 zonal mean), E (3 warming trend maps: global + Arctic/Antarctic polar stereo), F (1 Taylor diagram)
+- Berkeley Earth data: 1° lat/lon, degC, dims `latitude`/`longitude`, lons -180..180, var name `2t`
+- Path: `/work/bb1153/b382289/data/aqua-dvc/datasets/BERKELEY-EARTH/aqua-filled/Berkeley-Earth_aqua-filled_1x1_1979-2024.nc`
+- `_load_berkeley_earth()`: renames dims (latitude→lat, longitude→lon), shifts lons (-180..180 → 0..360), converts degC→K (+273.15)
+- All spatial bias/trend computations done on common nereus 0.25° grid (both model and obs regridded)
+- Trend maps: `linear_trend()` × 10 for K/decade, symmetric colorbar (centered on zero)
+- Polar trend maps: cartopy `NorthPolarStereo()`/`SouthPolarStereo()`, `nr.plot(projection="np"/"sp")`
+- Taylor diagram: `plot_taylor_diagram()` in `plot/lines.py`, polar axes with `theta=arccos(corr)`, `r=std_ratio`, CRMS contour circles
+- Statistics: area-weighted pattern correlation, normalised STD ratio, RMSE, regional mean bias
+- CMIP6 trends: regrid each model individually to common grid, then average (never `xr.align()` on native grids)
+- 81 dedicated tests in `tests/test_temperature_berkeley.py`
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`

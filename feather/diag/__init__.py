@@ -31,3 +31,4 @@ import feather.diag.ocean_en4  # noqa: F401
 import feather.diag.global_trends  # noqa: F401
 import feather.diag.climate_variability  # noqa: F401
 import feather.diag.precipitation_mswep  # noqa: F401
+import feather.diag.temperature_berkeley  # noqa: F401
