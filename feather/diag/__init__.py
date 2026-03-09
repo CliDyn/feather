@@ -14,6 +14,8 @@ Diagnostics:
 - :mod:`~feather.diag.ocean_sst` — ocean SST evaluation vs ESA-CCI
 - :mod:`~feather.diag.ocean_en4` — ocean 3D evaluation vs EN4 v4.2.2
 - :mod:`~feather.diag.precipitation_mswep` — precipitation evaluation vs MSWEP v2.8
+- :mod:`~feather.diag.temperature_berkeley` — temperature evaluation vs Berkeley Earth
+- :mod:`~feather.diag.teleconnections` — climate variability modes (ENSO, NAO, etc.)
 """
 
 from feather.diag.base import DiagnosticBase
@@ -32,3 +34,4 @@ import feather.diag.global_trends  # noqa: F401
 import feather.diag.climate_variability  # noqa: F401
 import feather.diag.precipitation_mswep  # noqa: F401
 import feather.diag.temperature_berkeley  # noqa: F401
+import feather.diag.teleconnections  # noqa: F401

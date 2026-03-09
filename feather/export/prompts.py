@@ -64,6 +64,11 @@ Berkeley Earth Land+Ocean (independent station-based dataset) — bias maps \
 (annual/DJF/JJA), timeseries, seasonal cycle, zonal mean, warming trend \
 maps (global + polar stereographic Arctic/Antarctic), and Taylor diagram \
 (pattern correlation vs normalised standard deviation)
+- **Teleconnections**: Large-scale climate variability modes — ENSO \
+(Nino 3.4), NAO, SAM, AO, IOD, PDO, QBO. For each mode: index time \
+series, spatial pattern (EOF/regression), power spectrum, and seasonal \
+variance profile. Compares phase, amplitude, spectral characteristics, \
+and seasonal locking across models, ERA5, and CMIP6
 
 Your task: from the full set of diagnostic results, select the most \
 compelling findings and organise them into 5-10 thematic sections for a \

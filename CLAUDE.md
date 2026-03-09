@@ -36,7 +36,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~1079 unit tests + 4 integration tests.
+Current test count: ~1166 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -57,6 +57,8 @@ feather/                     # Package root
 ├── util/
 │   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, compute_latlon_areas
 │   ├── temporal.py          # climatology, anomaly, seasonal/monthly grouping
+│   ├── eof.py               # EOF computation via SVD (teleconnections)
+│   ├── spectrum.py           # Power spectrum via Welch (teleconnections)
 │   └── units.py             # Unit conversion functions
 ├── plot/
 │   ├── maps.py              # plot_combined_bias_map (multi-panel), plot_bias_map (3-panel), plot_single_map
@@ -75,7 +77,8 @@ feather/                     # Package root
 │   ├── ocean_en4.py         # OceanEN4: 3D ocean T/S evaluation vs EN4
 │   ├── global_trends.py     # GlobalTrends: per-grid-point linear trends
 │   ├── precipitation_mswep.py # PrecipitationMSWEP: precip eval vs MSWEP v2.8
-│   └── temperature_berkeley.py # TemperatureBerkeley: T2m eval vs Berkeley Earth
+│   ├── temperature_berkeley.py # TemperatureBerkeley: T2m eval vs Berkeley Earth
+│   └── teleconnections.py    # TeleconnectionDiag: variability modes (ENSO, NAO, etc.)
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -445,6 +448,26 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - Statistics: area-weighted pattern correlation, normalised STD ratio, RMSE, regional mean bias
 - CMIP6 trends: regrid each model individually to common grid, then average (never `xr.align()` on native grids)
 - 81 dedicated tests in `tests/test_temperature_berkeley.py`
+
+### TeleconnectionDiag diagnostic
+- 13th diagnostic: large-scale climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
+- 7 modes × 4 figure types = up to 28 figures: index time series, spatial pattern map, power spectrum, seasonal variance profile
+- Mode registry: `ModeDefinition` dataclass with method (box_mean, box_diff, eof, zonal_mean), region, sign convention
+- ENSO: Nino 3.4 box mean (190-240E, 5S-5N) of deseasonalised SST anomalies
+- NAO/SAM/AO: EOF1 of regional SLP anomalies (NAO: N. Atlantic, SAM: SH, AO: NH)
+- IOD: western IO box mean minus eastern IO box mean (SST)
+- PDO: EOF1 of N. Pacific SST with global-mean SST removed
+- QBO: equatorial zonal-mean zonal wind at 50 hPa (gracefully skips if no pressure levels)
+- Spatial patterns: EOF loading (EOF modes) or regression map (box-index modes) — shows teleconnection footprint
+- Power spectrum: `feather/util/spectrum.py` wraps `scipy.signal.welch()`, returns periods in years
+- EOF utility: `feather/util/eof.py` uses `np.linalg.svd` with cos-lat weighting, sign convention fixing
+- No regridding for index computation (box means on native grid, EOF on native regional subset)
+- CMIP6: per-model indices → aligned + averaged for MMM; `cmip6_individual` for individual model overlay
+- 4-layer z-order for time series: CMIP6 individual → models → obs (no MMM for variability modes — averaging smears signal)
+- `_field_global_mean()` uses cos-lat weighting directly (grid-config-independent), used for PDO global SST removal
+- **Curvilinear CMIP6 ocean grids** (ORCA, tripolar): `_find_latlon()` detects `nav_lat`/`nav_lon` etc.; `_get_latlon_arrays()` wraps `nereus.extract_coordinates()` with validation (falls back to named coords when nereus returns integer dim indices). Box means use `nr.subset_by_bbox()` on flattened coord arrays. EOF on curvilinear grids uses `_compute_eof_flat()` (returns PC index only, no spatial pattern). Regression patterns work on any grid shape.
+- **Pattern display**: all patterns (obs, model, CMIP6) regridded to common 1° grid via `_regrid_patterns_to_common()`. Rectilinear uses `xr.DataArray.interp()`, curvilinear uses `nr.regrid()` with explicit lon/lat arrays. All panels rendered with `method="linear"` in `nr.plot()` for smooth display.
+- 87 dedicated tests across `tests/test_eof.py` (13), `tests/test_spectrum.py` (9), `tests/test_teleconnections.py` (65)
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`

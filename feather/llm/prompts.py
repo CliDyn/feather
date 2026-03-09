@@ -114,6 +114,23 @@ temperature fields against Berkeley Earth. Multiple seasons (ANN, DJF, JJA) \
 shown with different markers. Reference point at (1,0) represents perfect \
 match. CRMS contour circles indicate centred RMS error. Assess overall \
 spatial skill and seasonal dependence.
+27. **Teleconnection index time series** — monthly (semi-transparent) and \
+annual-mean (thick) time series of climate variability mode indices (ENSO, \
+NAO, SAM, AO, IOD, PDO, QBO). Compares phase, amplitude, and timing of \
+modes across models, ERA5, and optionally CMIP6. For ENSO, assess El Nino \
+and La Nina event timing; for NAO/AO, assess winter dominance.
+28. **Teleconnection spatial patterns** — EOF loading maps (for EOF-based \
+modes: NAO, SAM, AO, PDO) or regression maps (for box-index modes: ENSO, \
+IOD) showing the spatial footprint of each mode. Multi-panel: obs + models. \
+Compare pattern structure, amplitude, and spatial extent across models.
+29. **Teleconnection power spectra** — Welch periodogram showing power \
+spectral density vs period (years) for each mode index. Assess whether \
+models reproduce the observed spectral peak (e.g. 3-7 year ENSO band). \
+Log-log axes. Shaded band indicates typical period range.
+30. **Teleconnection seasonal variance** — grouped bar chart showing \
+monthly standard deviation of each mode index. Reveals whether models \
+capture the seasonal locking of variability (e.g. ENSO peaks in DJF, \
+IOD in SON). Compare peak month and amplitude across models and obs.
 
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
