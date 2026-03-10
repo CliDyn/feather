@@ -599,3 +599,132 @@ class TestConfigDrivenPeriod:
         index_html = (site_dir / "index.html").read_text()
         assert "1990" in index_html
         assert "2014" in index_html
+
+
+# ── No-LLM Mode Tests ──────────────────────────────────────────────
+
+
+class TestNoLlm:
+    def test_no_llm_skips_analysis_loading(self, tmp_path):
+        """With analysis files on disk, no_llm=True gives empty analysis."""
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg, no_llm=True)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "t2m_bias",
+            {"title": "T2M Bias", "group": "temperature"},
+        )
+        _create_analysis(
+            gen.analysis_dir, "global_biases", "t2m_bias",
+            {"summary": "A warm bias.", "confidence": "high"},
+        )
+        _create_synthesis(
+            gen.analysis_dir, "global_biases",
+            {"headline_finding": "Overall warm bias",
+             "narrative": "Details here."},
+        )
+
+        result = gen.collect_diagnostics()
+        assert len(result) == 1
+        diag = result[0]
+        assert diag["figures"][0]["analysis"] == {}
+        assert diag["synthesis"] == {}
+        assert diag["has_analysis"] is False
+
+    def test_no_llm_html_no_synthesis(self, tmp_path):
+        """Build with no_llm → diagnostic page has no synthesis box."""
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg, no_llm=True)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature"},
+        )
+        _create_synthesis(
+            gen.analysis_dir, "global_biases",
+            {"headline_finding": "Warm bias", "narrative": "N/A"},
+        )
+
+        site_dir = gen.build()
+        diag_html = (site_dir / "global_biases.html").read_text()
+        assert "synthesis-box" not in diag_html
+        assert "Warm bias" not in diag_html
+
+    def test_no_llm_html_no_analysis_panel(self, tmp_path):
+        """Build with no_llm → no analysis panel or 'not yet available'."""
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg, no_llm=True)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature"},
+        )
+
+        site_dir = gen.build()
+        diag_html = (site_dir / "global_biases.html").read_text()
+        assert "analysis-panel" not in diag_html
+        assert "not yet available" not in diag_html
+
+    def test_no_llm_index_no_headline(self, tmp_path):
+        """Build with no_llm → index page has no headline_finding text."""
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg, no_llm=True)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature"},
+        )
+        _create_synthesis(
+            gen.analysis_dir, "global_biases",
+            {"headline_finding": "Warm bias everywhere"},
+        )
+
+        site_dir = gen.build()
+        index_html = (site_dir / "index.html").read_text()
+        assert "Warm bias everywhere" not in index_html
+        assert "AI Analysis" not in index_html
+        assert "Figures only" not in index_html
+
+    def test_no_llm_skips_analyze_step(self, tmp_path):
+        """run_pipeline with no_llm=True skips the analyze step."""
+        from unittest.mock import patch, MagicMock
+
+        cfg = _make_config(tmp_path)
+
+        mock_site_gen = MagicMock()
+        mock_site_gen.build.return_value = Path("/fake")
+
+        with patch(
+            "feather.website.generator.SiteGenerator", return_value=mock_site_gen,
+        ) as mock_site_cls, patch(
+            "feather.llm.analyzer.FigureAnalyzer"
+        ) as mock_analyzer_cls:
+
+            from feather.run import run_pipeline
+            result = run_pipeline(
+                cfg,
+                steps=["analyze", "website"],
+                no_llm=True,
+            )
+
+            # Analyzer should NOT have been called (analyze step skipped)
+            mock_analyzer_cls.assert_not_called()
+            # Analyses count should be 0
+            assert result["analyses"] == 0
+
+    def test_no_llm_metadata_still_visible(self, tmp_path):
+        """Build with no_llm → metadata table is still rendered."""
+        cfg = _make_config(tmp_path)
+        gen = SiteGenerator(cfg, no_llm=True)
+
+        _create_figure(
+            gen.figures_dir, "global_biases", "fig1",
+            {"title": "Fig 1", "group": "temperature",
+             "variables_used": ["tas"], "units": "K",
+             "models": ["ifs-fesom"]},
+        )
+
+        site_dir = gen.build()
+        diag_html = (site_dir / "global_biases.html").read_text()
+        assert "meta-table" in diag_html
+        assert "Variables" in diag_html

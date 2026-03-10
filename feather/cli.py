@@ -77,6 +77,11 @@ def main(argv: list[str] | None = None):
         help="Plot individual CMIP6 model biases (plus MMM) instead of MMM only",
     )
     parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Generate website without LLM analysis (figures only)",
+    )
+    parser.add_argument(
         "--no-skip-existing",
         action="store_true",
         help="Re-run steps even if output already exists",
@@ -149,6 +154,7 @@ def main(argv: list[str] | None = None):
         skip_existing=not args.no_skip_existing,
         compile_pdf=args.compile_pdf,
         cmip6_individual=args.cmip6_individual,
+        no_llm=args.no_llm,
     )
 
     print()

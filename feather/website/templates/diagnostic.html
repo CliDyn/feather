@@ -38,7 +38,7 @@
 {% endif %}
 
 <!-- Synthesis -->
-{% if diag.synthesis %}
+{% if not no_llm and diag.synthesis %}
 <div class="synthesis-box">
     <h2>Synthesis</h2>
     {% if diag.synthesis.headline_finding %}
@@ -134,6 +134,7 @@
             {% endif %}
 
             <!-- LLM analysis -->
+            {% if not no_llm %}
             {% if fig.analysis %}
             <div class="analysis-panel">
                 <h4>Summary
@@ -180,6 +181,7 @@
             </div>
             {% else %}
             <p class="no-analysis-notice">LLM analysis not yet available for this figure.</p>
+            {% endif %}
             {% endif %}
         </div>
     </div>

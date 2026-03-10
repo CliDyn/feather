@@ -26,6 +26,7 @@ def run_pipeline(
     skip_existing: bool = True,
     compile_pdf: bool = False,
     cmip6_individual: bool = False,
+    no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
 
@@ -56,6 +57,9 @@ def run_pipeline(
         Plot individual CMIP6 model lines/biases (plus MMM) instead of
         MMM only.  Affects diagnostics that accept the parameter
         (``GlobalBiases``, ``SeasonalCycleDiag``, ``TimeseriesDiag``).
+    no_llm : bool
+        When True, skip the ``"analyze"`` step and generate a
+        figures-only website without LLM content.
 
     Returns
     -------
@@ -89,7 +93,7 @@ def run_pipeline(
         )
 
     # ── Step 2: LLM analysis ────────────────────────────────────────
-    if "analyze" in steps:
+    if "analyze" in steps and not no_llm:
         from feather.llm.analyzer import FigureAnalyzer
 
         analyzer = FigureAnalyzer(config, api_key=api_key)
@@ -114,7 +118,7 @@ def run_pipeline(
     if "website" in steps:
         from feather.website.generator import SiteGenerator
 
-        gen = SiteGenerator(config)
+        gen = SiteGenerator(config, no_llm=no_llm)
         summary["site_dir"] = gen.build()
 
     return summary

@@ -63,8 +63,9 @@ class SiteGenerator:
         Feather configuration (for output paths and website settings).
     """
 
-    def __init__(self, config: FeatherConfig) -> None:
+    def __init__(self, config: FeatherConfig, *, no_llm: bool = False) -> None:
         self.config = config
+        self.no_llm = no_llm
         self.figures_dir = Path(config.output_dir) / "figures"
         self.analysis_dir = Path(config.output_dir) / "analysis"
         self.site_dir = Path(config.output_dir) / "site"
@@ -140,14 +141,17 @@ class SiteGenerator:
                 if first_meta_group is None and metadata.get("group"):
                     first_meta_group = metadata["group"]
 
-                analysis_path = (
-                    self.analysis_dir / name / f"{stem}_analysis.json"
-                )
-                analysis = (
-                    _load_json(analysis_path)
-                    if analysis_path.exists()
-                    else {}
-                )
+                if self.no_llm:
+                    analysis = {}
+                else:
+                    analysis_path = (
+                        self.analysis_dir / name / f"{stem}_analysis.json"
+                    )
+                    analysis = (
+                        _load_json(analysis_path)
+                        if analysis_path.exists()
+                        else {}
+                    )
 
                 figures.append(
                     {
@@ -160,10 +164,13 @@ class SiteGenerator:
                 )
 
             # Load synthesis
-            synth_path = self.analysis_dir / name / "synthesis.json"
-            synthesis = (
-                _load_json(synth_path) if synth_path.exists() else {}
-            )
+            if self.no_llm:
+                synthesis = {}
+            else:
+                synth_path = self.analysis_dir / name / "synthesis.json"
+                synthesis = (
+                    _load_json(synth_path) if synth_path.exists() else {}
+                )
 
             # Extract CMIP6 info from figure metadata
             cmip6_info: dict[str, Any] = {}
@@ -317,6 +324,7 @@ class SiteGenerator:
             "period": period_str,
             "site_title": site_title,
             "site_subtitle": site_subtitle,
+            "no_llm": self.no_llm,
         }
 
         # Render index.html

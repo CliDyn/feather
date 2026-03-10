@@ -31,16 +31,18 @@
                     <span class="cmip6-badge">CMIP6</span>
                     {% endif %}
                 </div>
-                {% if diag.synthesis and diag.synthesis.headline_finding %}
+                {% if not no_llm and diag.synthesis and diag.synthesis.headline_finding %}
                 <div class="card-headline">{{ diag.synthesis.headline_finding }}</div>
                 {% endif %}
             </div>
             <div class="card-footer">
                 <span>{{ diag.figures|length }} figure{{ "s" if diag.figures|length != 1 }}</span>
+                {% if not no_llm %}
                 {% if diag.has_analysis %}
                 <span>AI Analysis</span>
                 {% else %}
                 <span>Figures only</span>
+                {% endif %}
                 {% endif %}
             </div>
         </div>

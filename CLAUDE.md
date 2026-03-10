@@ -36,7 +36,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~1166 unit tests + 4 integration tests.
+Current test count: ~1172 unit tests + 4 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -496,6 +496,7 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - 4-stage pipeline: `diagnostics → analyze → report → website`
 - Each step independently runnable via `--steps`; default is `all`
 - `--cmip6-individual` flag plots individual CMIP6 model lines/biases + MMM (passed only to diagnostics that accept it via `inspect.signature()`; supported by `GlobalBiases`, `SeasonalCycleDiag`, `TimeseriesDiag`, `RadiationBudget`, `SeaIceDiag`, `OceanSST`, `OceanEN4`)
+- `--no-llm` flag generates a figures-only website without LLM content: skips the `analyze` step entirely and suppresses synthesis boxes, analysis panels, headline findings, and AI Analysis badges in the HTML output. Metadata tables remain visible. Useful for quick dashboards without running LLM analysis.
 - `run_pipeline()` returns summary dict: `{"figures": N, "analyses": N, ...}`
 - All `scripts/` files are legacy thin wrappers delegating to `feather.cli:main()`
 
