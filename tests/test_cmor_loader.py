@@ -214,3 +214,368 @@ class TestMultiFile:
         loader = CMORLoader(cmor_config)
         da = loader.load_var("TestModel", "tas", table="Amon")
         assert len(da.time) == 24  # 12 + 12
+
+
+# ── Per-model override tests ─────────────────────────────────────────
+
+
+def _make_synth_nc(path, var_name="tas", time_dim="time", n_months=12):
+    """Write a small synthetic NetCDF file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+    time = xr.date_range("1990-01", periods=n_months, freq="MS")
+    data = np.ones((n_months, len(lats), len(lons))) * 300.0
+    ds = xr.Dataset({
+        var_name: xr.DataArray(
+            data, dims=(time_dim, "lat", "lon"),
+            coords={time_dim: time, "lat": lats, "lon": lons},
+        ),
+    })
+    ds.to_netcdf(path)
+    return ds
+
+
+@pytest.fixture
+def hadgem_tree(tmp_path):
+    """Create a HadGEM3-style directory tree with per-model overrides."""
+    root = tmp_path / "MOHC" / "HadGEM3"
+
+    # Atmosphere: standard layout with gr1 grid label
+    tas_dir = root / "eerie-historical" / "r1i1p1f1" / "Amon" / "tas" / "gr1" / "v20240927"
+    _make_synth_nc(
+        tas_dir / "tas_UM_u-di356_199001-199012.nc",
+        var_name="tas",
+    )
+
+    # clt: fraction 0-1 (needs scale_factor=100)
+    clt_dir = root / "eerie-historical" / "r1i1p1f1" / "Amon" / "clt" / "gr1" / "v20240927"
+    path = clt_dir / "clt_UM_u-di356_199001-199012.nc"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+    time = xr.date_range("1990-01", periods=12, freq="MS")
+    data = np.ones((12, len(lats), len(lons))) * 0.65  # 65% as fraction
+    ds = xr.Dataset({
+        "clt": xr.DataArray(
+            data, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        ),
+    })
+    ds.to_netcdf(path)
+
+    # Ocean alias: toscon (alias for tos) with gr1 grid label
+    tos_dir = root / "eerie-historical" / "r1i1p1f1" / "Omon" / "toscon" / "gr1" / "v20240927"
+    _make_synth_nc(
+        tos_dir / "toscon_nemo_199001-199012.nc",
+        var_name="toscon",
+    )
+
+    # Ocean 3D alias: thetao-con (flat layout, no grid_label/version)
+    # Dir name has hyphen, NetCDF var name has underscore
+    thetao_dir = root / "eerie-historical" / "r1i1p1f1" / "Omon" / "thetao-con"
+    _make_synth_nc(
+        thetao_dir / "thetao-con_nemo_199001.nc",
+        var_name="thetao_con",
+        time_dim="time_counter",
+    )
+
+    return root
+
+
+@pytest.fixture
+def hadgem_config(hadgem_tree, tmp_path):
+    """FeatherConfig for a model with per-model overrides."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["HadGEM3"],
+        obs_root="",
+        obs_datasets={},
+        cmip6={"enabled": False},
+        dask={},
+        nereus={"influence_radius": 1_000_000},
+        output_dir=str(tmp_path / "output"),
+        data_source={"type": "cmor", "root": ""},
+        model_configs={
+            "HadGEM3": ModelConfig(
+                name="HadGEM3",
+                institution="MOHC",
+                experiment="eerie-historical",
+                variant="r1i1p1f1",
+                grids={"sfc": "latlon", "o2d": "latlon", "o3d": "latlon"},
+                color="#d62728",
+                data_root=str(hadgem_tree),
+                grid_label="gr1",
+                variable_aliases={
+                    "thetao": "thetao-con",
+                    "so": "so-abs",
+                    "tos": "toscon",
+                    "sos": "sosabs",
+                },
+                scale_factors={"clt": 100},
+            ),
+        },
+    )
+
+
+class TestDataRootOverride:
+    """Tests for per-model data_root path construction."""
+
+    def test_loads_from_data_root(self, hadgem_config):
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "tas", table="Amon")
+        assert da.dims == ("time", "lat", "lon")
+        assert len(da.time) == 12
+
+    def test_table_dir_uses_data_root(self, hadgem_config, hadgem_tree):
+        loader = CMORLoader(hadgem_config)
+        td = loader._table_dir("HadGEM3", "Amon")
+        expected = hadgem_tree / "eerie-historical" / "r1i1p1f1" / "Amon"
+        assert td == expected
+
+
+class TestGridLabelOverride:
+    """Tests for per-model grid_label (gr1 instead of gr)."""
+
+    def test_finds_gr1_dir(self, hadgem_config):
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "tas", table="Amon")
+        assert da.values.mean() == pytest.approx(300.0)
+
+    def test_default_grid_label_is_gr(self, cmor_config):
+        """Standard models still use 'gr' by default."""
+        loader = CMORLoader(cmor_config)
+        da = loader.load_var("TestModel", "tas", table="Amon")
+        assert da.dims == ("time", "lat", "lon")
+
+
+class TestVariableAliases:
+    """Tests for per-model variable name mapping."""
+
+    def test_alias_tos_to_toscon(self, hadgem_config):
+        """Requesting 'tos' loads from 'toscon' directory."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "tos", table="Omon")
+        assert da.dims == ("time", "lat", "lon")
+
+    def test_alias_thetao_flat_layout(self, hadgem_config):
+        """thetao-con uses flat layout (no grid_label/version subdirs)."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "thetao", table="Omon")
+        assert "time" in da.dims  # time_counter renamed to time
+
+    def test_get_alias_returns_mapping(self, hadgem_config):
+        loader = CMORLoader(hadgem_config)
+        assert loader._get_alias("HadGEM3", "thetao") == "thetao-con"
+        assert loader._get_alias("HadGEM3", "tos") == "toscon"
+        assert loader._get_alias("HadGEM3", "tas") == "tas"  # no alias
+
+    def test_no_alias_model_returns_variable(self, cmor_config):
+        loader = CMORLoader(cmor_config)
+        assert loader._get_alias("TestModel", "thetao") == "thetao"
+
+
+class TestTimeCounterRenaming:
+    """Tests for time_counter → time dimension renaming."""
+
+    def test_time_counter_renamed(self, hadgem_config):
+        """Ocean 3D files with time_counter dim get renamed to time."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "thetao", table="Omon")
+        assert "time" in da.dims
+        assert "time_counter" not in da.dims
+
+    def test_standard_time_dim_unchanged(self, hadgem_config):
+        """Atmosphere files with standard time dim are unaffected."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "tas", table="Amon")
+        assert "time" in da.dims
+
+
+class TestScaleFactors:
+    """Tests for per-model post-load scaling."""
+
+    def test_clt_scaled_to_percentage(self, hadgem_config):
+        """clt stored as 0-1 fraction should be scaled to 0-100%."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "clt", table="Amon")
+        assert da.values.mean() == pytest.approx(65.0)  # 0.65 * 100
+
+    def test_no_scaling_for_standard_vars(self, hadgem_config):
+        """Variables without scale_factor are unchanged."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "tas", table="Amon")
+        assert da.values.mean() == pytest.approx(300.0)
+
+    def test_get_scale_factor_default(self, cmor_config):
+        loader = CMORLoader(cmor_config)
+        assert loader._get_scale_factor("TestModel", "clt") == 1.0
+
+
+class TestFlatLayout:
+    """Tests for flat directory layout (no grid_label/version subdirs)."""
+
+    def test_falls_back_to_flat(self, hadgem_config):
+        """When no grid_label/v* dirs exist, reads .nc from var dir."""
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "thetao", table="Omon")
+        assert da.values.mean() == pytest.approx(300.0)
+
+    def test_error_when_nothing_found(self, hadgem_config):
+        """Raises FileNotFoundError when neither layout exists."""
+        loader = CMORLoader(hadgem_config)
+        with pytest.raises(FileNotFoundError, match="tried"):
+            loader.load_var("HadGEM3", "pr", table="Amon")
+
+
+class TestFillValueTime:
+    """Tests for files with fill values in time coordinate."""
+
+    def test_loads_despite_fill_value_time(self, hadgem_tree, hadgem_config):
+        """Files with 9.97e+36 fill values in time should still load."""
+        # Create a SImon/siconc file with a fill value in time
+        si_dir = (
+            hadgem_tree / "eerie-historical" / "r1i1p1f1"
+            / "SImon" / "siconc" / "gr1" / "v20240927"
+        )
+        si_dir.mkdir(parents=True, exist_ok=True)
+
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+
+        # Write a file with a fill value as time (raw seconds)
+        data = np.ones((1, len(lats), len(lons))) * 50.0
+        ds = xr.Dataset({
+            "siconc": xr.DataArray(
+                data, dims=("time", "lat", "lon"),
+                coords={
+                    "time": [9.969209968386869e+36],  # fill value!
+                    "lat": lats,
+                    "lon": lons,
+                },
+            ),
+        })
+        # Must write with raw float time (no encoding) to reproduce issue
+        ds["time"].attrs["units"] = "seconds since 1850-01-01 00:00:00"
+        ds["time"].attrs["calendar"] = "gregorian"
+        ds["time"].encoding = {"dtype": "float64", "units": "seconds since 1850-01-01 00:00:00", "calendar": "gregorian"}
+        ds.to_netcdf(
+            si_dir / "siconc_si3_fill.nc",
+            encoding={"time": {"dtype": "float64", "_FillValue": None}},
+        )
+
+        loader = CMORLoader(hadgem_config)
+        da = loader.load_var("HadGEM3", "siconc", table="SImon")
+        assert "time" in da.dims
+
+    def test_decode_time_manually_no_bounds(self):
+        """Without time_bounds, fill values become NaT."""
+        time_vals = np.array([86400.0, 172800.0, 9.97e+36])
+        ds = xr.Dataset({
+            "x": xr.DataArray([1, 2, 3], dims="time"),
+        })
+        ds["time"] = ("time", time_vals)
+        ds["time"].attrs["units"] = "seconds since 2000-01-01"
+        ds["time"].attrs["calendar"] = "gregorian"
+
+        result = CMORLoader._decode_time_manually(ds, "time")
+        times = result["time"].values
+        assert np.isnat(times[2])  # fill value → NaT
+        assert not np.isnat(times[0])  # valid
+
+    def test_decode_time_manually_with_bounds(self):
+        """With time_bounds, fill values are recovered from midpoints."""
+        time_vals = np.array([86400.0, 9.97e+36])
+        bounds = np.array([[0.0, 172800.0], [172800.0, 259200.0]])
+        ds = xr.Dataset({
+            "x": xr.DataArray([1, 2], dims="time"),
+            "time_bounds": xr.DataArray(bounds, dims=("time", "bnds")),
+        })
+        ds["time"] = ("time", time_vals)
+        ds["time"].attrs["units"] = "seconds since 2000-01-01"
+        ds["time"].attrs["calendar"] = "gregorian"
+        ds["time"].attrs["bounds"] = "time_bounds"
+
+        result = CMORLoader._decode_time_manually(ds, "time")
+        times = result["time"].values
+        assert not np.isnat(times[0])
+        assert not np.isnat(times[1])  # recovered from bounds, not NaT
+
+
+class TestModelConfigNewFields:
+    """Tests for new ModelConfig fields."""
+
+    def test_default_values(self):
+        mc = ModelConfig(name="Test")
+        assert mc.data_root == ""
+        assert mc.grid_label == ""
+        assert mc.variable_aliases == {}
+        assert mc.scale_factors == {}
+
+    def test_fields_set(self):
+        mc = ModelConfig(
+            name="Test",
+            data_root="/some/path",
+            grid_label="gr1",
+            variable_aliases={"thetao": "thetao-con"},
+            scale_factors={"clt": 100},
+        )
+        assert mc.data_root == "/some/path"
+        assert mc.grid_label == "gr1"
+        assert mc.variable_aliases == {"thetao": "thetao-con"}
+        assert mc.scale_factors == {"clt": 100}
+
+
+class TestConfigParsing:
+    """Tests that YAML parsing populates the new fields."""
+
+    def test_from_yaml_new_fields(self, tmp_path):
+        yaml_content = """
+project:
+  name: "Test"
+  experiment: "hist-test"
+  period: ["1980", "2014"]
+
+data_source:
+  type: "cmor"
+  root: "/data"
+
+models:
+  ModelA:
+    institution: INST
+    experiment: hist-test
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#111111"
+    data_root: "/custom/root"
+    grid_label: "gr1"
+    variable_aliases:
+      thetao: "thetao-con"
+      tos: "toscon"
+    scale_factors:
+      clt: 100
+  ModelB:
+    institution: INST2
+    experiment: hist-test
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+"""
+        yaml_path = tmp_path / "test_config.yaml"
+        yaml_path.write_text(yaml_content)
+
+        cfg = FeatherConfig.from_yaml(str(yaml_path))
+
+        mc_a = cfg.model_configs["ModelA"]
+        assert mc_a.data_root == "/custom/root"
+        assert mc_a.grid_label == "gr1"
+        assert mc_a.variable_aliases == {"thetao": "thetao-con", "tos": "toscon"}
+        assert mc_a.scale_factors == {"clt": 100}
+
+        # ModelB has no overrides → defaults
+        mc_b = cfg.model_configs["ModelB"]
+        assert mc_b.data_root == ""
+        assert mc_b.grid_label == ""
+        assert mc_b.variable_aliases == {}
+        assert mc_b.scale_factors == {}

@@ -4,13 +4,19 @@ Supports directory structures like EERIE HighResMIP::
 
     {root}/{institution}/{model}/{experiment}/{variant}/{table}/{variable}/gr/v*/
 
-Each variable is stored as one-file-per-year NetCDF files following the
-CMIP6/CMOR naming convention.
+Also supports per-model overrides for non-standard layouts (e.g. HadGEM3)::
+
+    {data_root}/{experiment}/{variant}/{table}/{variable}/{grid_label}/v*/
+
+Each variable is stored as one-file-per-year (or per-month) NetCDF files
+following the CMIP6/CMOR naming convention.
 """
 
 import logging
+import warnings
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
 from feather.config import FeatherConfig
@@ -129,6 +135,70 @@ class CMORLoader:
 
     # ── Private helpers ────────────────────────────────────────────────
 
+    def _get_alias(self, model: str, variable: str) -> str:
+        """Return the on-disk variable name for *variable*.
+
+        Checks per-model ``variable_aliases`` first, otherwise returns
+        the canonical name unchanged.
+        """
+        mcfg = self._config.model_configs.get(model)
+        if mcfg and mcfg.variable_aliases:
+            return mcfg.variable_aliases.get(variable, variable)
+        return variable
+
+    def _get_scale_factor(self, model: str, variable: str) -> float:
+        """Return a post-load scale factor (default 1.0)."""
+        mcfg = self._config.model_configs.get(model)
+        if mcfg and mcfg.scale_factors:
+            return mcfg.scale_factors.get(variable, 1.0)
+        return 1.0
+
+    @staticmethod
+    def _decode_time_manually(ds: xr.Dataset, time_dim: str) -> xr.Dataset:
+        """Decode a raw numeric time coordinate, recovering fill values.
+
+        Some HadGEM3 files have fill values (9.97e+36) in the time
+        coordinate that prevent normal CF time decoding.  This method
+        reads the ``units`` and ``calendar`` attributes and converts
+        valid values using ``cftime.num2date``.  For fill values, it
+        falls back to ``time_bounds`` (midpoint) if available, otherwise
+        sets NaT.
+        """
+        import cftime as cf
+
+        raw = ds[time_dim]
+        units = raw.attrs.get("units", "seconds since 1850-01-01 00:00:00")
+        calendar = raw.attrs.get("calendar", "gregorian")
+
+        vals = raw.values.astype(np.float64)
+        # Mask fill values (typically ~1e+20 or ~1e+36)
+        valid = np.abs(vals) < 1e15
+
+        # Try to recover fill-value times from time_bounds midpoints
+        bounds_name = raw.attrs.get("bounds", "time_bounds")
+        if not valid.all() and bounds_name in ds:
+            bounds = ds[bounds_name].values.astype(np.float64)
+            midpoints = bounds.mean(axis=-1)
+            vals[~valid] = midpoints[~valid]
+            valid[:] = True
+            logger.info(
+                "Recovered %d fill-value time(s) from %s midpoints",
+                int((~valid).sum()) if not valid.all() else int(vals.shape[0]),
+                bounds_name,
+            )
+
+        dates = np.full(vals.shape, np.datetime64("NaT"), dtype="datetime64[ns]")
+        if valid.any():
+            decoded = cf.num2date(
+                vals[valid], units, calendar,
+                only_use_cftime_datetimes=False,
+                only_use_python_datetimes=True,
+            )
+            dates[valid] = np.array(decoded, dtype="datetime64[ns]")
+
+        ds[time_dim] = (time_dim, dates)
+        return ds
+
     def _open_variable(
         self, model: str, variable: str, table: str,
     ) -> xr.DataArray:
@@ -140,22 +210,97 @@ class CMORLoader:
                 f"No NetCDF files in {data_dir}"
             )
 
+        alias = self._get_alias(model, variable)
+
         logger.info(
-            "Opening %s/%s/%s (%d files)",
+            "Opening %s/%s/%s (%d files)%s",
             model, table, variable, len(nc_files),
+            f" [alias={alias}]" if alias != variable else "",
         )
 
-        ds = xr.open_mfdataset(nc_files, chunks="auto", combine="by_coords")
-        if variable not in ds:
+        # Suppress SerializationWarning about multiple fill values
+        # (e.g. HadGEM3 siconc has both float32 and float64 _FillValue)
+        # and FutureWarning about data_vars default change.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="variable.*multiple fill values")
+            warnings.filterwarnings("ignore", category=FutureWarning,
+                                    message=".*data_vars.*")
+
+            # Detect time dimension name from first file to set concat_dim.
+            # Use decode_times=False to avoid crashes on files with fill
+            # values in the time coordinate (e.g. HadGEM3 SImon).
+            ds0 = xr.open_dataset(
+                nc_files[0], chunks="auto",
+                decode_timedelta=False, decode_times=False,
+            )
+            time_dim = "time_counter" if "time_counter" in ds0.dims else "time"
+            ds0.close()
+
+            try:
+                ds = xr.open_mfdataset(
+                    nc_files, chunks="auto",
+                    combine="nested", concat_dim=time_dim,
+                    decode_timedelta=False,
+                )
+            except (ValueError, OverflowError):
+                # Some files have fill values (9.97e+36) in the time
+                # coordinate that cause time decoding to fail.  Open
+                # without decoding and reconstruct time manually.
+                logger.warning(
+                    "Time decoding failed for %s/%s/%s — retrying with "
+                    "decode_times=False",
+                    model, table, variable,
+                )
+                ds = xr.open_mfdataset(
+                    nc_files, chunks="auto",
+                    combine="nested", concat_dim=time_dim,
+                    decode_timedelta=False, decode_times=False,
+                )
+                ds = self._decode_time_manually(ds, time_dim)
+
+        # Normalise time dimension: some datasets use "time_counter"
+        if "time_counter" in ds.dims and "time" not in ds.dims:
+            ds = ds.rename({"time_counter": "time"})
+
+        # Find the variable in the dataset.  Try canonical name first,
+        # then the alias with underscores (dir names use hyphens, NetCDF
+        # variable names use underscores).
+        nc_var = None
+        for candidate in [variable, alias, alias.replace("-", "_")]:
+            if candidate in ds:
+                nc_var = candidate
+                break
+
+        if nc_var is None:
             raise KeyError(
-                f"Variable {variable!r} not in dataset. "
+                f"Variable {variable!r} (alias={alias!r}) not in dataset. "
                 f"Available: {list(ds.data_vars)}"
             )
-        return ds[variable]
+
+        da = ds[nc_var]
+
+        # Apply per-model scale factor (e.g. clt fraction→percentage)
+        scale = self._get_scale_factor(model, variable)
+        if scale != 1.0:
+            da = da * scale
+
+        return da
 
     def _table_dir(self, model: str, table: str) -> Path:
-        """Build path to the table directory."""
+        """Build path to the table directory.
+
+        Uses per-model ``data_root`` if set, otherwise constructs from
+        the global root + institution + model name.
+        """
         mcfg = self._config.model_configs[model]
+        if mcfg.data_root:
+            # Per-model override: {data_root}/{experiment}/{variant}/{table}
+            return (
+                Path(mcfg.data_root)
+                / (mcfg.experiment or self._config.get_experiment())
+                / (mcfg.variant or "r1i1p1f1")
+                / table
+            )
         return (
             self._root
             / mcfg.institution
@@ -168,21 +313,42 @@ class CMORLoader:
     def _find_version_dir(
         self, model: str, variable: str, table: str,
     ) -> Path:
-        """Find the latest version directory for a variable.
+        """Find the directory containing NetCDF files for a variable.
 
-        Path: ``{root}/{institution}/{model}/{experiment}/{variant}/{table}/{variable}/gr/v*/``
+        Tries paths in order:
+
+        1. ``{table_dir}/{alias}/{grid_label}/v*/``  (standard CMOR)
+        2. ``{table_dir}/{alias}/``  (flat layout, no grid_label/version)
+
+        The grid label defaults to ``"gr"`` but can be overridden per model
+        via ``ModelConfig.grid_label``.
         """
-        var_dir = self._table_dir(model, table) / variable / "gr"
-        if not var_dir.exists():
-            raise FileNotFoundError(
-                f"Variable directory not found: {var_dir}"
-            )
+        alias = self._get_alias(model, variable)
+        mcfg = self._config.model_configs.get(model)
+        grid_label = (mcfg.grid_label if mcfg and mcfg.grid_label else "gr")
 
-        # Take the latest version directory
-        versions = sorted(var_dir.glob("v*"))
-        if not versions:
-            raise FileNotFoundError(
-                f"No version directories in {var_dir}"
-            )
+        base = self._table_dir(model, table)
 
-        return versions[-1]
+        # Try 1: standard layout with grid_label and version dirs
+        var_dir = base / alias / grid_label
+        if var_dir.exists():
+            versions = sorted(var_dir.glob("v*"))
+            if versions:
+                return versions[-1]
+            # grid_label dir exists but no version subdirs — use it directly
+            if list(var_dir.glob("*.nc")):
+                return var_dir
+
+        # Try 2: flat layout — files directly under the variable directory
+        flat_dir = base / alias
+        if flat_dir.exists() and list(flat_dir.glob("*.nc")):
+            logger.debug(
+                "Using flat layout for %s/%s/%s (no %s/v* subdirs)",
+                model, table, alias, grid_label,
+            )
+            return flat_dir
+
+        raise FileNotFoundError(
+            f"Variable directory not found: tried {base / alias / grid_label} "
+            f"and {flat_dir}"
+        )

@@ -37,6 +37,24 @@ models:
       o2d: latlon
       o3d: latlon
     color: "#2ca02c"
+  HadGEM3-GC5:
+    institution: MOHC
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#d62728"
+    data_root: "/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    variable_aliases:
+      thetao: "thetao-con"
+      so: "so-abs"
+      tos: "toscon"
+      sos: "sosabs"
+    scale_factors:
+      clt: 100
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:

@@ -38,6 +38,10 @@ class ModelConfig:
     variant: str = ""
     grids: dict[str, str] = field(default_factory=dict)
     color: str = ""
+    data_root: str = ""
+    grid_label: str = ""
+    variable_aliases: dict[str, str] = field(default_factory=dict)
+    scale_factors: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -207,5 +211,9 @@ def _build_model_configs(
             variant=cfg.get("variant", ""),
             grids=grids,
             color=cfg.get("color", ""),
+            data_root=cfg.get("data_root", ""),
+            grid_label=cfg.get("grid_label", ""),
+            variable_aliases=cfg.get("variable_aliases", {}),
+            scale_factors=cfg.get("scale_factors", {}),
         )
     return configs

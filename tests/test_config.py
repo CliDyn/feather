@@ -302,13 +302,23 @@ class TestEerieConfig:
             pytest.skip("EERIE config not found")
 
         cfg = FeatherConfig.from_yaml(str(eerie_path))
-        assert cfg.models == ["IFS-FESOM2-SR", "IFS-NEMO-ER", "ICON-ESM-ER"]
+        assert cfg.models == [
+            "IFS-FESOM2-SR", "IFS-NEMO-ER", "ICON-ESM-ER",
+            "HadGEM3-GC5",
+        ]
         assert cfg.project["name"] == "EERIE"
         assert cfg.get_period() == ("1980", "2014")
         assert cfg.get_experiment() == "hist-1950"
         assert cfg.get_data_source_type() == "cmor"
         assert cfg.get_grid_type("IFS-FESOM2-SR", "sfc") == "latlon"
         assert cfg.model_configs["IFS-FESOM2-SR"].institution == "AWI"
+
+        # HadGEM3 per-model overrides
+        hg = cfg.model_configs["HadGEM3-GC5"]
+        assert hg.data_root != ""
+        assert hg.grid_label == "gr1"
+        assert hg.variable_aliases["thetao"] == "thetao-con"
+        assert hg.scale_factors["clt"] == 100
 
     def test_default_config_backward_compat(self):
         """Default config with project section still loads as legacy."""
