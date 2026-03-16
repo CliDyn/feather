@@ -1,62 +1,53 @@
 project:
-  name: "EERIE"
-  description: "EERIE HighResMIP hist-1950 high-resolution model evaluation"
-  experiment: "hist-1950"
-  period: ["1980", "2014"]
-  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
+  name: "IFS-FESOM T319"
+  description: "IFS-FESOM T319 coupled model evaluation (HEALPix nside=128)"
+  experiment: "hist"
+  period: ["1990", "2014"]
+  resolution: "T319 (~30 km atm, ~5 km ocean)"
 
 data_source:
-  type: "cmor"
-  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+  type: "netcdf_healpix"
+  root: "/work/ab0995/a270135/MN5/projt319/netcdf"
+  # nside: 128  # auto-detected from gsize dim; uncomment to override
 
 models:
-  IFS-FESOM2-SR:
+  IFS-FESOM-T319:
     institution: AWI
-    experiment: hist-1950
+    experiment: hist
     variant: r1i1p1f1
     grids:
-      sfc: latlon
-      o2d: latlon
-      o3d: latlon
+      sfc: healpix
+      o2d: healpix
+      o3d: healpix
+      pl: healpix
     color: "#1f77b4"
-  IFS-NEMO-ER:
-    institution: BSC
-    experiment: hist-1950
-    variant: r1i1p1f1
-    grids:
-      sfc: latlon
-      o2d: latlon
-      o3d: latlon
-    color: "#ff7f0e"
-    absolute_salinity: true
-  ICON-ESM-ER:
-    institution: MPI-M
-    experiment: hist-1950
-    variant: r1i1p1f1
-    grids:
-      sfc: latlon
-      o2d: latlon
-      o3d: latlon
-    color: "#2ca02c"
-  HadGEM3-GC5:
-    institution: MOHC
-    experiment: eerie-historical
-    variant: r1i1p1f1
-    grids:
-      sfc: latlon
-      o2d: latlon
-      o3d: latlon
-    color: "#d62728"
-    data_root: "/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
-    grid_label: "gr1"
     variable_aliases:
-      thetao: "thetao-con"
-      so: "so-abs"
-      tos: "toscon"
-      sos: "sosabs"
-    scale_factors:
-      clt: 100
-    absolute_salinity: true
+      # Surface (sfc)
+      tas: "sfc_mean2t"
+      ts: "sfc_mskt"
+      psl: "sfc_msl"
+      uas: "sfc_10u"
+      vas: "sfc_10v"
+      clt: "sfc_tcc"
+      pr: "sfc_mtpr"
+      hfss: "sfc_msshf"
+      hfls: "sfc_mslhf"
+      rsds: "sfc_msdwswrf"
+      rlds: "sfc_msdwlwrf"
+      rss: "sfc_msnswrf"
+      rls: "sfc_msnlwrf"
+      rsscs: "sfc_msnswrfcs"
+      rlscs: "sfc_msnlwrfcs"
+      # Ocean 2D (o2d)
+      tos: "o2d_avg_tos"
+      sos: "o2d_avg_sos"
+      siconc: "o2d_avg_siconc"
+      sithick: "o2d_avg_sithick"
+      # Ocean 3D (o3d)
+      thetao: "o3d_avg_thetao"
+      so: "o3d_avg_so"
+    # scale_factors:
+      # pr: verify units — assumed kg/m²/s already
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:
@@ -165,7 +156,7 @@ nereus:
   ocean_influence_radius: 20000
   method: "linear"
 
-output_dir: "./output_eerie"
+output_dir: "./output_himansu_319"
 
 llm:
   figure_analysis:
@@ -185,8 +176,8 @@ report:
   n_highlights: 10
 
 website:
-  title: "Feather — EERIE Model Evaluation"
-  subtitle: "EERIE HighResMIP hist-1950 Simulations vs Observations (1980-2014)"
+  title: "Feather — IFS-FESOM T319 Model Evaluation"
+  subtitle: "IFS-FESOM T319 Simulation vs Observations (1990-2014)"
   group_order:
     - evaluation
     - temperature

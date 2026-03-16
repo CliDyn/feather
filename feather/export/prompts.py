@@ -82,6 +82,14 @@ Selection criteria:
 5. Stories where the models agree or disagree with each other \
 and with CMIP6
 
+CRITICAL: Figure captions MUST name ALL evaluated models ({model_list}) \
+that appear in that figure. Do not write captions that mention only a \
+subset of the evaluated models when more are shown. Individual CMIP6 \
+ensemble members do NOT need to be named — refer to them collectively as \
+"CMIP6 MMM" or "CMIP6 ensemble". Some figures may have fewer evaluated \
+models if a variable is unavailable — that is fine, just name all \
+evaluated models that ARE present.
+
 Respond ONLY with a valid JSON object (no markdown fencing) matching this schema:
 
 {{
@@ -229,6 +237,9 @@ Write in an IPCC-like style:
 - Reference figures by their labels (e.g. "Figure~\\ref{{fig:label}}")
 - Plain text only — NO LaTeX commands (except figure references as above)
 - NO markdown formatting
+- CRITICAL: You MUST discuss ALL evaluated models ({model_list}) by name \
+in the section text. Do not omit any model — each one deserves individual \
+assessment of its performance
 
 IMPORTANT REQUIREMENTS for depth and quality:
 - Write 2-4 substantial paragraphs per section

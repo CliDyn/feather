@@ -7,6 +7,7 @@ Feather is a lightweight climate model evaluation framework supporting multiple 
 Currently supported model sets:
 - **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
 - **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree)
+- **Custom NetCDF/HEALPix**: Per-year NetCDF files on HEALPix grid (e.g. IFS-FESOM T319)
 
 The framework is grid-agnostic: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model config.
 
@@ -36,7 +37,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~1172 unit tests + 4 integration tests.
+Current test count: ~1242 unit tests + 5 integration tests.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -51,6 +52,7 @@ feather/                     # Package root
 ├── data/
 │   ├── loader.py            # DataLoader (intake catalogs + file paths)
 │   ├── cmor_loader.py       # CMORLoader (CMOR directory tree, e.g. EERIE)
+│   ├── netcdf_loader.py     # NetCDFLoader (per-year NetCDF on HEALPix grid)
 │   ├── obs.py               # ObsLoader (observations from config) + load_ceres()
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (33 vars, CMOR canonical names)
@@ -107,6 +109,7 @@ feather/                     # Package root
 | `feather/config.py` | FeatherConfig + ModelConfig dataclasses, dual-format YAML loading |
 | `feather/data/variables.py` | Central variable registry (CMOR canonical names) |
 | `feather/data/cmor_loader.py` | CMORLoader — load from CMOR directory tree (EERIE etc.) |
+| `feather/data/netcdf_loader.py` | NetCDFLoader — load per-year NetCDF on HEALPix grid |
 | `feather/diag/base.py` | Base class — grid-agnostic helpers (`_load_model_var`, `_model_global_mean`) |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
 | `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
@@ -163,7 +166,7 @@ models:
 | `get_model_color(model)` | hex color string | palette cycle |
 | `get_period()` | `(start, end)` tuple | `("1990", "2014")` |
 | `get_experiment()` | experiment string | `"baseline_hist"` |
-| `get_data_source_type()` | `"cmor"` or `"destine_catalog"` | `"destine_catalog"` |
+| `get_data_source_type()` | `"cmor"`, `"netcdf_healpix"`, or `"destine_catalog"` | `"destine_catalog"` |
 
 ### ModelConfig dataclass
 
@@ -176,6 +179,11 @@ class ModelConfig:
     variant: str        # e.g. "r1i1p1f1"
     grids: dict         # domain → "healpix"|"latlon"
     color: str          # Hex color for plots
+    data_root: str      # Per-model data path override (HadGEM3)
+    grid_label: str     # CMOR grid label override (default "gr")
+    variable_aliases: dict  # CMOR var name → on-disk name (e.g. thetao→thetao-con)
+    scale_factors: dict     # var → multiplier (e.g. clt: 100 for fraction→%)
+    absolute_salinity: bool # True if model outputs SA (TEOS-10) instead of SP (EOS-80)
 ```
 
 ### Other config fields
@@ -220,6 +228,21 @@ Variables use CMOR names as canonical IDs (e.g., `"tas"` not `"avg_2t"`). The `V
 - 3 models: IFS-FESOM2-SR (AWI), IFS-NEMO-ER (BSC), ICON-ESM-ER (MPI-M)
 - Period: 1950–2014 (config uses 1980–2014)
 - CMORLoader in `feather/data/cmor_loader.py` handles path construction and file discovery
+
+### Custom NetCDF/HEALPix model data (NetCDFLoader)
+- Data source type: `"netcdf_healpix"` in config
+- Root: configurable per-project (e.g. `/work/ab0995/a270135/MN5/projt319/netcdf`)
+- Path pattern: `{root}/{dir_name}/{dir_name}_{year}.nc` (per-year files)
+- Grid: HEALPix 1D, dim named `gsize` (renamed to `values` on load)
+- Coordinates: derived from `healpy.pix2ang(nside, ...)` and attached as `longitude`/`latitude`
+- nside auto-detected from `gsize` dim size, or overridden via `data_source.nside` config
+- Singleton dims (`height`, `depth`) squeezed automatically
+- Variable mapping: `variable_aliases` in ModelConfig maps CMOR names → on-disk dir names
+- Fallback: `destine_variable` from `VARIABLE_REGISTRY`, then canonical name
+- Scale factors and caching work identically to CMORLoader
+- IFS conventions: positive-downward fluxes (same as ERA5/DestinE, NOT CMOR)
+- NetCDFLoader in `feather/data/netcdf_loader.py`
+- Config: `configs/himansu_319.yaml` (IFS-FESOM T319 example)
 
 ### Observations
 - Root: `/work/bb1153/b382289/data/aqua-dvc/datasets/`
@@ -297,12 +320,13 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py` (CMOR name as
 ## How to add a new model set
 
 1. Create a config YAML using the structured format (see `configs/eerie.yaml` as template)
-2. Set `data_source.type` to `"cmor"` (or implement a new loader)
+2. Set `data_source.type` to `"cmor"`, `"netcdf_healpix"`, or `"destine_catalog"`
 3. Define `models` as a dict with per-model `institution`, `experiment`, `variant`, `grids`, `color`
 4. Set `project.name`, `project.period`, `project.experiment`
-5. Run: `feather --config configs/my_project.yaml --diagnostics timeseries --variables tas -v`
+5. For `"netcdf_healpix"`: add `variable_aliases` mapping CMOR names → on-disk directory names (see `configs/himansu_319.yaml`)
+6. Run: `feather --config configs/my_project.yaml --diagnostics timeseries --variables tas -v`
 
-If your data format is not CMOR or intake catalogs, create a new loader class (see `CMORLoader` in `feather/data/cmor_loader.py` as template) and add a dispatch case in `feather/run.py:_create_model_loader()`.
+If your data format is not CMOR, NetCDF/HEALPix, or intake catalogs, create a new loader class (see `NetCDFLoader` in `feather/data/netcdf_loader.py` or `CMORLoader` in `feather/data/cmor_loader.py` as templates) and add a dispatch case in `feather/run.py:_create_model_loader()`.
 
 ## Important patterns and gotchas
 
@@ -415,12 +439,14 @@ If your data format is not CMOR or intake catalogs, create a new loader class (s
 - Hovmoller figures are combined: EN4 + all models as subpanels with shared symmetric colorbar
 - Two anomaly types: anom1 (each minus own first timestep) and anomref (all minus EN4 first timestep)
 - Uses `nr.hovmoller()` with integer time indices (datetime64 buffer workaround), `nr.mesh_from_arrays()` for EN4 areas, `nr.volume_mean()` for depth-layer averaging
-- Depth levels: auto-detected from `lev`/`depth` coordinate when not in config. Config levels take priority (needed for DestinE integer-indexed depth dim).
+- Depth levels: auto-detected from `lev`/`depth`/`deptht` coordinate when not in config. Config levels take priority (needed for DestinE integer-indexed depth dim). NEMO-based models (HadGEM3) use `deptht` as depth dimension name instead of `lev`.
 - `nr.hovmoller()` and `nr.volume_mean()` are dask-friendly — pass DataArrays directly, never `.values`
 - For latlon 4D data: `.stack(space=(lat_dim, lon_dim))` before `nr.volume_mean()` (needs 3D input)
 - K→°C conversion: `_get_convert(var)` for model (skips for CMOR), `_get_convert(var, for_obs=True)` for EN4 (always converts). EN4 thetao on Levante is stored in Kelvin, CMOR model thetao is in °C.
+- **SA→SP salinity conversion**: NEMO-based models (IFS-NEMO-ER, HadGEM3-GC5) output absolute salinity (TEOS-10, g/kg) instead of practical salinity (EOS-80, PSU). `_apply_sa_to_sp()` converts using `gsw.SP_from_SA(SA, p, lon, lat)` for models with `absolute_salinity: true` in config. Uses `xr.apply_ufunc` with `dask='parallelized'` — stays lazy.
+- EN4 observations use practical salinity — no conversion needed for obs
 - EN4 influence radius: 200km default (`en4_influence_radius`) for 1° grid; model uses standard 80km
-- 110 dedicated tests in `tests/test_ocean_en4.py`
+- 118 dedicated tests in `tests/test_ocean_en4.py`
 
 ### PrecipitationMSWEP diagnostic
 - 11th diagnostic: dedicated precipitation evaluation against MSWEP v2.8

@@ -42,6 +42,7 @@ class ModelConfig:
     grid_label: str = ""
     variable_aliases: dict[str, str] = field(default_factory=dict)
     scale_factors: dict[str, float] = field(default_factory=dict)
+    absolute_salinity: bool = False
 
 
 @dataclass
@@ -215,5 +216,6 @@ def _build_model_configs(
             grid_label=cfg.get("grid_label", ""),
             variable_aliases=cfg.get("variable_aliases", {}),
             scale_factors=cfg.get("scale_factors", {}),
+            absolute_salinity=cfg.get("absolute_salinity", False),
         )
     return configs

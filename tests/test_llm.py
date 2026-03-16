@@ -240,7 +240,7 @@ class TestFigurePrompt:
         meta = _sample_metadata()
         del meta["cmip6_info"]
         prompt = build_figure_prompt(meta)
-        assert "CMIP6" not in prompt
+        assert "CMIP6 context:" not in prompt
 
     def test_no_summary_stats(self):
         meta = _sample_metadata()

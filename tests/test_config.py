@@ -319,6 +319,14 @@ class TestEerieConfig:
         assert hg.grid_label == "gr1"
         assert hg.variable_aliases["thetao"] == "thetao-con"
         assert hg.scale_factors["clt"] == 100
+        assert hg.absolute_salinity is True
+
+        # IFS-NEMO-ER also uses absolute salinity
+        assert cfg.model_configs["IFS-NEMO-ER"].absolute_salinity is True
+
+        # Models without NEMO don't use absolute salinity
+        assert cfg.model_configs["IFS-FESOM2-SR"].absolute_salinity is False
+        assert cfg.model_configs["ICON-ESM-ER"].absolute_salinity is False
 
     def test_default_config_backward_compat(self):
         """Default config with project section still loads as legacy."""

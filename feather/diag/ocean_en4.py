@@ -123,6 +123,82 @@ class OceanEN4(DiagnosticBase):
                 return lambda da: da  # CMOR model data already in °C
         return _VAR_CFG[variable]["convert"]
 
+    # ── Salinity conversion (SA → SP) ─────────────────────────────────
+
+    def _apply_sa_to_sp(
+        self,
+        da: xr.DataArray,
+        model: str,
+        *,
+        model_coords: tuple | None = None,
+        depth: np.ndarray | None = None,
+    ) -> xr.DataArray:
+        """Convert absolute salinity to practical salinity for NEMO models.
+
+        NEMO-based models (IFS-NEMO, HadGEM3) output absolute salinity
+        (TEOS-10, g/kg) instead of practical salinity (EOS-80, PSU).
+        This applies ``gsw.SP_from_SA(SA, p, lon, lat)`` where pressure
+        is approximated from ocean depth (p ≈ depth in dbar).
+
+        No-op for models without ``absolute_salinity: true`` in config.
+        """
+        mcfg = self.config.model_configs.get(model)
+        if not (mcfg and mcfg.absolute_salinity):
+            return da
+
+        import gsw
+
+        # --- Pressure (dbar ≈ depth in metres) ---
+        depth_dim = next(
+            (d for d in da.dims if d in ("lev", "depth", "level", "deptht")), None)
+
+        if depth_dim is not None:
+            if depth is not None:
+                # External depth array (handles DestinE integer-indexed levels)
+                coords = ({depth_dim: da[depth_dim].values}
+                          if depth_dim in da.coords else None)
+                p = xr.DataArray(
+                    depth.astype(np.float64), dims=depth_dim, coords=coords)
+            else:
+                # CMOR: lev coordinate IS real depth in metres
+                p = da[depth_dim].astype(np.float64)
+        else:
+            p = 0.0  # surface data
+
+        # --- Latitude & longitude ---
+        lat_da: xr.DataArray | float = 0.0
+        lon_da: xr.DataArray | float = 0.0
+
+        for lat_name in ("lat", "latitude"):
+            if lat_name in da.dims:
+                lat_da = da[lat_name].astype(np.float64)
+                break
+
+        for lon_name in ("lon", "longitude"):
+            if lon_name in da.dims:
+                lon_da = da[lon_name].astype(np.float64)
+                break
+
+        # HEALPix: lat/lon not in dims, use external coordinates
+        if isinstance(lat_da, float) and model_coords is not None:
+            lon_ext, lat_ext = model_coords
+            spatial_dim = next(
+                (d for d in da.dims if d == "values"), None)
+            if spatial_dim:
+                lat_da = xr.DataArray(
+                    np.asarray(lat_ext, dtype=np.float64), dims=spatial_dim)
+                lon_da = xr.DataArray(
+                    np.asarray(lon_ext, dtype=np.float64), dims=spatial_dim)
+
+        logger.info("Converting SA → SP for %s using gsw.SP_from_SA", model)
+
+        return xr.apply_ufunc(
+            gsw.SP_from_SA,
+            da, p, lon_da, lat_da,
+            dask='parallelized',
+            output_dtypes=[float],
+        )
+
     # ── Depth level helpers ────────────────────────────────────────────
 
     def _get_depth_levels(
@@ -143,7 +219,7 @@ class OceanEN4(DiagnosticBase):
 
         # Fallback: extract from data coordinate (CMOR files)
         if da is not None:
-            for dim_name in ("lev", "depth"):
+            for dim_name in ("lev", "depth", "deptht"):
                 if dim_name in da.coords:
                     values = da[dim_name].values.astype(np.float64)
                     if len(values) > 1:
@@ -175,7 +251,7 @@ class OceanEN4(DiagnosticBase):
 
         # Try lev_bnds from the DataArray coordinates (CMOR files)
         if da is not None:
-            for dim_name in ("lev", "depth"):
+            for dim_name in ("lev", "depth", "deptht"):
                 bnds_name = f"{dim_name}_bnds"
                 if bnds_name in da.coords:
                     bnds = da[bnds_name].values
@@ -562,6 +638,9 @@ class OceanEN4(DiagnosticBase):
             # Extract surface level and convert
             level_dim = "level" if "level" in da.dims else da.dims[1]
             model_sfc = convert(da.isel({level_dim: 0}))
+            # SA → SP conversion for NEMO-based models
+            if variable == "so":
+                model_sfc = self._apply_sa_to_sp(model_sfc, model)
 
             # Compute model climatologies
             model_annual = climatology(model_sfc, self.period).compute()
@@ -754,6 +833,11 @@ class OceanEN4(DiagnosticBase):
 
             # Convert (lazy — stays dask-backed)
             da_conv = convert(da)
+            # SA → SP conversion for NEMO-based models
+            if variable == "so":
+                mc = model_coords.get(model) if model_coords else None
+                da_conv = self._apply_sa_to_sp(
+                    da_conv, model, model_coords=mc, depth=depth)
             time_vals = da_conv.time.values
 
             # nr.hovmoller is dask-friendly: pass DataArray directly,
@@ -1013,6 +1097,11 @@ class OceanEN4(DiagnosticBase):
 
             # Convert (lazy — stays dask-backed)
             da_conv = convert(da)
+            # SA → SP conversion for NEMO-based models
+            if variable == "so":
+                mc = model_coords.get(model) if model_coords else None
+                da_conv = self._apply_sa_to_sp(
+                    da_conv, model, model_coords=mc, depth=depth)
             time_vals = da_conv.time.values
 
             # Flatten spatial dims for nr.volume_mean which expects

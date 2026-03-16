@@ -149,6 +149,11 @@ standard), note sign conventions (positive = energy into the system), \
 assess cloud radiative effects, and for Gregory plots interpret the \
 regression slope as a feedback parameter (W/m²/K)
 
+CRITICAL: You MUST discuss EVERY evaluated model ({model_list}) by name \
+when it appears in the figure. Do not omit any of them from your analysis. \
+CMIP6 models may be summarised collectively as "CMIP6 MMM" or "CMIP6 \
+ensemble" — you do NOT need to name individual CMIP6 members.
+
 Be specific — refer to actual regions, magnitudes, and physical mechanisms. \
 Avoid vague statements.
 
@@ -294,7 +299,10 @@ def build_figure_prompt(metadata: dict) -> str:
         "Analyse the attached climate diagnostic figure.\n\n"
         "Figure metadata:\n"
         + "\n".join(f"  - {p}" for p in parts)
-        + "\n\nProvide your analysis as a JSON object matching the schema "
+        + "\n\nIMPORTANT: You must discuss every evaluated model shown in "
+        "this figure by name. Do not omit any of them. CMIP6 models can be "
+        "summarised collectively.\n\n"
+        "Provide your analysis as a JSON object matching the schema "
         "described in the system prompt."
     )
 
@@ -319,6 +327,9 @@ that ~100 km CMIP6 models miss?
 4. Physical consistency — are the findings physically coherent?
 5. Radiation budget closure — do models conserve energy at TOA/surface? \
 Are cloud radiative effects realistic?
+
+CRITICAL: You MUST mention and discuss ALL evaluated models ({model_list}) \
+by name. Do not omit any model from the synthesis.
 
 Respond **only** with a valid JSON object matching this exact schema \
 (no markdown fencing, no commentary outside the JSON):

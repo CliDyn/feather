@@ -231,6 +231,10 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.cmor_loader import CMORLoader
         return CMORLoader(config)
 
+    if config.get_data_source_type() == "netcdf_healpix":
+        from feather.data.netcdf_loader import NetCDFLoader
+        return NetCDFLoader(config)
+
     from feather.data.loader import DataLoader
 
     catalogs = config.model_catalogs

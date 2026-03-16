@@ -1368,3 +1368,217 @@ class TestFigureExistence:
         # Only create png, not json
         (out / "test_fig.png").write_bytes(b"png")
         assert not en4_diag._figure_exists("test_fig")
+
+
+# ── 20. Absolute salinity → practical salinity conversion ─────────
+
+
+def _mock_sp_from_sa(sa, p, lon, lat):
+    """Mock gsw.SP_from_SA: approximate SA→SP as SA - 0.17."""
+    return sa - 0.17
+
+
+class TestAbsoluteSalinity:
+    """Test SA→SP conversion via _apply_sa_to_sp."""
+
+    def _make_diag(self, tmp_path, *, models, model_configs=None,
+                   synth_data=None, synth_en4=None):
+        """Build OceanEN4 with given model configs."""
+        from feather.config import ModelConfig
+        mc = model_configs or {}
+        config = FeatherConfig(
+            model_catalogs={},
+            models=models,
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000,
+                    "ocean_influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            ocean_3d={
+                "depth_levels": _SYNTH_DEPTHS,
+                "half_levels": _SYNTH_HALF_LEVELS,
+            },
+            data_source={"type": "cmor"},
+            model_configs=mc,
+        )
+        ml = MockOcean3DModelLoader(synth_data) if synth_data else MagicMock()
+        ol = MockEN4ObsLoader(synth_en4) if synth_en4 else MagicMock()
+        return OceanEN4(ml, ol, config, period=("1990", "2014"))
+
+    def test_noop_when_flag_not_set(self, tmp_path):
+        """Models without absolute_salinity flag are unchanged."""
+        from feather.config import ModelConfig
+        diag = self._make_diag(
+            tmp_path, models=["ifs-fesom"],
+            model_configs={
+                "ifs-fesom": ModelConfig(name="ifs-fesom"),
+            },
+        )
+        da = xr.DataArray([35.0, 34.5])
+        result = diag._apply_sa_to_sp(da, "ifs-fesom")
+        np.testing.assert_array_equal(result.values, [35.0, 34.5])
+
+    def test_noop_when_model_not_in_configs(self, tmp_path):
+        """Unknown model → no conversion."""
+        diag = self._make_diag(tmp_path, models=["unknown"])
+        da = xr.DataArray([35.0])
+        result = diag._apply_sa_to_sp(da, "unknown")
+        np.testing.assert_array_equal(result.values, [35.0])
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_converts_when_flag_set(self, mock_gsw, tmp_path):
+        """Models with absolute_salinity=True get SA→SP conversion."""
+        from feather.config import ModelConfig
+        mock_gsw.SP_from_SA = _mock_sp_from_sa
+
+        diag = self._make_diag(
+            tmp_path, models=["nemo-model"],
+            model_configs={
+                "nemo-model": ModelConfig(
+                    name="nemo-model", absolute_salinity=True),
+            },
+        )
+        da = xr.DataArray([35.17, 34.67], dims="x")
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result = diag._apply_sa_to_sp(da, "nemo-model")
+        np.testing.assert_allclose(result.values, [35.0, 34.5], atol=1e-10)
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_surface_data_uses_zero_pressure(self, mock_gsw, tmp_path):
+        """Surface-only data (no depth dim) should use p=0."""
+        from feather.config import ModelConfig
+        mock_gsw.SP_from_SA = MagicMock(side_effect=_mock_sp_from_sa)
+
+        diag = self._make_diag(
+            tmp_path, models=["nemo"],
+            model_configs={
+                "nemo": ModelConfig(name="nemo", absolute_salinity=True),
+            },
+        )
+        da = xr.DataArray(
+            np.full((3, 4), 35.17),
+            dims=("lat", "lon"),
+            coords={"lat": [10, 20, 30], "lon": [0, 90, 180, 270]},
+        )
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result = diag._apply_sa_to_sp(da, "nemo")
+        # Result should be SA - 0.17
+        np.testing.assert_allclose(result.values, 35.0, atol=1e-10)
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_3d_latlon_uses_depth_as_pressure(self, mock_gsw, tmp_path):
+        """3D latlon data should use lev coordinate as pressure."""
+        from feather.config import ModelConfig
+
+        # Use a mock that returns SA minus a depth-dependent offset
+        def sp_from_sa_depth(sa, p, lon, lat):
+            return sa - 0.17 - 0.001 * p
+
+        mock_gsw.SP_from_SA = sp_from_sa_depth
+
+        diag = self._make_diag(
+            tmp_path, models=["nemo"],
+            model_configs={
+                "nemo": ModelConfig(name="nemo", absolute_salinity=True),
+            },
+        )
+
+        levs = np.array([5.0, 50.0, 200.0])
+        lats = np.array([0.0, 30.0])
+        lons = np.array([0.0, 180.0])
+        da = xr.DataArray(
+            np.full((2, 3, 2, 2), 35.17),
+            dims=("time", "lev", "lat", "lon"),
+            coords={"lev": levs, "lat": lats, "lon": lons},
+        )
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result = diag._apply_sa_to_sp(da, "nemo")
+
+        # At lev=5: 35.17 - 0.17 - 0.005 = 34.995
+        # At lev=50: 35.17 - 0.17 - 0.05 = 34.95
+        # At lev=200: 35.17 - 0.17 - 0.2 = 34.8
+        np.testing.assert_allclose(result.sel(lev=5).values, 34.995, atol=1e-6)
+        np.testing.assert_allclose(result.sel(lev=200).values, 34.8, atol=1e-6)
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_3d_healpix_uses_external_depth(self, mock_gsw, tmp_path):
+        """HEALPix 3D data should use external depth array as pressure."""
+        from feather.config import ModelConfig
+        mock_gsw.SP_from_SA = _mock_sp_from_sa
+
+        diag = self._make_diag(
+            tmp_path, models=["nemo"],
+            model_configs={
+                "nemo": ModelConfig(
+                    name="nemo", absolute_salinity=True,
+                    grids={"o3d": "healpix"}),
+            },
+        )
+
+        ncells = 12
+        da = xr.DataArray(
+            np.full((2, 3, ncells), 35.17),
+            dims=("time", "level", "values"),
+        )
+        depth = np.array([5.0, 50.0, 200.0])
+        lon = np.random.uniform(0, 360, ncells)
+        lat = np.random.uniform(-90, 90, ncells)
+
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result = diag._apply_sa_to_sp(
+                da, "nemo",
+                model_coords=(lon, lat),
+                depth=depth,
+            )
+        np.testing.assert_allclose(result.values, 35.0, atol=1e-10)
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_preserves_dataarray_coords(self, mock_gsw, tmp_path):
+        """Conversion should preserve all DataArray metadata."""
+        from feather.config import ModelConfig
+        mock_gsw.SP_from_SA = _mock_sp_from_sa
+
+        diag = self._make_diag(
+            tmp_path, models=["nemo"],
+            model_configs={
+                "nemo": ModelConfig(name="nemo", absolute_salinity=True),
+            },
+        )
+        time = xr.date_range("1990-01", periods=3, freq="MS")
+        lats = np.array([0.0, 30.0])
+        lons = np.array([0.0, 180.0])
+        da = xr.DataArray(
+            np.full((3, 2, 2), 35.17),
+            dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        )
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result = diag._apply_sa_to_sp(da, "nemo")
+        assert list(result.dims) == ["time", "lat", "lon"]
+        assert len(result.time) == 3
+
+    @patch("feather.diag.ocean_en4.gsw", create=True)
+    def test_mixed_models_only_converts_flagged(self, mock_gsw, tmp_path):
+        """In a multi-model setup, only flagged models get conversion."""
+        from feather.config import ModelConfig
+        mock_gsw.SP_from_SA = _mock_sp_from_sa
+
+        diag = self._make_diag(
+            tmp_path, models=["fesom", "nemo"],
+            model_configs={
+                "fesom": ModelConfig(name="fesom"),
+                "nemo": ModelConfig(name="nemo", absolute_salinity=True),
+            },
+        )
+        da = xr.DataArray([35.17])
+
+        # FESOM: no conversion
+        result_fesom = diag._apply_sa_to_sp(da, "fesom")
+        np.testing.assert_array_equal(result_fesom.values, [35.17])
+
+        # NEMO: converted
+        with patch.dict("sys.modules", {"gsw": mock_gsw}):
+            result_nemo = diag._apply_sa_to_sp(da, "nemo")
+        np.testing.assert_allclose(result_nemo.values, [35.0], atol=1e-10)
