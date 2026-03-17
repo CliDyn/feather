@@ -119,6 +119,26 @@ class TestLegacyFormat:
         assert "ifs-fesom" in cfg.model_configs
         assert cfg.model_configs["ifs-fesom"].grids["sfc"] == "healpix"
 
+    def test_legacy_nemo_absolute_salinity(self):
+        """IFS-NEMO in legacy DestinE config gets absolute_salinity=True."""
+        cfg_data = {
+            "models": ["ifs-fesom", "ifs-nemo", "icon"],
+            "obs_root": "",
+            "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {},
+            "nereus": {},
+            "output_dir": "/tmp/out",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.model_configs["ifs-nemo"].absolute_salinity is True
+        assert cfg.model_configs["ifs-fesom"].absolute_salinity is False
+        assert cfg.model_configs["icon"].absolute_salinity is False
+
     def test_legacy_default_period(self):
         cfg = FeatherConfig(
             model_catalogs={}, models=["m"], obs_root="",

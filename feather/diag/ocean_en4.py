@@ -106,6 +106,7 @@ class OceanEN4(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Unit conversion ────────────────────────────────────────────────
 
@@ -765,6 +766,7 @@ class OceanEN4(DiagnosticBase):
                 bias_cmap=vcfg["bias_cmap"],
                 units=vcfg["units"],
                 land=True,
+                method=self._regrid_method,
             )
 
             meta = self._build_metadata(

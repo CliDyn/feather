@@ -87,6 +87,7 @@ class OceanSST(DiagnosticBase):
         self.ocean_influence_radius = self.config.nereus.get(
             "ocean_influence_radius", 20_000.0,
         )
+        self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-figure-group incremental) ──────────────────
 
@@ -318,6 +319,7 @@ class OceanSST(DiagnosticBase):
                     model_clim_annual.values.ravel(),
                     lon=regrid_lon.ravel(), lat=regrid_lat.ravel(),
                     resolution=resolution,
+                    method=self._regrid_method,
                     influence_radius=self.ocean_influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -348,6 +350,7 @@ class OceanSST(DiagnosticBase):
                     obs_timemean.values.ravel(),
                     lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
                     resolution=resolution,
+                    method=self._regrid_method,
                     influence_radius=self.ocean_influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -453,6 +456,7 @@ class OceanSST(DiagnosticBase):
                 bias_cmap="RdBu_r",
                 units="\u00b0C",
                 land=True,
+                method=self._regrid_method,
             )
 
             meta = self._build_metadata(

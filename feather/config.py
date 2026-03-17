@@ -114,7 +114,11 @@ class FeatherConfig:
         return self.project.get("experiment", "baseline_hist")
 
     def get_data_source_type(self) -> str:
-        """Return data source type: ``"destine_catalog"`` or ``"cmor"``."""
+        """Return data source type.
+
+        One of ``"destine_catalog"``, ``"cmor"``, ``"netcdf_healpix"``,
+        or ``"grib_healpix"``.
+        """
         return self.data_source.get("type", "destine_catalog")
 
     # ── YAML loading ───────────────────────────────────────────────────
@@ -185,6 +189,9 @@ def _build_legacy_model_configs(
     """
     from feather.plot.styles import MODEL_COLORS
 
+    # NEMO-based models output absolute salinity (TEOS-10) — need SA→SP
+    _NEMO_MODELS = {"ifs-nemo"}
+
     configs = {}
     for model in models:
         configs[model] = ModelConfig(
@@ -192,6 +199,7 @@ def _build_legacy_model_configs(
             grids={"sfc": "healpix", "o2d": "healpix",
                    "pl": "healpix", "o3d": "healpix"},
             color=MODEL_COLORS.get(model, ""),
+            absolute_salinity=model in _NEMO_MODELS,
         )
     return configs
 

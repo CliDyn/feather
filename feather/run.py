@@ -235,6 +235,10 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.netcdf_loader import NetCDFLoader
         return NetCDFLoader(config)
 
+    if config.get_data_source_type() == "grib_healpix":
+        from feather.data.grib_loader import GRIBLoader
+        return GRIBLoader(config)
+
     from feather.data.loader import DataLoader
 
     catalogs = config.model_catalogs

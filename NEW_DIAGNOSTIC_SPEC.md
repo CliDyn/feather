@@ -381,6 +381,18 @@ da = self.obs_loader.load_ceres("toa_net_all_mon", period=period, file_key="toa"
 - `_load_obs_var()` applies sign flip automatically for `hfss`/`hfls` when `data_source == "cmor"`
 - Always use `_load_obs_var()` instead of direct `obs_loader.load_for_model_var()` to get correct signs
 
+**Salinity convention gotcha (TEOS-10 vs EOS-80):**
+- NEMO-based models (IFS-NEMO-ER, HadGEM3-GC5) output **absolute salinity** (SA, TEOS-10, g/kg)
+- Other models (FESOM, ICON) and observations (EN4) use **practical salinity** (SP, EOS-80, PSU)
+- Difference is ~0.17 g/kg globally, varies with location (up to ~0.5 near river mouths)
+- Flagged per-model via `absolute_salinity: true` in `ModelConfig`
+- Conversion uses `gsw.SP_from_SA(SA, p, lon, lat)` — see `ocean_en4._apply_sa_to_sp()`
+- See pitfall 13.14 for implementation details
+
+**NEMO depth dimension gotcha:**
+- NEMO ocean output uses `deptht` as the depth dimension name, not `lev` or `depth`
+- Always search for depth using `("lev", "depth", "deptht")` — see pitfall 13.15
+
 ### 3.3 CMIP6 Data (Optional)
 
 Always guard CMIP6 code with `self.cmip6_enabled`:
@@ -1377,7 +1389,46 @@ for model, variant in member_pairs:
 mmm = sum(trend_fields) / len(trend_fields)
 ```
 
-### 13.14 Standalone Observation Loading (Non-VARIABLE_REGISTRY Datasets)
+### 13.14 NEMO Models Output Absolute Salinity (TEOS-10)
+
+**Problem:** NEMO-based ocean models (IFS-NEMO-ER, HadGEM3-GC5 in EERIE; ifs-nemo in DestinE) output **absolute salinity** (SA, TEOS-10, g/kg) instead of **practical salinity** (SP, EOS-80, PSU). EN4 observations and most other models (FESOM, ICON) use practical salinity. Comparing SA directly against SP introduces a systematic bias of ~0.17 g/kg (varying with location).
+
+**Solution:** The `ocean_en4` diagnostic has `_apply_sa_to_sp()` which converts SA→SP using `gsw.SP_from_SA(SA, p, lon, lat)` for models with `absolute_salinity: true` in their `ModelConfig`. The conversion is:
+- **Opt-in per model** — set `absolute_salinity: true` in the YAML config (not all NEMO models necessarily need this)
+- **Dask-compatible** — uses `xr.apply_ufunc(gsw.SP_from_SA, ..., dask='parallelized')`, stays lazy
+- **Coordinate-aware** — uses depth as pressure (dbar ≈ metres), lat/lon from DataArray dims (latlon grids) or external model_coords (HEALPix)
+- **Applied per-model** — only flagged models get converted; others pass through unchanged
+
+```yaml
+# In config YAML:
+models:
+  IFS-NEMO-ER:
+    absolute_salinity: true   # NEMO outputs TEOS-10 absolute salinity
+  IFS-FESOM2-SR:
+    # no flag → practical salinity assumed (default)
+```
+
+```python
+# In diagnostic code — applied inside model loop after base convert:
+if variable == "so":
+    da_conv = self._apply_sa_to_sp(
+        da_conv, model, model_coords=mc, depth=depth)
+```
+
+**Requires:** `gsw` package (`conda install -c conda-forge gsw` or `pip install gsw`).
+
+### 13.15 NEMO Depth Dimension Named `deptht`
+
+**Problem:** NEMO ocean model output uses `deptht` as the depth dimension name (e.g., HadGEM3-GC5 ocean files), not the standard `lev` or `depth` used by other models. Code that only searches for `lev`/`depth` will fail to find depth levels, causing "No depth levels configured" errors.
+
+**Solution:** Always search for depth coordinates using all known names: `("lev", "depth", "deptht")`. The `ocean_en4` diagnostic does this in `_get_depth_levels()`, `_get_layer_thickness()`, and `_apply_sa_to_sp()`. Similarly, HadGEM3's depth bounds coordinate is `deptht_bnds` (not `lev_bnds`).
+
+For the surface level extraction, the fallback `da.dims[1]` already handles unknown depth dim names:
+```python
+level_dim = "level" if "level" in da.dims else da.dims[1]  # catches "deptht" etc.
+```
+
+### 13.16 Standalone Observation Loading (Non-VARIABLE_REGISTRY Datasets)
 
 **Problem:** Some diagnostics use observation datasets not mapped through `VARIABLE_REGISTRY` (e.g., Berkeley Earth for `temperature_berkeley`, MSWEP for `precipitation_mswep`). The base class `_load_obs_var()` only works with variables registered in the variable registry.
 

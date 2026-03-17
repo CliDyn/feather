@@ -236,7 +236,8 @@ class DiagnosticBase(ABC):
         """
         from feather.data.variables import get_var
 
-        if self.config.get_data_source_type() in ("cmor", "netcdf_healpix"):
+        if self.config.get_data_source_type() in ("cmor", "netcdf_healpix",
+                                                      "grib_healpix"):
             return self.model_loader.load_var(
                 model, variable, period=period, time_mean=time_mean,
             )
@@ -272,7 +273,7 @@ class DiagnosticBase(ABC):
             da = self.model_loader.load_var(model, variable)
             return np.asarray(da.lon), np.asarray(da.lat)
 
-        if src == "netcdf_healpix":
+        if src in ("netcdf_healpix", "grib_healpix"):
             da = self.model_loader.load_var(model, variable)
             return np.asarray(da["longitude"]), np.asarray(da["latitude"])
 

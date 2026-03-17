@@ -51,6 +51,66 @@ def test_zonal_mean_weighted(synth_healpix):
     assert not np.all(np.isnan(zm.values))
 
 
+def test_zonal_mean_nan_handling():
+    """Zonal mean excludes NaN pixels from denominator.
+
+    Regression test: previously NaN (land) pixels were included in the
+    denominator, diluting the zonal mean for ocean-only variables.
+    """
+    import xarray as xr
+
+    # 10 pixels: 5 in band 0 (0-10°), 5 in band 1 (10-20°)
+    lat = np.array([5.0, 5.0, 5.0, 5.0, 5.0,
+                     15.0, 15.0, 15.0, 15.0, 15.0])
+    # Band 0: 3 ocean (value 20) + 2 land (NaN)
+    # Band 1: all ocean (value 10)
+    data = np.array([20.0, 20.0, 20.0, np.nan, np.nan,
+                      10.0, 10.0, 10.0, 10.0, 10.0])
+    da = xr.DataArray(data, dims=("values",))
+
+    bins = np.array([0.0, 10.0, 20.0])
+    zm = zonal_mean(da, lat, lat_bins=bins)
+
+    # Band 0 should be 20.0 (mean of the 3 valid pixels), NOT 12.0 (60/5)
+    assert zm.values[0] == pytest.approx(20.0)
+    # Band 1 should be 10.0
+    assert zm.values[1] == pytest.approx(10.0)
+
+
+def test_zonal_mean_nan_with_time():
+    """Zonal mean NaN handling works with extra time dimension."""
+    import xarray as xr
+
+    lat = np.array([5.0, 5.0, 5.0, 5.0])
+    # 2 timesteps × 4 pixels; pixel 3 is always NaN (land)
+    data = np.array([
+        [10.0, 20.0, 30.0, np.nan],
+        [40.0, 50.0, 60.0, np.nan],
+    ])
+    da = xr.DataArray(data, dims=("time", "values"))
+    bins = np.array([0.0, 10.0])
+    zm = zonal_mean(da, lat, lat_bins=bins)
+
+    # t=0: mean of [10, 20, 30] = 20.0 (not 60/4 = 15.0)
+    assert zm.values[0, 0] == pytest.approx(20.0)
+    # t=1: mean of [40, 50, 60] = 50.0 (not 150/4 = 37.5)
+    assert zm.values[1, 0] == pytest.approx(50.0)
+
+
+def test_zonal_mean_all_nan_band():
+    """Zonal mean returns NaN for latitude band where all pixels are NaN."""
+    import xarray as xr
+
+    lat = np.array([5.0, 5.0, 15.0, 15.0])
+    data = np.array([np.nan, np.nan, 10.0, 20.0])
+    da = xr.DataArray(data, dims=("values",))
+    bins = np.array([0.0, 10.0, 20.0])
+    zm = zonal_mean(da, lat, lat_bins=bins)
+
+    assert np.isnan(zm.values[0])    # all-NaN band → NaN
+    assert zm.values[1] == pytest.approx(15.0)
+
+
 def test_global_mean(synth_healpix):
     """Global mean of synthetic temperature field."""
     ds = synth_healpix

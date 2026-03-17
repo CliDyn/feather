@@ -70,10 +70,16 @@ def zonal_mean(da: xr.DataArray, lat: xr.DataArray,
         if mask.any():
             masked_data = data[..., mask]
             masked_w = w[mask]
-            # Weighted mean along last axis
-            wsum = np.nansum(masked_w)
-            if wsum > 0:
-                out[..., i] = np.nansum(masked_data * masked_w, axis=-1) / wsum
+            # Weighted mean along last axis, excluding NaN data points
+            not_nan = ~np.isnan(masked_data)
+            # Zero out weights where data is NaN so denominator is correct
+            effective_w = masked_w * not_nan  # broadcast: (n,) * (..., n)
+            wsum = effective_w.sum(axis=-1)
+            nonzero = wsum > 0
+            if np.any(nonzero):
+                result = np.nansum(masked_data * masked_w, axis=-1)
+                # Avoid division by zero; leave NaN where entire band is NaN
+                out[..., i] = np.where(nonzero, result / wsum, np.nan)
 
     coords = {**other_coords, "lat": ("lat", bin_centres)}
     dims = other_dims + ["lat"]
