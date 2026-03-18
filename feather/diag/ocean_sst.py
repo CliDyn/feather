@@ -87,6 +87,9 @@ class OceanSST(DiagnosticBase):
         self.ocean_influence_radius = self.config.nereus.get(
             "ocean_influence_radius", 20_000.0,
         )
+        self._influence_radius = self.config.nereus.get(
+            "influence_radius", 80_000.0,
+        )
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-figure-group incremental) ──────────────────
@@ -204,8 +207,7 @@ class OceanSST(DiagnosticBase):
         model_coords : dict[str, tuple]
             Model name -> (lon, lat) coordinate arrays.
         """
-        # CMOR (EERIE) tos is already in °C; DestinE tos is in Kelvin
-        is_cmor = self.config.get_data_source_type() == "cmor"
+        # CMOR (EERIE) tos is already in °C; DestinE/GRIB tos is in Kelvin
         model_monthly = {}
         model_coords = {}
         for model in self.config.models:
@@ -217,7 +219,8 @@ class OceanSST(DiagnosticBase):
             except (KeyError, FileNotFoundError):
                 logger.warning("tos not available for %s", model)
                 continue
-            model_monthly[model] = da if is_cmor else _to_celsius(da)
+            model_src = self.config.get_model_data_source_type(model)
+            model_monthly[model] = da if model_src == "cmor" else _to_celsius(da)
             model_coords[model] = (lon, lat)
         return model_monthly, model_coords
 
@@ -272,12 +275,13 @@ class OceanSST(DiagnosticBase):
 
         resolution = self.config.nereus.get("resolution", 0.25)
 
-        # Build interpolators once
-        model_interpolator = None
+        # Cache interpolators per source grid size
+        _model_interp_cache: dict[int, Any] = {}
         obs_interpolator = None
         target_lats = None
         target_lons = None
         common_area = None
+        n_roll = 0
 
         # Results per period
         periods_data = {
@@ -299,6 +303,12 @@ class OceanSST(DiagnosticBase):
             else:
                 regrid_lon, regrid_lat = np.asarray(lon), np.asarray(lat)
 
+            # Convert to -180..180 so Delaunay triangulation does not
+            # produce a NaN stripe at the prime meridian (0°/360° gap).
+            regrid_lon = np.where(
+                regrid_lon > 180, regrid_lon - 360, regrid_lon,
+            )
+
             # Compute model climatologies
             model_clim_annual = climatology(da, self.period).compute()
             model_seasonal = seasonal_climatology(da, self.period)
@@ -313,72 +323,106 @@ class OceanSST(DiagnosticBase):
                 else model_clim_annual
             )
 
-            # Build model interpolator once
-            if model_interpolator is None:
-                _, model_interpolator = nr.regrid(
+            # Build/reuse interpolator keyed by source grid size.
+            # Use the regular influence_radius for model data — the
+            # ocean_influence_radius (20 km) is too small for coarse
+            # grids (e.g. GRIB TCO399 ~25 km) and leaves NaN holes.
+            n_src = regrid_lon.ravel().shape[0]
+            if n_src not in _model_interp_cache:
+                _, interp = nr.regrid(
                     model_clim_annual.values.ravel(),
                     lon=regrid_lon.ravel(), lat=regrid_lat.ravel(),
                     resolution=resolution,
                     method=self._regrid_method,
-                    influence_radius=self.ocean_influence_radius,
-                    lon_bounds=(0.0, 360.0),
+                    influence_radius=self._influence_radius,
+                    lon_bounds=(-180.0, 180.0),
                     as_xarray=True,
                 )
-                target_lats = model_interpolator.target_lat[:, 0]
-                target_lons = model_interpolator.target_lon[0, :]
+                _model_interp_cache[n_src] = interp
 
-                # Compute common area weights
-                common_area = compute_latlon_areas(target_lats, target_lons)
-
-                # Regrid obs to common grid (once)
-                lat_name = (
-                    "lat" if "lat" in obs_timemean.coords else "latitude"
-                )
-                lon_name = (
-                    "lon" if "lon" in obs_timemean.coords else "longitude"
-                )
-                obs_lats = obs_timemean[lat_name].values
-                obs_lons = obs_timemean[lon_name].values
-                obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lats, obs_lons)
-                # Note: meshgrid(lats, lons) creates (nlon, nlat) so we
-                # need meshgrid(lons, lats) with indexing='ij' for (nlat, nlon)
-                obs_lons_2d, obs_lats_2d = np.meshgrid(
-                    obs_lons, obs_lats,
-                )
-
-                _, obs_interpolator = nr.regrid(
-                    obs_timemean.values.ravel(),
-                    lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
-                    resolution=resolution,
-                    method=self._regrid_method,
-                    influence_radius=self.ocean_influence_radius,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-
-                # Regrid each obs period to common grid
-                for pkey in periods_data:
-                    obs_field = periods_data[pkey]["obs"]
-                    obs_common = xr.DataArray(
-                        obs_interpolator(obs_field.values.ravel()),
-                        dims=("lat", "lon"),
-                        coords={"lat": target_lats, "lon": target_lons},
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    # Roll target lons from -180..180 to 0..360
+                    target_lons_raw = interp.target_lon[0, :]
+                    n_roll = len(target_lons_raw) // 2
+                    target_lons = np.roll(target_lons_raw, -n_roll)
+                    target_lons = np.where(
+                        target_lons < 0, target_lons + 360, target_lons,
                     )
-                    periods_data[pkey]["obs_common"] = obs_common
 
-            # Regrid model to common grid
+                    # Compute common area weights
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
+
+                    # Regrid obs to common grid (once)
+                    lat_name = (
+                        "lat" if "lat" in obs_timemean.coords else "latitude"
+                    )
+                    lon_name = (
+                        "lon" if "lon" in obs_timemean.coords else "longitude"
+                    )
+                    obs_lats = obs_timemean[lat_name].values
+                    obs_lons = obs_timemean[lon_name].values
+                    obs_lons_180 = np.where(
+                        obs_lons > 180, obs_lons - 360, obs_lons,
+                    )
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(
+                        obs_lons_180, obs_lats,
+                    )
+
+                    _, obs_interpolator = nr.regrid(
+                        obs_timemean.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=resolution,
+                        method=self._regrid_method,
+                        influence_radius=self.ocean_influence_radius,
+                        lon_bounds=(-180.0, 180.0),
+                        as_xarray=True,
+                    )
+
+                    # Regrid each obs period to common grid
+                    # (roll from -180..180 to 0..360 output order)
+                    for pkey in periods_data:
+                        obs_field = periods_data[pkey]["obs"]
+                        regridded = np.roll(
+                            obs_interpolator(obs_field.values.ravel()),
+                            -n_roll, axis=1,
+                        )
+                        obs_common = xr.DataArray(
+                            regridded,
+                            dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
+                        periods_data[pkey]["obs_common"] = obs_common
+
+            model_interpolator = _model_interp_cache[n_src]
+
+            # Regrid model to common grid (roll from -180..180 to 0..360)
             annual_regrid = xr.DataArray(
-                model_interpolator(model_clim_annual.values.ravel()),
+                np.roll(
+                    model_interpolator(model_clim_annual.values.ravel()),
+                    -n_roll, axis=1,
+                ),
                 dims=("lat", "lon"),
                 coords={"lat": target_lats, "lon": target_lons},
             )
             djf_regrid = xr.DataArray(
-                model_interpolator(model_djf.values.ravel()),
+                np.roll(
+                    model_interpolator(model_djf.values.ravel()),
+                    -n_roll, axis=1,
+                ),
                 dims=("lat", "lon"),
                 coords={"lat": target_lats, "lon": target_lons},
             )
             jja_regrid = xr.DataArray(
-                model_interpolator(model_jja.values.ravel()),
+                np.roll(
+                    model_interpolator(model_jja.values.ravel()),
+                    -n_roll, axis=1,
+                ),
                 dims=("lat", "lon"),
                 coords={"lat": target_lats, "lon": target_lons},
             )
