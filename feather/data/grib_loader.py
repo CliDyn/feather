@@ -144,9 +144,17 @@ class GRIBLoader:
             return mcfg.scale_factors.get(variable, 1.0)
         return 1.0
 
-    def _get_depth_levels(self) -> list[float] | None:
-        """Return ocean 3D depth levels from config, if any."""
-        return self._config.ocean_3d.get("depth_levels")
+    def _get_depth_levels(self, model: str = "") -> list[float] | None:
+        """Return ocean 3D depth levels from config, if any.
+
+        Supports two formats:
+        - **List**: a flat list of depth values (all models share).
+        - **Dict**: maps model name → list of depth values.
+        """
+        dl = self._config.ocean_3d.get("depth_levels")
+        if isinstance(dl, dict):
+            return dl.get(model)
+        return dl
 
     def _discover_grib_files(
         self, data_root: Path, dir_name: str, file_prefix: str,
@@ -191,11 +199,26 @@ class GRIBLoader:
             model, variable, len(grib_files), data_root,
         )
 
+        def _normalise_ocean_layers(ds):
+            """Normalise oceanModelLayer indices across files.
+
+            Some GRIB files use [2, 4, ..., 56] (even) while others use
+            [1, 3, ..., 55] (odd).  Replace with sequential 0..N-1 so
+            that ``open_mfdataset`` outer join does not double the levels.
+            """
+            if "oceanModelLayer" in ds.dims:
+                n = ds.sizes["oceanModelLayer"]
+                ds = ds.assign_coords(
+                    oceanModelLayer=np.arange(n, dtype=np.float64),
+                )
+            return ds
+
         ds = xr.open_mfdataset(
             grib_files,
             engine="cfgrib",
             combine="nested",
             concat_dim="time",
+            preprocess=_normalise_ocean_layers,
             backend_kwargs={"indexpath": ""},
             chunks="auto",
         )
@@ -215,7 +238,7 @@ class GRIBLoader:
 
         # Remap ocean model layers to real depth values
         if "oceanModelLayer" in da.dims:
-            da = self._remap_ocean_depth(da)
+            da = self._remap_ocean_depth(da, model)
 
         # Apply per-model scale factor
         scale = self._get_scale_factor(model, variable)
@@ -224,14 +247,16 @@ class GRIBLoader:
 
         return da
 
-    def _remap_ocean_depth(self, da: xr.DataArray) -> xr.DataArray:
+    def _remap_ocean_depth(
+        self, da: xr.DataArray, model: str = "",
+    ) -> xr.DataArray:
         """Replace ``oceanModelLayer`` indices with real depth values.
 
         If ``ocean_3d.depth_levels`` is configured, maps the integer
         GRIB layer indices (2, 4, ..., 56) to corresponding depth
         values.  Otherwise, just renames the dimension to ``lev``.
         """
-        depth_levels = self._get_depth_levels()
+        depth_levels = self._get_depth_levels(model)
         n_layers = da.sizes["oceanModelLayer"]
 
         if depth_levels and len(depth_levels) == n_layers:

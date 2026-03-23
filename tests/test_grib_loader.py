@@ -590,6 +590,31 @@ class TestOceanDepthRemap:
         expected = np.arange(2, 12, 2, dtype=np.float64)
         np.testing.assert_array_equal(da["lev"].values, expected)
 
+    def test_per_model_depth_dict(self, ocean_setup):
+        """Dict-format depth_levels picks up per-model values."""
+        depths_399 = [7.5, 25.0, 45.0, 65.0, 85.0]
+        depths_319 = [10.0, 30.0, 50.0, 70.0, 90.0]
+        depth_dict = {
+            "IFS-FESOM-TCO399": depths_399,
+            "IFS-FESOM-TCO319": depths_319,
+        }
+        cfg = _make_config(ocean_setup, depth_levels=depth_dict)
+        loader = GRIBLoader(cfg)
+        da = loader.load_var("IFS-FESOM-TCO399", "thetao")
+        np.testing.assert_array_equal(da["lev"].values, depths_399)
+
+    def test_per_model_depth_dict_missing_model(self, ocean_setup):
+        """Model not in dict-format depth_levels keeps raw indices."""
+        depth_dict = {
+            "OTHER_MODEL": [7.5, 25.0, 45.0, 65.0, 85.0],
+        }
+        cfg = _make_config(ocean_setup, depth_levels=depth_dict)
+        loader = GRIBLoader(cfg)
+        da = loader.load_var("IFS-FESOM-TCO399", "thetao")
+        # No entry for TCO399 → None → keeps raw indices
+        expected = np.arange(2, 12, 2, dtype=np.float64)
+        np.testing.assert_array_equal(da["lev"].values, expected)
+
 
 # ── Test: ocean 2D singleton squeeze ─────────────────────────────────
 
