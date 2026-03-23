@@ -702,6 +702,11 @@ class TeleconnectionDiag(DiagnosticBase):
         """EOF-based index (NAO, SAM, AO, PDO)."""
         da = self._load_field(mode_def, model, source)
 
+        # Check grid type: HEALPix and curvilinear grids use flat EOF
+        _, _, is_rect = self._find_latlon(da)
+        if not is_rect:
+            return self._compute_eof_mode_flat(da, mode_def)
+
         # Extract regional subset FIRST (before deseasonalising)
         # This is the key optimisation: operate on a small region, not global
         logger.info("    Extracting EOF region for %s...", mode_def.name)
@@ -758,6 +763,89 @@ class TeleconnectionDiag(DiagnosticBase):
             )
 
         return pc1, eof1, var_explained
+
+    def _compute_eof_mode_flat(self, da, mode_def):
+        """EOF-based index for non-rectilinear grids (HEALPix, curvilinear).
+
+        Uses _compute_eof_flat for the PC index, then computes a regression
+        pattern from the full field so spatial maps still work.
+
+        Returns (pc1, pattern, var_explained) or (None, None, None).
+        """
+        logger.info("    Using flat EOF for non-rectilinear grid...")
+
+        # For PDO: remove global-mean SST
+        if mode_def.detrend_global:
+            logger.info("    Removing global-mean SST (lazy)...")
+            gm = self._field_global_mean(da)
+            da = da - gm
+
+        # Deseasonalise the full field (flat EOF handles regional masking)
+        logger.info("    Deseasonalising field...")
+        da_anom = deseason(da)
+        if hasattr(da_anom, "compute"):
+            logger.info("    Materialising field...")
+            t0 = _time.time()
+            da_anom = da_anom.compute()
+            dt = _time.time() - t0
+            logger.info(
+                "    Materialised %s (%.1f MB) in %.1fs",
+                da_anom.shape, da_anom.nbytes / 1e6, dt,
+            )
+
+        if da_anom.sizes["time"] < 12:
+            logger.warning(
+                "  Too few timesteps (%d) for EOF of %s",
+                da_anom.sizes["time"], mode_def.name,
+            )
+            return None, None, None
+
+        logger.info("    Computing flat EOF (SVD)...")
+        t0 = _time.time()
+        result = self._compute_eof_flat(da_anom, mode_def, n_modes=1)
+        dt = _time.time() - t0
+
+        if result[0] is None:
+            logger.warning("  Flat EOF returned None for %s", mode_def.name)
+            return None, None, None
+
+        pc1, var_explained = result
+        logger.info(
+            "    Flat EOF done in %.1fs — var explained: %.1f%%",
+            dt, var_explained * 100,
+        )
+
+        # Fix sign convention using the PC index
+        if mode_def.sign_point is not None:
+            # Regression at sign point: if positive → flip
+            lat_check, lon_check = mode_def.sign_point
+            try:
+                lat_arr, lon_arr, _ = self._get_latlon_arrays(da_anom)
+                lat_flat = np.asarray(lat_arr).ravel()
+                lon_flat = np.asarray(lon_arr).ravel() % 360
+                lon_check_360 = lon_check % 360
+                dist = np.sqrt(
+                    (lat_flat - lat_check) ** 2
+                    + (lon_flat - lon_check_360) ** 2
+                )
+                nearest_idx = int(np.argmin(dist))
+                spatial_dims = [d for d in da_anom.dims if d != "time"]
+                data_flat = da_anom.values.reshape(
+                    da_anom.sizes["time"], -1,
+                )
+                sign_val = np.corrcoef(
+                    pc1.values, data_flat[:, nearest_idx],
+                )[0, 1]
+                if sign_val > 0:
+                    pc1 = -pc1
+            except Exception:
+                pass  # sign convention best-effort
+
+        # Compute regression pattern from full field
+        logger.info("    Computing regression pattern (lazy)...")
+        pattern = self._regression_pattern(da_anom, pc1)
+
+        return pc1, pattern, var_explained
 
     @staticmethod
     def _extract_eof_region(da, mode_def):
