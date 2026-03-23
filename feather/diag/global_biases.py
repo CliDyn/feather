@@ -170,9 +170,10 @@ class GlobalBiases(DiagnosticBase):
         obs_lons = obs_clim[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Build nereus interpolator once (all models share the same
-        # HEALPix grid, so the KDTree is built only once).
-        interpolator = None
+        # Cache nereus interpolator per source grid size.
+        # Different-resolution models (e.g. nside=1024 vs nside=128) need
+        # separate interpolators, but models sharing a grid reuse the same one.
+        _interp_cache: dict[int, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         # Pre-computed area weights for the common grid (set once)
@@ -208,10 +209,12 @@ class GlobalBiases(DiagnosticBase):
                 for s in model_seasonal.data_vars
             }
 
-            # Build interpolator once (reused across models + seasons)
-            if interpolator is None:
-                logger.info("  Building nereus interpolator (first model)...")
-                annual_regrid, interpolator = nr.regrid(
+            # Build/reuse interpolator keyed by source grid size
+            n_src = np.asarray(lon).ravel().shape[0]
+            if n_src not in _interp_cache:
+                logger.info("  Building nereus interpolator (grid size %d)...",
+                            n_src)
+                annual_regrid, interp = nr.regrid(
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
@@ -219,51 +222,52 @@ class GlobalBiases(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = interpolator.target_lat[:, 0]
-                target_lons = interpolator.target_lon[0, :]
+                _interp_cache[n_src] = interp
 
-                # Regrid obs to common nereus grid via NN (once).
-                # Using nereus (not xr.interp) for consistency with
-                # model regridding and to avoid NaN at the 0°/360°
-                # boundary where xr.interp extrapolates.
-                obs_lons_2d, obs_lats_2d = np.meshgrid(
-                    obs_lons, obs_lats,
-                )
-                _, obs_interpolator = nr.regrid(
-                    obs_clim.values.ravel(),
-                    lon=obs_lons_2d.ravel(),
-                    lat=obs_lats_2d.ravel(),
-                    resolution=obs_res,
-                    influence_radius=influence_radius,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-                obs_clim_common = xr.DataArray(
-                    obs_interpolator(obs_clim.values.ravel()),
-                    dims=("lat", "lon"),
-                    coords={"lat": target_lats, "lon": target_lons},
-                )
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
 
-                # Pre-compute area weights for the common grid (once)
-                from feather.util.spatial import compute_latlon_areas
-                common_area = compute_latlon_areas(
-                    target_lats, target_lons,
-                )
-
-                # Also regrid seasonal obs (reuse obs interpolator)
-                obs_seasonal_common = {}
-                for season in obs_seasonal:
-                    s_np = obs_interpolator(
-                        obs_seasonal[season].values.ravel(),
+                    # Regrid obs to common nereus grid via NN (once).
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(
+                        obs_lons, obs_lats,
                     )
-                    obs_seasonal_common[season] = xr.DataArray(
-                        s_np, dims=("lat", "lon"),
-                        coords={
-                            "lat": target_lats, "lon": target_lons,
-                        },
+                    _, obs_interpolator = nr.regrid(
+                        obs_clim.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=obs_res,
+                        influence_radius=influence_radius,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
                     )
+                    obs_clim_common = xr.DataArray(
+                        obs_interpolator(obs_clim.values.ravel()),
+                        dims=("lat", "lon"),
+                        coords={"lat": target_lats, "lon": target_lons},
+                    )
+
+                    # Pre-compute area weights for the common grid (once)
+                    from feather.util.spatial import compute_latlon_areas
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
+
+                    # Also regrid seasonal obs (reuse obs interpolator)
+                    obs_seasonal_common = {}
+                    for season in obs_seasonal:
+                        s_np = obs_interpolator(
+                            obs_seasonal[season].values.ravel(),
+                        )
+                        obs_seasonal_common[season] = xr.DataArray(
+                            s_np, dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
             else:
-                regridded_np = interpolator(model_clim.values.ravel())
+                interp = _interp_cache[n_src]
+                regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
                     coords={"lat": target_lats, "lon": target_lons},
@@ -283,7 +287,7 @@ class GlobalBiases(DiagnosticBase):
             seasonal_regrids: dict[str, Any] = {}
             for season in ["DJF", "JJA"]:
                 if season in model_seasonal:
-                    s_np = interpolator(
+                    s_np = _interp_cache[n_src](
                         model_seasonal[season].values.ravel()
                     )
                     s_regrid = xr.DataArray(
@@ -317,7 +321,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
-        if self.cmip6_enabled and interpolator is not None:
+        if self.cmip6_enabled and target_lats is not None:
             if self.cmip6_individual:
                 # Individual CMIP6 models + MMM from same regridded fields
                 cmip6_individual_data = self._compute_cmip6_individual(

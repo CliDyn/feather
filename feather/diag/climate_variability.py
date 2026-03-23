@@ -167,8 +167,8 @@ class ClimateVariability(DiagnosticBase):
         obs_lons = obs_std[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Build nereus interpolator once
-        interpolator = None
+        # Cache nereus interpolator per source grid size
+        _interp_cache: dict[int, Any] = {}
         obs_std_common = None
         common_area = None
         target_lats = None
@@ -203,10 +203,12 @@ class ClimateVariability(DiagnosticBase):
             model_detrended = detrend(model_deseas)
             model_std = model_detrended.std("time")
 
-            # Build interpolator once (reused across models)
-            if interpolator is None:
-                logger.info("  Building nereus interpolator (first model)...")
-                std_regrid, interpolator = nr.regrid(
+            # Build/reuse interpolator keyed by source grid size
+            n_src = np.asarray(lon).ravel().shape[0]
+            if n_src not in _interp_cache:
+                logger.info("  Building nereus interpolator (grid size %d)...",
+                            n_src)
+                std_regrid, interp = nr.regrid(
                     model_std.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
@@ -214,30 +216,36 @@ class ClimateVariability(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = interpolator.target_lat[:, 0]
-                target_lons = interpolator.target_lon[0, :]
+                _interp_cache[n_src] = interp
 
-                # Regrid obs to common nereus grid (once)
-                obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
-                _, obs_interpolator = nr.regrid(
-                    obs_std.values.ravel(),
-                    lon=obs_lons_2d.ravel(),
-                    lat=obs_lats_2d.ravel(),
-                    resolution=obs_res,
-                    influence_radius=influence_radius,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-                obs_std_common = xr.DataArray(
-                    obs_interpolator(obs_std.values.ravel()),
-                    dims=("lat", "lon"),
-                    coords={"lat": target_lats, "lon": target_lons},
-                )
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
 
-                # Pre-compute area weights for the common grid
-                common_area = compute_latlon_areas(target_lats, target_lons)
+                    # Regrid obs to common nereus grid (once)
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
+                    _, obs_interpolator = nr.regrid(
+                        obs_std.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=obs_res,
+                        influence_radius=influence_radius,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
+                    )
+                    obs_std_common = xr.DataArray(
+                        obs_interpolator(obs_std.values.ravel()),
+                        dims=("lat", "lon"),
+                        coords={"lat": target_lats, "lon": target_lons},
+                    )
+
+                    # Pre-compute area weights for the common grid
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
             else:
-                regridded_np = interpolator(model_std.values.ravel())
+                interp = _interp_cache[n_src]
+                regridded_np = interp(model_std.values.ravel())
                 std_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
                     coords={"lat": target_lats, "lon": target_lons},
@@ -275,7 +283,7 @@ class ClimateVariability(DiagnosticBase):
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
-        if self.cmip6_enabled and interpolator is not None:
+        if self.cmip6_enabled and target_lats is not None:
             if self.cmip6_individual:
                 cmip6_individual_data = self._compute_cmip6_individual_std(
                     var, target_lats, target_lons,

@@ -170,8 +170,8 @@ class GlobalTrends(DiagnosticBase):
         obs_lons = obs_annual_trend[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Build nereus interpolator once
-        interpolator = None
+        # Cache nereus interpolator per source grid size
+        _interp_cache: dict[int, Any] = {}
         obs_trend_common = None
         obs_seasonal_trends_common = {}
         common_area = None
@@ -202,10 +202,12 @@ class GlobalTrends(DiagnosticBase):
             model_annual = annual_mean(model_data).compute()
             model_annual_trend = linear_trend(model_annual) * 10  # per decade
 
-            # Build interpolator once (reused across models + seasons)
-            if interpolator is None:
-                logger.info("  Building nereus interpolator (first model)...")
-                annual_regrid, interpolator = nr.regrid(
+            # Build/reuse interpolator keyed by source grid size
+            n_src = np.asarray(lon).ravel().shape[0]
+            if n_src not in _interp_cache:
+                logger.info("  Building nereus interpolator (grid size %d)...",
+                            n_src)
+                annual_regrid, interp = nr.regrid(
                     model_annual_trend.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
@@ -213,43 +215,49 @@ class GlobalTrends(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = interpolator.target_lat[:, 0]
-                target_lons = interpolator.target_lon[0, :]
+                _interp_cache[n_src] = interp
 
-                # Regrid obs trend to common nereus grid (once)
-                obs_lons_2d, obs_lats_2d = np.meshgrid(
-                    obs_lons, obs_lats,
-                )
-                _, obs_interpolator = nr.regrid(
-                    obs_annual_trend.values.ravel(),
-                    lon=obs_lons_2d.ravel(),
-                    lat=obs_lats_2d.ravel(),
-                    resolution=obs_res,
-                    influence_radius=influence_radius,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-                obs_trend_common = xr.DataArray(
-                    obs_interpolator(obs_annual_trend.values.ravel()),
-                    dims=("lat", "lon"),
-                    coords={"lat": target_lats, "lon": target_lons},
-                )
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
 
-                # Pre-compute area weights for the common grid (once)
-                from feather.util.spatial import compute_latlon_areas
-                common_area = compute_latlon_areas(
-                    target_lats, target_lons,
-                )
-
-                # Also regrid seasonal obs trends (reuse obs interpolator)
-                for season, obs_s_trend in obs_seasonal_trends.items():
-                    s_np = obs_interpolator(obs_s_trend.values.ravel())
-                    obs_seasonal_trends_common[season] = xr.DataArray(
-                        s_np, dims=("lat", "lon"),
+                    # Regrid obs trend to common nereus grid (once)
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(
+                        obs_lons, obs_lats,
+                    )
+                    _, obs_interpolator = nr.regrid(
+                        obs_annual_trend.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=obs_res,
+                        influence_radius=influence_radius,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
+                    )
+                    obs_trend_common = xr.DataArray(
+                        obs_interpolator(obs_annual_trend.values.ravel()),
+                        dims=("lat", "lon"),
                         coords={"lat": target_lats, "lon": target_lons},
                     )
+
+                    # Pre-compute area weights for the common grid (once)
+                    from feather.util.spatial import compute_latlon_areas
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
+
+                    # Also regrid seasonal obs trends
+                    for season, obs_s_trend in obs_seasonal_trends.items():
+                        s_np = obs_interpolator(obs_s_trend.values.ravel())
+                        obs_seasonal_trends_common[season] = xr.DataArray(
+                            s_np, dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
             else:
-                regridded_np = interpolator(
+                interp = _interp_cache[n_src]
+                regridded_np = interp(
                     model_annual_trend.values.ravel(),
                 )
                 annual_regrid = xr.DataArray(
@@ -287,7 +295,7 @@ class GlobalTrends(DiagnosticBase):
                 model_s_trend = linear_trend(
                     model_season_annual, dim="year",
                 ) * 10
-                s_np = interpolator(model_s_trend.values.ravel())
+                s_np = _interp_cache[n_src](model_s_trend.values.ravel())
                 s_regrid = xr.DataArray(
                     s_np, dims=("lat", "lon"),
                     coords={"lat": target_lats, "lon": target_lons},
@@ -318,7 +326,7 @@ class GlobalTrends(DiagnosticBase):
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
-        if self.cmip6_enabled and interpolator is not None:
+        if self.cmip6_enabled and target_lats is not None:
             if self.cmip6_individual:
                 cmip6_individual_data = self._compute_cmip6_individual_trends(
                     var, target_lats, target_lons,

@@ -308,8 +308,8 @@ class PrecipitationMSWEP(DiagnosticBase):
         obs_lons = obs_clim.lon.values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Build nereus interpolator once
-        interpolator = None
+        # Cache nereus interpolator per source grid size
+        _interp_cache: dict[int, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         common_area = None
@@ -338,9 +338,11 @@ class PrecipitationMSWEP(DiagnosticBase):
                 s: model_seas[s].compute() for s in model_seas.data_vars
             }
 
-            if interpolator is None:
-                logger.info("  Building nereus interpolator...")
-                annual_regrid, interpolator = nr.regrid(
+            n_src = np.asarray(lon).ravel().shape[0]
+            if n_src not in _interp_cache:
+                logger.info("  Building nereus interpolator (grid size %d)...",
+                            n_src)
+                annual_regrid, interp = nr.regrid(
                     model_clim.values.ravel(),
                     lon=np.asarray(lon).ravel(),
                     lat=np.asarray(lat).ravel(),
@@ -349,34 +351,47 @@ class PrecipitationMSWEP(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = interpolator.target_lat[:, 0]
-                target_lons = interpolator.target_lon[0, :]
+                _interp_cache[n_src] = interp
 
-                # Regrid obs to common grid
-                obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
-                _, obs_interp = nr.regrid(
-                    obs_clim.values.ravel(),
-                    lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
-                    resolution=obs_res,
-                    influence_radius=influence_radius,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-                obs_clim_common = xr.DataArray(
-                    obs_interp(obs_clim.values.ravel()),
-                    dims=("lat", "lon"),
-                    coords={"lat": target_lats, "lon": target_lons},
-                )
-                common_area = compute_latlon_areas(target_lats, target_lons)
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
 
-                for season in obs_seasonal:
-                    s_np = obs_interp(obs_seasonal[season].values.ravel())
-                    obs_seasonal_common[season] = xr.DataArray(
-                        s_np, dims=("lat", "lon"),
+                    # Regrid obs to common grid
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(
+                        obs_lons, obs_lats,
+                    )
+                    _, obs_interp = nr.regrid(
+                        obs_clim.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=obs_res,
+                        influence_radius=influence_radius,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
+                    )
+                    obs_clim_common = xr.DataArray(
+                        obs_interp(obs_clim.values.ravel()),
+                        dims=("lat", "lon"),
                         coords={"lat": target_lats, "lon": target_lons},
                     )
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
+
+                    for season in obs_seasonal:
+                        s_np = obs_interp(
+                            obs_seasonal[season].values.ravel(),
+                        )
+                        obs_seasonal_common[season] = xr.DataArray(
+                            s_np, dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
             else:
-                regridded_np = interpolator(model_clim.values.ravel())
+                interp = _interp_cache[n_src]
+                regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
                     coords={"lat": target_lats, "lon": target_lons},
@@ -412,7 +427,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             seasonal_regrids: dict[str, Any] = {}
             for season in ["DJF", "JJA"]:
                 if season in model_seas:
-                    s_np = interpolator(model_seas[season].values.ravel())
+                    s_np = _interp_cache[n_src](model_seas[season].values.ravel())
                     s_regrid = xr.DataArray(
                         s_np, dims=("lat", "lon"),
                         coords={"lat": target_lats, "lon": target_lons},
@@ -439,7 +454,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
-        if self.cmip6_enabled and interpolator is not None:
+        if self.cmip6_enabled and target_lats is not None:
             if self.cmip6_individual:
                 cmip6_individual_data = self._compute_cmip6_individual(
                     target_lats, target_lons,

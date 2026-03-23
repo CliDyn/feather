@@ -616,7 +616,7 @@ class OceanEN4(DiagnosticBase):
             "jja": {"obs": obs_jja},
         }
         model_results = {}
-        model_interpolator = None
+        _model_interp_cache: dict[int, Any] = {}
         obs_interpolator = None
         target_lats = None
         target_lons = None
@@ -651,9 +651,10 @@ class OceanEN4(DiagnosticBase):
             model_jja = (model_seasonal["JJA"].compute()
                          if "JJA" in model_seasonal else model_annual)
 
-            # Build interpolators once
-            if model_interpolator is None:
-                _, model_interpolator = nr.regrid(
+            # Build/reuse interpolator keyed by source grid size
+            n_src = regrid_lon.ravel().shape[0]
+            if n_src not in _model_interp_cache:
+                _, interp = nr.regrid(
                     model_annual.values.ravel(),
                     lon=regrid_lon.ravel(), lat=regrid_lat.ravel(),
                     resolution=resolution,
@@ -661,36 +662,48 @@ class OceanEN4(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = model_interpolator.target_lat[:, 0]
-                target_lons = model_interpolator.target_lon[0, :]
-                common_area = compute_latlon_areas(target_lats, target_lons)
+                _model_interp_cache[n_src] = interp
 
-                # Regrid EN4 obs to common grid (larger radius for 1° grid)
-                lat_name = ("lat" if "lat" in obs_annual.coords
-                            else "latitude")
-                lon_name = ("lon" if "lon" in obs_annual.coords
-                            else "longitude")
-                obs_lats = obs_annual[lat_name].values
-                obs_lons = obs_annual[lon_name].values
-                obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
-
-                _, obs_interpolator = nr.regrid(
-                    obs_annual.values.ravel(),
-                    lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
-                    resolution=resolution,
-                    influence_radius=en4_influence,
-                    lon_bounds=(0.0, 360.0),
-                    as_xarray=True,
-                )
-
-                for pkey in periods_data:
-                    obs_field = periods_data[pkey]["obs"]
-                    obs_common = xr.DataArray(
-                        obs_interpolator(obs_field.values.ravel()),
-                        dims=("lat", "lon"),
-                        coords={"lat": target_lats, "lon": target_lons},
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
                     )
-                    periods_data[pkey]["obs_common"] = obs_common
+
+                    # Regrid EN4 obs to common grid
+                    lat_name = ("lat" if "lat" in obs_annual.coords
+                                else "latitude")
+                    lon_name = ("lon" if "lon" in obs_annual.coords
+                                else "longitude")
+                    obs_lats = obs_annual[lat_name].values
+                    obs_lons = obs_annual[lon_name].values
+                    obs_lons_2d, obs_lats_2d = np.meshgrid(
+                        obs_lons, obs_lats,
+                    )
+
+                    _, obs_interpolator = nr.regrid(
+                        obs_annual.values.ravel(),
+                        lon=obs_lons_2d.ravel(),
+                        lat=obs_lats_2d.ravel(),
+                        resolution=resolution,
+                        influence_radius=en4_influence,
+                        lon_bounds=(0.0, 360.0),
+                        as_xarray=True,
+                    )
+
+                    for pkey in periods_data:
+                        obs_field = periods_data[pkey]["obs"]
+                        obs_common = xr.DataArray(
+                            obs_interpolator(obs_field.values.ravel()),
+                            dims=("lat", "lon"),
+                            coords={
+                                "lat": target_lats, "lon": target_lons,
+                            },
+                        )
+                        periods_data[pkey]["obs_common"] = obs_common
+
+            model_interpolator = _model_interp_cache[n_src]
 
             # Regrid model to common grid
             regrid_fields = {

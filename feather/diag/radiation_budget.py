@@ -1019,8 +1019,8 @@ class RadiationBudget(DiagnosticBase):
         obs_lons = obs_clim[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Compute model derived quantity and regrid to obs grid
-        interpolator = None
+        # Cache nereus interpolator per source grid size
+        _interp_cache: dict[int, Any] = {}
         obs_clim_common = None
         common_area = None
         target_lats = None
@@ -1047,8 +1047,9 @@ class RadiationBudget(DiagnosticBase):
             if grid_type != "healpix":
                 lon, lat = np.meshgrid(lon, lat)
 
-            if interpolator is None:
-                annual_regrid, interpolator = nr.regrid(
+            n_src = np.asarray(lon).ravel().shape[0]
+            if n_src not in _interp_cache:
+                annual_regrid, interp = nr.regrid(
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
@@ -1056,19 +1057,25 @@ class RadiationBudget(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                target_lats = interpolator.target_lat[:, 0]
-                target_lons = interpolator.target_lon[0, :]
+                _interp_cache[n_src] = interp
 
-                obs_clim_common = obs_clim.interp(
-                    {lat_name: target_lats, lon_name: target_lons}
-                )
-                if lat_name != "lat":
-                    obs_clim_common = obs_clim_common.rename(
-                        {lat_name: "lat", lon_name: "lon"}
+                if target_lats is None:
+                    target_lats = interp.target_lat[:, 0]
+                    target_lons = interp.target_lon[0, :]
+
+                    obs_clim_common = obs_clim.interp(
+                        {lat_name: target_lats, lon_name: target_lons}
                     )
-                common_area = compute_latlon_areas(target_lats, target_lons)
+                    if lat_name != "lat":
+                        obs_clim_common = obs_clim_common.rename(
+                            {lat_name: "lat", lon_name: "lon"}
+                        )
+                    common_area = compute_latlon_areas(
+                        target_lats, target_lons,
+                    )
             else:
-                regridded_np = interpolator(model_clim.values.ravel())
+                interp = _interp_cache[n_src]
+                regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
                     coords={"lat": target_lats, "lon": target_lons},
