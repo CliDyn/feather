@@ -95,3 +95,51 @@ class DataLoader:
         """
         resolution = "standard" if domain in ("o3d", "pl") else "high"
         return f"{experiment}_2_{model}_{member}_0001_clmn_{resolution}_{domain}"
+
+
+class MultiCatalogLoader:
+    """DataLoader that searches across multiple intake catalogs."""
+
+    def __init__(self, catalog_paths: dict[str, str]):
+        import intake
+
+        self._catalogs = {}
+        self._cache: dict[str, xr.Dataset] = {}
+        for label, path in catalog_paths.items():
+            self._catalogs[label] = intake.open_catalog(path)
+
+    def load(self, key: str) -> xr.Dataset:
+        if key in self._cache:
+            return self._cache[key]
+
+        for label, cat in self._catalogs.items():
+            if key in cat:
+                ds = cat[key].to_dask()
+                self._cache[key] = ds
+                return ds
+
+        available = self.list_entries()[:10]
+        raise KeyError(
+            f"Entry {key!r} not found in any catalog. "
+            f"First entries: {available}"
+        )
+
+    def load_var(self, key: str, variable: str) -> xr.DataArray:
+        ds = self.load(key)
+        if variable not in ds:
+            raise KeyError(
+                f"Variable {variable!r} not in dataset. "
+                f"Available: {list(ds.data_vars)}"
+            )
+        return ds[variable]
+
+    def list_entries(self) -> list[str]:
+        entries = []
+        for cat in self._catalogs.values():
+            entries.extend(list(cat))
+        return entries
+
+    @staticmethod
+    def make_key(experiment: str, model: str, domain: str,
+                 member: int = 1) -> str:
+        return DataLoader.make_key(experiment, model, domain, member)

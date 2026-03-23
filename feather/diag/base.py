@@ -234,7 +234,13 @@ class DiagnosticBase(ABC):
         -------
         xr.DataArray
         """
+        from feather.data.composite_loader import CompositeModelLoader
         from feather.data.variables import get_var
+
+        if isinstance(self.model_loader, CompositeModelLoader):
+            return self.model_loader.load_var(
+                model, variable, period=period, time_mean=time_mean,
+            )
 
         if self.config.get_data_source_type() in ("cmor", "netcdf_healpix",
                                                       "grib_healpix"):
@@ -246,7 +252,9 @@ class DiagnosticBase(ABC):
         vinfo = get_var(variable)
         destine_var = vinfo.destine_variable or variable
         exp = experiment or self.config.get_experiment()
-        key = DataLoader.make_key(exp, model, vinfo.domain)
+        mc = self.config.model_configs.get(model)
+        member = mc.member if mc else 1
+        key = DataLoader.make_key(exp, model, vinfo.domain, member=member)
         da = self.model_loader.load_var(key, destine_var)
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -266,7 +274,11 @@ class DiagnosticBase(ABC):
         """
         import numpy as np
 
+        from feather.data.composite_loader import CompositeModelLoader
         from feather.data.variables import get_var
+
+        if isinstance(self.model_loader, CompositeModelLoader):
+            return self.model_loader.load_coords(model, variable)
 
         src = self.config.get_data_source_type()
         if src == "cmor":
@@ -280,7 +292,9 @@ class DiagnosticBase(ABC):
         # DestinE: coords are in the Dataset
         vinfo = get_var(variable)
         exp = experiment or self.config.get_experiment()
-        key = DataLoader.make_key(exp, model, vinfo.domain)
+        mc = self.config.model_configs.get(model)
+        member = mc.member if mc else 1
+        key = DataLoader.make_key(exp, model, vinfo.domain, member=member)
         ds = self.model_loader.load(key)
         return np.asarray(ds["longitude"]), np.asarray(ds["latitude"])
 

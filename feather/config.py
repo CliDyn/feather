@@ -43,6 +43,9 @@ class ModelConfig:
     variable_aliases: dict[str, str] = field(default_factory=dict)
     scale_factors: dict[str, float] = field(default_factory=dict)
     absolute_salinity: bool = False
+    data_source_type: str = ""
+    catalog_key: str = ""
+    member: int = 1
 
 
 @dataclass
@@ -113,13 +116,50 @@ class FeatherConfig:
         """
         return self.project.get("experiment", "baseline_hist")
 
+    def get_comparison_type(self) -> str:
+        """Return the comparison type for LLM prompt framing.
+
+        One of ``"multi_model"`` (default), ``"resolution_sensitivity"``,
+        ``"single_model"``, or ``"baseline_evaluation"``.
+        """
+        return self.project.get("comparison_type", "multi_model")
+
+    def get_comparison_description(self) -> str:
+        """Return optional free-text comparison description.
+
+        Appended to LLM prompts for project-specific context.
+        """
+        return self.project.get("comparison_description", "")
+
     def get_data_source_type(self) -> str:
-        """Return data source type.
+        """Return global data source type.
 
         One of ``"destine_catalog"``, ``"cmor"``, ``"netcdf_healpix"``,
         or ``"grib_healpix"``.
         """
         return self.data_source.get("type", "destine_catalog")
+
+    def get_model_data_source_type(self, model: str) -> str:
+        """Return data source type for a specific model.
+
+        Uses per-model ``data_source_type`` if set, otherwise falls
+        back to the global ``data_source.type``.
+        """
+        mc = self.model_configs.get(model)
+        if mc and mc.data_source_type:
+            return mc.data_source_type
+        return self.get_data_source_type()
+
+    def is_multi_source(self) -> bool:
+        """True when models use different data source backends.
+
+        This triggers the :class:`CompositeModelLoader` to route
+        ``load_var()`` calls to the correct backend per model.
+        """
+        types = set()
+        for model in self.models:
+            types.add(self.get_model_data_source_type(model))
+        return len(types) > 1
 
     # ── YAML loading ───────────────────────────────────────────────────
 
@@ -225,5 +265,8 @@ def _build_model_configs(
             variable_aliases=cfg.get("variable_aliases", {}),
             scale_factors=cfg.get("scale_factors", {}),
             absolute_salinity=cfg.get("absolute_salinity", False),
+            data_source_type=cfg.get("data_source_type", ""),
+            catalog_key=cfg.get("catalog_key", ""),
+            member=cfg.get("member", 1),
         )
     return configs

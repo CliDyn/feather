@@ -284,6 +284,171 @@ class TestStructuredFormat:
         assert cfg.get_data_source_type() == "cmor"
 
 
+class TestMemberField:
+    """Tests for the per-model member field."""
+
+    def test_model_config_default_member(self):
+        mc = ModelConfig(name="test")
+        assert mc.member == 1
+
+    def test_model_config_custom_member(self):
+        mc = ModelConfig(name="test", member=2)
+        assert mc.member == 2
+
+    def test_structured_format_parses_member(self):
+        cfg_data = {
+            "models": {
+                "ifs-nemo": {
+                    "grids": {"sfc": "healpix"},
+                    "member": 2,
+                },
+            },
+            "obs_root": "", "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {}, "nereus": {}, "output_dir": "/tmp",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.model_configs["ifs-nemo"].member == 2
+
+    def test_structured_format_member_defaults_to_1(self):
+        cfg_data = {
+            "models": {
+                "ifs-fesom": {
+                    "grids": {"sfc": "healpix"},
+                },
+            },
+            "obs_root": "", "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {}, "nereus": {}, "output_dir": "/tmp",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.model_configs["ifs-fesom"].member == 1
+
+    def test_legacy_format_defaults_to_member_1(self):
+        cfg_data = {
+            "models": ["ifs-fesom", "ifs-nemo"],
+            "obs_root": "", "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {}, "nereus": {}, "output_dir": "/tmp",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.model_configs["ifs-fesom"].member == 1
+        assert cfg.model_configs["ifs-nemo"].member == 1
+
+
+class TestMultiSource:
+    """Tests for per-model data_source_type and is_multi_source()."""
+
+    def test_model_config_new_fields_defaults(self):
+        mc = ModelConfig(name="test")
+        assert mc.data_source_type == ""
+        assert mc.catalog_key == ""
+
+    def test_model_config_new_fields_set(self):
+        mc = ModelConfig(
+            name="test",
+            data_source_type="grib_healpix",
+            catalog_key="ifs-fesom",
+        )
+        assert mc.data_source_type == "grib_healpix"
+        assert mc.catalog_key == "ifs-fesom"
+
+    def test_get_model_data_source_type_global_fallback(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m1"],
+            obs_root="", obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            data_source={"type": "cmor"},
+            model_configs={"m1": ModelConfig(name="m1")},
+        )
+        assert cfg.get_model_data_source_type("m1") == "cmor"
+
+    def test_get_model_data_source_type_per_model(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m1"],
+            obs_root="", obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            data_source={"type": "destine_catalog"},
+            model_configs={
+                "m1": ModelConfig(
+                    name="m1", data_source_type="grib_healpix",
+                ),
+            },
+        )
+        assert cfg.get_model_data_source_type("m1") == "grib_healpix"
+
+    def test_is_multi_source_false_single_type(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m1", "m2"],
+            obs_root="", obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            data_source={"type": "grib_healpix"},
+            model_configs={
+                "m1": ModelConfig(name="m1"),
+                "m2": ModelConfig(name="m2"),
+            },
+        )
+        assert cfg.is_multi_source() is False
+
+    def test_is_multi_source_true_mixed(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m1", "m2"],
+            obs_root="", obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            data_source={"type": "destine_catalog"},
+            model_configs={
+                "m1": ModelConfig(name="m1"),  # inherits destine_catalog
+                "m2": ModelConfig(
+                    name="m2", data_source_type="grib_healpix",
+                ),
+            },
+        )
+        assert cfg.is_multi_source() is True
+
+    def test_yaml_parses_new_fields(self):
+        cfg_data = {
+            "models": {
+                "ModelA": {
+                    "institution": "ECMWF",
+                    "catalog_key": "ifs-fesom",
+                    "grids": {"sfc": "healpix"},
+                },
+                "ModelB": {
+                    "institution": "AWI",
+                    "data_source_type": "grib_healpix",
+                    "data_root": "/data/grib",
+                    "grids": {"sfc": "healpix"},
+                },
+            },
+            "data_source": {"type": "destine_catalog"},
+            "obs_root": "", "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {}, "nereus": {}, "output_dir": "/tmp",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.model_configs["ModelA"].catalog_key == "ifs-fesom"
+        assert cfg.model_configs["ModelB"].data_source_type == "grib_healpix"
+        assert cfg.is_multi_source() is True
+        assert cfg.get_model_data_source_type("ModelA") == "destine_catalog"
+        assert cfg.get_model_data_source_type("ModelB") == "grib_healpix"
+
+
 class TestModelColor:
     def test_color_from_model_config(self):
         cfg = FeatherConfig(
@@ -312,6 +477,86 @@ class TestModelColor:
         )
         color = cfg.get_model_color("unknown")
         assert color.startswith("#")
+
+
+class TestComparisonType:
+    """Tests for comparison_type and comparison_description getters."""
+
+    def test_default_multi_model(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+        )
+        assert cfg.get_comparison_type() == "multi_model"
+
+    def test_default_empty_description(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+        )
+        assert cfg.get_comparison_description() == ""
+
+    def test_resolution_sensitivity(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            project={
+                "comparison_type": "resolution_sensitivity",
+                "comparison_description": "Same model at 3 resolutions.",
+            },
+        )
+        assert cfg.get_comparison_type() == "resolution_sensitivity"
+        assert cfg.get_comparison_description() == "Same model at 3 resolutions."
+
+    def test_single_model(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            project={"comparison_type": "single_model"},
+        )
+        assert cfg.get_comparison_type() == "single_model"
+
+    def test_baseline_evaluation(self):
+        cfg = FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp",
+            project={"comparison_type": "baseline_evaluation"},
+        )
+        assert cfg.get_comparison_type() == "baseline_evaluation"
+
+    def test_yaml_roundtrip(self):
+        cfg_data = {
+            "models": {"M": {}},
+            "project": {
+                "comparison_type": "resolution_sensitivity",
+                "comparison_description": "Three resolutions",
+            },
+            "obs_root": "", "obs_datasets": {},
+            "cmip6": {"enabled": False},
+            "dask": {}, "nereus": {}, "output_dir": "/tmp",
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            yaml.dump(cfg_data, f)
+            f.flush()
+            cfg = FeatherConfig.from_yaml(f.name)
+
+        assert cfg.get_comparison_type() == "resolution_sensitivity"
+        assert cfg.get_comparison_description() == "Three resolutions"
+
+    def test_ifs_fesom_combined_config(self):
+        """IFS-FESOM combined config has resolution_sensitivity."""
+        combined_path = Path(__file__).parent.parent / "configs" / "ifs_fesom_combined.yaml"
+        if not combined_path.exists():
+            pytest.skip("ifs_fesom_combined config not found")
+
+        cfg = FeatherConfig.from_yaml(str(combined_path))
+        assert cfg.get_comparison_type() == "resolution_sensitivity"
+        assert "IFS-FESOM" in cfg.get_comparison_description()
 
 
 class TestEerieConfig:
@@ -360,3 +605,33 @@ class TestEerieConfig:
         assert cfg.get_period() == ("1990", "2014")
         assert cfg.get_experiment() == "baseline_hist"
         assert cfg.project["name"] == "DestinE"
+
+
+class TestTerraDTConfig:
+    def test_load_terradt_config(self):
+        """TerraDT config loads with structured model format and member field."""
+        terradt_path = Path(__file__).parent.parent / "configs" / "terradt.yaml"
+        if not terradt_path.exists():
+            pytest.skip("TerraDT config not found")
+
+        cfg = FeatherConfig.from_yaml(str(terradt_path))
+        assert set(cfg.models) == {"ifs-fesom", "ifs-nemo", "icon"}
+        assert cfg.project["name"] == "TerraDT"
+        assert cfg.get_period() == ("1990", "2014")
+        assert cfg.get_experiment() == "baseline_hist"
+        assert cfg.get_comparison_type() == "baseline_evaluation"
+        assert "TerraDT" in cfg.get_comparison_description()
+        assert cfg.get_data_source_type() == "destine_catalog"
+
+        # Member field
+        assert cfg.model_configs["ifs-fesom"].member == 1
+        assert cfg.model_configs["ifs-nemo"].member == 2
+        assert cfg.model_configs["icon"].member == 1
+
+        # Grid types
+        assert cfg.get_grid_type("ifs-fesom", "sfc") == "healpix"
+        assert cfg.get_grid_type("ifs-nemo", "o2d") == "healpix"
+
+        # Absolute salinity
+        assert cfg.model_configs["ifs-nemo"].absolute_salinity is True
+        assert cfg.model_configs["ifs-fesom"].absolute_salinity is False

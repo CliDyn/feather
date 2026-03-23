@@ -221,12 +221,13 @@ def _run_diagnostics(
 def _create_model_loader(config: FeatherConfig):
     """Create a model data loader from config.
 
-    Dispatches based on ``config.data_source.type``:
-
-    - ``"cmor"``: creates a :class:`CMORLoader` for CMOR directory trees
-    - ``"destine_catalog"`` (default): opens intake catalogs from
-      ``config.model_catalogs``
+    Dispatches based on ``config.data_source.type``.  When models use
+    different source types, returns a :class:`CompositeModelLoader`.
     """
+    if config.is_multi_source():
+        from feather.data.composite_loader import CompositeModelLoader
+        return CompositeModelLoader(config)
+
     if config.get_data_source_type() == "cmor":
         from feather.data.cmor_loader import CMORLoader
         return CMORLoader(config)
@@ -239,61 +240,11 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.grib_loader import GRIBLoader
         return GRIBLoader(config)
 
-    from feather.data.loader import DataLoader
+    from feather.data.loader import DataLoader, MultiCatalogLoader
 
     catalogs = config.model_catalogs
     if not catalogs:
         logger.warning("No model_catalogs configured")
         return DataLoader()
 
-    return _MultiCatalogLoader(catalogs)
-
-
-class _MultiCatalogLoader:
-    """DataLoader that searches across multiple intake catalogs."""
-
-    def __init__(self, catalog_paths: dict[str, str]):
-        import intake
-
-        self._catalogs = {}
-        self._cache: dict[str, "xr.Dataset"] = {}
-        for label, path in catalog_paths.items():
-            self._catalogs[label] = intake.open_catalog(path)
-
-    def load(self, key: str) -> "xr.Dataset":
-        import xarray as xr
-
-        if key in self._cache:
-            return self._cache[key]
-
-        for label, cat in self._catalogs.items():
-            if key in cat:
-                ds = cat[key].to_dask()
-                self._cache[key] = ds
-                return ds
-
-        available = self.list_entries()[:10]
-        raise KeyError(
-            f"Entry {key!r} not found in any catalog. "
-            f"First entries: {available}"
-        )
-
-    def load_var(self, key: str, variable: str) -> "xr.DataArray":
-        ds = self.load(key)
-        if variable not in ds:
-            raise KeyError(
-                f"Variable {variable!r} not in dataset. "
-                f"Available: {list(ds.data_vars)}"
-            )
-        return ds[variable]
-
-    def list_entries(self) -> list[str]:
-        entries = []
-        for cat in self._catalogs.values():
-            entries.extend(list(cat))
-        return entries
-
-    @staticmethod
-    def make_key(experiment: str, model: str, domain: str,
-                 member: int = 1) -> str:
-        return DataLoader.make_key(experiment, model, domain, member)
+    return MultiCatalogLoader(catalogs)
