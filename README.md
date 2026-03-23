@@ -17,16 +17,31 @@ Feather compares high-resolution climate models against observations (ERA5, CERE
 
 The framework is **grid-agnostic**: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model configuration. The **CompositeModelLoader** enables mixing models from different data backends in the same evaluation run.
 
-## Quick start
+## Installation
+
+### From scratch (conda/mamba)
 
 ```bash
-# On DKRZ Levante
-conda activate nereus
-cd /home/a/a270088/PYTHON/feather/feather
+# Create the environment with all dependencies
+conda env create -f environment.yml
+
+# Or using mamba/micromamba (faster)
+mamba env create -f environment.yml
+
+# Activate and install feather in editable mode
+conda activate feather
 pip install -e .
 ```
 
-After `pip install -e .`, the `feather` command is available.
+### Into an existing environment
+
+```bash
+pip install -e .
+```
+
+See `environment.yml` for the full list of dependencies. Key packages that are best installed via conda-forge: `cartopy`, `healpy`, `netcdf4`, `eccodes`, `cfgrib`.
+
+After installation, the `feather` command is available.
 
 ## Pipeline
 
@@ -421,12 +436,12 @@ Then import the module in `feather/diag/__init__.py` so `@register` fires. See `
 ## Testing
 
 ```bash
-conda activate nereus
+conda activate feather
 
-# Unit tests (synthetic data, safe on login node)
+# Unit tests (synthetic data, no real data needed)
 pytest tests/ -v -m "not integration"
 
-# Integration tests (real data, also safe on login node)
+# Integration tests (requires data access on DKRZ Levante)
 pytest tests/ -v -m "integration"
 
 # All tests
@@ -437,6 +452,6 @@ pytest tests/ -v
 
 ## Requirements
 
-Python 3.10+. Core dependencies: xarray, dask, numpy, scipy, matplotlib, cartopy, intake, healpy, nereus, pyyaml, zarr, pydantic, google-genai, openai, jinja2.
+Python 3.10+. See `environment.yml` for the full dependency list, or install via `conda env create -f environment.yml`.
 
-Development: `conda activate nereus` on DKRZ Levante provides everything.
+Key dependencies: xarray, dask, numpy, scipy, matplotlib, cartopy, healpy, nereus, gsw, cfgrib, pydantic, google-genai, openai.

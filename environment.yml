@@ -1,0 +1,42 @@
+name: feather
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  # Scientific stack
+  - numpy
+  - scipy
+  - xarray
+  - dask
+  - distributed
+  # Geospatial
+  - cartopy
+  - healpy
+  # NetCDF / zarr
+  - netcdf4
+  - zarr
+  # GRIB support
+  - eccodes
+  - cfgrib
+  # Plotting
+  - matplotlib
+  - cmocean
+  # I/O and config
+  - pyyaml
+  - jinja2>=3.0
+  - nbformat
+  # Data catalogs
+  - intake
+  - intake-xarray
+  # Testing
+  - pytest
+  - pytest-cov
+  # pip-only packages
+  - pip
+  - pip:
+    - nereus
+    - gsw
+    - pydantic>=2.0
+    - google-genai>=1.0
+    - openai>=1.0
