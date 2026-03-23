@@ -2,21 +2,24 @@
 
 Each prompt instructs the LLM to produce structured scientific analysis
 that can be parsed into the Pydantic schemas defined in ``schemas.py``.
+
+Prompts adapt to different comparison types via ``comparison_type``:
+
+- ``"multi_model"`` (default) — independent models compared against each
+  other and CMIP6.
+- ``"resolution_sensitivity"`` — same model family at different resolutions;
+  focus on how skill scales with resolution.
+- ``"single_model"`` — one model evaluated against observations only.
+- ``"baseline_evaluation"`` — baseline simulations assessed as a reference
+  for future component improvements (e.g. TerraDT).
 """
 
 import json
 
 
-# ── Figure-level analysis prompt ─────────────────────────────────────
+# ── Shared figure-type descriptions ─────────────────────────────────
 
-_FIGURE_ANALYSIS_SYSTEM = """\
-You are a climate scientist evaluating diagnostic figures from \
-{resolution} coupled climate model simulations. The models under evaluation \
-are {model_list}{project_context}.
-
-Figures compare model output against observational datasets (ERA5, CERES, \
-EN4, etc.) using these diagnostic figure types:
-
+_FIGURE_TYPES = """\
 1. **Bias maps** — spatial maps of model minus observation climatology \
 (from global_biases and radiation_budget diagnostics). Each panel shows \
 one model's bias.
@@ -106,7 +109,7 @@ systematic differences.
 25. **Temperature warming trend maps** — linear trends in 2m temperature \
 (K/decade) over the analysis period. Global Robinson projection shows \
 observation trends and model-obs trend differences; polar stereographic \
-projections (>50°N, <50°S) highlight Arctic amplification and Antarctic \
+projections (>50N, <50S) highlight Arctic amplification and Antarctic \
 warming patterns. Compare warming rates across models and observations.
 26. **Taylor diagram** — polar plot comparing spatial pattern correlation \
 (angular axis) vs normalised standard deviation (radial axis) of model \
@@ -130,8 +133,13 @@ Log-log axes. Shaded band indicates typical period range.
 30. **Teleconnection seasonal variance** — grouped bar chart showing \
 monthly standard deviation of each mode index. Reveals whether models \
 capture the seasonal locking of variability (e.g. ENSO peaks in DJF, \
-IOD in SON). Compare peak month and amplitude across models and obs.
+IOD in SON). Compare peak month and amplitude across models and obs."""
 
+
+# ── Comparison-type-dependent analysis blocks ───────────────────────
+
+_ANALYSIS_FOCUS = {
+    "multi_model": """\
 When CMIP6 multi-model mean (MMM) context is present, it provides a \
 conventional-resolution baseline: how well do traditional ~100 km models \
 capture the same features? This helps assess whether the evaluated models' \
@@ -147,7 +155,76 @@ of the figure shown. Focus on:
 - For radiation figures: compare against CERES EBAF (the satellite gold \
 standard), note sign conventions (positive = energy into the system), \
 assess cloud radiative effects, and for Gregory plots interpret the \
-regression slope as a feedback parameter (W/m²/K)
+regression slope as a feedback parameter (W/m2/K)""",
+
+    "resolution_sensitivity": """\
+These models represent the SAME model system at different atmospheric \
+resolutions. The primary scientific question is: how does model performance \
+scale with increasing resolution? When CMIP6 multi-model mean (MMM) context \
+is present, it provides a conventional-resolution (~100 km) baseline.
+
+Your task is to provide a rigorous, publication-quality scientific analysis \
+of the figure shown. Focus on:
+- Resolution scaling: do biases decrease monotonically with finer resolution, \
+or are there diminishing returns?
+- Resolution-sensitive features: which regional features (e.g. Western \
+Boundary Currents, orographic precipitation, tropical convection, sea ice \
+edge) improve most at higher resolution?
+- Resolution-insensitive features: which biases persist regardless of \
+resolution, suggesting they stem from parameterisation choices rather than \
+grid spacing?
+- Physical mechanisms: explain WHY certain features respond to resolution \
+(e.g. resolved vs parameterised processes, topographic representation)
+- For radiation figures: compare against CERES EBAF (the satellite gold \
+standard), note sign conventions (positive = energy into the system), \
+assess cloud radiative effects, and for Gregory plots interpret the \
+regression slope as a feedback parameter (W/m2/K)""",
+
+    "single_model": """\
+When CMIP6 multi-model mean (MMM) context is present, it provides a \
+conventional-resolution baseline from ~100 km models for comparison.
+
+Your task is to provide a rigorous, publication-quality scientific analysis \
+of the figure shown. Focus on:
+- Bias patterns and magnitudes (are biases systematic or regional?)
+- Model-observation agreement (where does the model perform well/poorly?)
+- Temporal behaviour: trends, drift, variability compared to observations
+- Physical mechanisms driving any bias patterns
+- Where the model outperforms or underperforms the CMIP6 ensemble mean
+- For radiation figures: compare against CERES EBAF (the satellite gold \
+standard), note sign conventions (positive = energy into the system), \
+assess cloud radiative effects, and for Gregory plots interpret the \
+regression slope as a feedback parameter (W/m2/K)""",
+
+    "baseline_evaluation": """\
+These models are baseline simulations for the TerraDT project, which aims \
+to enhance DestinE climate Digital Twins for cryosphere, land surface, and \
+related interactions. The evaluation establishes a reference performance \
+level before new Digital Twin Components (land ice, sea ice, aerosols, \
+vegetation) are integrated.
+
+When CMIP6 multi-model mean (MMM) context is present, it provides a \
+conventional-resolution (~100 km) baseline for comparison.
+
+Your task is to provide a rigorous, publication-quality scientific analysis \
+of the figure shown. Focus on:
+- Bias patterns and magnitudes — which biases are most relevant for \
+downstream impact studies (sea level, ice extent, carbon cycle)?
+- Model-observation agreement — where does each model perform adequately \
+as a baseline, and where are improvements most needed?
+- Inter-model spread — do the three model systems agree on bias patterns, \
+or do structural differences dominate?
+- Cryosphere and land surface features — pay special attention to sea ice \
+extent/thickness, polar temperature biases, precipitation over ice sheets, \
+and land-atmosphere coupling
+- Resolution effects — at ~10 km atmospheric resolution, which features \
+are already well-captured vs requiring improved process representation?
+- For radiation figures: compare against CERES EBAF, note sign conventions, \
+assess cloud radiative effects, and for Gregory plots interpret the \
+regression slope as a feedback parameter (W/m2/K)""",
+}
+
+_ANALYSIS_TAIL = """\
 
 CRITICAL: You MUST discuss EVERY evaluated model ({model_list}) by name \
 when it appears in the figure. Do not omit any of them from your analysis. \
@@ -168,9 +245,94 @@ Respond **only** with a valid JSON object matching this exact schema \
   "physical_interpretation": "physical mechanisms driving the patterns",
   "caveats": ["caveat 1", "caveat 2"],
   "confidence": "high|medium|low"
-}}
-"""
+}}"""
 
+
+# ── Comparison-type-dependent synthesis blocks ──────────────────────
+
+_SYNTHESIS_FOCUS = {
+    "multi_model": """\
+When CMIP6 multi-model mean context is present, it provides a baseline from \
+conventional-resolution (~100 km) models for comparison.
+
+Given the individual figure analyses below, write a coherent scientific \
+synthesis for the entire diagnostic. Consider:
+1. Overall model skill — which model(s) perform best?
+2. Systematic biases — are there common patterns across all models?
+3. Resolution-dependent features — do the evaluated models capture features \
+that ~100 km CMIP6 models miss?
+4. Physical consistency — are the findings physically coherent?
+5. Radiation budget closure — do models conserve energy at TOA/surface? \
+Are cloud radiative effects realistic?""",
+
+    "resolution_sensitivity": """\
+These models represent the same model system at different resolutions. \
+When CMIP6 multi-model mean context is present, it provides a ~100 km \
+baseline for comparison.
+
+Given the individual figure analyses below, write a coherent scientific \
+synthesis for the entire diagnostic. Consider:
+1. Resolution scaling — how does model skill improve with increasing \
+resolution? Are the improvements monotonic?
+2. High-resolution added value — which features are only captured at the \
+finest resolution? Where do medium resolutions already perform adequately?
+3. Resolution-insensitive biases — which systematic errors persist across \
+all resolutions, pointing to structural model issues?
+4. Physical consistency — are the resolution-dependent improvements \
+physically coherent (e.g. better-resolved topography reducing \
+precipitation biases)?
+5. Cost-benefit — given the computational cost of higher resolution, \
+where is the added value most/least justified?""",
+
+    "single_model": """\
+When CMIP6 multi-model mean context is present, it provides a baseline from \
+conventional-resolution (~100 km) models for comparison.
+
+Given the individual figure analyses below, write a coherent scientific \
+synthesis for the entire diagnostic. Consider:
+1. Overall model skill — where does the model perform well or poorly?
+2. Systematic biases — are there persistent spatial or temporal patterns?
+3. Comparison to CMIP6 — how does the model compare to the ~100 km ensemble?
+4. Physical consistency — are the findings physically coherent?
+5. Key strengths and weaknesses — what are the model's standout features \
+and primary limitations?""",
+
+    "baseline_evaluation": """\
+These are baseline simulations for TerraDT — a reference against which \
+future improvements in land ice, sea ice, aerosol, and land surface \
+components will be measured. When CMIP6 multi-model mean context is \
+present, it provides a ~100 km baseline for comparison.
+
+Given the individual figure analyses below, write a coherent scientific \
+synthesis for the entire diagnostic. Consider:
+1. Baseline adequacy — is the current model performance sufficient as a \
+starting point for TerraDT Digital Twin development?
+2. Priority improvement areas — which biases are most critical for the \
+downstream impact studies (cryosphere, land surface, carbon cycle)?
+3. Inter-model consistency — do all three models share similar weaknesses, \
+or are some biases model-specific?
+4. Cryosphere performance — how well do models represent sea ice, polar \
+temperatures, and ice-sheet-adjacent processes?
+5. Physical consistency — are the findings physically coherent across \
+different diagnostic types?""",
+}
+
+_SYNTHESIS_TAIL = """\
+
+CRITICAL: You MUST mention and discuss ALL evaluated models ({model_list}) \
+by name. Do not omit any model from the synthesis.
+
+Respond **only** with a valid JSON object matching this exact schema \
+(no markdown fencing, no commentary outside the JSON):
+
+{{
+  "narrative": "2-3 paragraph synthesis (scientific, specific, quantitative)",
+  "headline_finding": "one-sentence executive summary",
+  "connections": ["related diagnostic 1", "related diagnostic 2"]
+}}"""
+
+
+# ── Builder functions ───────────────────────────────────────────────
 
 def _format_model_list(models: list[str]) -> str:
     """Format a list of model names as a natural-language enumeration.
@@ -190,6 +352,8 @@ def build_figure_analysis_system(
     models: list[str] | None = None,
     project_name: str | None = None,
     resolution: str | None = None,
+    comparison_type: str = "multi_model",
+    comparison_description: str = "",
 ) -> str:
     """Return the figure analysis system prompt.
 
@@ -203,6 +367,11 @@ def build_figure_analysis_system(
     resolution : str or None
         Resolution description (e.g. ``"high-resolution"``).
         Defaults to ``"high-resolution (~5 km)"``.
+    comparison_type : str
+        One of ``"multi_model"``, ``"resolution_sensitivity"``,
+        ``"single_model"``.
+    comparison_description : str
+        Optional free-text context appended after the intro paragraph.
     """
     if models is None:
         models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
@@ -215,11 +384,32 @@ def build_figure_analysis_system(
     else:
         project_context = ", as part of the Destination Earth (DestinE) initiative"
 
-    return _FIGURE_ANALYSIS_SYSTEM.format(
-        model_list=model_list,
-        project_context=project_context,
-        resolution=resolution,
+    # Intro paragraph
+    intro = (
+        f"You are a climate scientist evaluating diagnostic figures from "
+        f"{resolution} coupled climate model simulations. The models under "
+        f"evaluation are {model_list}{project_context}."
     )
+
+    # Optional comparison description
+    desc_block = ""
+    if comparison_description:
+        desc_block = f"\n\n{comparison_description}"
+
+    # Figure types (shared)
+    types_block = (
+        "\n\nFigures compare model output against observational datasets "
+        "(ERA5, CERES, EN4, etc.) using these diagnostic figure types:\n\n"
+        + _FIGURE_TYPES
+    )
+
+    # Comparison-type-dependent analysis focus
+    focus = _ANALYSIS_FOCUS.get(comparison_type, _ANALYSIS_FOCUS["multi_model"])
+
+    # Tail (shared, needs format)
+    tail = _ANALYSIS_TAIL.format(model_list=model_list)
+
+    return intro + desc_block + types_block + "\n\n" + focus + tail
 
 
 def build_figure_prompt(metadata: dict) -> str:
@@ -255,7 +445,7 @@ def build_figure_prompt(metadata: dict) -> str:
 
     period = metadata.get("period")
     if period:
-        parts.append(f"Period: {period[0]}–{period[1]}")
+        parts.append(f"Period: {period[0]}\u2013{period[1]}")
 
     plot_type = metadata.get("plot_type")
     if plot_type:
@@ -309,44 +499,13 @@ def build_figure_prompt(metadata: dict) -> str:
 
 # ── Diagnostic synthesis prompt ──────────────────────────────────────
 
-_SYNTHESIS_SYSTEM = """\
-You are a climate scientist writing a synthesis of multiple diagnostic \
-figures from {resolution} coupled climate model evaluations. The models \
-are {model_list} evaluated against \
-observations (ERA5, CERES, EN4, etc.){project_context}.
-
-When CMIP6 multi-model mean context is present, it provides a baseline from \
-conventional-resolution (~100 km) models for comparison.
-
-Given the individual figure analyses below, write a coherent scientific \
-synthesis for the entire diagnostic. Consider:
-1. Overall model skill — which model(s) perform best?
-2. Systematic biases — are there common patterns across all models?
-3. Resolution-dependent features — do the evaluated models capture features \
-that ~100 km CMIP6 models miss?
-4. Physical consistency — are the findings physically coherent?
-5. Radiation budget closure — do models conserve energy at TOA/surface? \
-Are cloud radiative effects realistic?
-
-CRITICAL: You MUST mention and discuss ALL evaluated models ({model_list}) \
-by name. Do not omit any model from the synthesis.
-
-Respond **only** with a valid JSON object matching this exact schema \
-(no markdown fencing, no commentary outside the JSON):
-
-{{
-  "narrative": "2-3 paragraph synthesis (scientific, specific, quantitative)",
-  "headline_finding": "one-sentence executive summary",
-  "connections": ["related diagnostic 1", "related diagnostic 2"]
-}}
-"""
-
-
 def build_synthesis_system(
     *,
     models: list[str] | None = None,
     project_name: str | None = None,
     resolution: str | None = None,
+    comparison_type: str = "multi_model",
+    comparison_description: str = "",
 ) -> str:
     """Return the synthesis system prompt.
 
@@ -358,6 +517,11 @@ def build_synthesis_system(
         Project/initiative name. Defaults to DestinE.
     resolution : str or None
         Resolution description. Defaults to ``"high-resolution (~5 km)"``.
+    comparison_type : str
+        One of ``"multi_model"``, ``"resolution_sensitivity"``,
+        ``"single_model"``.
+    comparison_description : str
+        Optional free-text context appended after the intro paragraph.
     """
     if models is None:
         models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
@@ -370,11 +534,21 @@ def build_synthesis_system(
     else:
         project_context = " as part of Destination Earth (DestinE)"
 
-    return _SYNTHESIS_SYSTEM.format(
-        model_list=model_list,
-        project_context=project_context,
-        resolution=resolution,
+    intro = (
+        f"You are a climate scientist writing a synthesis of multiple "
+        f"diagnostic figures from {resolution} coupled climate model "
+        f"evaluations. The models are {model_list} evaluated against "
+        f"observations (ERA5, CERES, EN4, etc.){project_context}."
     )
+
+    desc_block = ""
+    if comparison_description:
+        desc_block = f"\n\n{comparison_description}"
+
+    focus = _SYNTHESIS_FOCUS.get(comparison_type, _SYNTHESIS_FOCUS["multi_model"])
+    tail = _SYNTHESIS_TAIL.format(model_list=model_list)
+
+    return intro + desc_block + "\n\n" + focus + tail
 
 
 def build_synthesis_prompt(

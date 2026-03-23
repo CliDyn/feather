@@ -324,6 +324,67 @@ class TestPrompts:
         assert "Temperature" in prompt
         assert "fig:t2m" in prompt
 
+    # ── comparison_type tests ──
+
+    def test_curation_system_resolution_sensitivity(self):
+        sys_prompt = build_curation_system(
+            comparison_type="resolution_sensitivity",
+        )
+        assert "resolution sensitivity" in sys_prompt.lower()
+        assert "high-resolution added value" in sys_prompt.lower()
+
+    def test_curation_system_single_model(self):
+        sys_prompt = build_curation_system(
+            comparison_type="single_model",
+        )
+        assert "outperforms or underperforms" in sys_prompt
+
+    def test_curation_system_default_multi_model(self):
+        sys_prompt = build_curation_system()
+        assert "agree or disagree" in sys_prompt
+
+    def test_curation_system_comparison_description(self):
+        sys_prompt = build_curation_system(
+            comparison_description="Custom context for this project.",
+        )
+        assert "Custom context for this project." in sys_prompt
+
+    def test_section_system_resolution_sensitivity(self):
+        sys_prompt = build_section_system(
+            comparison_type="resolution_sensitivity",
+        )
+        assert "resolution scaling" in sys_prompt.lower()
+        assert "cost-benefit" in sys_prompt.lower()
+
+    def test_section_system_single_model(self):
+        sys_prompt = build_section_system(
+            comparison_type="single_model",
+        )
+        assert "outperforms or underperforms" in sys_prompt
+
+    def test_section_system_comparison_description(self):
+        sys_prompt = build_section_system(
+            comparison_description="Same model at 3 resolutions.",
+        )
+        assert "Same model at 3 resolutions." in sys_prompt
+
+    # ── baseline_evaluation tests ──
+
+    def test_curation_system_baseline_evaluation(self):
+        sys_prompt = build_curation_system(
+            comparison_type="baseline_evaluation",
+        )
+        assert "baseline performance" in sys_prompt.lower()
+        assert "cryosphere" in sys_prompt.lower()
+
+    def test_section_system_baseline_evaluation(self):
+        sys_prompt = build_section_system(
+            comparison_type="baseline_evaluation",
+        )
+        assert "baseline assessment" in sys_prompt.lower()
+        assert "terradt" in sys_prompt.lower()
+        assert "cryosphere" in sys_prompt.lower()
+
 
 # ── OpenAIClient tests ──────────────────────────────────────────────
 

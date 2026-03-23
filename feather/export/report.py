@@ -71,6 +71,8 @@ class ReportGenerator:
             "resolution"
         ) if config.project else None
         self._prompt_period = config.get_period()
+        self._comparison_type = config.get_comparison_type()
+        self._comparison_description = config.get_comparison_description()
 
     def run(self, *, skip_existing: bool = True) -> Path:
         """Run the full report pipeline.
@@ -155,6 +157,8 @@ class ReportGenerator:
                     project_name=self._prompt_project,
                     resolution=self._prompt_resolution,
                     period=self._prompt_period,
+                    comparison_type=self._comparison_type,
+                    comparison_description=self._comparison_description,
                 ),
                 user=user_prompt,
             )
@@ -272,6 +276,8 @@ class ReportGenerator:
                     models=self._prompt_models,
                     resolution=self._prompt_resolution,
                     period=self._prompt_period,
+                    comparison_type=self._comparison_type,
+                    comparison_description=self._comparison_description,
                 ),
                 user=user_prompt,
             )

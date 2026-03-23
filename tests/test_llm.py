@@ -302,6 +302,78 @@ class TestSystemPrompts:
         system = build_synthesis_system()
         assert "Destination Earth" in system
 
+    # ── comparison_type tests ──
+
+    def test_figure_system_default_multi_model(self):
+        system = build_figure_analysis_system()
+        assert "which model performs best" in system
+
+    def test_figure_system_resolution_sensitivity(self):
+        system = build_figure_analysis_system(
+            comparison_type="resolution_sensitivity",
+        )
+        assert "resolution scaling" in system.lower()
+        assert "same model system" in system.lower()
+        assert "which model performs best" not in system
+
+    def test_figure_system_single_model(self):
+        system = build_figure_analysis_system(
+            comparison_type="single_model",
+        )
+        assert "outperforms or underperforms" in system
+        assert "which model performs best" not in system
+
+    def test_figure_system_unknown_type_falls_back(self):
+        system = build_figure_analysis_system(
+            comparison_type="unknown_type",
+        )
+        assert "which model performs best" in system
+
+    def test_figure_system_comparison_description(self):
+        system = build_figure_analysis_system(
+            comparison_description="Custom context about this project.",
+        )
+        assert "Custom context about this project." in system
+
+    def test_synthesis_system_resolution_sensitivity(self):
+        system = build_synthesis_system(
+            comparison_type="resolution_sensitivity",
+        )
+        assert "resolution scaling" in system.lower()
+        assert "cost-benefit" in system.lower()
+        assert "which model(s) perform best" not in system
+
+    def test_synthesis_system_single_model(self):
+        system = build_synthesis_system(
+            comparison_type="single_model",
+        )
+        assert "strengths and weaknesses" in system.lower()
+
+    def test_synthesis_system_comparison_description(self):
+        system = build_synthesis_system(
+            comparison_description="Same model at 3 resolutions.",
+        )
+        assert "Same model at 3 resolutions." in system
+
+    # ── baseline_evaluation tests ──
+
+    def test_figure_system_baseline_evaluation(self):
+        system = build_figure_analysis_system(
+            comparison_type="baseline_evaluation",
+        )
+        assert "terradt" in system.lower()
+        assert "cryosphere" in system.lower()
+        assert "baseline" in system.lower()
+        assert "which model performs best" not in system
+
+    def test_synthesis_system_baseline_evaluation(self):
+        system = build_synthesis_system(
+            comparison_type="baseline_evaluation",
+        )
+        assert "terradt" in system.lower()
+        assert "baseline adequacy" in system.lower()
+        assert "cryosphere" in system.lower()
+
 
 class TestSynthesisPrompt:
     def test_contains_diagnostic_name(self):

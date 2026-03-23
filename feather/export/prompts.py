@@ -2,6 +2,15 @@
 
 Stage 1: Editorial curation — select figures and plan report structure.
 Stage 2: Section writing — write scientific prose for each section.
+
+Prompts adapt to different comparison types via ``comparison_type``:
+
+- ``"multi_model"`` (default) — independent models compared against each
+  other and CMIP6.
+- ``"resolution_sensitivity"`` — same model family at different resolutions.
+- ``"single_model"`` — one model evaluated against observations only.
+- ``"baseline_evaluation"`` — baseline simulations assessed as a reference
+  for future component improvements (e.g. TerraDT).
 """
 
 import json
@@ -16,18 +25,55 @@ def _format_model_list(models: list[str]) -> str:
     return ", ".join(models[:-1]) + f", and {models[-1]}"
 
 
-# ── Stage 1: Editorial Curation ──────────────────────────────────────
+# ── Comparison-type-dependent curation blocks ───────────────────────
 
-_CURATION_SYSTEM = """\
-You are a senior climate scientist and science editor preparing a concise \
-technical report evaluating {resolution} climate models{project_context} \
-against observations.
+_CURATION_CRITERIA = {
+    "multi_model": """\
+Selection criteria:
+1. Scientific importance — biases that matter for applications
+2. Clear, visually striking results
+3. Thematic coherence within sections
+4. Balance across climate system components (atmosphere, ocean, ice)
+5. Stories where the models agree or disagree with each other \
+and with CMIP6""",
 
-The report covers results from {n_models} coupled models — {model_list}. \
-These are compared against observational datasets (ERA5, CERES, EN4) and \
-optionally against a CMIP6 multi-model mean ensemble. The evaluation \
-period is {period} (historical).
+    "resolution_sensitivity": """\
+Selection criteria:
+1. Resolution sensitivity — figures that clearly show how skill changes \
+with resolution (monotonic improvement, saturation, or non-monotonic \
+behaviour)
+2. High-resolution added value — features only captured at the finest \
+resolution (e.g. WBCs, orographic precipitation, mesoscale eddies)
+3. Resolution-insensitive biases — systematic errors shared across all \
+resolutions, indicating structural model limitations
+4. Balance across climate system components (atmosphere, ocean, ice)
+5. Clear, visually striking results that illustrate the resolution story""",
 
+    "single_model": """\
+Selection criteria:
+1. Scientific importance — biases that matter for applications
+2. Clear, visually striking results
+3. Thematic coherence within sections
+4. Balance across climate system components (atmosphere, ocean, ice)
+5. Where the model outperforms or underperforms the CMIP6 ensemble""",
+
+    "baseline_evaluation": """\
+Selection criteria:
+1. Baseline performance — figures that clearly show where models are \
+adequate vs where improvements are needed
+2. Cryosphere relevance — prioritise figures related to sea ice, polar \
+regions, ice sheets, and land surface processes (key TerraDT targets)
+3. Impact-relevant biases — biases that affect downstream applications \
+(sea level projections, shipping routes, vegetation, urban planning)
+4. Balance across climate system components (atmosphere, ocean, ice, land)
+5. Inter-model agreement — stories where models agree or disagree on \
+baseline performance""",
+}
+
+
+# ── Shared diagnostic descriptions ──────────────────────────────────
+
+_DIAGNOSTIC_DESCRIPTIONS = """\
 Available diagnostics:
 - **Global biases**: Spatial bias maps (model minus obs climatology) for \
 18 surface variables across annual, DJF, and JJA periods
@@ -68,19 +114,9 @@ maps (global + polar stereographic Arctic/Antarctic), and Taylor diagram \
 (Nino 3.4), NAO, SAM, AO, IOD, PDO, QBO. For each mode: index time \
 series, spatial pattern (EOF/regression), power spectrum, and seasonal \
 variance profile. Compares phase, amplitude, spectral characteristics, \
-and seasonal locking across models, ERA5, and CMIP6
+and seasonal locking across models, ERA5, and CMIP6"""
 
-Your task: from the full set of diagnostic results, select the most \
-compelling findings and organise them into 5-10 thematic sections for a \
-publication-quality technical report.
-
-Selection criteria:
-1. Scientific importance — biases that matter for applications
-2. Clear, visually striking results
-3. Thematic coherence within sections
-4. Balance across climate system components (atmosphere, ocean, ice)
-5. Stories where the models agree or disagree with each other \
-and with CMIP6
+_CURATION_TAIL = """\
 
 CRITICAL: Figure captions MUST name ALL evaluated models ({model_list}) \
 that appear in that figure. Do not write captions that mention only a \
@@ -114,9 +150,10 @@ Respond ONLY with a valid JSON object (no markdown fencing) matching this schema
     }}
   ],
   "conclusion": "1-2 paragraph conclusion"
-}}
-"""
+}}"""
 
+
+# ── Stage 1: Editorial Curation ──────────────────────────────────────
 
 def build_curation_system(
     *,
@@ -124,6 +161,8 @@ def build_curation_system(
     project_name: str | None = None,
     resolution: str | None = None,
     period: tuple[str, str] | None = None,
+    comparison_type: str = "multi_model",
+    comparison_description: str = "",
 ) -> str:
     """Return the curation system prompt.
 
@@ -137,6 +176,11 @@ def build_curation_system(
         Resolution description. Defaults to ``"high-resolution (~5 km)"``.
     period : tuple of str or None
         Evaluation period. Defaults to ``("1990", "2014")``.
+    comparison_type : str
+        One of ``"multi_model"``, ``"resolution_sensitivity"``,
+        ``"single_model"``.
+    comparison_description : str
+        Optional free-text context appended after the intro paragraph.
     """
     if models is None:
         models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
@@ -151,12 +195,33 @@ def build_curation_system(
     else:
         project_context = " from the DestinE initiative"
 
-    return _CURATION_SYSTEM.format(
-        model_list=model_list,
-        n_models=len(models),
-        project_context=project_context,
-        resolution=resolution,
-        period=f"{period[0]}-{period[1]}",
+    intro = (
+        f"You are a senior climate scientist and science editor preparing "
+        f"a concise technical report evaluating {resolution} climate "
+        f"models{project_context} against observations.\n\n"
+        f"The report covers results from {len(models)} coupled models "
+        f"\\u2014 {model_list}. These are compared against observational "
+        f"datasets (ERA5, CERES, EN4) and optionally against a CMIP6 "
+        f"multi-model mean ensemble. The evaluation period is "
+        f"{period[0]}-{period[1]} (historical)."
+    )
+
+    desc_block = ""
+    if comparison_description:
+        desc_block = f"\n\n{comparison_description}"
+
+    criteria = _CURATION_CRITERIA.get(
+        comparison_type, _CURATION_CRITERIA["multi_model"],
+    )
+
+    tail = _CURATION_TAIL.format(model_list=model_list)
+
+    return (
+        intro + desc_block + "\n\n" + _DIAGNOSTIC_DESCRIPTIONS
+        + "\n\nYour task: from the full set of diagnostic results, select "
+        "the most compelling findings and organise them into 5-10 thematic "
+        "sections for a publication-quality technical report.\n\n"
+        + criteria + tail
     )
 
 
@@ -224,13 +289,10 @@ def build_curation_prompt(
     return "\n".join(parts)
 
 
-# ── Stage 2: Section Writing ─────────────────────────────────────────
+# ── Comparison-type-dependent section blocks ────────────────────────
 
-_SECTION_SYSTEM = """\
-You are a climate scientist writing a section of a technical report \
-evaluating {resolution} models ({model_list}) against observations \
-(ERA5, CERES, EN4) for the period {period}.
-
+_SECTION_FOCUS = {
+    "multi_model": """\
 Write in an IPCC-like style:
 - Factual, quantitative, cite specific magnitudes and regions
 - No speculation beyond what the data shows
@@ -256,23 +318,98 @@ changes, thermodynamic constraints)
 radiative effects, and compare against CERES EBAF (the satellite reference \
 standard). For Gregory plots, interpret the regression slope as a feedback \
 parameter and relate to equilibrium climate sensitivity.
-- End the section with a brief synthesis tying the figures together
+- End the section with a brief synthesis tying the figures together""",
 
-Respond ONLY with a valid JSON object (no markdown fencing):
+    "resolution_sensitivity": """\
+Write in an IPCC-like style:
+- Factual, quantitative, cite specific magnitudes and regions
+- No speculation beyond what the data shows
+- Reference figures by their labels (e.g. "Figure~\\ref{{fig:label}}")
+- Plain text only — NO LaTeX commands (except figure references as above)
+- NO markdown formatting
+- CRITICAL: You MUST discuss ALL evaluated models ({model_list}) by name \
+in the section text, explicitly comparing across resolutions
 
-{{
-  "section_id": "USE THE EXACT section_id PROVIDED IN THE USER PROMPT",
-  "title": "Section Title",
-  "body": "2-4 paragraphs of detailed scientific prose..."
-}}
-"""
+IMPORTANT REQUIREMENTS for depth and quality:
+- Write 2-4 substantial paragraphs per section
+- Dedicate at least one full paragraph to EACH figure in the section, \
+describing in detail what it shows
+- Frame the discussion around resolution scaling: does the highest-resolution \
+configuration outperform the coarser ones? By how much? Is the improvement \
+monotonic?
+- Highlight resolution-sensitive features (e.g. Western Boundary Currents, \
+orographic precipitation, tropical convection, mesoscale ocean eddies) and \
+explain WHY they respond to resolution
+- Identify biases that persist across all resolutions — these indicate \
+structural model limitations independent of grid spacing
+- Include quantitative values wherever the analyses provide them
+- Connect the findings to physical mechanisms (resolved vs parameterised \
+processes, topographic representation, eddy-resolving thresholds)
+- For radiation budget figures: discuss energy balance closure, cloud \
+radiative effects, and compare against CERES EBAF
+- End the section with a brief synthesis on the cost-benefit of \
+increased resolution for the features discussed""",
 
+    "single_model": """\
+Write in an IPCC-like style:
+- Factual, quantitative, cite specific magnitudes and regions
+- No speculation beyond what the data shows
+- Reference figures by their labels (e.g. "Figure~\\ref{{fig:label}}")
+- Plain text only — NO LaTeX commands (except figure references as above)
+- NO markdown formatting
+- CRITICAL: You MUST discuss the evaluated model ({model_list}) in detail
+
+IMPORTANT REQUIREMENTS for depth and quality:
+- Write 2-4 substantial paragraphs per section
+- Dedicate at least one full paragraph to EACH figure in the section, \
+describing in detail what it shows: spatial patterns, regional hotspots, \
+bias magnitudes, and physical interpretation
+- Include quantitative values wherever the analyses provide them
+- Discuss where the model outperforms or underperforms the CMIP6 \
+ensemble and explain WHY
+- Connect the findings to physical mechanisms
+- For radiation budget figures: discuss energy balance closure, cloud \
+radiative effects, and compare against CERES EBAF
+- End the section with a brief synthesis tying the figures together""",
+
+    "baseline_evaluation": """\
+Write in an IPCC-like style:
+- Factual, quantitative, cite specific magnitudes and regions
+- No speculation beyond what the data shows
+- Reference figures by their labels (e.g. "Figure~\\ref{{fig:label}}")
+- Plain text only — NO LaTeX commands (except figure references as above)
+- NO markdown formatting
+- CRITICAL: You MUST discuss ALL evaluated models ({model_list}) by name \
+in the section text. Do not omit any model
+
+IMPORTANT REQUIREMENTS for depth and quality:
+- Write 2-4 substantial paragraphs per section
+- Dedicate at least one full paragraph to EACH figure in the section
+- Frame the discussion as a baseline assessment: the current model \
+configurations will serve as references for improvements in land ice, \
+sea ice, aerosol, and land surface representations within TerraDT
+- Highlight biases most relevant for cryosphere and land surface \
+applications (sea level rise, glacier retreat, shipping routes, \
+vegetation/carbon sequestration, urban climate extremes)
+- Include quantitative values wherever the analyses provide them
+- Discuss inter-model agreement and relate to structural model differences
+- Connect the findings to physical mechanisms
+- For radiation budget figures: discuss energy balance closure, cloud \
+radiative effects, and compare against CERES EBAF
+- End the section with a brief synthesis identifying priority areas \
+for model improvement""",
+}
+
+
+# ── Stage 2: Section Writing ─────────────────────────────────────────
 
 def build_section_system(
     *,
     models: list[str] | None = None,
     resolution: str | None = None,
     period: tuple[str, str] | None = None,
+    comparison_type: str = "multi_model",
+    comparison_description: str = "",
 ) -> str:
     """Return the section writing system prompt.
 
@@ -284,6 +421,11 @@ def build_section_system(
         Resolution description. Defaults to ``"high-resolution (~5 km)"``.
     period : tuple of str or None
         Evaluation period. Defaults to ``("1990", "2014")``.
+    comparison_type : str
+        One of ``"multi_model"``, ``"resolution_sensitivity"``,
+        ``"single_model"``.
+    comparison_description : str
+        Optional free-text context appended after the intro line.
     """
     if models is None:
         models = ["IFS-FESOM", "IFS-NEMO", "ICON"]
@@ -294,11 +436,31 @@ def build_section_system(
 
     model_list = _format_model_list(models)
 
-    return _SECTION_SYSTEM.format(
-        model_list=model_list,
-        resolution=resolution,
-        period=f"{period[0]}-{period[1]}",
+    intro = (
+        f"You are a climate scientist writing a section of a technical "
+        f"report evaluating {resolution} models ({model_list}) against "
+        f"observations (ERA5, CERES, EN4) for the period "
+        f"{period[0]}-{period[1]}."
     )
+
+    desc_block = ""
+    if comparison_description:
+        desc_block = f"\n\n{comparison_description}"
+
+    focus = _SECTION_FOCUS.get(comparison_type, _SECTION_FOCUS["multi_model"])
+    focus = focus.format(model_list=model_list)
+
+    tail = """
+
+Respond ONLY with a valid JSON object (no markdown fencing):
+
+{{
+  "section_id": "USE THE EXACT section_id PROVIDED IN THE USER PROMPT",
+  "title": "Section Title",
+  "body": "2-4 paragraphs of detailed scientific prose..."
+}}"""
+
+    return intro + desc_block + "\n\n" + focus + tail
 
 
 def build_section_prompt(
@@ -330,7 +492,8 @@ def build_section_prompt(
     ]
 
     for fig in selected_figures:
-        parts.append(f"\n{'─'*40}")
+        sep = "\u2500" * 40
+        parts.append(f"\n{sep}")
         parts.append(f"Figure: {fig['figure_id']} (from diagnostic: {fig['diagnostic']})")
         parts.append(f"Caption: {fig['caption']}")
         parts.append(f"LaTeX label: {fig['label']}")

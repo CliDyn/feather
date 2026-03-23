@@ -77,6 +77,8 @@ class FigureAnalyzer:
         self._prompt_resolution = config.project.get(
             "resolution"
         ) if config.project else None
+        self._comparison_type = config.get_comparison_type()
+        self._comparison_description = config.get_comparison_description()
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -195,6 +197,8 @@ class FigureAnalyzer:
                 models=self._prompt_models,
                 project_name=self._prompt_project,
                 resolution=self._prompt_resolution,
+                comparison_type=self._comparison_type,
+                comparison_description=self._comparison_description,
             ),
             contents=[image_part, user_prompt],
         )
@@ -227,6 +231,8 @@ class FigureAnalyzer:
                 models=self._prompt_models,
                 project_name=self._prompt_project,
                 resolution=self._prompt_resolution,
+                comparison_type=self._comparison_type,
+                comparison_description=self._comparison_description,
             ),
             contents=[user_prompt],
         )
