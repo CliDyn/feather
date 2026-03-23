@@ -5,17 +5,19 @@ Core infrastructure:
 - :mod:`~feather.diag.base` — :class:`DiagnosticBase` abstract base class
 - :mod:`~feather.diag.registry` — ``@register`` decorator and discovery
 
-Diagnostics:
-- :mod:`~feather.diag.global_biases` — climatology bias maps
+Diagnostics (12 registered):
+- :mod:`~feather.diag.global_biases` — climatology bias maps (18 variables)
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
-- :mod:`~feather.diag.radiation_budget` — radiation budget analysis
-- :mod:`~feather.diag.sea_ice` — sea ice evaluation (area/extent/volume/spatial)
+- :mod:`~feather.diag.global_trends` — per-grid-point linear trends
+- :mod:`~feather.diag.climate_variability` — STD of deseasonalised, detrended fields
+- :mod:`~feather.diag.radiation_budget` — radiation budget analysis vs CERES EBAF
+- :mod:`~feather.diag.sea_ice` — sea ice evaluation vs OSI-SAF + PIOMAS/GIOMAS
 - :mod:`~feather.diag.ocean_sst` — ocean SST evaluation vs ESA-CCI
-- :mod:`~feather.diag.ocean_en4` — ocean 3D evaluation vs EN4 v4.2.2
+- :mod:`~feather.diag.ocean_en4` — ocean 3D T/S evaluation vs EN4 v4.2.2
 - :mod:`~feather.diag.precipitation_mswep` — precipitation evaluation vs MSWEP v2.8
 - :mod:`~feather.diag.temperature_berkeley` — temperature evaluation vs Berkeley Earth
-- :mod:`~feather.diag.teleconnections` — climate variability modes (ENSO, NAO, etc.)
+- :mod:`~feather.diag.teleconnections` — climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
 """
 
 from feather.diag.base import DiagnosticBase

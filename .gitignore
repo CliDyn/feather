@@ -15,6 +15,7 @@ build/
 
 # Output
 output/
+output_*/
 *.png
 *.nc
 

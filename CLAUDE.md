@@ -6,8 +6,11 @@ Feather is a lightweight climate model evaluation framework supporting multiple 
 
 Currently supported model sets:
 - **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
-- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree)
+- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 (~10 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree)
 - **Custom NetCDF/HEALPix**: Per-year NetCDF files on HEALPix grid (e.g. IFS-FESOM T319)
+- **GRIB**: IFS-FESOM TCO399/TCO319 (~25-35 km, regular lat/lon, GRIB files)
+- **TerraDT**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix, per-model ensemble members)
+- **Combined multi-source**: Mix models from different backends (e.g. DestinE catalog + GRIB) via CompositeModelLoader
 
 The framework is grid-agnostic: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model config.
 
@@ -37,7 +40,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~1242 unit tests + 5 integration tests.
+Current test count: ~1372 tests (1367 unit + 5 integration).
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -50,9 +53,11 @@ feather/                     # Package root
 ├── __main__.py              # python -m feather support
 ├── config.py                # FeatherConfig dataclass + YAML loading
 ├── data/
-│   ├── loader.py            # DataLoader (intake catalogs + file paths)
+│   ├── loader.py            # MultiCatalogLoader (DestinE intake catalogs)
 │   ├── cmor_loader.py       # CMORLoader (CMOR directory tree, e.g. EERIE)
 │   ├── netcdf_loader.py     # NetCDFLoader (per-year NetCDF on HEALPix grid)
+│   ├── grib_loader.py       # GRIBLoader (GRIB files on regular lat/lon grid)
+│   ├── composite_loader.py  # CompositeModelLoader (multi-source per-model routing)
 │   ├── obs.py               # ObsLoader (observations from config) + load_ceres()
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (33 vars, CMOR canonical names)
@@ -78,6 +83,7 @@ feather/                     # Package root
 │   ├── ocean_sst.py         # OceanSST: SST evaluation vs ESA-CCI
 │   ├── ocean_en4.py         # OceanEN4: 3D ocean T/S evaluation vs EN4
 │   ├── global_trends.py     # GlobalTrends: per-grid-point linear trends
+│   ├── climate_variability.py # ClimateVariability: STD of deseasonalised, detrended fields
 │   ├── precipitation_mswep.py # PrecipitationMSWEP: precip eval vs MSWEP v2.8
 │   ├── temperature_berkeley.py # TemperatureBerkeley: T2m eval vs Berkeley Earth
 │   └── teleconnections.py    # TeleconnectionDiag: variability modes (ENSO, NAO, etc.)
@@ -104,16 +110,20 @@ feather/                     # Package root
 |------|---------|
 | `configs/default.yaml` | DestinE configuration (legacy list format) |
 | `configs/eerie.yaml` | EERIE HighResMIP configuration (structured dict format) |
+| `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
+| `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
 | `feather/config.py` | FeatherConfig + ModelConfig dataclasses, dual-format YAML loading |
 | `feather/data/variables.py` | Central variable registry (CMOR canonical names) |
 | `feather/data/cmor_loader.py` | CMORLoader — load from CMOR directory tree (EERIE etc.) |
 | `feather/data/netcdf_loader.py` | NetCDFLoader — load per-year NetCDF on HEALPix grid |
+| `feather/data/grib_loader.py` | GRIBLoader — load GRIB files on regular lat/lon grid |
+| `feather/data/composite_loader.py` | CompositeModelLoader — multi-source per-model routing |
 | `feather/diag/base.py` | Base class — grid-agnostic helpers (`_load_model_var`, `_model_global_mean`) |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
 | `feather/data/cmip6.py` | CMIP6Loader — load zarr, compute multi-model mean |
-| `feather/llm/analyzer.py` | FigureAnalyzer — Gemini-based figure analysis |
+| `feather/llm/analyzer.py` | FigureAnalyzer — Gemini-based, comparison-type aware |
 | `feather/llm/schemas.py` | Pydantic models for structured LLM output |
 | `feather/export/report.py` | ReportGenerator — LaTeX report via OpenAI (3-stage) |
 | `feather/website/generator.py` | SiteGenerator — static HTML dashboard from figures + analysis |
@@ -138,9 +148,11 @@ project:
   experiment: "hist-1950"
   period: ["1980", "2014"]
   resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"  # used in LLM prompts
+  comparison_type: "multi_model"      # multi_model | resolution_sensitivity | single_model | baseline_evaluation
+  comparison_description: ""          # optional free-text for LLM prompt framing
 
 data_source:
-  type: "cmor"                        # "cmor" or "destine_catalog"
+  type: "cmor"                        # "cmor" | "destine_catalog" | "netcdf_healpix" | "grib"
   root: "/path/to/CMOR/tree"
 
 models:
@@ -166,7 +178,11 @@ models:
 | `get_model_color(model)` | hex color string | palette cycle |
 | `get_period()` | `(start, end)` tuple | `("1990", "2014")` |
 | `get_experiment()` | experiment string | `"baseline_hist"` |
-| `get_data_source_type()` | `"cmor"`, `"netcdf_healpix"`, or `"destine_catalog"` | `"destine_catalog"` |
+| `get_data_source_type()` | `"cmor"`, `"netcdf_healpix"`, `"grib"`, or `"destine_catalog"` | `"destine_catalog"` |
+| `get_model_data_source_type(model)` | per-model backend (falls back to global) | global type |
+| `is_multi_source()` | `True` when models use different backends | `False` |
+| `get_comparison_type()` | LLM prompt framing type | `"multi_model"` |
+| `get_comparison_description()` | free-text comparison context | `""` |
 
 ### ModelConfig dataclass
 
@@ -184,6 +200,9 @@ class ModelConfig:
     variable_aliases: dict  # CMOR var name → on-disk name (e.g. thetao→thetao-con)
     scale_factors: dict     # var → multiplier (e.g. clt: 100 for fraction→%)
     absolute_salinity: bool # True if model outputs SA (TEOS-10) instead of SP (EOS-80)
+    data_source_type: str   # Per-model backend override (e.g. "grib" for mixed-source)
+    catalog_key: str        # Catalog entry name when different from model name
+    member: int             # Ensemble member index (default 1)
 ```
 
 ### Other config fields
@@ -320,13 +339,15 @@ Add an entry to `VARIABLE_REGISTRY` in `feather/data/variables.py` (CMOR name as
 ## How to add a new model set
 
 1. Create a config YAML using the structured format (see `configs/eerie.yaml` as template)
-2. Set `data_source.type` to `"cmor"`, `"netcdf_healpix"`, or `"destine_catalog"`
+2. Set `data_source.type` to `"cmor"`, `"destine_catalog"`, `"netcdf_healpix"`, or `"grib"`
 3. Define `models` as a dict with per-model `institution`, `experiment`, `variant`, `grids`, `color`
 4. Set `project.name`, `project.period`, `project.experiment`
-5. For `"netcdf_healpix"`: add `variable_aliases` mapping CMOR names → on-disk directory names (see `configs/himansu_319.yaml`)
-6. Run: `feather --config configs/my_project.yaml --diagnostics timeseries --variables tas -v`
+5. Optionally set `project.comparison_type` for LLM prompt framing
+6. For mixed data sources: set per-model `data_source_type` to route via `CompositeModelLoader`
+7. For `"netcdf_healpix"`: add `variable_aliases` mapping CMOR names → on-disk directory names (see `configs/himansu_319.yaml`)
+8. Run: `feather --config configs/my_project.yaml --diagnostics timeseries --variables tas -v`
 
-If your data format is not CMOR, NetCDF/HEALPix, or intake catalogs, create a new loader class (see `NetCDFLoader` in `feather/data/netcdf_loader.py` or `CMORLoader` in `feather/data/cmor_loader.py` as templates) and add a dispatch case in `feather/run.py:_create_model_loader()`.
+If your data format is not supported, create a new loader class (see `GRIBLoader`, `NetCDFLoader`, or `CMORLoader` as templates) and add a dispatch case in `feather/run.py:_create_model_loader()`.
 
 ## Important patterns and gotchas
 
@@ -515,6 +536,39 @@ If your data format is not CMOR, NetCDF/HEALPix, or intake catalogs, create a ne
 - Caching: `publication/structure.json` and `publication/sections/{id}.json` for resumable runs
 - `OpenAIClient` has retry logic (3 attempts) and handles markdown-fenced JSON + LaTeX escapes in responses
 - Run via: `feather --steps report --openai-api-key $OPENAI_API_KEY -v`
+
+### GRIBLoader
+- `feather/data/grib_loader.py`: loads GRIB files on regular lat/lon grid
+- Uses `xr.open_mfdataset()` with `engine="cfgrib"` and `preprocess=_normalise_ocean_layers()`
+- Ocean depth levels: configurable per model via dict format `depth_levels: {model_name: [depths]}`
+- `_normalise_ocean_layers()`: fixes inconsistent `oceanModelLayer` indices across GRIB files (even vs odd numbering) by normalizing to sequential 0..N-1
+- Variable mapping: CMOR → GRIB short name via `_GRIB_VAR_MAP` (e.g., `tas → 2t`, `pr → tp`)
+- Grid: regular lat/lon, standard `(time, latitude, longitude)` dims
+- Config: `configs/tco_grib.yaml`, also used as secondary backend in `configs/ifs_fesom_combined.yaml`
+
+### CompositeModelLoader
+- `feather/data/composite_loader.py`: routes `load_var()` and `load_coords()` to the correct backend per model
+- Triggered when `config.is_multi_source()` returns `True` (models have different `data_source_type`)
+- Groups models by backend type, instantiates one loader per type
+- `_DestinECatalogAdapter`: wraps `MultiCatalogLoader` with the unified `load_var(model, variable)` API
+- Uses `catalog_key` from ModelConfig to map model names to catalog entries (when they differ)
+- Uses `member` from ModelConfig for ensemble member selection in catalog keys
+- `DiagnosticBase._load_model_var()` detects `CompositeModelLoader` and delegates directly (bypasses old dispatch logic)
+
+### Comparison-type LLM prompts
+- LLM prompts adapt to four comparison types: `multi_model`, `resolution_sensitivity`, `single_model`, `baseline_evaluation`
+- Set via `project.comparison_type` in config YAML
+- `project.comparison_description` adds optional free-text context
+- Affects figure analysis (Gemini), synthesis, report curation, and section writing (OpenAI)
+- Prompts are composed from reusable blocks: shared figure-type descriptions + type-specific focus sections
+- `build_figure_analysis_system()`, `build_synthesis_system()` in `llm/prompts.py`
+- `build_curation_system()`, `build_section_system()` in `export/prompts.py`
+
+### Per-grid interpolator cache
+- When models have different grid sizes (e.g., nside=1024 vs nside=128, or different lat/lon resolutions), each grid needs its own nereus interpolator
+- `_interp_cache: dict[int, Any]` caches interpolators keyed by `n_src` (number of source points)
+- Applied across 7 bias-map diagnostics: global_biases, global_trends, climate_variability, ocean_en4, precipitation_mswep, radiation_budget, temperature_berkeley
+- Essential for multi-resolution evaluations via `CompositeModelLoader`
 
 ### Pipeline runner
 - `feather` CLI command registered via `[project.scripts]` in `pyproject.toml`
