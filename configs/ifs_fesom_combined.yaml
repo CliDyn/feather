@@ -1,0 +1,464 @@
+project:
+  name: "IFS-FESOM Multi-Resolution"
+  description: "IFS-FESOM resolution comparison: TCO2999 (~5 km), TCO399 (~25 km), TCO319 (~30 km)"
+  experiment: "baseline_hist"
+  period: ["1990", "2014"]
+  resolution: "TCO2999 (~5 km) / TCO399 (~25 km) / TCO319 (~30 km) atmosphere"
+  comparison_type: "resolution_sensitivity"
+  comparison_description: >
+    These three configurations are the same IFS-FESOM coupled model system
+    run at three different atmospheric resolutions: TCO2999 (~5 km),
+    TCO399 (~25 km), and TCO319 (~30 km). The ocean component (FESOM) also
+    differs in vertical resolution (69 vs 28 levels). The primary scientific
+    question is how model performance scales with resolution within this
+    single model family. Focus on which features (e.g. Western Boundary
+    Currents, orographic precipitation, mesoscale eddies) improve at
+    higher resolution, and where the medium-resolution configurations
+    already perform adequately.
+
+data_source:
+  type: "destine_catalog"    # default for models without per-model override
+
+model_catalogs:
+  2d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/2D/catalog.yaml"
+  3d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/3D/catalog.yaml"
+
+models:
+  IFS-FESOM-TCO2999:
+    institution: ECMWF
+    experiment: baseline_hist
+    catalog_key: "ifs-fesom"
+    grids:
+      sfc: healpix
+      o2d: healpix
+      o3d: healpix
+      pl: healpix
+    color: "#2ca02c"
+
+  IFS-FESOM-TCO399:
+    institution: AWI
+    experiment: hist
+    data_source_type: "grib_healpix"
+    data_root: "/work/ab0995/a270135/MN5/projt399/a3bo_grib/varyears"
+    grids:
+      sfc: healpix
+      o2d: healpix
+      o3d: healpix
+      pl: healpix
+    color: "#1f77b4"
+    variable_aliases:
+      # Surface (sfc)
+      tas: "sfc_mean2t"
+      ts: "sfc_mskt"
+      psl: "sfc_msl"
+      uas: "sfc_10u"
+      vas: "sfc_10v"
+      clt: "sfc_tcc"
+      pr: "sfc_mtpr"
+      hfss: "sfc_msshf"
+      hfls: "sfc_mslhf"
+      rsds: "sfc_msdwswrf"
+      rlds: "sfc_msdwlwrf"
+      rss: "sfc_msnswrf"
+      rls: "sfc_msnlwrf"
+      rsscs: "sfc_msnswrfcs"
+      rlscs: "sfc_msnlwrfcs"
+      # Ocean 2D (o2d)
+      tos: "o2d_avg_tos"
+      sos: "o2d_avg_sos"
+      siconc: "o2d_avg_siconc"
+      sithick: "o2d_avg_sithick"
+      # Ocean 3D (o3d)
+      thetao: "o3d_avg_thetao"
+      so: "o3d_avg_so"
+
+  IFS-FESOM-TCO319:
+    institution: AWI
+    experiment: hist
+    data_source_type: "grib_healpix"
+    data_root: "/work/ab0995/a270135/MN5/projt319/a3be_grib/varyears"
+    grids:
+      sfc: healpix
+      o2d: healpix
+      o3d: healpix
+      pl: healpix
+    color: "#ff7f0e"
+    variable_aliases:
+      # Surface (sfc)
+      tas: "sfc_mean2t"
+      ts: "sfc_mskt"
+      psl: "sfc_msl"
+      uas: "sfc_10u"
+      vas: "sfc_10v"
+      clt: "sfc_tcc"
+      pr: "sfc_mtpr"
+      hfss: "sfc_msshf"
+      hfls: "sfc_mslhf"
+      rsds: "sfc_msdwswrf"
+      rlds: "sfc_msdwlwrf"
+      rss: "sfc_msnswrf"
+      rls: "sfc_msnlwrf"
+      rsscs: "sfc_msnswrfcs"
+      rlscs: "sfc_msnlwrfcs"
+      # Ocean 2D (o2d)
+      tos: "o2d_avg_tos"
+      sos: "o2d_avg_sos"
+      siconc: "o2d_avg_siconc"
+      sithick: "o2d_avg_sithick"
+      # Ocean 3D (o3d)
+      thetao: "o3d_avg_thetao"
+      so: "o3d_avg_so"
+
+# Per-model ocean depth levels (different grids have different vertical levels)
+ocean_3d:
+  depth_levels:
+    # DestinE IFS-FESOM TCO2999: 69 levels
+    IFS-FESOM-TCO2999:
+      - 2.5
+      - 7.5
+      - 12.5
+      - 17.5
+      - 22.5
+      - 27.5
+      - 32.5
+      - 37.5
+      - 42.5
+      - 47.5
+      - 52.5
+      - 57.5
+      - 62.5
+      - 67.5
+      - 72.5
+      - 77.5
+      - 82.5
+      - 87.5
+      - 92.5
+      - 97.5
+      - 105
+      - 115
+      - 125
+      - 135
+      - 145
+      - 155
+      - 165
+      - 175
+      - 185
+      - 195
+      - 210
+      - 230
+      - 250
+      - 270
+      - 290
+      - 320
+      - 360
+      - 400
+      - 440
+      - 480
+      - 520
+      - 560
+      - 600
+      - 640
+      - 710
+      - 810
+      - 950
+      - 1110
+      - 1255
+      - 1415
+      - 1600
+      - 1810
+      - 2035
+      - 2275
+      - 2525
+      - 2775
+      - 3025
+      - 3275
+      - 3525
+      - 3775
+      - 4025
+      - 4275
+      - 4525
+      - 4775
+      - 5025
+      - 5275
+      - 5525
+      - 5825
+      - 6175
+    # TCO399 and TCO319: FESOM-DARS-full, 28 levels
+    IFS-FESOM-TCO399:
+      - 7.5
+      - 25.0
+      - 45.0
+      - 65.0
+      - 85.0
+      - 107.5
+      - 137.5
+      - 170.0
+      - 212.5
+      - 262.5
+      - 312.5
+      - 362.5
+      - 425.0
+      - 525.0
+      - 625.0
+      - 750.0
+      - 970.0
+      - 1255.0
+      - 1600.0
+      - 2035.0
+      - 2525.0
+      - 3025.0
+      - 3525.0
+      - 4025.0
+      - 4525.0
+      - 5025.0
+      - 5525.0
+      - 6125.0
+    IFS-FESOM-TCO319:
+      - 7.5
+      - 25.0
+      - 45.0
+      - 65.0
+      - 85.0
+      - 107.5
+      - 137.5
+      - 170.0
+      - 212.5
+      - 262.5
+      - 312.5
+      - 362.5
+      - 425.0
+      - 525.0
+      - 625.0
+      - 750.0
+      - 970.0
+      - 1255.0
+      - 1600.0
+      - 2035.0
+      - 2525.0
+      - 3025.0
+      - 3525.0
+      - 4025.0
+      - 4525.0
+      - 5025.0
+      - 5525.0
+      - 6125.0
+  half_levels:
+    IFS-FESOM-TCO2999:
+      - 0
+      - 5.0
+      - 10.0
+      - 15.0
+      - 20.0
+      - 25.0
+      - 30.0
+      - 35.0
+      - 40.0
+      - 45.0
+      - 50.0
+      - 55.0
+      - 60.0
+      - 65.0
+      - 70.0
+      - 75.0
+      - 80.0
+      - 85.0
+      - 90.0
+      - 95.0
+      - 100.0
+      - 110.0
+      - 120.0
+      - 130.0
+      - 140.0
+      - 150.0
+      - 160.0
+      - 170.0
+      - 180.0
+      - 190.0
+      - 200.0
+      - 220.0
+      - 240.0
+      - 260.0
+      - 280.0
+      - 300.0
+      - 340.0
+      - 380.0
+      - 420.0
+      - 460.0
+      - 500.0
+      - 540.0
+      - 580.0
+      - 620.0
+      - 660.0
+      - 760.0
+      - 860.0
+      - 1040.0
+      - 1180.0
+      - 1330.0
+      - 1500.0
+      - 1700.0
+      - 1920.0
+      - 2150.0
+      - 2400.0
+      - 2650.0
+      - 2900.0
+      - 3150.0
+      - 3400.0
+      - 3650.0
+      - 3900.0
+      - 4150.0
+      - 4400.0
+      - 4650.0
+      - 4900.0
+      - 5150.0
+      - 5400.0
+      - 5650.0
+      - 6000.0
+      - 6350.0
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      sst: "ERA5_sea_surface_temperature_mon_full_sfc_1940-2024.nc"
+      msl: "ERA5_mean_sea_level_pressure_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      tcc: "ERA5_total_cloud_cover_mon_full_sfc_1940-2024.nc"
+      sshf: "ERA5_surface_sensible_heat_flux_mon_full_sfc_1940-2024.nc"
+      slhf: "ERA5_surface_latent_heat_flux_mon_full_sfc_1940-2024.nc"
+      ssr: "ERA5_surface_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      str: "ERA5_surface_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      ssrc: "ERA5_surface_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      strc: "ERA5_surface_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tsr: "ERA5_top_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      ttr: "ERA5_top_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      tsrc: "ERA5_top_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      ttrc: "ERA5_top_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tisr: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      ssrd: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      strd: "ERA5_surface_thermal_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      e: "ERA5_evaporation_mon_full_sfc_1940-2024.nc"
+      tclw: "ERA5_total_column_cloud_liquid_water_mon_full_sfc_1940-2024.nc"
+      tciw: "ERA5_total_column_cloud_ice_water_mon_full_sfc_1940-2024.nc"
+      u10: "ERA5_10m_u_component_of_wind_mon_full_sfc_1940-2024.nc"
+      v10: "ERA5_10m_v_component_of_wind_mon_full_sfc_1940-2024.nc"
+      siconc_era5: "ERA5_sea_ice_cover_mon_full_sfc_1940-2024.nc"
+  CERES_EBAF:
+    path: "{obs_root}/CERES/EBAF_v4.2.1"
+    variables:
+      toa: "CERES_EBAF-TOA_Edition4.2.1_MONTHLY_200003-202506.nc"
+      surface: "CERES_EBAF_Edition4.2.1_MONTHLY_200003-202506.nc"
+  EN4:
+    path: "{obs_root}/EN4/v4.2.2"
+    variables:
+      thetao: "thetao-EN4-1950-2024.nc"
+      so: "so-EN4-1950-2024.nc"
+  ESA_CCI:
+    path: "/work/ab0995/a270088/DestinE/OBS/ESA-CCI_temp"
+    variables:
+      analysed_sst: "ESA-CCI-L4_v3.0.1_monthly_1990_2014_sst.nc"
+      timemean: "ESA-CCI-L4_v3.0.1_timemean_1990_2014_sst.nc"
+      ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
+  OSI_SAF:
+    path: "{obs_root}/OSI-SAF/OSI-AQUA"
+    variables:
+      nh: "monthly/ice_conc_nh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+      sh: "monthly/ice_conc_sh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+  PSC:
+    path: "{obs_root}/PSC"
+    variables:
+      piomas: "PIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x120_curvgrid.nc"
+      giomas: "GIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x276_curvgrid.nc"
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
+  BERKELEY_EARTH:
+    path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+
+cmip6:
+  enabled: true
+  catalog_path: "/home/a/a270088/PYTHON/DestinE/cmip6/cmip6_zarr_catalog.yaml"
+  regrid_resolution: 0.25
+  influence_radius: 80000
+  ensemble_mode: "one_per_model"
+  models:
+    CanESM5:
+      variant: "r1i1p1f1"
+    MPI-ESM1-2-LR:
+      variant: "r1i1p1f1"
+    GISS-E2-1-G:
+      variant: "r1i1p1f2"
+    IPSL-CM6A-LR:
+      variant: "r1i1p1f1"
+    ACCESS-ESM1-5:
+      variant: "r1i1p1f1"
+    EC-Earth3:
+      variant: "r1i1p1f1"
+    CNRM-CM6-1:
+      variant: "r1i1p1f2"
+    AWI-CM-1-1-MR:
+      variant: "r1i1p1f1"
+    CNRM-ESM2-1:
+      variant: "r1i1p1f2"
+    FGOALS-g3:
+      variant: "r1i1p1f1"
+    INM-CM5-0:
+      variant: "r1i1p1f1"
+    MRI-ESM2-0:
+      variant: "r1i1p1f1"
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  ocean_influence_radius: 20000
+  method: "linear"
+
+output_dir: "./output_ifs_fesom_combined"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — IFS-FESOM Multi-Resolution Evaluation"
+  subtitle: "IFS-FESOM TCO2999/TCO399/TCO319 vs Observations (1990-2014)"
+  group_order:
+    - evaluation
+    - temperature
+    - precipitation
+    - radiation
+    - circulation
+    - ocean_surface
+    - sea_ice
+    - ocean_3d
+  group_labels:
+    evaluation: "Global Biases"
+    temperature: "Temperature"
+    precipitation: "Precipitation"
+    radiation: "Radiation Budget"
+    circulation: "Atmospheric Circulation"
+    ocean_surface: "Ocean Surface"
+    sea_ice: "Sea Ice"
+    ocean_3d: "Ocean 3D"
