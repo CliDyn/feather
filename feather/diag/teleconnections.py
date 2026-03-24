@@ -1481,9 +1481,11 @@ class TeleconnectionDiag(DiagnosticBase):
         if map_extent is not None:
             plot_kwargs["extent"] = map_extent
 
-        # All patterns are on the common 1° grid after regridding,
-        # so use linear interpolation for smooth rendering.
-        plot_kwargs["method"] = "linear"
+        # NOTE: method="linear" was previously added to plot_kwargs here for
+        # smoother rendering of the regridded 1° pattern fields, but it was
+        # removed because the `method` kwarg is no longer accepted by the
+        # current nereus plotting API (possibly dropped in a recent nereus
+        # update).  Re-add once nereus restores the parameter.
         interpolator = None
         for i, (label, pat) in enumerate(patterns.items()):
             row, col = divmod(i, ncols)
