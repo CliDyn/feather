@@ -41,6 +41,12 @@ pip install -e .
 
 See `environment.yml` for the full list of dependencies. Key packages that are best installed via conda-forge: `cartopy`, `healpy`, `netcdf4`, `eccodes`, `cfgrib`.
 
+**nereus** must be installed directly from GitHub (not available on PyPI/conda-forge):
+
+```bash
+pip install git+https://github.com/koldunovn/nereus.git@0.4.1
+```
+
 After installation, the `feather` command is available.
 
 ## Pipeline

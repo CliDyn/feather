@@ -405,7 +405,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Without the flag, only CMIP6 MMM is shown (default behavior)
 - `--variables` CLI flag intersects with diagnostic's supported list; warns about unsupported variables
 - **CMIP6 interpolation method**: configurable via `nereus.method` (default `"nearest"`, recommended `"linear"` for smoother CMIP6 maps). Only applies to CMIP6 regridding; model/obs stay nearest neighbor.
-- **`method` kwarg removed from `nr.plot()` calls**: `plot_bias_map()`, `plot_combined_bias_map()`, and `plot_combined_map()` in `plot/maps.py` still accept a `method` argument in their signatures for backwards compatibility, but no longer forward it to `nr.plot()`. Similarly, `teleconnections.py` no longer sets `plot_kwargs["method"] = "linear"` for pattern maps. This is because the `method` parameter appears to have been dropped from the nereus plotting API in a recent update; passing it causes a `TypeError`. Re-enable once nereus restores the parameter.
+- **CMIP6 interpolation method**: configurable via `nereus.method` (default `"nearest"`, recommended `"linear"` for smoother CMIP6 maps). Only applies to CMIP6 regridding; model/obs stay nearest neighbor.
 - CMIP6 source lons converted to -180..180 before interpolation to avoid NaN stripe at prime meridian (Delaunay triangulation gap)
 - MMM computed as "regrid each model individually then average" — when `cmip6_individual=True`, MMM reuses already-regridded individual fields (`_mmm_from_individual()`) to avoid double interpolation
 

@@ -99,11 +99,6 @@ def plot_bias_map(model_data, obs_data, *,
     else:
         bias_abs_max = 1.0
 
-    # NOTE: the `method` parameter is no longer forwarded to nr.plot() calls
-    # below.  The `method` kwarg was removed from the nereus plotting API
-    # (possibly in a recent nereus update) and passing it causes a TypeError.
-    # The `method` argument is kept in the function signature for backwards
-    # compatibility but has no effect until nereus restores the parameter.
     interpolator = None  # shared across panels on the same grid
 
     # --- Panel 1: Model ---
@@ -113,7 +108,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=model_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Panel 2: Observation (same grid → reuse interpolator) ---
@@ -123,7 +118,7 @@ def plot_bias_map(model_data, obs_data, *,
         ax=axes[1], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Panel 3: Bias ---
@@ -135,7 +130,7 @@ def plot_bias_map(model_data, obs_data, *,
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_abs_max, vmax=bias_abs_max,
             colorbar=True, colorbar_label=units, title=bias_title,
-            land=land,
+            land=land, method=method,
         )
     else:
         axes[2].text(
@@ -257,7 +252,7 @@ def plot_combined_bias_map(
         ax=axes_flat[0], projection=projection, resolution=resolution,
         interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
         colorbar=True, colorbar_label=units, title=obs_title,
-        land=land,
+        land=land, method=method,
     )
 
     # --- Bias panels ---
@@ -269,7 +264,7 @@ def plot_combined_bias_map(
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_vmax, vmax=bias_vmax,
             colorbar=True, colorbar_label=units, title=f"Bias: {label}",
-            land=land,
+            land=land, method=method,
         )
 
     # Hide unused axes
@@ -369,7 +364,7 @@ def plot_combined_map(
             ax=axes_flat[i], projection=projection, resolution=resolution,
             interpolator=interpolator, cmap=cmap, vmin=vmin, vmax=vmax,
             colorbar=True, colorbar_label=units, title=label,
-            land=land,
+            land=land, method=method,
         )
 
     # Hide unused axes
