@@ -62,7 +62,7 @@ feather/                     # Package root
 │   ├── cmip6.py             # CMIP6Loader (multi-model mean from zarr)
 │   └── variables.py         # VarInfo dataclass + VARIABLE_REGISTRY (33 vars, CMOR canonical names)
 ├── util/
-│   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, compute_latlon_areas
+│   ├── spatial.py           # zonal_mean, global_mean, regional_mean, latlon_global_mean, compute_latlon_areas, spatial_ttest, spatial_variance_ratio
 │   ├── temporal.py          # climatology, anomaly, seasonal/monthly grouping
 │   ├── eof.py               # EOF computation via SVD (teleconnections)
 │   ├── spectrum.py           # Power spectrum via Welch (teleconnections)
@@ -408,6 +408,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **CMIP6 interpolation method**: configurable via `nereus.method` (default `"nearest"`, recommended `"linear"` for smoother CMIP6 maps). Only applies to CMIP6 regridding; model/obs stay nearest neighbor.
 - CMIP6 source lons converted to -180..180 before interpolation to avoid NaN stripe at prime meridian (Delaunay triangulation gap)
 - MMM computed as "regrid each model individually then average" — when `cmip6_individual=True`, MMM reuses already-regridded individual fields (`_mmm_from_individual()`) to avoid double interpolation
+- **Statistical significance tests**: per-model paired t-test (area-weighted, Kish's effective sample size) tests whether mean spatial bias differs significantly from zero (`t_test_statistic`, `t_test_p_value` in JSON metadata). Variance ratio F-test (population variance, ddof=0, area-weighted) computes F = Var(model) / Var(obs) — F=1 means equal spatial variability, F>1 model more variable, F<1 model smoother (`variance_ratio`, `variance_ratio_p_value`). Both computed for evaluated models, CMIP6 MMM, and individual CMIP6 models. Utility functions: `spatial_ttest()` and `spatial_variance_ratio()` in `feather/util/spatial.py`. Website uses `_format_stat` Jinja2 filter for scientific notation on small p-values.
 
 ### Timeseries & SeasonalCycle diagnostics
 - Both share the same 18-variable list as GlobalBiases (temperature, pressure, wind, clouds, precipitation, radiation, heat fluxes)

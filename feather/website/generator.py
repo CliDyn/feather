@@ -44,6 +44,15 @@ def _model_display_name(name: str, config: "FeatherConfig | None" = None) -> str
     return name
 
 
+def _format_stat(value):
+    """Format a statistic for display: scientific notation for tiny values."""
+    if not isinstance(value, (int, float)):
+        return str(value)
+    if value != 0 and abs(value) < 0.01:
+        return f"{value:.2e}"
+    return f"{value:.2f}"
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     """Load a JSON file, returning empty dict on failure."""
     try:
@@ -80,6 +89,7 @@ class SiteGenerator:
         self.env.filters["model_display_name"] = (
             lambda name: _model_display_name(name, config)
         )
+        self.env.filters["format_stat"] = _format_stat
 
     # ── Registry lookup ───────────────────────────────────────────────
 
