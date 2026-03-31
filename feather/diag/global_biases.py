@@ -15,7 +15,7 @@ import xarray as xr
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.maps import plot_combined_bias_map
+from feather.plot.maps import plot_combined_bias_map, plot_combined_map
 from feather.util.spatial import (
     latlon_global_mean,
     spatial_ttest,
@@ -24,6 +24,10 @@ from feather.util.spatial import (
 from feather.util.temporal import climatology, seasonal_climatology
 
 logger = logging.getLogger(__name__)
+
+# Precipitation display constants (pr only)
+_PR_TO_MMDAY = 86400.0          # kg/m²/s → mm/day (display only)
+_REL_BIAS_THRESHOLD = 0.1 / 86400  # mask relative bias where obs < 0.1 mm/day
 
 
 @register
@@ -97,6 +101,12 @@ class GlobalBiases(DiagnosticBase):
             figure_ids = [
                 f"{var}_{p}_bias_combined" for p in ["annual", "djf", "jja"]
             ]
+            # For precipitation, also require relative-bias figures
+            if var == "pr":
+                figure_ids += [
+                    f"pr_{p}_relative_bias_combined"
+                    for p in ["annual", "djf", "jja"]
+                ]
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
             ):
@@ -937,7 +947,12 @@ class GlobalBiases(DiagnosticBase):
     def _plot_variable(
         self, var: str, vr: dict[str, Any],
     ) -> list[tuple[plt.Figure, dict]]:
-        """Generate combined multi-panel bias maps for a single variable."""
+        """Generate combined multi-panel bias maps for a single variable.
+
+        For ``pr``, additionally produces relative-bias (%) figures using the
+        IPCC BrBG colormap (brown = dry bias, green = wet bias) and converts
+        display units to mm/day.
+        """
         figures: list[tuple[plt.Figure, dict]] = []
 
         var_info = vr["var_info"]
@@ -946,6 +961,8 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data = vr.get("cmip6_data", {})
         cmip6_info = vr.get("cmip6_info", {})
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
+
+        is_pr = (var == "pr")
 
         periods = [("annual", "Annual Mean")]
         for season in ["DJF", "JJA"]:
@@ -958,12 +975,15 @@ class GlobalBiases(DiagnosticBase):
             summary_stats = {}
             all_models = []
 
+            # Unit multiplier for display: pr → mm/day, others → 1
+            unit_scale = _PR_TO_MMDAY if is_pr else 1.0
+
             for model, mdata in vr["models"].items():
                 if period_key == "annual":
                     bias_field = mdata["annual_bias"]
                     summary_stats[model] = {
-                        "global_mean_bias": mdata["annual_bias_gmean"],
-                        "rmse": mdata["annual_rmse"],
+                        "global_mean_bias": mdata["annual_bias_gmean"] * unit_scale,
+                        "rmse": mdata["annual_rmse"] * unit_scale,
                         "t_test_statistic": mdata["ttest_statistic"],
                         "t_test_p_value": mdata["ttest_pvalue"],
                         "variance_ratio": mdata["ftest_statistic"],
@@ -977,7 +997,7 @@ class GlobalBiases(DiagnosticBase):
                     summary_stats[model] = {
                         "global_mean_bias": float(
                             latlon_global_mean(bias_field).values
-                        ),
+                        ) * unit_scale,
                         "t_test_statistic": s_tt.get("ttest_statistic"),
                         "t_test_p_value": s_tt.get("ttest_pvalue"),
                         "variance_ratio": s_tt.get("ftest_statistic"),
@@ -992,8 +1012,9 @@ class GlobalBiases(DiagnosticBase):
                 bias_dict["CMIP6 MMM"] = c_data["bias"]
                 all_models.append("CMIP6 MMM")
                 summary_stats["CMIP6 MMM"] = {
-                    "global_mean_bias": c_data["bias_gmean"],
-                    "rmse": c_data.get("rmse"),
+                    "global_mean_bias": c_data["bias_gmean"] * unit_scale,
+                    "rmse": (c_data["rmse"] * unit_scale
+                             if c_data.get("rmse") is not None else None),
                     "t_test_statistic": c_data.get("ttest_statistic"),
                     "t_test_p_value": c_data.get("ttest_pvalue"),
                     "variance_ratio": c_data.get("ftest_statistic"),
@@ -1006,8 +1027,9 @@ class GlobalBiases(DiagnosticBase):
                     bias_dict[label] = c_data["bias"]
                     all_models.append(label)
                     summary_stats[label] = {
-                        "global_mean_bias": c_data["bias_gmean"],
-                        "rmse": c_data.get("rmse"),
+                        "global_mean_bias": c_data["bias_gmean"] * unit_scale,
+                        "rmse": (c_data["rmse"] * unit_scale
+                                 if c_data.get("rmse") is not None else None),
                         "t_test_statistic": c_data.get("ttest_statistic"),
                         "t_test_p_value": c_data.get("ttest_pvalue"),
                         "variance_ratio": c_data.get("ftest_statistic"),
@@ -1028,16 +1050,79 @@ class GlobalBiases(DiagnosticBase):
             # Get colorbar ranges
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
+            # ── Precipitation-specific: relative bias + IPCC colormaps ──────
+            if is_pr:
+                # Relative bias figure (%) — brown=dry, green=wet
+                obs_masked = obs_period.where(obs_period > _REL_BIAS_THRESHOLD)
+                rel_bias_dict = {
+                    k: (v / obs_masked) * 100 for k, v in bias_dict.items()
+                }
+                # Compute relative bias stats in % for metadata
+                rel_stats = {}
+                for label, rel_field in rel_bias_dict.items():
+                    finite = rel_field.values[np.isfinite(rel_field.values)]
+                    if finite.size > 0:
+                        rel_stats[label] = {
+                            "mean_relative_bias_pct": float(np.nanmean(finite)),
+                        }
+                fig_rel, _ = plot_combined_map(
+                    rel_bias_dict,
+                    title=f"Precipitation Relative Bias ({period_label})",
+                    cmap="BrBG",
+                    vmin=-100, vmax=100,
+                    units="%",
+                    method=self._regrid_method,
+                )
+                meta_rel = self._build_metadata(
+                    title=f"Precipitation Relative Bias ({period_label})",
+                    figure_id=f"pr_{period_key.lower()}_relative_bias_combined",
+                    models=all_models,
+                    variables=["pr"],
+                    description=(
+                        f"{period_label} precipitation relative bias (%) vs "
+                        f"{var_info.obs_dataset}. Masked where obs < 0.1 mm/day. "
+                        "Brown = dry bias, green = wet bias."
+                    ),
+                    plot_type="combined_map",
+                    period=self.period,
+                    cmip6_info=cmip6_info or None,
+                    summary_statistics=rel_stats,
+                )
+                figures.append((fig_rel, meta_rel))
+
+                # Scale absolute fields to mm/day for display
+                obs_plot = obs_period * _PR_TO_MMDAY
+                bias_plot = {k: v * _PR_TO_MMDAY for k, v in bias_dict.items()}
+                vmin_p = (p_cb["vmin"] * _PR_TO_MMDAY
+                          if p_cb.get("vmin") is not None else None)
+                vmax_p = (p_cb["vmax"] * _PR_TO_MMDAY
+                          if p_cb.get("vmax") is not None else None)
+                bvmax_p = (p_cb["bias_vmax"] * _PR_TO_MMDAY
+                           if p_cb.get("bias_vmax") is not None else None)
+                disp_cmap = "YlGnBu"
+                disp_bias_cmap = "BrBG"
+                disp_units = "mm/day"
+            else:
+                obs_plot = obs_period
+                bias_plot = bias_dict
+                vmin_p = p_cb.get("vmin")
+                vmax_p = p_cb.get("vmax")
+                bvmax_p = p_cb.get("bias_vmax")
+                disp_cmap = var_info.cmap
+                disp_bias_cmap = "RdBu_r"
+                disp_units = var_info.units
+
+            # ── Absolute bias figure ─────────────────────────────────────────
             fig, axes = plot_combined_bias_map(
-                obs_period, bias_dict,
+                obs_plot, bias_plot,
                 title=f"{var_info.long_name} {period_label}",
                 obs_title=var_info.obs_dataset,
-                cmap=var_info.cmap,
-                bias_cmap="RdBu_r",
-                vmin=p_cb.get("vmin"),
-                vmax=p_cb.get("vmax"),
-                bias_vmax=p_cb.get("bias_vmax"),
-                units=var_info.units,
+                cmap=disp_cmap,
+                bias_cmap=disp_bias_cmap,
+                vmin=vmin_p,
+                vmax=vmax_p,
+                bias_vmax=bvmax_p,
+                units=disp_units,
                 method=self._regrid_method,
             )
 

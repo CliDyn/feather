@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 # Below this, relative bias is masked to avoid division artifacts.
 _REL_BIAS_THRESHOLD = 0.1 / 86400  # ~0.1 mm/day
 
+# Conversion factor: kg/m²/s → mm/day (used for display only).
+_PR_TO_MMDAY = 86400.0
+
 
 @register
 class PrecipitationMSWEP(DiagnosticBase):
@@ -90,8 +93,11 @@ class PrecipitationMSWEP(DiagnosticBase):
         need_a = not skip_existing or not all(
             self._figure_exists(fid) for fid in bias_ids
         )
-        need_b = not skip_existing or not self._figure_exists(
-            "pr_annual_relative_bias"
+        rel_bias_ids = [
+            f"pr_{p}_relative_bias" for p in ["annual", "djf", "jja"]
+        ]
+        need_b = not skip_existing or not all(
+            self._figure_exists(fid) for fid in rel_bias_ids
         )
         need_c = not skip_existing or not self._figure_exists(
             "pr_timeseries"
@@ -114,11 +120,11 @@ class PrecipitationMSWEP(DiagnosticBase):
                 for fid in bias_ids
             ])
         if not need_b:
-            logger.info("Skipping relative bias -- figure exists")
-            saved.append((
-                out / "pr_annual_relative_bias.png",
-                out / "pr_annual_relative_bias.json",
-            ))
+            logger.info("Skipping relative bias -- figures exist")
+            saved.extend([
+                (out / f"{fid}.png", out / f"{fid}.json")
+                for fid in rel_bias_ids
+            ])
         if not need_c:
             logger.info("Skipping timeseries -- figure exists")
             saved.append((
@@ -515,12 +521,12 @@ class PrecipitationMSWEP(DiagnosticBase):
                 if period_key == "annual":
                     bias_field = mdata["annual_bias"]
                     summary_stats[model] = {
-                        "global_mean_bias": mdata["annual_bias_gmean"],
-                        "rmse": mdata["annual_rmse"],
+                        "global_mean_bias": mdata["annual_bias_gmean"] * _PR_TO_MMDAY,
+                        "rmse": mdata["annual_rmse"] * _PR_TO_MMDAY,
                         "pattern_correlation": mdata["pattern_correlation"],
                         "std_ratio": mdata["std_ratio"],
-                        "tropical_mean_bias": mdata["tropical_mean_bias"],
-                        "extratropical_mean_bias": mdata["extratropical_mean_bias"],
+                        "tropical_mean_bias": mdata["tropical_mean_bias"] * _PR_TO_MMDAY,
+                        "extratropical_mean_bias": mdata["extratropical_mean_bias"] * _PR_TO_MMDAY,
                     }
                 else:
                     bias_field = mdata["seasonal_biases"].get(period_key)
@@ -535,8 +541,9 @@ class PrecipitationMSWEP(DiagnosticBase):
                 bias_dict["CMIP6 MMM"] = c_data["bias"]
                 all_models.append("CMIP6 MMM")
                 summary_stats["CMIP6 MMM"] = {
-                    "global_mean_bias": c_data["bias_gmean"],
-                    "rmse": c_data.get("rmse"),
+                    "global_mean_bias": c_data["bias_gmean"] * _PR_TO_MMDAY,
+                    "rmse": (c_data["rmse"] * _PR_TO_MMDAY
+                             if c_data.get("rmse") is not None else None),
                 }
 
             # CMIP6 individual
@@ -558,16 +565,26 @@ class PrecipitationMSWEP(DiagnosticBase):
 
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
+            # Convert to mm/day for display (internal data stays in kg/m²/s)
+            obs_plot = obs_period * _PR_TO_MMDAY
+            bias_plot = {k: v * _PR_TO_MMDAY for k, v in bias_dict.items()}
+            vmin_plot = (p_cb["vmin"] * _PR_TO_MMDAY
+                         if p_cb.get("vmin") is not None else None)
+            vmax_plot = (p_cb["vmax"] * _PR_TO_MMDAY
+                         if p_cb.get("vmax") is not None else None)
+            bvmax_plot = (p_cb["bias_vmax"] * _PR_TO_MMDAY
+                          if p_cb.get("bias_vmax") is not None else None)
+
             fig, axes = plot_combined_bias_map(
-                obs_period, bias_dict,
+                obs_plot, bias_plot,
                 title=f"Precipitation {period_label}",
                 obs_title="MSWEP v2.8",
                 cmap="YlGnBu",
                 bias_cmap="BrBG",
-                vmin=p_cb.get("vmin"),
-                vmax=p_cb.get("vmax"),
-                bias_vmax=p_cb.get("bias_vmax"),
-                units=var_info.units,
+                vmin=vmin_plot,
+                vmax=vmax_plot,
+                bias_vmax=bvmax_plot,
+                units="mm/day",
                 method=self._regrid_method,
             )
 
@@ -594,68 +611,101 @@ class PrecipitationMSWEP(DiagnosticBase):
     # ── Group B: Relative bias ───────────────────────────────────────
 
     def _compute_relative_bias(self, shared: dict) -> dict[str, Any]:
-        """Compute relative precipitation bias (% of obs)."""
+        """Compute relative precipitation bias (% of obs) for annual + seasonal."""
         logger.info("Computing relative precipitation bias...")
         bias_results = self._compute_bias_maps(shared)
 
         obs_clim = bias_results["obs"]["clim"]
-        # Mask where obs is very small to avoid division artifacts
-        obs_masked = obs_clim.where(obs_clim > _REL_BIAS_THRESHOLD)
-
-        rel_bias_dict = {}
-        for model, mdata in bias_results["models"].items():
-            rel = (mdata["annual_bias"] / obs_masked) * 100
-            rel_bias_dict[model] = rel
-
-        # CMIP6 MMM relative bias
+        obs_seasonal_clim = bias_results["obs"]["seasonal_clim"]
         cmip6_data = bias_results.get("cmip6_data", {})
-        if "annual" in cmip6_data:
-            rel = (cmip6_data["annual"]["bias"] / obs_masked) * 100
-            rel_bias_dict["CMIP6 MMM"] = rel
-
-        # CMIP6 individual relative biases
         cmip6_individual_data = bias_results.get("cmip6_individual_data", {})
+
+        # ── Annual ──────────────────────────────────────────────────────
+        obs_masked = obs_clim.where(obs_clim > _REL_BIAS_THRESHOLD)
+        rel_bias_annual: dict[str, Any] = {}
+        for model, mdata in bias_results["models"].items():
+            rel_bias_annual[model] = (mdata["annual_bias"] / obs_masked) * 100
+        if "annual" in cmip6_data:
+            rel_bias_annual["CMIP6 MMM"] = (
+                cmip6_data["annual"]["bias"] / obs_masked
+            ) * 100
         if "annual" in cmip6_individual_data:
             for label, c_data in cmip6_individual_data["annual"].items():
-                rel = (c_data["bias"] / obs_masked) * 100
-                rel_bias_dict[label] = rel
+                rel_bias_annual[label] = (c_data["bias"] / obs_masked) * 100
+
+        # ── Seasonal (DJF, JJA) ─────────────────────────────────────────
+        rel_bias_seasonal: dict[str, dict] = {}
+        for season in ["DJF", "JJA"]:
+            if season not in obs_seasonal_clim:
+                continue
+            obs_s = obs_seasonal_clim[season]
+            obs_s_masked = obs_s.where(obs_s > _REL_BIAS_THRESHOLD)
+            rel_s: dict[str, Any] = {}
+            for model, mdata in bias_results["models"].items():
+                if season in mdata.get("seasonal_biases", {}):
+                    rel_s[model] = (
+                        mdata["seasonal_biases"][season] / obs_s_masked
+                    ) * 100
+            if season in cmip6_data:
+                rel_s["CMIP6 MMM"] = (
+                    cmip6_data[season]["bias"] / obs_s_masked
+                ) * 100
+            if season in cmip6_individual_data:
+                for label, c_data in cmip6_individual_data[season].items():
+                    rel_s[label] = (c_data["bias"] / obs_s_masked) * 100
+            if rel_s:
+                rel_bias_seasonal[season] = rel_s
 
         return {
-            "rel_bias_dict": rel_bias_dict,
+            "rel_bias_annual": rel_bias_annual,
+            "rel_bias_seasonal": rel_bias_seasonal,
             "obs_clim": obs_clim,
         }
 
     def _plot_relative_bias(self, results: dict) -> list[tuple[plt.Figure, dict]]:
-        """Plot relative bias maps (%)."""
-        rel_bias_dict = results["rel_bias_dict"]
-        if not rel_bias_dict:
-            return []
+        """Plot relative bias maps (%) for annual, DJF, and JJA."""
+        figures = []
 
-        fig, axes = plot_combined_map(
-            rel_bias_dict,
-            title="Precipitation Relative Bias (Annual)",
-            cmap="BrBG",
-            vmin=-100, vmax=100,
-            units="%",
-            method=self._regrid_method,
-        )
+        periods = [("annual", "Annual")]
+        for season in ["DJF", "JJA"]:
+            if season in results.get("rel_bias_seasonal", {}):
+                periods.append((season, season))
 
-        meta = self._build_metadata(
-            title="Precipitation Relative Bias (Annual)",
-            figure_id="pr_annual_relative_bias",
-            models=list(rel_bias_dict.keys()),
-            variables=["pr"],
-            description=(
-                "Annual mean precipitation relative bias (%) compared to "
-                "MSWEP v2.8. Masked where obs < 0.1 mm/day to avoid "
-                "division artifacts in arid regions."
-            ),
-            obs_dataset="MSWEP",
-            obs_variable="precipitation",
-            plot_type="combined_map",
-            period=self.period,
-        )
-        return [(fig, meta)]
+        for period_key, period_label in periods:
+            if period_key == "annual":
+                bias_dict = results["rel_bias_annual"]
+            else:
+                bias_dict = results["rel_bias_seasonal"][period_key]
+            if not bias_dict:
+                continue
+
+            fig, axes = plot_combined_map(
+                bias_dict,
+                title=f"Precipitation Relative Bias ({period_label})",
+                cmap="BrBG",
+                vmin=-100, vmax=100,
+                units="%",
+                method=self._regrid_method,
+            )
+            meta = self._build_metadata(
+                title=f"Precipitation Relative Bias ({period_label})",
+                figure_id=f"pr_{period_key.lower()}_relative_bias",
+                models=list(bias_dict.keys()),
+                variables=["pr"],
+                description=(
+                    f"{period_label} precipitation relative bias (%) vs "
+                    "MSWEP v2.8. Masked where obs < 0.1 mm/day to avoid "
+                    "division artifacts in arid regions. "
+                    "Brown = dry bias, green = wet bias."
+                ),
+                obs_dataset="MSWEP",
+                obs_variable="precipitation",
+                plot_type="combined_map",
+                period=self.period,
+            )
+            figures.append((fig, meta))
+
+        return figures
 
     # ── Group C: Timeseries ──────────────────────────────────────────
 
@@ -706,25 +756,25 @@ class PrecipitationMSWEP(DiagnosticBase):
         # Monthly pass (background)
         for _mname, ts in cmip6_indiv.items():
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values * _PR_TO_MMDAY,
                     color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
 
         if results.get("cmip6_ts") is not None:
             cmip6_ts = results["cmip6_ts"]
             time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values,
+            ax.plot(time_vals, cmip6_ts.values * _PR_TO_MMDAY,
                     color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values * _PR_TO_MMDAY,
                     color=color, alpha=0.3, linewidth=0.7)
 
         obs_ts = results["obs"]
         obs_time = _to_plot_time(obs_ts.time.values)
-        ax.plot(obs_time, obs_ts.values,
+        ax.plot(obs_time, obs_ts.values * _PR_TO_MMDAY,
                 color=OBS_COLOR, alpha=0.3, linewidth=0.7)
 
         # Annual pass (foreground)
@@ -732,14 +782,14 @@ class PrecipitationMSWEP(DiagnosticBase):
             label = "CMIP6 members" if i == 0 else "_nolegend_"
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values * _PR_TO_MMDAY,
                     color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                     label=label)
 
         if results.get("cmip6_ts") is not None:
             cmip6_annual = annual_mean(results["cmip6_ts"])
             time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values,
+            ax.plot(time_vals, cmip6_annual.values * _PR_TO_MMDAY,
                     label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=2.0, linestyle="--")
 
@@ -747,16 +797,16 @@ class PrecipitationMSWEP(DiagnosticBase):
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values * _PR_TO_MMDAY,
                     label=model, color=color, linewidth=2.0)
 
         obs_annual = annual_mean(obs_ts)
         obs_annual_time = _to_plot_time(obs_annual.time.values)
-        ax.plot(obs_annual_time, obs_annual.values,
+        ax.plot(obs_annual_time, obs_annual.values * _PR_TO_MMDAY,
                 label="MSWEP", color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title("Precipitation \u2014 Global Mean")
-        ax.set_ylabel("Precipitation (kg/m\u00b2/s)")
+        ax.set_ylabel("Precipitation (mm/day)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -829,7 +879,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         cmip6_indiv = results.get("cmip6_individual_monthly", {})
         for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
             label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ax.plot(months, monthly.values,
+            ax.plot(months, monthly.values * _PR_TO_MMDAY,
                     color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                     label=label)
         if cmip6_indiv:
@@ -837,24 +887,24 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         # Layer 2: CMIP6 MMM
         if results.get("cmip6_monthly") is not None:
-            ax.plot(months, results["cmip6_monthly"].values,
+            ax.plot(months, results["cmip6_monthly"].values * _PR_TO_MMDAY,
                     marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=1.5, linestyle="--")
 
         # Layer 3: Model lines
         for model, monthly in results["models"].items():
             color = self.config.get_model_color(model)
-            ax.plot(months, monthly.values,
+            ax.plot(months, monthly.values * _PR_TO_MMDAY,
                     marker="o", label=model, color=color)
 
         # Layer 4: Observations
-        ax.plot(months, results["obs"].values,
+        ax.plot(months, results["obs"].values * _PR_TO_MMDAY,
                 marker="s", label="MSWEP", color=OBS_COLOR, linewidth=2)
 
         ax.set_xticks(months)
         ax.set_xticklabels(month_labels)
         ax.set_title("Precipitation \u2014 Seasonal Cycle")
-        ax.set_ylabel("Precipitation (kg/m\u00b2/s)")
+        ax.set_ylabel("Precipitation (mm/day)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -957,7 +1007,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         # CMIP6 MMM
         if results.get("cmip6_zonal") is not None:
             zm = results["cmip6_zonal"]
-            ax.plot(zm.values, zm.lat.values,
+            ax.plot(zm.values * _PR_TO_MMDAY, zm.lat.values,
                     label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=1.5, linestyle="--")
             all_models.append("CMIP6 MMM")
@@ -965,18 +1015,18 @@ class PrecipitationMSWEP(DiagnosticBase):
         # Models
         for model, zm in results["models"].items():
             color = self.config.get_model_color(model)
-            ax.plot(zm.values, zm.lat.values,
+            ax.plot(zm.values * _PR_TO_MMDAY, zm.lat.values,
                     label=model, color=color, linewidth=1.5)
             all_models.append(model)
 
         # Observations
         obs_zm = results["obs"]
-        ax.plot(obs_zm.values, obs_zm.lat.values,
+        ax.plot(obs_zm.values * _PR_TO_MMDAY, obs_zm.lat.values,
                 label="MSWEP", color=OBS_COLOR, linewidth=2.5)
         all_models.append("MSWEP")
 
         ax.set_ylabel("Latitude")
-        ax.set_xlabel("Precipitation (kg/m\u00b2/s)")
+        ax.set_xlabel("Precipitation (mm/day)")
         ax.set_title("Precipitation \u2014 Zonal Mean")
         ax.set_ylim(-90, 90)
         ax.legend(loc="upper right")
@@ -1095,12 +1145,13 @@ class PrecipitationMSWEP(DiagnosticBase):
     def _plot_intensity_pdf(self, results: dict) -> list[tuple[plt.Figure, dict]]:
         """Plot precipitation intensity PDF."""
         fig, ax = plt.subplots(figsize=(10, 6))
-        bin_centres = results["bin_centres"]
+        # Convert bin centres to mm/day for display
+        bin_centres_mmday = results["bin_centres"] * _PR_TO_MMDAY
         all_models = []
 
         # CMIP6 MMM
         if "CMIP6 MMM" in results["pdfs"]:
-            ax.plot(bin_centres, results["pdfs"]["CMIP6 MMM"],
+            ax.plot(bin_centres_mmday, results["pdfs"]["CMIP6 MMM"],
                     label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=1.5, linestyle="--")
             all_models.append("CMIP6 MMM")
@@ -1109,19 +1160,19 @@ class PrecipitationMSWEP(DiagnosticBase):
         for model in self.config.models:
             if model in results["pdfs"]:
                 color = self.config.get_model_color(model)
-                ax.plot(bin_centres, results["pdfs"][model],
+                ax.plot(bin_centres_mmday, results["pdfs"][model],
                         label=model, color=color, linewidth=1.5)
                 all_models.append(model)
 
         # Observations
         if "MSWEP" in results["pdfs"]:
-            ax.plot(bin_centres, results["pdfs"]["MSWEP"],
+            ax.plot(bin_centres_mmday, results["pdfs"]["MSWEP"],
                     label="MSWEP", color=OBS_COLOR, linewidth=2.5)
             all_models.append("MSWEP")
 
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("Precipitation rate (kg/m\u00b2/s)")
+        ax.set_xlabel("Precipitation rate (mm/day)")
         ax.set_ylabel("Probability density")
         ax.set_title("Precipitation Intensity Distribution")
         ax.legend()
