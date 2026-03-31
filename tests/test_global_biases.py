@@ -1334,3 +1334,235 @@ class TestGlobalBiasesStatistics:
         for label, entry in ind_data.items():
             assert "ftest_statistic" in entry
             assert "ftest_pvalue" in entry
+
+
+class TestGlobalBiasesEnsemble:
+    """Tests for ensemble mean/median bias maps in GlobalBiases."""
+
+    def test_single_model_no_ens_data(self, mock_model_loader, mock_obs_loader,
+                                       minimal_config):
+        """With one model, ens_data is empty."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        assert results["tas"]["ens_data"] == {}
+
+    def test_multi_model_has_ens_data(self, mock_multi_model_loader,
+                                       mock_obs_loader, multi_model_config):
+        """With multiple models, ens_data has annual and seasonal entries."""
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        ens_data = results["tas"]["ens_data"]
+        assert "annual" in ens_data
+        assert "DJF" in ens_data
+        assert "JJA" in ens_data
+
+    def test_ens_data_annual_keys(self, mock_multi_model_loader,
+                                   mock_obs_loader, multi_model_config):
+        """Annual ens_data contains mean/median bias fields."""
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        annual = results["tas"]["ens_data"]["annual"]
+        for key in ("mean", "median", "mean_bias", "median_bias",
+                    "mean_bias_gmean", "median_bias_gmean",
+                    "mean_rmse", "median_rmse"):
+            assert key in annual, f"Missing key: {key}"
+
+    def test_ens_bias_shape_matches_obs(self, mock_multi_model_loader,
+                                         mock_obs_loader, multi_model_config):
+        """Ensemble bias arrays have the same shape as obs common grid."""
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        vr = results["tas"]
+        obs_shape = vr["obs"]["clim"].shape
+        annual = vr["ens_data"]["annual"]
+        assert annual["mean_bias"].shape == obs_shape
+        assert annual["median_bias"].shape == obs_shape
+
+    def test_ens_bias_gmean_is_scalar(self, mock_multi_model_loader,
+                                       mock_obs_loader, multi_model_config):
+        """mean_bias_gmean and median_bias_gmean are finite floats."""
+        import math
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        annual = results["tas"]["ens_data"]["annual"]
+        assert math.isfinite(annual["mean_bias_gmean"])
+        assert math.isfinite(annual["median_bias_gmean"])
+
+    def test_compute_ens_stats_static(self):
+        """Static _compute_ens_stats returns correct mean for identical fields."""
+        import numpy as np
+        import xarray as xr
+        from feather.util.spatial import compute_latlon_areas
+
+        lats = np.array([-45.0, 0.0, 45.0])
+        lons = np.array([0.0, 90.0, 180.0, 270.0])
+        data_a = xr.DataArray(
+            np.ones((3, 4)) * 290.0, dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        data_b = xr.DataArray(
+            np.ones((3, 4)) * 292.0, dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        obs = xr.DataArray(
+            np.ones((3, 4)) * 288.0, dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        model_results = {
+            "m1": {"annual_regrid": data_a, "seasonal_regrids": {}},
+            "m2": {"annual_regrid": data_b, "seasonal_regrids": {}},
+        }
+        area = compute_latlon_areas(lats, lons)
+        ens = GlobalBiases._compute_ens_stats(
+            model_results, obs, {}, area,
+        )
+
+        assert "annual" in ens
+        np.testing.assert_allclose(
+            ens["annual"]["mean_bias"].values, 3.0, atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            ens["annual"]["mean_bias_gmean"], 3.0, atol=1e-3,
+        )
+
+    def test_multi_model_generates_ens_figures(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """With multiple models, _plot_variable produces ens figures per period."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        figure_ids = [meta["figure_id"] for _, meta in figures]
+
+        assert "tas_annual_ens_bias_combined" in figure_ids
+        assert "tas_djf_ens_bias_combined" in figure_ids
+        assert "tas_jja_ens_bias_combined" in figure_ids
+        plt.close("all")
+
+    def test_single_model_no_ens_figures(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """With one model, no ensemble figure is produced."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        figure_ids = [meta["figure_id"] for _, meta in figures]
+
+        assert not any("ens_bias_combined" in fid for fid in figure_ids)
+        plt.close("all")
+
+    def test_ens_figure_metadata(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """Ensemble figure metadata has correct figure_id and plot_type."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+
+        ens_metas = [
+            meta for _, meta in figures
+            if "ens_bias_combined" in meta["figure_id"]
+        ]
+        assert len(ens_metas) == 3  # annual, DJF, JJA
+        for meta in ens_metas:
+            assert meta["plot_type"] == "combined_bias_map"
+            assert meta.get("summary_statistics") is not None
+        plt.close("all")
+
+    def test_ens_figure_summary_stats_keys(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """Ensemble figure summary_statistics includes ens. mean and median entries."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+
+        annual_ens = next(
+            meta for _, meta in figures
+            if meta["figure_id"] == "tas_annual_ens_bias_combined"
+        )
+        stats = annual_ens["summary_statistics"]
+        assert "EERIE ens. mean" in stats
+        assert "EERIE ens. median" in stats
+        plt.close("all")
+
+    def test_skip_includes_ens_figure_ids_multi_model(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """run() skips variable only when all ens figures also exist."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create all per-model figures but NOT the ens figures
+        for p in ["annual", "djf", "jja"]:
+            (diag.output_dir / f"tas_{p}_bias_combined.png").write_bytes(b"x")
+            (diag.output_dir / f"tas_{p}_bias_combined.json").write_text("{}")
+
+        saved = diag.run(skip_existing=True)
+
+        # Should NOT skip because ens figures are missing → should regenerate
+        figure_ids = [paths[0].stem for paths in saved]
+        assert any("ens_bias_combined" in fid for fid in figure_ids)
+        plt.close("all")
+
+    def test_skip_with_all_ens_figures_present(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """run() skips variable when per-model AND ens figures all exist."""
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create all required figure files
+        for p in ["annual", "djf", "jja"]:
+            for suffix in [".png", ".json"]:
+                (diag.output_dir / f"tas_{p}_bias_combined{suffix}").write_bytes(b"x")
+                (diag.output_dir / f"tas_{p}_ens_bias_combined{suffix}").write_bytes(b"x")
+
+        saved = diag.run(skip_existing=True)
+
+        # All pre-existing → should skip and return 6 paths (3 per-model + 3 ens)
+        assert len(saved) == 6
+        assert all(paths[0].read_bytes() == b"x" for paths in saved)
