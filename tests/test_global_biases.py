@@ -379,6 +379,32 @@ class TestGlobalBiasesPlot:
                 )
                 seasonal_biases[season] = s_regrid - obs_s
 
+        from feather.util.spatial import spatial_ttest, spatial_variance_ratio
+
+        t_stat, t_pval = spatial_ttest(regridded, obs_clim_common)
+        f_stat, f_pval = spatial_variance_ratio(regridded, obs_clim_common)
+
+        obs_seasonal_common = {}
+        for season in ["DJF", "JJA"]:
+            if season in obs_seasonal:
+                obs_seasonal_common[season] = obs_seasonal[season].interp(
+                    lat=target_lats, lon=target_lons,
+                )
+
+        seasonal_ttest_stats = {}
+        for season in ["DJF", "JJA"]:
+            if season in seasonal_regrids and season in obs_seasonal_common:
+                s_t, s_p = spatial_ttest(
+                    seasonal_regrids[season], obs_seasonal_common[season],
+                )
+                s_f, s_fp = spatial_variance_ratio(
+                    seasonal_regrids[season], obs_seasonal_common[season],
+                )
+                seasonal_ttest_stats[season] = {
+                    "ttest_statistic": s_t, "ttest_pvalue": s_p,
+                    "ftest_statistic": s_f, "ftest_pvalue": s_fp,
+                }
+
         model_results = {
             "ifs-fesom": {
                 "annual_regrid": regridded,
@@ -392,14 +418,13 @@ class TestGlobalBiasesPlot:
                     latlon_global_mean(annual_bias ** 2).values
                 )),
                 "seasonal_biases": seasonal_biases,
+                "ttest_statistic": t_stat,
+                "ttest_pvalue": t_pval,
+                "ftest_statistic": f_stat,
+                "ftest_pvalue": f_pval,
+                "seasonal_ttest": seasonal_ttest_stats,
             },
         }
-        obs_seasonal_common = {}
-        for season in ["DJF", "JJA"]:
-            if season in obs_seasonal:
-                obs_seasonal_common[season] = obs_seasonal[season].interp(
-                    lat=target_lats, lon=target_lons,
-                )
 
         colorbar_ranges = GlobalBiases._compute_colorbar_ranges(
             model_results, obs_clim_common, obs_seasonal_common,
@@ -862,3 +887,205 @@ class TestGlobalBiasesCMIP6Individual:
         ind_data = results["tas"]["cmip6_individual_data"]
         assert "DJF" in ind_data
         assert "JJA" in ind_data
+
+
+# -- Statistical significance tests ----------------------------------------
+
+
+class TestGlobalBiasesStatistics:
+    """Tests for t-test and ANOVA statistics in GlobalBiases."""
+
+    def test_compute_has_ttest_fields(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """compute() results contain ttest_statistic and ttest_pvalue per model."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mdata = results["tas"]["models"]["ifs-fesom"]
+        assert "ttest_statistic" in mdata
+        assert "ttest_pvalue" in mdata
+        assert isinstance(mdata["ttest_statistic"], float)
+        assert isinstance(mdata["ttest_pvalue"], float)
+
+    def test_compute_has_seasonal_ttest(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """compute() results contain seasonal t-test stats."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mdata = results["tas"]["models"]["ifs-fesom"]
+        assert "seasonal_ttest" in mdata
+        for season in ["DJF", "JJA"]:
+            if season in mdata["seasonal_ttest"]:
+                s_tt = mdata["seasonal_ttest"][season]
+                assert "ttest_statistic" in s_tt
+                assert "ttest_pvalue" in s_tt
+
+    def test_plot_metadata_has_ttest(
+        self, synth_healpix, synth_obs, minimal_config,
+        mock_model_loader, mock_obs_loader,
+    ):
+        """Plot metadata summary_statistics contains t-test fields."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        # Check annual metadata
+        annual_meta = next(
+            meta for _, meta in pairs
+            if meta["figure_id"] == "tas_annual_bias_combined"
+        )
+        stats = annual_meta["summary_statistics"]
+        assert "ifs-fesom" in stats
+        assert "t_test_statistic" in stats["ifs-fesom"]
+        assert "t_test_p_value" in stats["ifs-fesom"]
+
+    def test_compute_has_ftest_fields(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """compute() results contain ftest_statistic and ftest_pvalue per model."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mdata = results["tas"]["models"]["ifs-fesom"]
+        assert "ftest_statistic" in mdata
+        assert "ftest_pvalue" in mdata
+        assert isinstance(mdata["ftest_statistic"], float)
+        assert isinstance(mdata["ftest_pvalue"], float)
+
+    def test_plot_metadata_has_variance_ratio(
+        self, synth_healpix, synth_obs, minimal_config,
+        mock_model_loader, mock_obs_loader,
+    ):
+        """Plot metadata summary_statistics contains variance_ratio fields."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        annual_meta = next(
+            meta for _, meta in pairs
+            if meta["figure_id"] == "tas_annual_bias_combined"
+        )
+        stats = annual_meta["summary_statistics"]
+        assert "variance_ratio" in stats["ifs-fesom"]
+        assert "variance_ratio_p_value" in stats["ifs-fesom"]
+
+    def test_no_aggregate_anova_in_metadata(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """Aggregate ANOVA is not present (replaced by per-model variance ratio)."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            pairs = diag.plot(results)
+
+        annual_meta = next(
+            meta for _, meta in pairs
+            if meta["figure_id"] == "tas_annual_bias_combined"
+        )
+        assert "ANOVA (models)" not in annual_meta["summary_statistics"]
+
+    def test_cmip6_mmm_has_ttest(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 MMM compute results contain t-test stats."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        cmip6_annual = results["tas"]["cmip6_data"]["annual"]
+        assert "ttest_statistic" in cmip6_annual
+        assert "ttest_pvalue" in cmip6_annual
+
+    def test_cmip6_individual_has_ttest(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Individual CMIP6 models have t-test stats."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        ind_data = results["tas"]["cmip6_individual_data"]["annual"]
+        for label, entry in ind_data.items():
+            assert "ttest_statistic" in entry
+            assert "ttest_pvalue" in entry
+
+    def test_cmip6_mmm_has_ftest(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 MMM compute results contain variance ratio stats."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        cmip6_annual = results["tas"]["cmip6_data"]["annual"]
+        assert "ftest_statistic" in cmip6_annual
+        assert "ftest_pvalue" in cmip6_annual
+
+    def test_cmip6_individual_has_ftest(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """Individual CMIP6 models have variance ratio stats."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            cmip6_individual=True,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        ind_data = results["tas"]["cmip6_individual_data"]["annual"]
+        for label, entry in ind_data.items():
+            assert "ftest_statistic" in entry
+            assert "ftest_pvalue" in entry

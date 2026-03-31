@@ -290,6 +290,171 @@ def healpix_mesh(ncells: int) -> xr.Dataset:
     return nr.healpix.load_mesh(ncells)
 
 
+def spatial_ttest(field_a, field_b, weights=None):
+    """Paired t-test across grid points between two 2D fields.
+
+    Treats each grid point as a paired sample. Tests whether the
+    mean difference (field_a - field_b) is significantly different from zero.
+
+    When *weights* is provided (e.g., cell areas), uses a weighted paired
+    t-test with Kish's effective sample size.  This makes the test
+    consistent with area-weighted global mean bias and avoids
+    overrepresenting polar grid cells on regular lat/lon grids.
+
+    Parameters
+    ----------
+    field_a, field_b : array-like
+        Two fields of the same shape (e.g., model and obs climatologies).
+    weights : array-like, optional
+        Per-grid-point weights (e.g., cell areas).  Must broadcast to
+        the same shape as the fields.  If *None*, all grid points are
+        weighted equally (falls back to ``scipy.stats.ttest_rel``).
+
+    Returns
+    -------
+    (t_statistic, p_value) : tuple[float, float]
+    """
+    from scipy import stats
+
+    a = np.asarray(field_a).ravel()
+    b = np.asarray(field_b).ravel()
+
+    if weights is not None:
+        w = np.asarray(weights).ravel()
+        valid = np.isfinite(a) & np.isfinite(b) & np.isfinite(w) & (w > 0)
+    else:
+        valid = np.isfinite(a) & np.isfinite(b)
+
+    if valid.sum() < 3:
+        return float("nan"), float("nan")
+
+    av, bv = a[valid], b[valid]
+    d = av - bv
+
+    # Guard against zero-variance differences (identical fields)
+    if np.std(d) == 0.0:
+        if np.mean(d) == 0.0:
+            return 0.0, 1.0
+        return float("inf") if np.mean(d) > 0 else float("-inf"), 0.0
+
+    if weights is None:
+        t_stat, p_val = stats.ttest_rel(av, bv)
+        return float(t_stat), float(p_val)
+
+    # Weighted paired t-test
+    wv = w[valid]
+    wv = wv / wv.sum()                    # normalise to sum to 1
+    d_mean = np.sum(wv * d)               # weighted mean difference
+    v2 = np.sum(wv ** 2)                  # sum of squared weights
+    # Weighted variance (Bessel-corrected for reliability weights)
+    d_var = np.sum(wv * (d - d_mean) ** 2) / (1.0 - v2)
+    n_eff = 1.0 / v2                      # Kish's effective sample size
+    se = np.sqrt(d_var / n_eff)
+    t_stat = d_mean / se
+    df = n_eff - 1.0
+    p_val = 2.0 * stats.t.sf(np.abs(t_stat), df)
+    return float(t_stat), float(p_val)
+
+
+def spatial_anova(*fields):
+    """One-way ANOVA F-test across multiple 2D spatial fields.
+
+    Each field is a group; grid points are the samples within each group.
+    Uses the intersection of valid (non-NaN) grid points across all fields.
+    Tests whether group means differ significantly.
+
+    Returns (f_statistic, p_value).
+    """
+    from scipy import stats
+
+    arrays = [np.asarray(f).ravel() for f in fields]
+    if len(arrays) < 2:
+        return float("nan"), float("nan")
+    # Use intersection of valid grid points
+    valid = np.ones(arrays[0].shape, dtype=bool)
+    for a in arrays:
+        valid &= np.isfinite(a)
+    if valid.sum() < 3:
+        return float("nan"), float("nan")
+    groups = [a[valid] for a in arrays]
+    f_stat, p_val = stats.f_oneway(*groups)
+    return float(f_stat), float(p_val)
+
+
+def spatial_variance_ratio(field_model, field_obs, weights=None):
+    """Variance ratio F-test between model and obs spatial fields.
+
+    Computes F = Var(model) / Var(obs) across grid points, testing
+    whether the model reproduces the observed spatial variability.
+
+    - F = 1: model has same spatial variance as observations
+    - F > 1: model has more spatial variability (too noisy)
+    - F < 1: model has less spatial variability (too smooth)
+
+    Uses population variance (ddof=0) since the fields represent the
+    entire spatial domain, not a sample.  When *weights* is provided
+    (e.g., cell areas), uses area-weighted variances with Kish's
+    effective sample size for the degrees of freedom.
+
+    Parameters
+    ----------
+    field_model, field_obs : array-like
+        Two fields of the same shape on the same grid.
+    weights : array-like, optional
+        Per-grid-point weights (e.g., cell areas).
+
+    Returns
+    -------
+    (f_statistic, p_value) : tuple[float, float]
+        Two-sided p-value testing H0: Var(model) == Var(obs).
+    """
+    from scipy import stats
+
+    m = np.asarray(field_model).ravel()
+    o = np.asarray(field_obs).ravel()
+
+    if weights is not None:
+        w = np.asarray(weights).ravel()
+        valid = np.isfinite(m) & np.isfinite(o) & np.isfinite(w) & (w > 0)
+    else:
+        valid = np.isfinite(m) & np.isfinite(o)
+
+    if valid.sum() < 3:
+        return float("nan"), float("nan")
+
+    mv, ov = m[valid], o[valid]
+
+    if weights is not None:
+        wv = w[valid]
+        wv = wv / wv.sum()
+        v2 = np.sum(wv ** 2)
+        n_eff = 1.0 / v2
+        # Weighted population variances (ddof=0)
+        m_mean = np.sum(wv * mv)
+        o_mean = np.sum(wv * ov)
+        var_m = np.sum(wv * (mv - m_mean) ** 2)
+        var_o = np.sum(wv * (ov - o_mean) ** 2)
+        df = n_eff - 1.0
+    else:
+        n = len(mv)
+        var_m = np.var(mv, ddof=0)
+        var_o = np.var(ov, ddof=0)
+        df = n - 1.0
+
+    if var_o == 0.0:
+        if var_m == 0.0:
+            return 1.0, 1.0
+        return float("inf"), 0.0
+
+    f_stat = var_m / var_o
+    # Two-sided p-value: probability of F this extreme or more
+    p_val = 2.0 * min(
+        stats.f.cdf(f_stat, df, df),
+        stats.f.sf(f_stat, df, df),
+    )
+    return float(f_stat), float(p_val)
+
+
 def _get_spatial_dim(da: xr.DataArray) -> str:
     """Identify the spatial dimension name in a DataArray."""
     for candidate in ("values", "ncells", "cell", "npix"):

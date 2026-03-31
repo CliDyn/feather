@@ -117,7 +117,7 @@
                     <th>{{ stat_key | model_display_name }}</th>
                     <td>
                     {% for k, v in stat_val.items() %}
-                        {{ k | replace("_", " ") | title }}: {{ "%.2f"|format(v) if v is number else v }}{% if not loop.last %} · {% endif %}
+                        {{ k | replace("_", " ") | title }}: {{ v | format_stat if v is number else v }}{% if not loop.last %} · {% endif %}
                     {% endfor %}
                     </td>
                 </tr>
@@ -125,7 +125,7 @@
                 {# Flat stats (simple key-value) #}
                 <tr>
                     <th>{{ stat_key | replace("_", " ") | title }}</th>
-                    <td>{{ "%.3f"|format(stat_val) if stat_val is number else stat_val }}</td>
+                    <td>{{ stat_val | format_stat if stat_val is number else stat_val }}</td>
                 </tr>
                 {% endif %}
                 {% endfor %}

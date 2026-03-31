@@ -16,7 +16,11 @@ from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map
-from feather.util.spatial import latlon_global_mean
+from feather.util.spatial import (
+    latlon_global_mean,
+    spatial_ttest,
+    spatial_variance_ratio,
+)
 from feather.util.temporal import climatology, seasonal_climatology
 
 logger = logging.getLogger(__name__)
@@ -301,6 +305,31 @@ class GlobalBiases(DiagnosticBase):
                         s_bias = s_regrid - obs_seasonal_common[season]
                         seasonal_biases[season] = s_bias
 
+            # --- t-test: model vs obs across grid points ---
+            t_stat, t_pval = spatial_ttest(
+                annual_regrid, obs_clim_common, weights=common_area,
+            )
+            # --- Variance ratio F-test ---
+            f_stat, f_pval = spatial_variance_ratio(
+                annual_regrid, obs_clim_common, weights=common_area,
+            )
+
+            seasonal_ttest_stats: dict[str, dict] = {}
+            for season in ["DJF", "JJA"]:
+                if season in seasonal_regrids and season in obs_seasonal_common:
+                    s_t, s_p = spatial_ttest(
+                        seasonal_regrids[season], obs_seasonal_common[season],
+                        weights=common_area,
+                    )
+                    s_f, s_fp = spatial_variance_ratio(
+                        seasonal_regrids[season], obs_seasonal_common[season],
+                        weights=common_area,
+                    )
+                    seasonal_ttest_stats[season] = {
+                        "ttest_statistic": s_t, "ttest_pvalue": s_p,
+                        "ftest_statistic": s_f, "ftest_pvalue": s_fp,
+                    }
+
             model_results[model] = {
                 "annual_regrid": annual_regrid,
                 "seasonal_regrids": seasonal_regrids,
@@ -309,6 +338,11 @@ class GlobalBiases(DiagnosticBase):
                 "annual_bias_gmean": bias_gmean,
                 "annual_rmse": rmse,
                 "seasonal_biases": seasonal_biases,
+                "ttest_statistic": t_stat,
+                "ttest_pvalue": t_pval,
+                "ftest_statistic": f_stat,
+                "ftest_pvalue": f_pval,
+                "seasonal_ttest": seasonal_ttest_stats,
             }
 
         if not model_results:
@@ -440,11 +474,21 @@ class GlobalBiases(DiagnosticBase):
                 cmip6_bias ** 2, area=common_area,
             ).values
         ))
+        cmip6_t, cmip6_p = spatial_ttest(
+            mmm, obs_clim_common, weights=common_area,
+        )
+        cmip6_f, cmip6_fp = spatial_variance_ratio(
+            mmm, obs_clim_common, weights=common_area,
+        )
         cmip6_data["annual"] = {
             "regrid": mmm,
             "bias": cmip6_bias,
             "bias_gmean": cmip6_bias_gmean,
             "rmse": cmip6_rmse,
+            "ttest_statistic": cmip6_t,
+            "ttest_pvalue": cmip6_p,
+            "ftest_statistic": cmip6_f,
+            "ftest_pvalue": cmip6_fp,
         }
 
         # MMM seasonal
@@ -457,6 +501,12 @@ class GlobalBiases(DiagnosticBase):
                 seasonal_fields[season], dim="member",
             ).mean("member")
             s_bias = s_mmm - obs_seasonal_common[season]
+            s_t, s_p = spatial_ttest(
+                s_mmm, obs_seasonal_common[season], weights=common_area,
+            )
+            s_f, s_fp = spatial_variance_ratio(
+                s_mmm, obs_seasonal_common[season], weights=common_area,
+            )
             cmip6_data[season] = {
                 "regrid": s_mmm,
                 "bias": s_bias,
@@ -465,6 +515,10 @@ class GlobalBiases(DiagnosticBase):
                         s_bias, area=common_area,
                     ).values
                 ),
+                "ttest_statistic": s_t,
+                "ttest_pvalue": s_p,
+                "ftest_statistic": s_f,
+                "ftest_pvalue": s_fp,
             }
 
         return cmip6_data, cmip6_info
@@ -574,11 +628,21 @@ class GlobalBiases(DiagnosticBase):
                 ).values
             ))
 
+            ind_t, ind_p = spatial_ttest(
+                cmip6_common, obs_clim_common, weights=common_area,
+            )
+            ind_f, ind_fp = spatial_variance_ratio(
+                cmip6_common, obs_clim_common, weights=common_area,
+            )
             cmip6_individual_data.setdefault("annual", {})[label] = {
                 "regrid": cmip6_common,
                 "bias": cmip6_bias,
                 "bias_gmean": bias_gmean,
                 "rmse": rmse,
+                "ttest_statistic": ind_t,
+                "ttest_pvalue": ind_p,
+                "ftest_statistic": ind_f,
+                "ftest_pvalue": ind_fp,
             }
 
             # Seasonal
@@ -595,6 +659,14 @@ class GlobalBiases(DiagnosticBase):
                     method=self._regrid_method,
                 )
                 cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
+                s_t, s_p = spatial_ttest(
+                    cmip6_s, obs_seasonal_common[season],
+                    weights=common_area,
+                )
+                s_f, s_fp = spatial_variance_ratio(
+                    cmip6_s, obs_seasonal_common[season],
+                    weights=common_area,
+                )
                 cmip6_individual_data.setdefault(season, {})[label] = {
                     "regrid": cmip6_s,
                     "bias": cmip6_s_bias,
@@ -603,6 +675,10 @@ class GlobalBiases(DiagnosticBase):
                             cmip6_s_bias, area=common_area,
                         ).values
                     ),
+                    "ttest_statistic": s_t,
+                    "ttest_pvalue": s_p,
+                    "ftest_statistic": s_f,
+                    "ftest_pvalue": s_fp,
                 }
 
         return cmip6_individual_data
@@ -629,6 +705,12 @@ class GlobalBiases(DiagnosticBase):
 
         mmm = xr.concat(annual_fields, dim="member").mean("member")
         cmip6_bias = mmm - obs_clim_common
+        mmm_t, mmm_p = spatial_ttest(
+            mmm, obs_clim_common, weights=common_area,
+        )
+        mmm_f, mmm_fp = spatial_variance_ratio(
+            mmm, obs_clim_common, weights=common_area,
+        )
         cmip6_data["annual"] = {
             "regrid": mmm,
             "bias": cmip6_bias,
@@ -640,6 +722,10 @@ class GlobalBiases(DiagnosticBase):
                     cmip6_bias ** 2, area=common_area,
                 ).values
             )),
+            "ttest_statistic": mmm_t,
+            "ttest_pvalue": mmm_p,
+            "ftest_statistic": mmm_f,
+            "ftest_pvalue": mmm_fp,
         }
 
         for season in ["DJF", "JJA"]:
@@ -653,6 +739,12 @@ class GlobalBiases(DiagnosticBase):
             ]
             s_mmm = xr.concat(s_fields, dim="member").mean("member")
             s_bias = s_mmm - obs_seasonal_common[season]
+            s_t, s_p = spatial_ttest(
+                s_mmm, obs_seasonal_common[season], weights=common_area,
+            )
+            s_f, s_fp = spatial_variance_ratio(
+                s_mmm, obs_seasonal_common[season], weights=common_area,
+            )
             cmip6_data[season] = {
                 "regrid": s_mmm,
                 "bias": s_bias,
@@ -661,6 +753,10 @@ class GlobalBiases(DiagnosticBase):
                         s_bias, area=common_area,
                     ).values
                 ),
+                "ttest_statistic": s_t,
+                "ttest_pvalue": s_p,
+                "ftest_statistic": s_f,
+                "ftest_pvalue": s_fp,
             }
 
         cmip6_info = {
@@ -868,11 +964,25 @@ class GlobalBiases(DiagnosticBase):
                     summary_stats[model] = {
                         "global_mean_bias": mdata["annual_bias_gmean"],
                         "rmse": mdata["annual_rmse"],
+                        "t_test_statistic": mdata["ttest_statistic"],
+                        "t_test_p_value": mdata["ttest_pvalue"],
+                        "variance_ratio": mdata["ftest_statistic"],
+                        "variance_ratio_p_value": mdata["ftest_pvalue"],
                     }
                 else:
                     bias_field = mdata["seasonal_biases"].get(period_key)
                     if bias_field is None:
                         continue
+                    s_tt = mdata.get("seasonal_ttest", {}).get(period_key, {})
+                    summary_stats[model] = {
+                        "global_mean_bias": float(
+                            latlon_global_mean(bias_field).values
+                        ),
+                        "t_test_statistic": s_tt.get("ttest_statistic"),
+                        "t_test_p_value": s_tt.get("ttest_pvalue"),
+                        "variance_ratio": s_tt.get("ftest_statistic"),
+                        "variance_ratio_p_value": s_tt.get("ftest_pvalue"),
+                    }
                 bias_dict[model] = bias_field
                 all_models.append(model)
 
@@ -884,6 +994,10 @@ class GlobalBiases(DiagnosticBase):
                 summary_stats["CMIP6 MMM"] = {
                     "global_mean_bias": c_data["bias_gmean"],
                     "rmse": c_data.get("rmse"),
+                    "t_test_statistic": c_data.get("ttest_statistic"),
+                    "t_test_p_value": c_data.get("ttest_pvalue"),
+                    "variance_ratio": c_data.get("ftest_statistic"),
+                    "variance_ratio_p_value": c_data.get("ftest_pvalue"),
                 }
 
             # Add individual CMIP6 models if available
@@ -894,6 +1008,10 @@ class GlobalBiases(DiagnosticBase):
                     summary_stats[label] = {
                         "global_mean_bias": c_data["bias_gmean"],
                         "rmse": c_data.get("rmse"),
+                        "t_test_statistic": c_data.get("ttest_statistic"),
+                        "t_test_p_value": c_data.get("ttest_pvalue"),
+                        "variance_ratio": c_data.get("ftest_statistic"),
+                        "variance_ratio_p_value": c_data.get("ftest_pvalue"),
                     }
 
             if not bias_dict:
