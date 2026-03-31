@@ -444,6 +444,221 @@ class TestTimeseriesCMIP6Individual:
         plt.close("all")
 
 
+class TestTimeseriesEnsemble:
+    """Tests for ensemble mean/median computation and plotting."""
+
+    def test_single_model_returns_none(self, mock_model_loader, mock_obs_loader,
+                                       minimal_config):
+        """With only one model, ensemble stats are None."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        assert results["tas"]["ens_mean"] is None
+        assert results["tas"]["ens_median"] is None
+
+    def test_multi_model_returns_arrays(self, mock_multi_model_loader,
+                                        mock_obs_loader, multi_model_config):
+        """With multiple models, ens_mean and ens_median are DataArrays."""
+        import xarray as xr
+
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        assert results["tas"]["ens_mean"] is not None
+        assert results["tas"]["ens_median"] is not None
+        assert isinstance(results["tas"]["ens_mean"], xr.DataArray)
+        assert isinstance(results["tas"]["ens_median"], xr.DataArray)
+
+    def test_ensemble_has_time_dim(self, mock_multi_model_loader,
+                                    mock_obs_loader, multi_model_config):
+        """Ensemble arrays have a time dimension."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        assert "time" in results["tas"]["ens_mean"].dims
+        assert "time" in results["tas"]["ens_median"].dims
+
+    def test_ensemble_length_matches_models(self, mock_multi_model_loader,
+                                             mock_obs_loader, multi_model_config):
+        """Ensemble time axis length equals model time axis length."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        model_len = len(list(results["tas"]["models"].values())[0])
+        assert len(results["tas"]["ens_mean"]) == model_len
+        assert len(results["tas"]["ens_median"]) == model_len
+
+    def test_ensemble_values_in_range(self, mock_multi_model_loader,
+                                       mock_obs_loader, multi_model_config):
+        """Ensemble mean/median values are within individual model range."""
+        import numpy as np
+
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        model_vals = np.concatenate(
+            [ts.values for ts in results["tas"]["models"].values()]
+        )
+        ens_mean = results["tas"]["ens_mean"].values
+        assert np.all(ens_mean >= model_vals.min() - 1e-6)
+        assert np.all(ens_mean <= model_vals.max() + 1e-6)
+
+    def test_compute_ensemble_stats_static_two_models(self):
+        """Static method returns mean and median for two identical series."""
+        import numpy as np
+        import xarray as xr
+
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+        ts1 = xr.DataArray(np.ones(12) * 290.0, dims=["time"],
+                            coords={"time": time})
+        ts2 = xr.DataArray(np.ones(12) * 292.0, dims=["time"],
+                            coords={"time": time})
+
+        mean, median = TimeseriesDiag._compute_ensemble_stats(
+            {"m1": ts1, "m2": ts2}
+        )
+
+        assert mean is not None
+        assert median is not None
+        np.testing.assert_allclose(mean.values, 291.0)
+        np.testing.assert_allclose(median.values, 291.0)
+
+    def test_compute_ensemble_stats_single_returns_none(self):
+        """Static method returns (None, None) for a single-model dict."""
+        import numpy as np
+        import xarray as xr
+
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+        ts = xr.DataArray(np.ones(12) * 290.0, dims=["time"],
+                           coords={"time": time})
+
+        mean, median = TimeseriesDiag._compute_ensemble_stats({"m1": ts})
+
+        assert mean is None
+        assert median is None
+
+    def test_compute_ensemble_stats_empty_returns_none(self):
+        """Static method returns (None, None) for an empty dict."""
+        mean, median = TimeseriesDiag._compute_ensemble_stats({})
+
+        assert mean is None
+        assert median is None
+
+    def test_plot_ensemble_lines_in_legend(self, mock_multi_model_loader,
+                                            mock_obs_loader, multi_model_config):
+        """Plot legend includes 'EERIE ensemble mean' and 'EERIE ensemble median'."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+        assert "EERIE ensemble mean" in labels
+        assert "EERIE ensemble median" in labels
+        plt.close(fig)
+
+    def test_plot_no_ensemble_lines_single_model(self, mock_model_loader,
+                                                  mock_obs_loader, minimal_config):
+        """Plot does not include ensemble legend entries for a single model."""
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+        assert "EERIE ensemble mean" not in labels
+        assert "EERIE ensemble median" not in labels
+        plt.close(fig)
+
+    def test_ensemble_line_colors(self, mock_multi_model_loader,
+                                   mock_obs_loader, multi_model_config):
+        """Ensemble lines use ENS_COLOR."""
+        from feather.plot.styles import ENS_COLOR
+        import matplotlib.colors as mcolors
+
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        ens_lines = [
+            line for line in ax.get_lines()
+            if line.get_label() in (
+                "EERIE ensemble mean", "EERIE ensemble median"
+            )
+        ]
+        assert len(ens_lines) == 2
+        expected = mcolors.to_rgba(ENS_COLOR)
+        for line in ens_lines:
+            assert mcolors.to_rgba(line.get_color()) == expected
+        plt.close(fig)
+
+    def test_ensemble_median_is_dashed(self, mock_multi_model_loader,
+                                        mock_obs_loader, multi_model_config):
+        """Ensemble median line uses dashed linestyle."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        median_line = next(
+            line for line in ax.get_lines()
+            if line.get_label() == "EERIE ensemble median"
+        )
+        assert median_line.get_linestyle() == "--"
+        plt.close(fig)
+
+    def test_ensemble_mean_is_solid(self, mock_multi_model_loader,
+                                     mock_obs_loader, multi_model_config):
+        """Ensemble mean line uses solid linestyle."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        mean_line = next(
+            line for line in ax.get_lines()
+            if line.get_label() == "EERIE ensemble mean"
+        )
+        assert mean_line.get_linestyle() == "-"
+        plt.close(fig)
+
+
 class TestTimeseriesMultiVariable:
     """Tests for expanded variable list in timeseries."""
 

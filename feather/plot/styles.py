@@ -10,6 +10,7 @@ MODEL_COLORS = {
 
 OBS_COLOR = "black"
 CMIP6_COLOR = "#888888"
+ENS_COLOR = "#2c3e50"   # EERIE ensemble mean/median lines (dark slate)
 
 
 def apply_style():
