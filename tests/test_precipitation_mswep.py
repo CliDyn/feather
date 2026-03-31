@@ -600,8 +600,8 @@ class TestRelativeBias:
         diag = _make_diag(loader, obs, precip_config)
         shared = diag._load_shared_data()
         results = diag._compute_relative_bias(shared)
-        assert "rel_bias_dict" in results
-        assert "ifs-fesom" in results["rel_bias_dict"]
+        assert "rel_bias_annual" in results
+        assert "ifs-fesom" in results["rel_bias_annual"]
 
     def test_relative_bias_units(self, synth_precip_healpix, synth_mswep,
                                   precip_config):
@@ -611,7 +611,7 @@ class TestRelativeBias:
         diag = _make_diag(loader, obs, precip_config)
         shared = diag._load_shared_data()
         results = diag._compute_relative_bias(shared)
-        rel = results["rel_bias_dict"]["ifs-fesom"]
+        rel = results["rel_bias_annual"]["ifs-fesom"]
         # Values should be in percentage range (not fraction)
         finite_vals = rel.values[np.isfinite(rel.values)]
         assert np.abs(finite_vals).max() < 1000  # reasonable % range
@@ -625,7 +625,7 @@ class TestRelativeBias:
         shared = diag._load_shared_data()
         results = diag._compute_relative_bias(shared)
         # Some NaN values expected where obs < threshold
-        rel = results["rel_bias_dict"]["ifs-fesom"]
+        rel = results["rel_bias_annual"]["ifs-fesom"]
         # Not all NaN
         assert not np.all(np.isnan(rel.values))
 
@@ -637,12 +637,13 @@ class TestRelativeBias:
         shared = diag._load_shared_data()
         results = diag._compute_relative_bias(shared)
         figures = diag._plot_relative_bias(results)
-        assert len(figures) == 1
+        assert len(figures) >= 1
         _, meta = figures[0]
         assert meta["figure_id"] == "pr_annual_relative_bias"
         assert meta["plot_type"] == "combined_map"
         import matplotlib.pyplot as plt
-        plt.close(figures[0][0])
+        for fig, _ in figures:
+            plt.close(fig)
 
     def test_relative_bias_symmetric_range(self, synth_precip_healpix,
                                             synth_mswep, precip_config):
@@ -654,9 +655,10 @@ class TestRelativeBias:
         results = diag._compute_relative_bias(shared)
         figures = diag._plot_relative_bias(results)
         # The plot uses vmin=-100, vmax=100 explicitly
-        assert len(figures) == 1
+        assert len(figures) >= 1
         import matplotlib.pyplot as plt
-        plt.close(figures[0][0])
+        for fig, _ in figures:
+            plt.close(fig)
 
     def test_obs_clim_stored(self, synth_precip_healpix, synth_mswep,
                               precip_config):
@@ -673,7 +675,7 @@ class TestRelativeBias:
         loader = MockPrecipModelLoader(synth_precip_healpix)
         obs = MockMSWEPObsLoader(synth_mswep)
         diag = _make_diag(loader, obs, precip_config)
-        results = {"rel_bias_dict": {}, "obs_clim": None}
+        results = {"rel_bias_annual": {}, "rel_bias_seasonal": {}, "obs_clim": None}
         figures = diag._plot_relative_bias(results)
         assert figures == []
 
@@ -1413,7 +1415,7 @@ class TestCMIP6:
                           cmip6_loader=cmip6, cmip6_individual=True)
         shared = diag._load_shared_data()
         results = diag._compute_relative_bias(shared)
-        keys = list(results["rel_bias_dict"].keys())
+        keys = list(results["rel_bias_annual"].keys())
         # Should contain model(s) + CMIP6 MMM + individual CMIP6 models
         assert "CMIP6 MMM" in keys
         cmip6_individual_keys = [k for k in keys
