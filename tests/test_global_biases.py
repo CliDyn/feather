@@ -933,6 +933,10 @@ class TestPrecipitationBias:
                 "annual_bias_gmean": float(bias.mean()),
                 "annual_rmse": float((bias ** 2).mean() ** 0.5),
                 "seasonal_biases": seasonal_biases,
+                "ttest_statistic": 1.5,
+                "ttest_pvalue": 0.13,
+                "ftest_statistic": 1.02,
+                "ftest_pvalue": 0.45,
             }
         }
         from feather.util.spatial import compute_latlon_areas
@@ -1041,6 +1045,10 @@ class TestPrecipitationBias:
                 "annual_bias_gmean": float(bias.mean()),
                 "annual_rmse": float((bias ** 2).mean() ** 0.5),
                 "seasonal_biases": {s: bias for s in obs_seasonal_common},
+                "ttest_statistic": 1.5,
+                "ttest_pvalue": 0.13,
+                "ftest_statistic": 1.02,
+                "ftest_pvalue": 0.45,
             }
         }
         colorbar_ranges = GlobalBiases._compute_colorbar_ranges(
@@ -1089,23 +1097,17 @@ class TestPrecipitationBias:
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
 
-        # Should NOT skip — relative bias files are absent
-        mock_fig = MagicMock(spec=plt.Figure)
-        with (
-            patch(
-                "feather.diag.global_biases.plot_combined_bias_map",
-                return_value=(mock_fig, [None, None]),
-            ),
-            patch(
-                "feather.diag.global_biases.plot_combined_map",
-                return_value=(mock_fig, [None, None]),
-            ),
-        ):
+        # Should NOT skip — relative bias files are absent.
+        # Track whether _compute_variable is called (= not skipped).
+        with patch.object(
+            diag, "_compute_variable", wraps=diag._compute_variable,
+        ) as spy:
             saved = diag.run(skip_existing=True)
 
-        # Figures were recomputed (not skipped)
-        pngs = [str(p) for p, _ in saved]
-        assert not all(b"fake" == p for p in pngs)
+        # _compute_variable was called (variable was NOT skipped)
+        spy.assert_called_once_with("pr")
+        # Mock loader lacks pr so compute returns None — no new figures
+        assert len(saved) == 0
 
     def test_pr_skip_when_all_six_exist(
         self, mock_model_loader, mock_obs_loader, minimal_config,

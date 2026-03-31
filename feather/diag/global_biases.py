@@ -975,12 +975,15 @@ class GlobalBiases(DiagnosticBase):
             summary_stats = {}
             all_models = []
 
+            # Unit multiplier for display: pr → mm/day, others → 1
+            unit_scale = _PR_TO_MMDAY if is_pr else 1.0
+
             for model, mdata in vr["models"].items():
                 if period_key == "annual":
                     bias_field = mdata["annual_bias"]
                     summary_stats[model] = {
-                        "global_mean_bias": mdata["annual_bias_gmean"],
-                        "rmse": mdata["annual_rmse"],
+                        "global_mean_bias": mdata["annual_bias_gmean"] * unit_scale,
+                        "rmse": mdata["annual_rmse"] * unit_scale,
                         "t_test_statistic": mdata["ttest_statistic"],
                         "t_test_p_value": mdata["ttest_pvalue"],
                         "variance_ratio": mdata["ftest_statistic"],
@@ -994,7 +997,7 @@ class GlobalBiases(DiagnosticBase):
                     summary_stats[model] = {
                         "global_mean_bias": float(
                             latlon_global_mean(bias_field).values
-                        ),
+                        ) * unit_scale,
                         "t_test_statistic": s_tt.get("ttest_statistic"),
                         "t_test_p_value": s_tt.get("ttest_pvalue"),
                         "variance_ratio": s_tt.get("ftest_statistic"),
@@ -1009,8 +1012,9 @@ class GlobalBiases(DiagnosticBase):
                 bias_dict["CMIP6 MMM"] = c_data["bias"]
                 all_models.append("CMIP6 MMM")
                 summary_stats["CMIP6 MMM"] = {
-                    "global_mean_bias": c_data["bias_gmean"],
-                    "rmse": c_data.get("rmse"),
+                    "global_mean_bias": c_data["bias_gmean"] * unit_scale,
+                    "rmse": (c_data["rmse"] * unit_scale
+                             if c_data.get("rmse") is not None else None),
                     "t_test_statistic": c_data.get("ttest_statistic"),
                     "t_test_p_value": c_data.get("ttest_pvalue"),
                     "variance_ratio": c_data.get("ftest_statistic"),
@@ -1023,8 +1027,9 @@ class GlobalBiases(DiagnosticBase):
                     bias_dict[label] = c_data["bias"]
                     all_models.append(label)
                     summary_stats[label] = {
-                        "global_mean_bias": c_data["bias_gmean"],
-                        "rmse": c_data.get("rmse"),
+                        "global_mean_bias": c_data["bias_gmean"] * unit_scale,
+                        "rmse": (c_data["rmse"] * unit_scale
+                                 if c_data.get("rmse") is not None else None),
                         "t_test_statistic": c_data.get("ttest_statistic"),
                         "t_test_p_value": c_data.get("ttest_pvalue"),
                         "variance_ratio": c_data.get("ftest_statistic"),
@@ -1052,6 +1057,14 @@ class GlobalBiases(DiagnosticBase):
                 rel_bias_dict = {
                     k: (v / obs_masked) * 100 for k, v in bias_dict.items()
                 }
+                # Compute relative bias stats in % for metadata
+                rel_stats = {}
+                for label, rel_field in rel_bias_dict.items():
+                    finite = rel_field.values[np.isfinite(rel_field.values)]
+                    if finite.size > 0:
+                        rel_stats[label] = {
+                            "mean_relative_bias_pct": float(np.nanmean(finite)),
+                        }
                 fig_rel, _ = plot_combined_map(
                     rel_bias_dict,
                     title=f"Precipitation Relative Bias ({period_label})",
@@ -1073,7 +1086,7 @@ class GlobalBiases(DiagnosticBase):
                     plot_type="combined_map",
                     period=self.period,
                     cmip6_info=cmip6_info or None,
-                    summary_statistics=summary_stats,
+                    summary_statistics=rel_stats,
                 )
                 figures.append((fig_rel, meta_rel))
 

@@ -521,12 +521,12 @@ class PrecipitationMSWEP(DiagnosticBase):
                 if period_key == "annual":
                     bias_field = mdata["annual_bias"]
                     summary_stats[model] = {
-                        "global_mean_bias": mdata["annual_bias_gmean"],
-                        "rmse": mdata["annual_rmse"],
+                        "global_mean_bias": mdata["annual_bias_gmean"] * _PR_TO_MMDAY,
+                        "rmse": mdata["annual_rmse"] * _PR_TO_MMDAY,
                         "pattern_correlation": mdata["pattern_correlation"],
                         "std_ratio": mdata["std_ratio"],
-                        "tropical_mean_bias": mdata["tropical_mean_bias"],
-                        "extratropical_mean_bias": mdata["extratropical_mean_bias"],
+                        "tropical_mean_bias": mdata["tropical_mean_bias"] * _PR_TO_MMDAY,
+                        "extratropical_mean_bias": mdata["extratropical_mean_bias"] * _PR_TO_MMDAY,
                     }
                 else:
                     bias_field = mdata["seasonal_biases"].get(period_key)
@@ -541,8 +541,9 @@ class PrecipitationMSWEP(DiagnosticBase):
                 bias_dict["CMIP6 MMM"] = c_data["bias"]
                 all_models.append("CMIP6 MMM")
                 summary_stats["CMIP6 MMM"] = {
-                    "global_mean_bias": c_data["bias_gmean"],
-                    "rmse": c_data.get("rmse"),
+                    "global_mean_bias": c_data["bias_gmean"] * _PR_TO_MMDAY,
+                    "rmse": (c_data["rmse"] * _PR_TO_MMDAY
+                             if c_data.get("rmse") is not None else None),
                 }
 
             # CMIP6 individual
