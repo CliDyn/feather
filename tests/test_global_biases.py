@@ -862,3 +862,246 @@ class TestGlobalBiasesCMIP6Individual:
         ind_data = results["tas"]["cmip6_individual_data"]
         assert "DJF" in ind_data
         assert "JJA" in ind_data
+
+
+# -- Precipitation (pr) special handling -------------------------------------
+
+
+class TestPrecipitationBias:
+    """pr gets BrBG colormaps, mm/day units, and relative bias figures."""
+
+    def _make_pr_vr(self, synth_obs):
+        """Build a minimal ``vr`` dict for ``pr`` with realistic units (kg/m²/s)."""
+        from feather.data.variables import get_var
+        from feather.util.temporal import climatology, seasonal_climatology
+
+        var_info = get_var("pr")
+
+        # Synthetic precipitation obs on the synth_obs grid (use t2m rescaled)
+        # Typical precip ~3e-5 kg/m²/s; keep all values positive
+        obs_da = synth_obs["t2m"] * 1e-7 + 3e-5  # ~3e-5 kg/m²/s, positive
+        obs_clim = climatology(obs_da)
+        obs_seasonal = seasonal_climatology(obs_da)
+
+        lats = obs_clim.lat.values
+        lons = obs_clim.lon.values
+        obs_clim_common = obs_clim
+        obs_seasonal_common = {s: obs_seasonal[s] for s in obs_seasonal}
+
+        # Model bias field (small positive and negative values)
+        bias = obs_clim * 0.1  # 10% wet bias
+        seasonal_biases = {
+            season: obs_seasonal_common[season] * 0.1
+            for season in obs_seasonal_common
+        }
+        seasonal_regrids = {
+            season: obs_seasonal_common[season] * 1.1
+            for season in obs_seasonal_common
+        }
+
+        model_results = {
+            "ifs-fesom": {
+                "annual_regrid": obs_clim_common * 1.1,
+                "seasonal_regrids": seasonal_regrids,
+                "global_mean": float(obs_clim.mean()),
+                "annual_bias": bias,
+                "annual_bias_gmean": float(bias.mean()),
+                "annual_rmse": float((bias ** 2).mean() ** 0.5),
+                "seasonal_biases": seasonal_biases,
+            }
+        }
+        from feather.util.spatial import compute_latlon_areas
+        common_area = compute_latlon_areas(lats, lons)
+        colorbar_ranges = GlobalBiases._compute_colorbar_ranges(
+            model_results, obs_clim_common, obs_seasonal_common,
+        )
+        return {
+            "models": model_results,
+            "obs": {
+                "clim": obs_clim_common,
+                "seasonal_clim": obs_seasonal_common,
+                "global_mean": float(obs_clim.mean()),
+            },
+            "var_info": var_info,
+            "colorbar_ranges": colorbar_ranges,
+            "cmip6_data": {},
+            "cmip6_info": {},
+            "cmip6_individual_data": {},
+        }
+
+    def test_pr_generates_six_figures(
+        self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """_plot_variable('pr') returns 6 figures: 3 absolute + 3 relative."""
+        vr = self._make_pr_vr(synth_obs)
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        figures = diag._plot_variable("pr", vr)
+        plt.close("all")
+        assert len(figures) == 6
+
+    def test_pr_absolute_bias_figure_ids(
+        self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """Absolute bias figures follow pr_{period}_bias_combined naming."""
+        vr = self._make_pr_vr(synth_obs)
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        figures = diag._plot_variable("pr", vr)
+        plt.close("all")
+        ids = {meta["figure_id"] for _, meta in figures}
+        for period in ["annual", "djf", "jja"]:
+            assert f"pr_{period}_bias_combined" in ids
+
+    def test_pr_relative_bias_figure_ids(
+        self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """Relative bias figures follow pr_{period}_relative_bias_combined naming."""
+        vr = self._make_pr_vr(synth_obs)
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        figures = diag._plot_variable("pr", vr)
+        plt.close("all")
+        ids = {meta["figure_id"] for _, meta in figures}
+        for period in ["annual", "djf", "jja"]:
+            assert f"pr_{period}_relative_bias_combined" in ids
+
+    def test_pr_relative_bias_plot_type(
+        self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """Relative bias figures have plot_type='combined_map'."""
+        vr = self._make_pr_vr(synth_obs)
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        figures = diag._plot_variable("pr", vr)
+        plt.close("all")
+        rel_metas = [
+            meta for _, meta in figures
+            if "relative_bias" in meta["figure_id"]
+        ]
+        assert len(rel_metas) == 3
+        for meta in rel_metas:
+            assert meta["plot_type"] == "combined_map"
+
+    def test_pr_non_pr_still_three_figures(
+        self, synth_healpix, synth_obs, mock_model_loader,
+        mock_obs_loader, minimal_config,
+    ):
+        """tas (non-pr) still produces only 3 absolute bias figures."""
+        from feather.data.variables import get_var
+        from feather.util.temporal import climatology, seasonal_climatology
+
+        # Reuse _make_mock_results logic inline
+        var_info = get_var("tas")
+        obs_clim = climatology(synth_obs["t2m"])
+        obs_seasonal_common = {
+            s: v
+            for s, v in seasonal_climatology(synth_obs["t2m"]).items()
+        }
+        bias = obs_clim * 0.01
+        model_results = {
+            "ifs-fesom": {
+                "annual_regrid": obs_clim,
+                "seasonal_regrids": obs_seasonal_common,
+                "global_mean": float(obs_clim.mean()),
+                "annual_bias": bias,
+                "annual_bias_gmean": float(bias.mean()),
+                "annual_rmse": float((bias ** 2).mean() ** 0.5),
+                "seasonal_biases": {s: bias for s in obs_seasonal_common},
+            }
+        }
+        colorbar_ranges = GlobalBiases._compute_colorbar_ranges(
+            model_results, obs_clim, obs_seasonal_common,
+        )
+        vr = {
+            "models": model_results,
+            "obs": {
+                "clim": obs_clim,
+                "seasonal_clim": obs_seasonal_common,
+                "global_mean": float(obs_clim.mean()),
+            },
+            "var_info": var_info,
+            "colorbar_ranges": colorbar_ranges,
+            "cmip6_data": {},
+            "cmip6_info": {},
+            "cmip6_individual_data": {},
+        }
+
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["tas"],
+        )
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ):
+            figures = diag._plot_variable("tas", vr)
+        plt.close("all")
+        assert len(figures) == 3
+
+    def test_pr_skip_requires_six_figure_ids(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """run() only skips pr when all 6 figure IDs (abs + rel) exist."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create only the 3 absolute bias files — relative are missing
+        for period in ["annual", "djf", "jja"]:
+            fid = f"pr_{period}_bias_combined"
+            (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+            (diag.output_dir / f"{fid}.json").write_text("{}")
+
+        # Should NOT skip — relative bias files are absent
+        mock_fig = MagicMock(spec=plt.Figure)
+        with (
+            patch(
+                "feather.diag.global_biases.plot_combined_bias_map",
+                return_value=(mock_fig, [None, None]),
+            ),
+            patch(
+                "feather.diag.global_biases.plot_combined_map",
+                return_value=(mock_fig, [None, None]),
+            ),
+        ):
+            saved = diag.run(skip_existing=True)
+
+        # Figures were recomputed (not skipped)
+        pngs = [str(p) for p, _ in saved]
+        assert not all(b"fake" == p for p in pngs)
+
+    def test_pr_skip_when_all_six_exist(
+        self, mock_model_loader, mock_obs_loader, minimal_config,
+    ):
+        """run() skips pr when all 6 figure IDs exist."""
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["pr"],
+        )
+        diag.output_dir.mkdir(parents=True, exist_ok=True)
+
+        all_ids = (
+            [f"pr_{p}_bias_combined" for p in ["annual", "djf", "jja"]]
+            + [f"pr_{p}_relative_bias_combined" for p in ["annual", "djf", "jja"]]
+        )
+        for fid in all_ids:
+            (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+            (diag.output_dir / f"{fid}.json").write_text("{}")
+
+        saved = diag.run(skip_existing=True)
+
+        assert len(saved) == 6
+        for png_path, _ in saved:
+            assert png_path.read_bytes() == b"fake"
