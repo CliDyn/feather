@@ -282,7 +282,7 @@ class TestTimeseriesCMIP6:
         fig, meta = pairs[0]
         ax = fig.axes[0]
         labels = [line.get_label() for line in ax.get_lines()]
-        assert "CMIP6 MMM" in labels
+        assert any("CMIP6 MMM" in lbl for lbl in labels)
         plt.close(fig)
 
     def test_cmip6_metadata_includes_info(
@@ -374,8 +374,8 @@ class TestTimeseriesCMIP6Individual:
         fig, _ = pairs[0]
         ax = fig.axes[0]
         labels = [line.get_label() for line in ax.get_lines()]
-        assert "CMIP6 members" in labels
-        assert "CMIP6 MMM" in labels
+        assert any("CMIP6 members" in lbl for lbl in labels)
+        assert any("CMIP6 MMM" in lbl for lbl in labels)
         plt.close(fig)
 
     def test_individual_line_count(
@@ -572,8 +572,8 @@ class TestTimeseriesEnsemble:
         fig, _ = pairs[0]
         ax = fig.axes[0]
         labels = [line.get_label() for line in ax.get_lines()]
-        assert "EERIE ensemble mean" in labels
-        assert "EERIE ensemble median" in labels
+        assert any("EERIE ensemble mean" in lbl for lbl in labels)
+        assert any("EERIE ensemble median" in lbl for lbl in labels)
         plt.close(fig)
 
     def test_plot_no_ensemble_lines_single_model(self, mock_model_loader,
@@ -589,8 +589,8 @@ class TestTimeseriesEnsemble:
         fig, _ = pairs[0]
         ax = fig.axes[0]
         labels = [line.get_label() for line in ax.get_lines()]
-        assert "EERIE ensemble mean" not in labels
-        assert "EERIE ensemble median" not in labels
+        assert not any("EERIE ensemble mean" in lbl for lbl in labels)
+        assert not any("EERIE ensemble median" in lbl for lbl in labels)
         plt.close(fig)
 
     def test_ensemble_line_colors(self, mock_multi_model_loader,
@@ -610,9 +610,8 @@ class TestTimeseriesEnsemble:
         ax = fig.axes[0]
         ens_lines = [
             line for line in ax.get_lines()
-            if line.get_label() in (
-                "EERIE ensemble mean", "EERIE ensemble median"
-            )
+            if "EERIE ensemble mean" in line.get_label()
+            or "EERIE ensemble median" in line.get_label()
         ]
         assert len(ens_lines) == 2
         expected = mcolors.to_rgba(ENS_COLOR)
@@ -634,7 +633,7 @@ class TestTimeseriesEnsemble:
         ax = fig.axes[0]
         median_line = next(
             line for line in ax.get_lines()
-            if line.get_label() == "EERIE ensemble median"
+            if "EERIE ensemble median" in line.get_label()
         )
         assert median_line.get_linestyle() == "--"
         plt.close(fig)
@@ -653,9 +652,73 @@ class TestTimeseriesEnsemble:
         ax = fig.axes[0]
         mean_line = next(
             line for line in ax.get_lines()
-            if line.get_label() == "EERIE ensemble mean"
+            if "EERIE ensemble mean" in line.get_label()
+            and "median" not in line.get_label()
         )
         assert mean_line.get_linestyle() == "-"
+        plt.close(fig)
+
+    def test_legend_labels_include_member_count(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """Ensemble legend labels include the member count in parentheses."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+
+        n = len(results["tas"]["models"])
+        assert f"EERIE ensemble mean ({n})" in labels
+        assert f"EERIE ensemble median ({n})" in labels
+        plt.close(fig)
+
+    def test_cmip6_mmm_label_includes_count(
+        self, mock_multi_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """CMIP6 MMM legend label includes the member count."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+
+        m = results["tas"]["cmip6_info"]["n_members"]
+        assert f"CMIP6 MMM ({m})" in labels
+        plt.close(fig)
+
+    def test_cmip6_individual_label_includes_count(
+        self, mock_multi_model_loader, mock_obs_loader,
+        cmip6_config, mock_cmip6_loader,
+    ):
+        """'CMIP6 members' legend label includes the count of individual series."""
+        diag = TimeseriesDiag(
+            mock_multi_model_loader, mock_obs_loader, cmip6_config,
+            cmip6_loader=mock_cmip6_loader,
+            variables=["tas"],
+            cmip6_individual=True,
+        )
+        results = diag.compute()
+        pairs = diag.plot(results)
+
+        fig, _ = pairs[0]
+        ax = fig.axes[0]
+        labels = [line.get_label() for line in ax.get_lines()]
+
+        k = len(results["tas"]["cmip6_individual_ts"])
+        assert f"CMIP6 members ({k})" in labels
         plt.close(fig)
 
 
