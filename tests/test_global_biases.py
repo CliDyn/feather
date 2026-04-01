@@ -1518,9 +1518,57 @@ class TestGlobalBiasesEnsemble:
             if meta["figure_id"] == "tas_annual_ens_bias_combined"
         )
         stats = annual_ens["summary_statistics"]
-        assert "EERIE ens. mean" in stats
-        assert "EERIE ens. median" in stats
+        # Keys include bold mathtext member count, e.g. "EERIE ens. mean $\mathbf{(3)}$"
+        assert any("EERIE ens. mean" in k for k in stats)
+        assert any("EERIE ens. median" in k for k in stats)
         plt.close("all")
+
+    def test_ens_panel_labels_include_member_count(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """Ensemble panel labels contain the member count and mathtext bold."""
+        import matplotlib.pyplot as plt
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+
+        annual_ens = next(
+            meta for _, meta in figures
+            if meta["figure_id"] == "tas_annual_ens_bias_combined"
+        )
+        stats = annual_ens["summary_statistics"]
+
+        # Each EERIE label should contain "(N)" for the member count
+        eerie_mean_key = next(k for k in stats if "EERIE ens. mean" in k)
+        eerie_med_key = next(k for k in stats if "EERIE ens. median" in k)
+        assert "(" in eerie_mean_key and ")" in eerie_mean_key
+        assert "(" in eerie_med_key and ")" in eerie_med_key
+
+        # Member count should equal number of configured models (all have tas)
+        n = results["tas"]["ens_data"]["annual"]["n_members"]
+        assert str(n) in eerie_mean_key
+        assert str(n) in eerie_med_key
+
+        # n_members stored in summary stats
+        assert stats[eerie_mean_key]["n_members"] == n
+        assert stats[eerie_med_key]["n_members"] == n
+        plt.close("all")
+
+    def test_ens_n_members_matches_available_models(
+        self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
+    ):
+        """n_members in ens_data equals the number of models that loaded."""
+        diag = GlobalBiases(
+            mock_multi_model_loader, mock_obs_loader, multi_model_config,
+            variables=["tas"],
+        )
+        results = diag.compute()
+
+        n_models_loaded = len(results["tas"]["models"])
+        assert results["tas"]["ens_data"]["annual"]["n_members"] == n_models_loaded
 
     def test_skip_includes_ens_figure_ids_multi_model(
         self, mock_multi_model_loader, mock_obs_loader, multi_model_config,

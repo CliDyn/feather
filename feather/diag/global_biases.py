@@ -485,6 +485,7 @@ class GlobalBiases(DiagnosticBase):
             "median_bias_gmean": median_bias_gmean,
             "mean_rmse": mean_rmse,
             "median_rmse": median_rmse,
+            "n_members": len(annual_fields),
         }
 
         # Seasonal
@@ -524,6 +525,7 @@ class GlobalBiases(DiagnosticBase):
                         s_median_bias ** 2, area=common_area,
                     ).values
                 )),
+                "n_members": len(s_fields),
             }
 
         return ens_data
@@ -1276,37 +1278,43 @@ class GlobalBiases(DiagnosticBase):
             # ── Ensemble summary figure (obs + ens. median + ens. mean + CMIP6 MMM) ──
             if period_key in ens_data:
                 edata = ens_data[period_key]
+                n = edata["n_members"]
+
+                # Panel labels include member count in mathtext bold
+                lbl_median = rf"EERIE ens. median $\mathbf{{({n})}}$"
+                lbl_mean   = rf"EERIE ens. mean $\mathbf{{({n})}}$"
 
                 # Build the bias panel dict in display units
                 ens_bias_dict = {
-                    "EERIE ens. median": (
-                        edata["median_bias"] * unit_scale
-                    ),
-                    "EERIE ens. mean": (
-                        edata["mean_bias"] * unit_scale
-                    ),
+                    lbl_median: edata["median_bias"] * unit_scale,
+                    lbl_mean:   edata["mean_bias"] * unit_scale,
                 }
                 if period_key in cmip6_data:
-                    ens_bias_dict["CMIP6 MMM"] = (
+                    m = cmip6_info.get("n_members", 0)
+                    lbl_cmip6 = rf"CMIP6 MMM $\mathbf{{({m})}}$"
+                    ens_bias_dict[lbl_cmip6] = (
                         cmip6_data[period_key]["bias"] * unit_scale
                     )
 
                 ens_summary_stats = {
-                    "EERIE ens. median": {
+                    lbl_median: {
                         "global_mean_bias": edata["median_bias_gmean"] * unit_scale,
                         "rmse": edata.get("median_rmse", 0.0) * unit_scale,
+                        "n_members": n,
                     },
-                    "EERIE ens. mean": {
+                    lbl_mean: {
                         "global_mean_bias": edata["mean_bias_gmean"] * unit_scale,
                         "rmse": edata.get("mean_rmse", 0.0) * unit_scale,
+                        "n_members": n,
                     },
                 }
                 if period_key in cmip6_data:
                     c_data = cmip6_data[period_key]
-                    ens_summary_stats["CMIP6 MMM"] = {
+                    ens_summary_stats[lbl_cmip6] = {
                         "global_mean_bias": c_data["bias_gmean"] * unit_scale,
                         "rmse": (c_data["rmse"] * unit_scale
                                  if c_data.get("rmse") is not None else None),
+                        "n_members": cmip6_info.get("n_members", 0),
                     }
 
                 fig_ens, _ = plot_combined_bias_map(
