@@ -830,16 +830,24 @@ class GlobalTrends(DiagnosticBase):
             # Get colorbar ranges
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
+            if var == "pr":
+                field_cmap = "cmo.tarn"
+                diff_cmap = "BrBG"
+            else:
+                field_cmap = "coolwarm"
+                diff_cmap = "RdBu_r"
+
             fig, axes = plot_combined_bias_map(
                 obs_period, trend_diff_dict,
                 title=f"{var_info.long_name} {period_label} Trend",
-                obs_title="ERA5 Trend",
-                cmap="coolwarm",
-                bias_cmap="RdBu_r",
+                obs_title="ERA5 Observed Trend",
+                cmap=field_cmap,
+                bias_cmap=diff_cmap,
                 vmin=p_cb.get("vmin"),
                 vmax=p_cb.get("vmax"),
                 bias_vmax=p_cb.get("bias_vmax"),
                 units=trend_units,
+                bias_title_prefix="Trend Diff",
                 method=self._regrid_method,
             )
 
