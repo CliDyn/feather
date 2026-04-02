@@ -14,7 +14,7 @@ import pandas as pd
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.plot.styles import CMIP6_COLOR, ENS_COLOR, OBS_COLOR
 from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import annual_mean
 
@@ -156,6 +156,8 @@ class TimeseriesDiag(DiagnosticBase):
             if self.cmip6_individual and "individual_series" in info:
                 cmip6_individual_ts = dict(info["individual_series"])
 
+        ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
+
         return {
             "models": model_ts,
             "obs": obs_ts,
@@ -163,7 +165,38 @@ class TimeseriesDiag(DiagnosticBase):
             "cmip6_ts": cmip6_ts,
             "cmip6_info": cmip6_info,
             "cmip6_individual_ts": cmip6_individual_ts,
+            "ens_mean": ens_mean,
+            "ens_median": ens_median,
         }
+
+    @staticmethod
+    def _compute_ensemble_stats(
+        model_ts: dict,
+    ) -> tuple["xr.DataArray | None", "xr.DataArray | None"]:
+        """Compute ensemble mean and median across available model time series.
+
+        Uses the inner time union so models with different lengths are
+        aligned to their common period before averaging.
+
+        Parameters
+        ----------
+        model_ts : dict
+            Mapping of model name → DataArray with a ``time`` dimension.
+
+        Returns
+        -------
+        ens_mean, ens_median : DataArray or None
+            Returns ``None`` for both when fewer than 2 models are present.
+        """
+        import xarray as xr
+
+        series = list(model_ts.values())
+        if len(series) < 2:
+            return None, None
+
+        aligned = xr.align(*series, join="inner")
+        stacked = xr.concat(list(aligned), dim="member")
+        return stacked.mean("member"), stacked.median("member")
 
     def compute(self) -> dict[str, Any]:
         """Compute global-mean time series for each variable.
@@ -243,9 +276,15 @@ class TimeseriesDiag(DiagnosticBase):
 
         # --- Annual pass (foreground, thick with labels) ---
 
+        # Pre-compute member counts for legend labels
+        n_eerie = len(vr["models"])
+        n_cmip6_mmm = vr.get("cmip6_info", {}).get("n_members", 0)
+        n_cmip6_indiv = len(cmip6_indiv)
+
         # CMIP6 individual annual
         for i, (mname, ts) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
+            label = (f"CMIP6 members ({n_cmip6_indiv})"
+                     if i == 0 else "_nolegend_")
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values,
@@ -257,7 +296,7 @@ class TimeseriesDiag(DiagnosticBase):
             cmip6_annual = annual_mean(vr["cmip6_ts"])
             time_vals = _to_plot_time(cmip6_annual.time.values)
             ax.plot(time_vals, cmip6_annual.values,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+                    label=f"CMIP6 MMM ({n_cmip6_mmm})", color=CMIP6_COLOR,
                     linewidth=2.0, linestyle="--")
 
         # DestinE model annual
@@ -267,6 +306,22 @@ class TimeseriesDiag(DiagnosticBase):
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values,
                     label=model, color=color, linewidth=2.0)
+
+        # Ensemble median annual (dashed)
+        if vr.get("ens_median") is not None:
+            ens_med_annual = annual_mean(vr["ens_median"])
+            time_vals = _to_plot_time(ens_med_annual.time.values)
+            ax.plot(time_vals, ens_med_annual.values,
+                    label=f"EERIE ensemble median ({n_eerie})",
+                    color=ENS_COLOR, linewidth=2.5, linestyle="--")
+
+        # Ensemble mean annual (solid)
+        if vr.get("ens_mean") is not None:
+            ens_mean_annual = annual_mean(vr["ens_mean"])
+            time_vals = _to_plot_time(ens_mean_annual.time.values)
+            ax.plot(time_vals, ens_mean_annual.values,
+                    label=f"EERIE ensemble mean ({n_eerie})",
+                    color=ENS_COLOR, linewidth=2.5)
 
         # Obs annual
         obs_annual = annual_mean(obs_ts)

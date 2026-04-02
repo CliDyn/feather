@@ -107,6 +107,12 @@ class GlobalBiases(DiagnosticBase):
                     f"pr_{p}_relative_bias_combined"
                     for p in ["annual", "djf", "jja"]
                 ]
+            # Ensemble summary figures (only when ≥2 models configured)
+            if len(self.config.models) >= 2:
+                figure_ids += [
+                    f"{var}_{p}_ens_bias_combined"
+                    for p in ["annual", "djf", "jja"]
+                ]
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
             ):
@@ -386,12 +392,21 @@ class GlobalBiases(DiagnosticBase):
                     common_area,
                 )
 
+        # EERIE ensemble mean/median bias maps (when ≥2 models available)
+        ens_data: dict[str, dict] = {}
+        if len(model_results) >= 2 and obs_clim_common is not None:
+            ens_data = self._compute_ens_stats(
+                model_results, obs_clim_common, obs_seasonal_common,
+                common_area,
+            )
+
         # Compute shared colorbar ranges across all models per period
         logger.info("  Computing shared colorbar ranges")
         colorbar_ranges = self._compute_colorbar_ranges(
             model_results, obs_clim_common, obs_seasonal_common,
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
+            ens_data=ens_data,
         )
 
         return {
@@ -406,7 +421,114 @@ class GlobalBiases(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "ens_data": ens_data,
         }
+
+    # -- Ensemble stats helpers ---------------------------------------------
+
+    @staticmethod
+    def _compute_ens_stats(model_results, obs_clim_common,
+                           obs_seasonal_common, common_area):
+        """Compute EERIE ensemble mean and median bias maps.
+
+        Stacks regridded model fields on a new ``member`` dimension and
+        computes the element-wise mean and median.  Requires at least two
+        models in *model_results*.
+
+        Parameters
+        ----------
+        model_results : dict
+            Per-model computation output from ``_compute_variable``.
+        obs_clim_common, obs_seasonal_common, common_area
+            Common-grid observation and area weights.
+
+        Returns
+        -------
+        dict
+            Keyed by period (``"annual"``, ``"DJF"``, ``"JJA"``).  Each entry
+            holds ``mean``, ``median``, ``mean_bias``, ``median_bias``,
+            ``mean_bias_gmean``, ``median_bias_gmean``, ``mean_rmse``, and
+            ``median_rmse``.
+        """
+        ens_data: dict[str, dict] = {}
+
+        # Annual
+        annual_fields = [mr["annual_regrid"] for mr in model_results.values()]
+        if len(annual_fields) < 2:
+            return ens_data
+
+        stacked = xr.concat(annual_fields, dim="member")
+        ens_mean = stacked.mean("member")
+        ens_median = stacked.median("member")
+        mean_bias = ens_mean - obs_clim_common
+        median_bias = ens_median - obs_clim_common
+
+        mean_bias_gmean = float(
+            latlon_global_mean(mean_bias, area=common_area).values
+        )
+        mean_rmse = float(np.sqrt(
+            latlon_global_mean(mean_bias ** 2, area=common_area).values
+        ))
+        median_bias_gmean = float(
+            latlon_global_mean(median_bias, area=common_area).values
+        )
+        median_rmse = float(np.sqrt(
+            latlon_global_mean(median_bias ** 2, area=common_area).values
+        ))
+
+        ens_data["annual"] = {
+            "mean": ens_mean,
+            "median": ens_median,
+            "mean_bias": mean_bias,
+            "median_bias": median_bias,
+            "mean_bias_gmean": mean_bias_gmean,
+            "median_bias_gmean": median_bias_gmean,
+            "mean_rmse": mean_rmse,
+            "median_rmse": median_rmse,
+            "n_members": len(annual_fields),
+        }
+
+        # Seasonal
+        for season in ["DJF", "JJA"]:
+            if season not in obs_seasonal_common:
+                continue
+            s_fields = [
+                mr["seasonal_regrids"].get(season)
+                for mr in model_results.values()
+            ]
+            s_fields = [f for f in s_fields if f is not None]
+            if len(s_fields) < 2:
+                continue
+            s_stacked = xr.concat(s_fields, dim="member")
+            s_mean = s_stacked.mean("member")
+            s_median = s_stacked.median("member")
+            s_mean_bias = s_mean - obs_seasonal_common[season]
+            s_median_bias = s_median - obs_seasonal_common[season]
+            ens_data[season] = {
+                "mean": s_mean,
+                "median": s_median,
+                "mean_bias": s_mean_bias,
+                "median_bias": s_median_bias,
+                "mean_bias_gmean": float(
+                    latlon_global_mean(s_mean_bias, area=common_area).values
+                ),
+                "median_bias_gmean": float(
+                    latlon_global_mean(s_median_bias, area=common_area).values
+                ),
+                "mean_rmse": float(np.sqrt(
+                    latlon_global_mean(
+                        s_mean_bias ** 2, area=common_area,
+                    ).values
+                )),
+                "median_rmse": float(np.sqrt(
+                    latlon_global_mean(
+                        s_median_bias ** 2, area=common_area,
+                    ).values
+                )),
+                "n_members": len(s_fields),
+            }
+
+        return ens_data
 
     # -- CMIP6 computation helpers ------------------------------------------
 
@@ -845,6 +967,7 @@ class GlobalBiases(DiagnosticBase):
         obs_seasonal_common: dict[str, xr.DataArray],
         cmip6_data: dict[str, dict] | None = None,
         cmip6_individual_data: dict[str, dict] | None = None,
+        ens_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
 
@@ -862,6 +985,7 @@ class GlobalBiases(DiagnosticBase):
         ranges: dict[str, dict] = {}
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
+        ens_data = ens_data or {}
 
         def _finite_vals(arrays):
             """Extract all finite values from a list of arrays."""
@@ -891,6 +1015,9 @@ class GlobalBiases(DiagnosticBase):
         if "annual" in cmip6_individual_data:
             for member_data in cmip6_individual_data["annual"].values():
                 bias_arrays.append(member_data["bias"])
+        if "annual" in ens_data:
+            bias_arrays.append(ens_data["annual"]["mean_bias"])
+            bias_arrays.append(ens_data["annual"]["median_bias"])
         vmin, vmax = _percentile_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -919,6 +1046,9 @@ class GlobalBiases(DiagnosticBase):
             if season in cmip6_individual_data:
                 for member_data in cmip6_individual_data[season].values():
                     s_biases.append(member_data["bias"])
+            if season in ens_data:
+                s_biases.append(ens_data[season]["mean_bias"])
+                s_biases.append(ens_data[season]["median_bias"])
             vmin, vmax = _percentile_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
@@ -961,6 +1091,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data = vr.get("cmip6_data", {})
         cmip6_info = vr.get("cmip6_info", {})
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
+        ens_data = vr.get("ens_data", {})
 
         is_pr = (var == "pr")
 
@@ -1143,5 +1274,80 @@ class GlobalBiases(DiagnosticBase):
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
+
+            # ── Ensemble summary figure (obs + ens. median + ens. mean + CMIP6 MMM) ──
+            if period_key in ens_data:
+                edata = ens_data[period_key]
+                n = edata["n_members"]
+
+                # Panel labels include member count in mathtext bold
+                lbl_median = rf"EERIE ens. median $\mathbf{{({n})}}$"
+                lbl_mean   = rf"EERIE ens. mean $\mathbf{{({n})}}$"
+
+                # Build the bias panel dict in display units
+                ens_bias_dict = {
+                    lbl_median: edata["median_bias"] * unit_scale,
+                    lbl_mean:   edata["mean_bias"] * unit_scale,
+                }
+                if period_key in cmip6_data:
+                    m = cmip6_info.get("n_members", 0)
+                    lbl_cmip6 = rf"CMIP6 MMM $\mathbf{{({m})}}$"
+                    ens_bias_dict[lbl_cmip6] = (
+                        cmip6_data[period_key]["bias"] * unit_scale
+                    )
+
+                ens_summary_stats = {
+                    lbl_median: {
+                        "global_mean_bias": edata["median_bias_gmean"] * unit_scale,
+                        "rmse": edata.get("median_rmse", 0.0) * unit_scale,
+                        "n_members": n,
+                    },
+                    lbl_mean: {
+                        "global_mean_bias": edata["mean_bias_gmean"] * unit_scale,
+                        "rmse": edata.get("mean_rmse", 0.0) * unit_scale,
+                        "n_members": n,
+                    },
+                }
+                if period_key in cmip6_data:
+                    c_data = cmip6_data[period_key]
+                    ens_summary_stats[lbl_cmip6] = {
+                        "global_mean_bias": c_data["bias_gmean"] * unit_scale,
+                        "rmse": (c_data["rmse"] * unit_scale
+                                 if c_data.get("rmse") is not None else None),
+                        "n_members": cmip6_info.get("n_members", 0),
+                    }
+
+                fig_ens, _ = plot_combined_bias_map(
+                    obs_plot,
+                    ens_bias_dict,
+                    title=f"{var_info.long_name} {period_label} — Ensemble",
+                    obs_title=var_info.obs_dataset,
+                    cmap=disp_cmap,
+                    bias_cmap=disp_bias_cmap,
+                    vmin=vmin_p,
+                    vmax=vmax_p,
+                    bias_vmax=bvmax_p,
+                    units=disp_units,
+                    method=self._regrid_method,
+                )
+                meta_ens = self._build_metadata(
+                    title=(
+                        f"{var_info.long_name} {period_label} Bias "
+                        f"— Ensemble Summary"
+                    ),
+                    figure_id=f"{var}_{period_key.lower()}_ens_bias_combined",
+                    models=list(self.config.models),
+                    variables=[var],
+                    description=(
+                        f"{period_label} climatology bias maps for "
+                        f"{var_info.long_name} — EERIE ensemble median, "
+                        f"ensemble mean, and CMIP6 MMM."
+                    ),
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    cmip6_info=cmip6_info or None,
+                    summary_statistics=ens_summary_stats,
+                )
+                figures.append((fig_ens, meta_ens))
 
         return figures

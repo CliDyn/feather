@@ -157,6 +157,7 @@ def plot_combined_bias_map(
     land=False,
     method="nearest",
     figsize_per_panel=(7, 5),
+    bias_title_prefix="Bias",
 ):
     """Combined multi-panel figure: obs climatology + bias maps.
 
@@ -263,7 +264,8 @@ def plot_combined_bias_map(
             ax=axes_flat[i], projection=projection, resolution=resolution,
             interpolator=interpolator, cmap=bias_cmap,
             vmin=-bias_vmax, vmax=bias_vmax,
-            colorbar=True, colorbar_label=units, title=f"Bias: {label}",
+            colorbar=True, colorbar_label=units,
+            title=f"{bias_title_prefix}: {label}",
             land=land, method=method,
         )
 

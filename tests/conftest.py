@@ -101,6 +101,21 @@ def minimal_config(tmp_path):
     )
 
 
+@pytest.fixture
+def multi_model_config(tmp_path):
+    """FeatherConfig with three models for ensemble statistics testing."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ifs-fesom", "ifs-nemo", "icon"],
+        obs_root="",
+        obs_datasets={},
+        cmip6={"enabled": False},
+        dask={},
+        nereus={"influence_radius": 1_000_000},
+        output_dir=str(tmp_path / "output"),
+    )
+
+
 # ── Mock data loaders ────────────────────────────────────────────────
 
 
@@ -141,6 +156,12 @@ class MockObsLoader:
 @pytest.fixture
 def mock_model_loader(synth_healpix):
     """MockModelLoader backed by synth_healpix."""
+    return MockModelLoader(synth_healpix)
+
+
+@pytest.fixture
+def mock_multi_model_loader(synth_healpix):
+    """MockModelLoader backed by synth_healpix, works for any model name."""
     return MockModelLoader(synth_healpix)
 
 
