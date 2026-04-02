@@ -216,24 +216,37 @@ class TestAddedValueDiagIntegration:
         vr = results["tas"]
         assert "av" in vr
         assert "annual" in vr["av"]
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             assert etype in vr["av"]["annual"], f"missing key: {etype}"
+        assert "per_eerie_av" in vr["av"]["annual"]
+        assert "per_cmip6_av" in vr["av"]["annual"]
 
     def test_av_dims_and_bounds(self, diag):
         results = diag.compute()
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             av = results["tas"]["av"]["annual"][etype]
             assert set(av.dims) == {"lat", "lon"}, etype
             assert float(av.min()) >= -1.0 - 1e-6, etype
             assert float(av.max()) <= 1.0 + 1e-6, etype
 
+    def test_per_model_av_in_result(self, diag):
+        results = diag.compute()
+        annual = results["tas"]["av"]["annual"]
+        # per_eerie_av: one entry per EERIE model (ModelA, ModelB)
+        assert len(annual["per_eerie_av"]) == 2
+        for model_name, av_field in annual["per_eerie_av"].items():
+            assert set(av_field.dims) == {"lat", "lon"}
+            assert float(av_field.min()) >= -1.0 - 1e-6
+            assert float(av_field.max()) <= 1.0 + 1e-6
+        # per_cmip6_av: one entry per CMIP6 member
+        assert len(annual["per_cmip6_av"]) >= 1
+        for label, av_field in annual["per_cmip6_av"].items():
+            assert set(av_field.dims) == {"lat", "lon"}
+
     def test_summary_stats_in_result(self, diag):
         results = diag.compute()
         av = results["tas"]["av"]["annual"]
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             assert f"{etype}_domain_av" in av
             assert f"{etype}_frac_positive" in av
             assert np.isfinite(av[f"{etype}_domain_av"])
@@ -242,8 +255,7 @@ class TestAddedValueDiagIntegration:
     def test_nc_files_saved(self, diag, tmp_path):
         diag.compute()
         nc_dir = diag.nc_dir
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             assert (nc_dir / f"tas_annual_{etype}_av.nc").exists(), etype
 
     def test_nc_file_contents(self, diag, tmp_path):
@@ -260,15 +272,20 @@ class TestAddedValueDiagIntegration:
         assert "Dosio" in av.attrs["reference"]
         ds.close()
 
-    def test_plot_returns_two_panels_per_period(self, diag):
+    def test_plot_returns_figures_per_period(self, diag):
         results = diag.compute()
         figures = diag.plot(results)
-        assert len(figures) >= 1
+        figure_ids = [meta["figure_id"] for _, meta in figures]
+        import matplotlib.pyplot as plt
         for fig, meta in figures:
-            import matplotlib.pyplot as plt
             assert isinstance(fig, plt.Figure)
             assert "figure_id" in meta
             assert "added_value" in meta["figure_id"]
+        # Both ensemble and per-model figures should be present
+        assert any("added_value_models" not in fid for fid in figure_ids), \
+            "expected at least one ensemble figure"
+        assert any("added_value_models" in fid for fid in figure_ids), \
+            "expected at least one per-model figure"
 
     def test_skip_when_nc_exists(self, diag, tmp_path, monkeypatch):
         """_all_nc_exist returns True only when all 6 NC files are present."""
@@ -276,6 +293,7 @@ class TestAddedValueDiagIntegration:
         # Before computation no NC files exist
         assert not diag._all_nc_exist(var)
         diag.compute()
+        # After computation: 2 etypes × 3 periods = 6 NC files
         assert diag._all_nc_exist(var)
 
     def test_load_from_nc(self, diag):
@@ -284,10 +302,12 @@ class TestAddedValueDiagIntegration:
         assert loaded is not None
         assert "av" in loaded
         assert "annual" in loaded["av"]
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             av = loaded["av"]["annual"][etype]
             assert float(av.min()) >= -1.0 - 1e-6, etype
+        # Per-model dicts are empty when loading from NC
+        assert loaded["av"]["annual"]["per_eerie_av"] == {}
+        assert loaded["av"]["annual"]["per_cmip6_av"] == {}
 
     def test_no_cmip6_returns_none(self, synth_obs, eerie_config):
         """Without CMIP6 loader, compute returns None for all variables."""
@@ -304,12 +324,17 @@ class TestAddedValueDiagIntegration:
     def test_metadata_fields(self, diag):
         results = diag.compute()
         figures = diag.plot(results)
+        # Figure 1 is ensemble summary
+        ensemble_figs = [
+            meta for _, meta in figures
+            if "models" not in meta["figure_id"].split("_added_value")[-1]
+        ]
+        assert ensemble_figs, "expected at least one ensemble figure"
         _, meta = figures[0]
         assert meta["diagnostic_name"] == "added_value"
         assert "summary_statistics" in meta
         stats = meta["summary_statistics"]
-        for etype in ("ensemble_mean", "ensemble_median",
-                      "individual_mean", "individual_median"):
+        for etype in ("ensemble_mean", "ensemble_median"):
             assert etype in stats, f"missing {etype}"
             assert "domain_mean_av" in stats[etype]
             assert "frac_positive" in stats[etype]

@@ -108,22 +108,21 @@ class AddedValueDiag(DiagnosticBase):
         return self.nc_dir / f"{var}_{period}_{ensemble_type}_av.nc"
 
     def _all_nc_exist(self, var: str) -> bool:
-        """True when all 12 NC files (3 periods × 4 ensemble types) exist."""
+        """True when all 6 NC files (3 periods × 2 ensemble types) exist."""
         for period in ("annual", "djf", "jja"):
-            for etype in (
-                "ensemble_mean", "ensemble_median",
-                "individual_mean", "individual_median",
-            ):
+            for etype in ("ensemble_mean", "ensemble_median"):
                 if not self._nc_path(var, period, etype).exists():
                     return False
         return True
 
     def _all_figures_exist(self, var: str) -> bool:
-        """True when all 3 period figures exist."""
-        return all(
-            self._figure_exists(f"{var}_{p}_added_value")
-            for p in ("annual", "djf", "jja")
-        )
+        """True when all figures for both ensemble and per-model plots exist."""
+        for p in ("annual", "djf", "jja"):
+            if not self._figure_exists(f"{var}_{p}_added_value"):
+                return False
+            if not self._figure_exists(f"{var}_{p}_added_value_models"):
+                return False
+        return True
 
     # -- Orchestration -------------------------------------------------------
 
@@ -143,11 +142,12 @@ class AddedValueDiag(DiagnosticBase):
             if skip_existing and self._all_figures_exist(var):
                 logger.info("Skipping %s — all figures exist", var)
                 for p in ("annual", "djf", "jja"):
-                    fid = f"{var}_{p}_added_value"
-                    saved.append((
-                        self.output_dir / f"{fid}.png",
-                        self.output_dir / f"{fid}.json",
-                    ))
+                    for suffix in ("added_value", "added_value_models"):
+                        fid = f"{var}_{p}_{suffix}"
+                        saved.append((
+                            self.output_dir / f"{fid}.png",
+                            self.output_dir / f"{fid}.json",
+                        ))
                 continue
 
             try:
@@ -244,6 +244,7 @@ class AddedValueDiag(DiagnosticBase):
         eerie_seasonal_fields: dict[str, list[xr.DataArray]] = {
             "DJF": [], "JJA": [],
         }
+        eerie_seasonal_models: dict[str, list[str]] = {"DJF": [], "JJA": []}
         eerie_models_used: list[str] = []
 
         for model in self.config.models:
@@ -342,6 +343,7 @@ class AddedValueDiag(DiagnosticBase):
                         s_vals, dims=("lat", "lon"),
                         coords={"lat": target_lats, "lon": target_lons},
                     ))
+                    eerie_seasonal_models[season].append(model)
 
         if not eerie_annual_fields:
             logger.warning("No EERIE models found for %s — skipping", var)
@@ -367,6 +369,7 @@ class AddedValueDiag(DiagnosticBase):
         cmip6_seasonal_fields: dict[str, list[xr.DataArray]] = {
             "DJF": [], "JJA": [],
         }
+        cmip6_seasonal_models: dict[str, list[str]] = {"DJF": [], "JJA": []}
         cmip6_models_used: list[str] = []
         cmip6_interp_cache: dict[tuple, Any] = {}
 
@@ -401,6 +404,7 @@ class AddedValueDiag(DiagnosticBase):
                         method=self._regrid_method,
                     )
                     cmip6_seasonal_fields[season].append(s_r)
+                    cmip6_seasonal_models[season].append(label)
 
         if not cmip6_annual_fields:
             logger.warning("No CMIP6 models found for %s — skipping", var)
@@ -419,60 +423,55 @@ class AddedValueDiag(DiagnosticBase):
         # -- AV computation -------------------------------------------------
         # Model1 = CMIP6 MMM, Model2 = EERIE  →  AV > 0 means EERIE adds value
         #
-        # Two approaches:
-        #   ensemble_mean / ensemble_median : AV applied to the EERIE
-        #     ensemble mean/median climatology  (Option B)
-        #   individual_mean / individual_median : per-model AV maps averaged
-        #     across EERIE members  (Option A)
+        # Two ensemble statistics computed:
+        #   ensemble_mean  : AV(CMIP6 MMM, EERIE ens. mean,   ERA5)
+        #   ensemble_median: AV(CMIP6 MMM, EERIE ens. median, ERA5)
+        #
+        # Per-model individual AV maps:
+        #   per_eerie_av:  {model: AV(CMIP6 MMM, EERIE_i, ERA5)}
+        #   per_cmip6_av:  {label: AV(EERIE ens. mean, CMIP6_j, ERA5)}
 
         av_results: dict[str, dict] = {}
 
-        def _period_av(cmip6_field, eerie_fields, eerie_ens_mean,
-                       eerie_ens_median, obs_field):
-            """Compute all four AV variants for one period."""
-            # Option B — AV of the ensemble statistic
+        def _period_av(cmip6_field, eerie_ens_mean, eerie_ens_median,
+                       eerie_fields, eerie_labels,
+                       cmip6_fields, cmip6_labels,
+                       obs_field):
+            """Compute ensemble and per-model AV for one period."""
             av_ens_mean = self._compute_av(cmip6_field, eerie_ens_mean,
                                            obs_field)
             av_ens_median = self._compute_av(cmip6_field, eerie_ens_median,
                                              obs_field)
 
-            # Option A — mean/median of per-model AV maps
-            indiv_avs = xr.concat(
-                [self._compute_av(cmip6_field, ef, obs_field)
-                 for ef in eerie_fields],
-                dim="member",
-            )
-            av_ind_mean = indiv_avs.mean("member")
-            av_ind_median = indiv_avs.median("member")
+            per_eerie_av = {
+                lbl: self._compute_av(cmip6_field, ef, obs_field)
+                for lbl, ef in zip(eerie_labels, eerie_fields)
+            }
+            per_cmip6_av = {
+                lbl: self._compute_av(eerie_ens_mean, cf, obs_field)
+                for lbl, cf in zip(cmip6_labels, cmip6_fields)
+            }
 
             return {
                 "ensemble_mean": av_ens_mean,
                 "ensemble_median": av_ens_median,
-                "individual_mean": av_ind_mean,
-                "individual_median": av_ind_median,
-                # summary stats
+                "per_eerie_av": per_eerie_av,
+                "per_cmip6_av": per_cmip6_av,
                 "ensemble_mean_domain_av": self._domain_mean_av(
                     av_ens_mean, common_area),
                 "ensemble_median_domain_av": self._domain_mean_av(
                     av_ens_median, common_area),
-                "individual_mean_domain_av": self._domain_mean_av(
-                    av_ind_mean, common_area),
-                "individual_median_domain_av": self._domain_mean_av(
-                    av_ind_median, common_area),
                 "ensemble_mean_frac_positive": self._frac_positive(
                     av_ens_mean),
                 "ensemble_median_frac_positive": self._frac_positive(
                     av_ens_median),
-                "individual_mean_frac_positive": self._frac_positive(
-                    av_ind_mean),
-                "individual_median_frac_positive": self._frac_positive(
-                    av_ind_median),
             }
 
         # Annual
         av_results["annual"] = _period_av(
-            cmip6_mmm, eerie_annual_fields,
-            eerie_mean, eerie_median,
+            cmip6_mmm, eerie_mean, eerie_median,
+            eerie_annual_fields, eerie_models_used,
+            cmip6_annual_fields, cmip6_models_used,
             obs_clim_common,
         )
 
@@ -486,9 +485,12 @@ class AddedValueDiag(DiagnosticBase):
             ):
                 av_results[season] = _period_av(
                     cmip6_seasonal_mmm[season],
-                    eerie_seasonal_fields[season],
                     eerie_seasonal_mean[season],
                     eerie_seasonal_median[season],
+                    eerie_seasonal_fields[season],
+                    eerie_seasonal_models[season],
+                    cmip6_seasonal_fields[season],
+                    cmip6_seasonal_models[season],
                     obs_seasonal_common[season],
                 )
 
@@ -504,12 +506,8 @@ class AddedValueDiag(DiagnosticBase):
             "long_name": var_info.long_name,
             "units": var_info.units,
         }
-        _etypes = (
-            "ensemble_mean", "ensemble_median",
-            "individual_mean", "individual_median",
-        )
         for period_key, period_data in av_results.items():
-            for etype in _etypes:
+            for etype in ("ensemble_mean", "ensemble_median"):
                 nc_path = self._nc_path(var, period_key.lower(), etype)
                 if not nc_path.exists():
                     self._save_av_to_nc(
@@ -533,10 +531,7 @@ class AddedValueDiag(DiagnosticBase):
         """
         var_info = get_var(var)
         av_results: dict[str, dict] = {}
-        _etypes = (
-            "ensemble_mean", "ensemble_median",
-            "individual_mean", "individual_median",
-        )
+        _etypes = ("ensemble_mean", "ensemble_median")
 
         for period in ("annual", "djf", "jja"):
             paths = {
@@ -559,6 +554,9 @@ class AddedValueDiag(DiagnosticBase):
                     av_f, area)
                 period_data[f"{et}_frac_positive"] = self._frac_positive(
                     av_f)
+            # Per-model AV maps are not stored in NC; skip per-model figure
+            period_data["per_eerie_av"] = {}
+            period_data["per_cmip6_av"] = {}
             av_results[period] = period_data
 
             for ds in datasets.values():
@@ -625,9 +623,14 @@ class AddedValueDiag(DiagnosticBase):
 
     @staticmethod
     def _domain_mean_av(
-        av: xr.DataArray, area: np.ndarray,
+        av: xr.DataArray, area: np.ndarray | None,
     ) -> float:
-        """Area-weighted domain-mean AV score."""
+        """Area-weighted domain-mean AV score.
+
+        When *area* is None, falls back to a simple arithmetic mean.
+        """
+        if area is None:
+            return float(np.nanmean(np.asarray(av)))
         return float(latlon_global_mean(av, area=area).values)
 
     @staticmethod
@@ -780,14 +783,19 @@ class AddedValueDiag(DiagnosticBase):
     ) -> list[tuple[plt.Figure, dict]]:
         """Generate AV map figures for a single variable.
 
-        Produces one figure per period (annual, DJF, JJA), each with
-        four panels:
-          - AV of EERIE ensemble mean  (Option B)
-          - AV of EERIE ensemble median  (Option B)
-          - Mean of per-model AV maps  (Option A)
-          - Median of per-model AV maps  (Option A)
+        Produces two figures per period (annual, DJF, JJA):
 
-        AV > 0 everywhere means EERIE adds value over CMIP6 MMM.
+        Figure 1 — ensemble summary (two panels):
+          - AV(CMIP6 MMM, EERIE ensemble mean, ERA5)
+          - AV(CMIP6 MMM, EERIE ensemble median, ERA5)
+
+        Figure 2 — individual model panels:
+          - One panel per EERIE model:  AV(CMIP6 MMM, EERIE_i, ERA5)
+          - One panel per CMIP6 model:  AV(EERIE ens. mean, CMIP6_j, ERA5)
+
+        AV > 0 means the candidate model reduces squared error vs ERA5
+        relative to the baseline (CMIP6 MMM for EERIE panels, EERIE mean
+        for CMIP6 panels).
         """
         figures: list[tuple[plt.Figure, dict]] = []
         var_info = vr["var_info"]
@@ -798,25 +806,24 @@ class AddedValueDiag(DiagnosticBase):
             if s in av:
                 period_labels.append((s, s))
 
-        _panel_specs = [
-            ("ensemble_mean",   "AV(EERIE Ens. Mean)",   "Option B"),
-            ("ensemble_median", "AV(EERIE Ens. Median)",  "Option B"),
-            ("individual_mean",   "Mean of Model AVs",    "Option A"),
-            ("individual_median", "Median of Model AVs",  "Option A"),
-        ]
-
         for period_key, period_label in period_labels:
             period_data = av.get(period_key)
             if period_data is None:
                 continue
 
-            data_dict = {}
+            pk_lower = period_key.lower()
+
+            # ── Figure 1: ensemble mean + median ───────────────────────────
             summary_stats: dict[str, Any] = {}
-            for etype, label, opt in _panel_specs:
+            data_dict: dict[str, xr.DataArray] = {}
+            for etype, label in (
+                ("ensemble_mean",   "AV(EERIE Ens. Mean)"),
+                ("ensemble_median", "AV(EERIE Ens. Median)"),
+            ):
                 dom_av = period_data[f"{etype}_domain_av"]
                 frac = period_data[f"{etype}_frac_positive"]
                 panel_title = (
-                    f"{label} [{opt}]\n"
+                    f"{label}\n"
                     f"domain mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                 )
                 data_dict[panel_title] = period_data[etype]
@@ -827,33 +834,31 @@ class AddedValueDiag(DiagnosticBase):
                     "n_cmip6_models": vr["n_cmip6_models"],
                 }
 
-            fig, axes = plot_combined_map(
+            fig1, _ = plot_combined_map(
                 data_dict,
                 title=(
                     f"{var_info.long_name} {period_label} Added Value"
-                    f" — EERIE vs CMIP6 MMM  (green = EERIE better)"
+                    f" — EERIE ensemble vs CMIP6 MMM  (green = EERIE better)"
                 ),
                 cmap="RdYlGn",
-                vmin=-1.0,
-                vmax=1.0,
+                vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
             )
-
-            figure_id = f"{var}_{period_key.lower()}_added_value"
-            meta = self._build_metadata(
+            meta1 = self._build_metadata(
                 title=(
                     f"{var_info.long_name} {period_label} Added Value "
-                    f"(EERIE vs CMIP6 MMM)"
+                    f"(EERIE ensemble vs CMIP6 MMM)"
                 ),
-                figure_id=figure_id,
+                figure_id=f"{var}_{pk_lower}_added_value",
                 models=vr["eerie_models"],
                 variables=[var],
                 description=(
                     f"Dosio et al. (2015) Added Value metric for "
                     f"{var_info.long_name} ({period_label}), "
                     f"{self.period[0]}-{self.period[1]}. "
-                    f"AV > 0: EERIE reduces squared error over CMIP6 MMM. "
+                    f"AV > 0: EERIE ensemble reduces squared error over "
+                    f"CMIP6 MMM. "
                     f"EERIE n={vr['n_eerie_models']}, "
                     f"CMIP6 n={vr['n_cmip6_models']}."
                 ),
@@ -866,6 +871,87 @@ class AddedValueDiag(DiagnosticBase):
                     "reference": "Dosio et al. (2015)",
                 },
             )
-            figures.append((fig, meta))
+            figures.append((fig1, meta1))
+
+            # ── Figure 2: individual model panels (skip if no per-model data)
+            per_eerie = period_data.get("per_eerie_av", {})
+            per_cmip6 = period_data.get("per_cmip6_av", {})
+            if not per_eerie and not per_cmip6:
+                continue
+
+            models_data_dict: dict[str, xr.DataArray] = {}
+            for model_name, av_field in per_eerie.items():
+                dom_av = self._domain_mean_av(av_field, None)  # unweighted
+                frac = self._frac_positive(av_field)
+                title_str = (
+                    f"EERIE: {model_name}\n"
+                    f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                )
+                models_data_dict[title_str] = av_field
+            for cmip6_label, av_field in per_cmip6.items():
+                dom_av = self._domain_mean_av(av_field, None)
+                frac = self._frac_positive(av_field)
+                title_str = (
+                    f"CMIP6: {cmip6_label}\n"
+                    f"vs EERIE mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                )
+                models_data_dict[title_str] = av_field
+
+            fig2, _ = plot_combined_map(
+                models_data_dict,
+                title=(
+                    f"{var_info.long_name} {period_label} Added Value"
+                    f" — Individual Models  (green = model better)"
+                ),
+                cmap="RdYlGn",
+                vmin=-1.0, vmax=1.0,
+                units="AV [ ]",
+                method=self._regrid_method,
+            )
+            eerie_stats = {
+                m: {
+                    "domain_mean_av": float(
+                        np.nanmean(np.asarray(av_f))),
+                    "frac_positive": self._frac_positive(av_f),
+                }
+                for m, av_f in per_eerie.items()
+            }
+            cmip6_stats = {
+                lbl: {
+                    "domain_mean_av": float(
+                        np.nanmean(np.asarray(av_f))),
+                    "frac_positive": self._frac_positive(av_f),
+                }
+                for lbl, av_f in per_cmip6.items()
+            }
+            meta2 = self._build_metadata(
+                title=(
+                    f"{var_info.long_name} {period_label} Added Value "
+                    f"— Individual Models"
+                ),
+                figure_id=f"{var}_{pk_lower}_added_value_models",
+                models=vr["eerie_models"],
+                variables=[var],
+                description=(
+                    f"Per-model Dosio et al. (2015) Added Value for "
+                    f"{var_info.long_name} ({period_label}), "
+                    f"{self.period[0]}-{self.period[1]}. "
+                    f"EERIE panels: AV(CMIP6 MMM, EERIE_i, ERA5). "
+                    f"CMIP6 panels: AV(EERIE mean, CMIP6_j, ERA5). "
+                    f"Green = model better than its baseline."
+                ),
+                plot_type="added_value_map",
+                period=self.period,
+                summary_statistics={
+                    "per_eerie": eerie_stats,
+                    "per_cmip6": cmip6_stats,
+                },
+                extra={
+                    "eerie_models": vr["eerie_models"],
+                    "cmip6_models": vr["cmip6_models"],
+                    "reference": "Dosio et al. (2015)",
+                },
+            )
+            figures.append((fig2, meta2))
 
         return figures
