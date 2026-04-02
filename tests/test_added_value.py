@@ -94,19 +94,19 @@ class MockObsLoaderLatlon:
 
 
 class TestComputeAv:
-    def test_perfect_model1_returns_minus_one(self):
-        """When m1 = ref, AV = -1 everywhere (sq1=0, sq2>0)."""
+    def test_perfect_cmip6_returns_minus_one(self):
+        """When m1=CMIP6=ref (perfect CMIP6), AV=-1 (CMIP6 better)."""
         ref = _make_latlon(300.0)
-        m1 = ref.copy()          # perfect
-        m2 = _make_latlon(302.0)  # has error
+        m1 = ref.copy()           # CMIP6 = perfect
+        m2 = _make_latlon(302.0)  # EERIE has error
         av = AddedValueDiag._compute_av(m1, m2, ref)
         assert np.allclose(av.values, -1.0)
 
-    def test_perfect_model2_returns_plus_one(self):
-        """When m2 = ref, AV = +1 everywhere (sq2=0, sq1>0)."""
+    def test_perfect_eerie_returns_plus_one(self):
+        """When m2=EERIE=ref (perfect EERIE), AV=+1 (EERIE adds value)."""
         ref = _make_latlon(300.0)
-        m1 = _make_latlon(302.0)  # has error
-        m2 = ref.copy()           # perfect
+        m1 = _make_latlon(302.0)  # CMIP6 has error
+        m2 = ref.copy()           # EERIE = perfect
         av = AddedValueDiag._compute_av(m1, m2, ref)
         assert np.allclose(av.values, 1.0)
 
@@ -216,36 +216,40 @@ class TestAddedValueDiagIntegration:
         vr = results["tas"]
         assert "av" in vr
         assert "annual" in vr["av"]
-        assert "mean" in vr["av"]["annual"]
-        assert "median" in vr["av"]["annual"]
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            assert etype in vr["av"]["annual"], f"missing key: {etype}"
 
     def test_av_dims_and_bounds(self, diag):
         results = diag.compute()
-        av_mean = results["tas"]["av"]["annual"]["mean"]
-        assert set(av_mean.dims) == {"lat", "lon"}
-        assert float(av_mean.min()) >= -1.0 - 1e-6
-        assert float(av_mean.max()) <= 1.0 + 1e-6
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            av = results["tas"]["av"]["annual"][etype]
+            assert set(av.dims) == {"lat", "lon"}, etype
+            assert float(av.min()) >= -1.0 - 1e-6, etype
+            assert float(av.max()) <= 1.0 + 1e-6, etype
 
     def test_summary_stats_in_result(self, diag):
         results = diag.compute()
         av = results["tas"]["av"]["annual"]
-        assert "mean_domain_av" in av
-        assert "mean_frac_positive" in av
-        assert "median_domain_av" in av
-        assert "median_frac_positive" in av
-        assert np.isfinite(av["mean_domain_av"])
-        assert 0.0 <= av["mean_frac_positive"] <= 1.0
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            assert f"{etype}_domain_av" in av
+            assert f"{etype}_frac_positive" in av
+            assert np.isfinite(av[f"{etype}_domain_av"])
+            assert 0.0 <= av[f"{etype}_frac_positive"] <= 1.0
 
     def test_nc_files_saved(self, diag, tmp_path):
         diag.compute()
         nc_dir = diag.nc_dir
-        assert (nc_dir / "tas_annual_mean_av.nc").exists()
-        assert (nc_dir / "tas_annual_median_av.nc").exists()
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            assert (nc_dir / f"tas_annual_{etype}_av.nc").exists(), etype
 
     def test_nc_file_contents(self, diag, tmp_path):
         diag.compute()
         import xarray as xr
-        ds = xr.open_dataset(diag.nc_dir / "tas_annual_mean_av.nc")
+        ds = xr.open_dataset(diag.nc_dir / "tas_annual_ensemble_mean_av.nc")
         assert "av" in ds
         av = ds["av"]
         assert "lat" in av.dims and "lon" in av.dims
@@ -280,8 +284,10 @@ class TestAddedValueDiagIntegration:
         assert loaded is not None
         assert "av" in loaded
         assert "annual" in loaded["av"]
-        av_m = loaded["av"]["annual"]["mean"]
-        assert float(av_m.min()) >= -1.0 - 1e-6
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            av = loaded["av"]["annual"][etype]
+            assert float(av.min()) >= -1.0 - 1e-6, etype
 
     def test_no_cmip6_returns_none(self, synth_obs, eerie_config):
         """Without CMIP6 loader, compute returns None for all variables."""
@@ -302,10 +308,11 @@ class TestAddedValueDiagIntegration:
         assert meta["diagnostic_name"] == "added_value"
         assert "summary_statistics" in meta
         stats = meta["summary_statistics"]
-        assert "EERIE_mean" in stats
-        assert "EERIE_median" in stats
-        assert "domain_mean_av" in stats["EERIE_mean"]
-        assert "frac_positive" in stats["EERIE_mean"]
+        for etype in ("ensemble_mean", "ensemble_median",
+                      "individual_mean", "individual_median"):
+            assert etype in stats, f"missing {etype}"
+            assert "domain_mean_av" in stats[etype]
+            assert "frac_positive" in stats[etype]
 
 
 # ── run() orchestration tests ─────────────────────────────────────────
