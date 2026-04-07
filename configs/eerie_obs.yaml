@@ -1,0 +1,88 @@
+project:
+  name: "EERIE-OBS"
+  description: "Observational dataset comparison: ERA5 vs Berkeley Earth"
+  experiment: "obs-only"
+  period: ["1980", "2024"]
+  resolution: "ERA5 (0.25°) and Berkeley Earth (1°)"
+  comparison_type: "single_model"
+  comparison_description: >
+    Obs-only evaluation comparing ERA5 reanalysis against Berkeley Earth
+    Land+Ocean for two periods (1980–2014 and 1980–2024) to assess how
+    trend estimates depend on record length and dataset choice.
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models: {}
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      sst: "ERA5_sea_surface_temperature_mon_full_sfc_1940-2024.nc"
+      msl: "ERA5_mean_sea_level_pressure_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      tcc: "ERA5_total_cloud_cover_mon_full_sfc_1940-2024.nc"
+      sshf: "ERA5_surface_sensible_heat_flux_mon_full_sfc_1940-2024.nc"
+      slhf: "ERA5_surface_latent_heat_flux_mon_full_sfc_1940-2024.nc"
+      ssr: "ERA5_surface_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      str: "ERA5_surface_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      ssrc: "ERA5_surface_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      strc: "ERA5_surface_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tsr: "ERA5_top_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      ttr: "ERA5_top_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      tsrc: "ERA5_top_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      ttrc: "ERA5_top_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      ssrd: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      strd: "ERA5_surface_thermal_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      u10: "ERA5_10m_u_component_of_wind_mon_full_sfc_1940-2024.nc"
+      v10: "ERA5_10m_v_component_of_wind_mon_full_sfc_1940-2024.nc"
+  BERKELEY_EARTH:
+    path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "./output_eerie_obs"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — Observational Comparison"
+  subtitle: "ERA5 vs Berkeley Earth (1980–2014 and 1980–2024)"
+  group_order:
+    - evaluation
+    - temperature
+  group_labels:
+    evaluation: "Obs Comparison"
+    temperature: "Temperature"

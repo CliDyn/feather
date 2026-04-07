@@ -519,6 +519,22 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **Pattern display**: all patterns (obs, model, CMIP6) regridded to common 1° grid via `_regrid_patterns_to_common()`. Rectilinear uses `xr.DataArray.interp()`, curvilinear uses `nr.regrid()` with explicit lon/lat arrays. All panels rendered with `method="linear"` in `nr.plot()` for smooth display.
 - 87 dedicated tests across `tests/test_eof.py` (13), `tests/test_spectrum.py` (9), `tests/test_teleconnections.py` (65)
 
+### ObsComparisonDiag diagnostic
+- 15th diagnostic: ERA5 vs Berkeley Earth comparison for global trends and climatological biases
+- Obs-only: no model data loaded — purely observational dataset intercomparison
+- Compares two periods: **1980–2014** (model-comparable) and **1980–2024** (full record)
+- Variable: `tas` (2m temperature)
+- 10 figures across 4 groups:
+  - **A** (×3 annual/DJF/JJA): 4-panel trend maps — ERA5 1980–2014, ERA5 1980–2024, BE 1980–2014, BE 1980–2024
+  - **B** (×3): 4-panel trend differences — ERA5 period diff, BE period diff, ERA5−BE for each period
+  - **C** (×1): global mean annual time series for both datasets (1980–2024)
+  - **D** (×3): ERA5 climatological reference + ERA5 period change + ERA5−BE bias maps
+- Trend: `linear_trend(annual_mean(da)) * 10` for annual; `seasonal_annual_mean` for DJF/JJA
+- Common grid: 1° lat/lon, bilinear via `xr.DataArray.interp` — no nereus needed
+- Berkeley Earth loading: same as `TemperatureBerkeley._load_berkeley_earth()` — renames dims, shifts lons to 0..360, converts degC→K
+- Requires `BERKELEY_EARTH` in `obs_datasets` config (path same as used by `temperature_berkeley`)
+- 62 dedicated tests in `tests/test_obs_comparison.py`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
