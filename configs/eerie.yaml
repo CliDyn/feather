@@ -47,7 +47,9 @@ models:
       o2d: latlon
       o3d: latlon
     color: "#d62728"
-    data_root: "/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    # Mirror directory with symlinks: existing variables from HadGEM3-GC5-EERIE-N640-ORCA12
+    # plus psl symlinked from HadGEM3-GC5E-HH/historical (added 2025-04)
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
     grid_label: "gr1"
     variable_aliases:
       thetao: "thetao-con"
@@ -121,6 +123,10 @@ obs_datasets:
     path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
     variables:
       2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
 
 cmip6:
   enabled: true

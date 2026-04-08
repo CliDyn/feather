@@ -28,6 +28,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import nereus as nr
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from feather.data.variables import get_var
@@ -177,6 +178,104 @@ class AddedValueDiag(DiagnosticBase):
         )
         return saved
 
+    # -- Observation loading ------------------------------------------------
+
+    #: Variables that use alternative obs datasets instead of ERA5.
+    _OBS_ALT_DATASETS: dict[str, str] = {
+        "tas": "BERKELEY_EARTH_HR",
+        "pr": "MSWEP",
+    }
+
+    #: Unit conversion factors applied to both obs and model data so that
+    #: climatologies are in display-friendly units before the AV formula.
+    #: AV is dimensionless so this does not affect the final values, but
+    #: it ensures all inputs are consistent and matches user-facing units.
+    _UNIT_FACTORS: dict[str, float] = {
+        "pr": 86400.0,  # kg/m²/s → mm/day
+    }
+
+    def _load_obs_for_var(
+        self, var: str, period: tuple[str, str],
+    ) -> xr.DataArray:
+        """Load observations for *var*, routing to the best available dataset.
+
+        - ``tas``: Berkeley Earth 0.25° HR (falls back to ERA5 if not in config)
+        - ``pr``:  MSWEP v2.8 (falls back to ERA5 if not in config)
+        - others: ERA5 via standard ``_load_obs_var``
+        """
+        alt = self._OBS_ALT_DATASETS.get(var)
+        if alt == "BERKELEY_EARTH_HR" and alt in self.config.obs_datasets:
+            logger.info("  Using Berkeley Earth HR for %s", var)
+            return self._load_berkeley_earth_for_av(period)
+        if alt == "MSWEP" and "MSWEP" in self.config.obs_datasets:
+            logger.info("  Using MSWEP for %s", var)
+            return self._load_mswep_for_av(period)
+        return self._load_obs_var(var, period)
+
+    def _load_berkeley_earth_for_av(
+        self, period: tuple[str, str],
+    ) -> xr.DataArray:
+        """Load Berkeley Earth 0.25° gridded temperature.
+
+        The file stores monthly anomalies (°C re 1951-1980) plus a separate
+        ``climatology`` array (12 × lat × lon, °C).
+        Absolute temperature = anomaly + climatology[month_of_year].
+        Time is encoded as decimal years; this method converts it to proper
+        datetime coordinates before slicing.
+        Returns a DataArray in Kelvin with dims (time, lat, lon),
+        lons 0..360.
+        """
+        ds_cfg = self.config.obs_datasets["BERKELEY_EARTH_HR"]
+        filepath = Path(ds_cfg["path"]) / ds_cfg["variables"]["temperature"]
+        ds_full = xr.open_dataset(filepath, chunks="auto")
+
+        # Convert decimal-year time → DatetimeIndex
+        dec_years = ds_full["time"].values
+        years = dec_years.astype(int)
+        months = np.round((dec_years - years) * 12).astype(int) + 1
+        months = np.clip(months, 1, 12)
+        datetimes = pd.to_datetime(
+            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        )
+        ds_full = ds_full.assign_coords(time=datetimes)
+
+        start, end = period
+        anom = ds_full["temperature"].sel(time=slice(start, end))
+        clim = ds_full["climatology"]  # (month_number, latitude, longitude)
+
+        month_idx = anom.time.dt.month.values - 1  # 0-based
+        clim_np = clim.values  # (12, nlat, nlon)
+        clim_matched = clim_np[month_idx]
+        abs_temp = anom + xr.DataArray(
+            clim_matched, dims=anom.dims, coords=anom.coords,
+        )
+
+        # Rename dims latitude/longitude → lat/lon
+        rename = {}
+        if "latitude" in abs_temp.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in abs_temp.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            abs_temp = abs_temp.rename(rename)
+
+        # Shift −180..180 → 0..360
+        if float(abs_temp.lon.min()) < 0:
+            abs_temp = abs_temp.assign_coords(
+                lon=((abs_temp.lon + 360) % 360),
+            ).sortby("lon")
+
+        return abs_temp + 273.15  # degC → K
+
+    def _load_mswep_for_av(self, period: tuple[str, str]) -> xr.DataArray:
+        """Load MSWEP v2.8 precipitation for the AV reference.
+
+        Returns a DataArray in mm/day with dims (time, lat, lon).
+        ``ObsLoader.load_mswep()`` delivers kg/m²/s; multiply by 86400.
+        """
+        da = self.obs_loader.load_mswep(period=period)
+        return da * self._UNIT_FACTORS["pr"]
+
     # -- Computation --------------------------------------------------------
 
     def compute(self) -> dict[str, Any]:
@@ -222,7 +321,8 @@ class AddedValueDiag(DiagnosticBase):
 
         # -- Observations ---------------------------------------------------
         logger.info("  Loading observations for %s", var)
-        obs_data = self._load_obs_var(var, self.period)
+        unit_factor = self._UNIT_FACTORS.get(var, 1.0)
+        obs_data = self._load_obs_for_var(var, self.period)
         obs_clim = climatology(obs_data)
         obs_seasonal = seasonal_climatology(obs_data)
 
@@ -262,9 +362,11 @@ class AddedValueDiag(DiagnosticBase):
             grid_type = self.config.get_grid_type(model, self.domain)
 
             model_clim = climatology(model_data, self.period).compute()
+            if unit_factor != 1.0:
+                model_clim = model_clim * unit_factor
             model_seasonal = seasonal_climatology(model_data, self.period)
             model_seasonal = {
-                s: model_seasonal[s].compute()
+                s: model_seasonal[s].compute() * unit_factor
                 for s in model_seasonal.data_vars
             }
 
@@ -389,7 +491,7 @@ class AddedValueDiag(DiagnosticBase):
                 resolution, influence_radius, cmip6_interp_cache,
                 method=self._regrid_method,
             )
-            cmip6_annual_fields.append(regridded)
+            cmip6_annual_fields.append(regridded * unit_factor)
             cmip6_models_used.append(label)
 
             for season in ["DJF", "JJA"]:
@@ -403,7 +505,7 @@ class AddedValueDiag(DiagnosticBase):
                         resolution, influence_radius, cmip6_interp_cache,
                         method=self._regrid_method,
                     )
-                    cmip6_seasonal_fields[season].append(s_r)
+                    cmip6_seasonal_fields[season].append(s_r * unit_factor)
                     cmip6_seasonal_models[season].append(label)
 
         if not cmip6_annual_fields:
@@ -495,6 +597,7 @@ class AddedValueDiag(DiagnosticBase):
                 )
 
         # -- Save NetCDF files ----------------------------------------------
+        obs_dataset_name = self._OBS_ALT_DATASETS.get(var, "ERA5")
         nc_meta = {
             "eerie_models": eerie_models_used,
             "n_eerie_models": len(eerie_models_used),
@@ -505,6 +608,7 @@ class AddedValueDiag(DiagnosticBase):
             "variable": var,
             "long_name": var_info.long_name,
             "units": var_info.units,
+            "obs_dataset": obs_dataset_name,
         }
         for period_key, period_data in av_results.items():
             for etype in ("ensemble_mean", "ensemble_median"):
@@ -840,7 +944,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — EERIE ensemble vs CMIP6 MMM  (green = EERIE better)"
                 ),
-                cmap="RdYlGn",
+                cmap="cmo.tarn",
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
@@ -903,7 +1007,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — Individual Models  (green = model better)"
                 ),
-                cmap="RdYlGn",
+                cmap="cmo.tarn",
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
