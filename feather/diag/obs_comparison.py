@@ -22,7 +22,7 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.plot.maps import _flatten_latlon, plot_combined_map
 from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import (
@@ -405,10 +405,25 @@ class ObsComparisonDiag(DiagnosticBase):
         """Bilinear interpolation of a regular lat/lon field to the common grid.
 
         Handles both 'lat'/'lon' and 'latitude'/'longitude' dim names and
-        renames the output dims to 'lat'/'lon'.
+        renames the output dims to 'lat'/'lon'.  Adds longitude wraparound
+        padding so points near the 0°/360° seam are interpolated correctly
+        (avoids the blank white stripe at the centre of Robinson maps).
         """
         lat_name = "lat" if "lat" in da.dims else "latitude"
         lon_name = "lon" if "lon" in da.dims else "longitude"
+
+        # Wraparound padding: duplicate edge columns with shifted coordinates
+        # so that xr.interp has data on both sides of the 0/360° seam.
+        da_lon_vals = da[lon_name].values
+        if float(da_lon_vals.max()) > 180:  # 0..360 convention
+            n_pad = 10
+            left_pad = da.isel({lon_name: slice(-n_pad, None)}).assign_coords(
+                {lon_name: da_lon_vals[-n_pad:] - 360.0}
+            )
+            right_pad = da.isel({lon_name: slice(None, n_pad)}).assign_coords(
+                {lon_name: da_lon_vals[:n_pad] + 360.0}
+            )
+            da = xr.concat([left_pad, da, right_pad], dim=lon_name)
 
         result = da.interp(
             {lat_name: lats, lon_name: lons},
@@ -458,10 +473,10 @@ class ObsComparisonDiag(DiagnosticBase):
 
             fig, _ = plot_combined_map(
                 data_dict,
-                title=f"tas {period_key} Warming Trend (K/decade)",
+                title=f"tas {period_key} Warming Trend (°C/decade)",
                 cmap="coolwarm",
                 vmin=-vmax, vmax=vmax,
-                units="K/decade",
+                units="°C/decade",
                 max_cols=2,
             )
 
@@ -471,7 +486,7 @@ class ObsComparisonDiag(DiagnosticBase):
                 models=[],
                 variables=["tas"],
                 description=(
-                    f"{period_key} warming trends (K/decade) from ERA5 and "
+                    f"{period_key} warming trends (°C/decade) from ERA5 and "
                     f"Berkeley Earth for {short_lbl} and {long_lbl}."
                 ),
                 plot_type="combined_trend_map",
@@ -504,10 +519,10 @@ class ObsComparisonDiag(DiagnosticBase):
 
             fig, _ = plot_combined_map(
                 data_dict,
-                title=f"tas {period_key} Trend Differences (K/decade)",
+                title=f"tas {period_key} Trend Differences (°C/decade)",
                 cmap="RdBu_r",
                 vmin=-vmax, vmax=vmax,
-                units="K/decade",
+                units="°C/decade",
                 max_cols=2,
             )
 
@@ -517,7 +532,7 @@ class ObsComparisonDiag(DiagnosticBase):
                 models=[],
                 variables=["tas"],
                 description=(
-                    f"{period_key} trend differences (K/decade): period "
+                    f"{period_key} trend differences (°C/decade): period "
                     f"extension effect ({short_lbl} → {long_lbl}) and "
                     f"ERA5 − Berkeley Earth dataset disagreement."
                 ),
@@ -530,11 +545,16 @@ class ObsComparisonDiag(DiagnosticBase):
         return out
 
     def _plot_clim_bias(self, results) -> list[tuple[plt.Figure, dict]]:
-        """Group D: climatological bias maps ERA5 − Berkeley Earth (3 figures).
+        """Group D: climatological maps — 5 panels per season (3 figures).
 
-        Layout: ERA5 clim (short period) as reference + 3 difference
-        panels (ERA5 period change, ERA5-BE short, ERA5-BE long).
+        Layout (row 0): ERA5 clim ref | Berkeley Earth clim ref | ERA5 period diff
+        Layout (row 1): ERA5 − Berkeley Earth (short) | ERA5 − Berkeley Earth (long) | [hidden]
         """
+        import math
+
+        import nereus as nr
+        from nereus.plotting import get_projection
+
         out = []
         clim = results["clim"]
         short_lbl = f"{self.PERIOD_SHORT[0]}–{self.PERIOD_SHORT[1]}"
@@ -543,39 +563,101 @@ class ObsComparisonDiag(DiagnosticBase):
         for period_key, cdata in clim.items():
             pk = period_key.lower()
 
-            # Absolute field range from ERA5 short period
-            field_vals = _finite_concat([cdata["era5_short"]])
+            # Convert absolute fields to °C for display
+            era5_ref_c = cdata["era5_short"] - 273.15
+            be_ref_c = cdata["be_short"] - 273.15
+            era5_period_diff = cdata["era5_long"] - cdata["era5_short"]
+            diff_short = cdata["diff_short"]
+            diff_long = cdata["diff_long"]
+
+            # Shared absolute range from both reference datasets
+            field_vals = _finite_concat([era5_ref_c, be_ref_c])
             f_vmin = float(np.percentile(field_vals, 2))
             f_vmax = float(np.percentile(field_vals, 98))
 
-            # Symmetric bias range across all difference fields
-            diff_vals = _finite_concat([
-                cdata["diff_short"],
-                cdata["diff_long"],
-                cdata["era5_long"] - cdata["era5_short"],
-            ])
-            bias_vmax = float(np.percentile(np.abs(diff_vals), 98)) or 1.0
+            # Fixed bias range as requested
+            bias_vmax = 3.0
 
-            diff_dict = {
-                f"ERA5 clim change\n({short_lbl} → {long_lbl})": (
-                    cdata["era5_long"] - cdata["era5_short"]
-                ),
-                f"ERA5 − Berkeley Earth\n({short_lbl})": cdata["diff_short"],
-                f"ERA5 − Berkeley Earth\n({long_lbl})": cdata["diff_long"],
-            }
+            # 5-panel layout, max 3 columns → 2 rows
+            n_panels = 5
+            max_cols = 3
+            ncols = min(n_panels, max_cols)
+            nrows = math.ceil(n_panels / ncols)
 
-            fig, _ = plot_combined_bias_map(
-                cdata["era5_short"],
-                diff_dict,
-                title=f"tas {period_key} Climatological Mean",
-                obs_title=f"ERA5 {short_lbl}",
-                cmap="RdBu_r",
-                bias_cmap="RdBu_r",
-                vmin=f_vmin, vmax=f_vmax,
-                bias_vmax=bias_vmax,
-                units="K",
-                bias_title_prefix="Difference",
+            proj = get_projection("rob")
+            fig, axes = plt.subplots(
+                nrows, ncols,
+                figsize=(7 * ncols, 5 * nrows),
+                subplot_kw={"projection": proj},
             )
+            axes_flat = np.asarray(axes).ravel().tolist()
+
+            interpolator = None
+
+            # Panel 0: ERA5 reference (°C)
+            vals, lons, lats = _flatten_latlon(era5_ref_c)
+            _, _, interpolator = nr.plot(
+                vals, lons, lats,
+                ax=axes_flat[0], projection="rob", resolution=0.25,
+                interpolator=interpolator, cmap="RdBu_r",
+                vmin=f_vmin, vmax=f_vmax,
+                colorbar=True, colorbar_label="°C",
+                title=f"ERA5 {short_lbl}",
+            )
+
+            # Panel 1: Berkeley Earth reference (°C, reuse interpolator)
+            vals, lons, lats = _flatten_latlon(be_ref_c)
+            _, _, interpolator = nr.plot(
+                vals, lons, lats,
+                ax=axes_flat[1], projection="rob", resolution=0.25,
+                interpolator=interpolator, cmap="RdBu_r",
+                vmin=f_vmin, vmax=f_vmax,
+                colorbar=True, colorbar_label="°C",
+                title=f"Berkeley Earth {short_lbl}",
+            )
+
+            # Panel 2: ERA5 period difference
+            vals, lons, lats = _flatten_latlon(era5_period_diff)
+            _, _, interpolator = nr.plot(
+                vals, lons, lats,
+                ax=axes_flat[2], projection="rob", resolution=0.25,
+                interpolator=interpolator, cmap="RdBu_r",
+                vmin=-bias_vmax, vmax=bias_vmax,
+                colorbar=True, colorbar_label="°C",
+                title=f"Difference: ERA5 periods\n({short_lbl} → {long_lbl})",
+            )
+
+            # Panel 3: ERA5 − Berkeley Earth (short period)
+            vals, lons, lats = _flatten_latlon(diff_short)
+            _, _, interpolator = nr.plot(
+                vals, lons, lats,
+                ax=axes_flat[3], projection="rob", resolution=0.25,
+                interpolator=interpolator, cmap="RdBu_r",
+                vmin=-bias_vmax, vmax=bias_vmax,
+                colorbar=True, colorbar_label="°C",
+                title=f"Difference: ERA5 − Berkeley Earth\n({short_lbl})",
+            )
+
+            # Panel 4: ERA5 − Berkeley Earth (long period)
+            vals, lons, lats = _flatten_latlon(diff_long)
+            _, _, interpolator = nr.plot(
+                vals, lons, lats,
+                ax=axes_flat[4], projection="rob", resolution=0.25,
+                interpolator=interpolator, cmap="RdBu_r",
+                vmin=-bias_vmax, vmax=bias_vmax,
+                colorbar=True, colorbar_label="°C",
+                title=f"Difference: ERA5 − Berkeley Earth\n({long_lbl})",
+            )
+
+            # Hide unused axes
+            for j in range(n_panels, len(axes_flat)):
+                axes_flat[j].set_visible(False)
+
+            fig.suptitle(
+                f"tas {period_key} Climatological Mean (°C)",
+                fontsize=14, fontweight="bold", y=0.98,
+            )
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
 
             meta = self._build_metadata(
                 title=f"tas {period_key} Climatology — ERA5 vs Berkeley Earth",
@@ -583,8 +665,9 @@ class ObsComparisonDiag(DiagnosticBase):
                 models=[],
                 variables=["tas"],
                 description=(
-                    f"{period_key} climatological mean 2m temperature (K): "
-                    f"ERA5 {short_lbl} reference, ERA5 period change, and "
+                    f"{period_key} climatological mean 2m temperature (°C): "
+                    f"ERA5 {short_lbl} and Berkeley Earth {short_lbl} "
+                    f"references, ERA5 period difference, and "
                     f"ERA5 − Berkeley Earth dataset bias for both periods."
                 ),
                 plot_type="combined_bias_map",
@@ -612,18 +695,18 @@ class ObsComparisonDiag(DiagnosticBase):
             )
 
         ax.plot(
-            _year_axis(era5_ts), era5_ts.values,
+            _year_axis(era5_ts), era5_ts.values - 273.15,
             color=OBS_COLOR, linewidth=2.0,
             label=f"ERA5 ({self.PERIOD_LONG[0]}–{self.PERIOD_LONG[1]})",
         )
         ax.plot(
-            _year_axis(be_ts), be_ts.values,
+            _year_axis(be_ts), be_ts.values - 273.15,
             color=_BERKELEY_COLOR, linewidth=2.0, linestyle="--",
             label=f"Berkeley Earth ({self.PERIOD_LONG[0]}–{self.PERIOD_LONG[1]})",
         )
 
         ax.set_xlabel("Year")
-        ax.set_ylabel("Global mean tas (K)")
+        ax.set_ylabel("Global mean tas (°C)")
         ax.set_title(
             "2m Temperature: ERA5 vs Berkeley Earth — Global Mean Annual Series",
         )
@@ -637,7 +720,7 @@ class ObsComparisonDiag(DiagnosticBase):
             models=[],
             variables=["tas"],
             description=(
-                f"Global-mean annual 2m temperature (K) from ERA5 and Berkeley Earth "
+                f"Global-mean annual 2m temperature (°C) from ERA5 and Berkeley Earth "
                 f"({self.PERIOD_LONG[0]}–{self.PERIOD_LONG[1]}). "
                 "Shows long-term warming and inter-dataset agreement."
             ),
