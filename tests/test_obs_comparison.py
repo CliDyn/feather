@@ -74,10 +74,67 @@ def _make_berkeley_degc(lats, lons, ntimes=36, base_temp=14.85,
     )
 
 
+def _make_berkeley_hr_dataset(lats, lons, ntimes=36, base_temp=14.85,
+                               trend_kperdecade=0.18, seed=5):
+    """Synthetic Berkeley Earth 0.25° dataset in anomaly+climatology format.
+
+    Returns an xr.Dataset with:
+      - ``temperature`` : anomaly (°C), time encoded as decimal years
+      - ``climatology`` : base period monthly mean (°C), dim month_number
+    """
+    import pandas as _pd
+    rng = np.random.default_rng(seed)
+    # Build monthly timestamps starting 1980-01
+    dates = _pd.date_range("1980-01-01", periods=ntimes, freq="MS")
+    # Decimal year encoding used by the real file
+    dec_years = np.array([
+        d.year + (d.month - 0.5) / 12.0 for d in dates
+    ])
+
+    lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+    clim_base = base_temp - 40 * np.abs(lat_grid / 90.0)
+
+    # Climatology: 12 months, shape (12, nlat, nlon)
+    clim_data = np.stack([
+        clim_base + 5 * np.sin(2 * np.pi * (m - 3) / 12)
+        for m in range(12)
+    ], axis=0)
+
+    # Anomaly: small trend + noise (absolute = clim + anom)
+    seasonal = 0.0  # already in climatology
+    trend_per_month = trend_kperdecade / (10 * 12)
+    trend = trend_per_month * np.arange(ntimes)
+    anom_data = (
+        trend[:, np.newaxis, np.newaxis]
+        + rng.normal(0, 0.05, (ntimes, len(lats), len(lons)))
+    )
+
+    ds = xr.Dataset(
+        {
+            "temperature": xr.DataArray(
+                anom_data.astype(np.float32),
+                dims=("time", "latitude", "longitude"),
+                coords={"time": dec_years, "latitude": lats, "longitude": lons},
+                attrs={"units": "degree C",
+                       "standard_name": "surface_temperature_anomaly"},
+            ),
+            "climatology": xr.DataArray(
+                clim_data.astype(np.float32),
+                dims=("month_number", "latitude", "longitude"),
+                coords={"latitude": lats, "longitude": lons},
+                attrs={"units": "degree C",
+                       "long_name": "Air Surface Temperature Climatology (Jan 1951 - Dec 1980)"},
+            ),
+        }
+    )
+    return ds
+
+
 # Small test grids (5° resolution for speed)
 _LATS = np.arange(-87.5, 90.0, 5.0)
 _LONS_360 = np.arange(2.5, 360.0, 5.0)       # ERA5 convention (0..360)
 _LONS_180 = np.arange(-177.5, 180.0, 5.0)    # Berkeley Earth (-180..180)
+_LONS_180_SMALL = np.arange(-177.5, 180.0, 5.0)  # same, alias for HR tests
 
 _N_SHORT = 35 * 12   # 35 years → 420 months (1980-2014)
 _N_LONG = 45 * 12    # 45 years → 540 months (1980-2024)
@@ -108,8 +165,19 @@ def be_long_degc():
 
 
 @pytest.fixture
+def be_hr_dataset():
+    """Berkeley Earth 0.25° style dataset (anomaly + climatology, decimal time)."""
+    return _make_berkeley_hr_dataset(_LATS, _LONS_180, ntimes=_N_SHORT, seed=5)
+
+
+@pytest.fixture
+def be_hr_dataset_long():
+    return _make_berkeley_hr_dataset(_LATS, _LONS_180, ntimes=_N_LONG, seed=6)
+
+
+@pytest.fixture
 def obs_config(tmp_path):
-    """Minimal FeatherConfig pointing to tmp_path for obs."""
+    """Minimal FeatherConfig pointing to tmp_path for obs (uses legacy BE)."""
     return FeatherConfig(
         model_catalogs={},
         models=["ifs-fesom"],
@@ -129,8 +197,29 @@ def obs_config(tmp_path):
 
 
 @pytest.fixture
+def obs_config_hr(tmp_path):
+    """FeatherConfig with BERKELEY_EARTH_HR instead of legacy BE."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ifs-fesom"],
+        obs_root=str(tmp_path),
+        obs_datasets={
+            "ERA5": {"path": str(tmp_path / "ERA5"), "variables": {"t2m": "t2m.nc"}},
+            "BERKELEY_EARTH_HR": {
+                "path": str(tmp_path / "BE_HR"),
+                "variables": {"temperature": "be_hr.nc"},
+            },
+        },
+        cmip6={"enabled": False},
+        dask={},
+        output_dir=str(tmp_path / "output"),
+        nereus={"method": "nearest"},
+    )
+
+
+@pytest.fixture
 def mock_obs_loader(era5_short, era5_long, be_short_degc, be_long_degc):
-    """Mock ObsLoader that returns synthetic data for both periods."""
+    """Mock ObsLoader that returns synthetic data for both periods (legacy BE)."""
     loader = MagicMock()
 
     def _load_era5(dataset, variable, period=None):
@@ -231,6 +320,68 @@ class TestLoadBerkeleyEarth:
         assert long_.shape[0] > short.shape[0]
 
 
+class TestLoadBerkeleyEarthHR:
+    """Tests for _load_berkeley_earth_hr (anomaly+climatology, decimal time)."""
+
+    @pytest.fixture
+    def hr_diag(self, obs_config_hr, tmp_path, be_hr_dataset):
+        """Diag configured with BERKELEY_EARTH_HR, writing the synthetic file."""
+        import os
+        hr_path = tmp_path / "BE_HR"
+        hr_path.mkdir(parents=True, exist_ok=True)
+        be_hr_dataset.to_netcdf(hr_path / "be_hr.nc")
+
+        from feather.data.obs import ObsLoader
+        obs_loader = ObsLoader(obs_config_hr)
+
+        mock_model_loader = MagicMock()
+        return ObsComparisonDiag(
+            model_loader=mock_model_loader,
+            obs_loader=obs_loader,
+            config=obs_config_hr,
+        )
+
+    def test_dispatches_to_hr_when_configured(self, hr_diag):
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        assert isinstance(result, xr.DataArray)
+
+    def test_renames_dims(self, hr_diag):
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        assert "lat" in result.dims
+        assert "lon" in result.dims
+        assert "latitude" not in result.dims
+        assert "longitude" not in result.dims
+
+    def test_lons_shifted_to_0_360(self, hr_diag):
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        assert float(result.lon.min()) >= 0.0
+        assert float(result.lon.max()) <= 360.0
+
+    def test_converts_to_kelvin(self, hr_diag):
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        # Absolute temperature should be in Kelvin (> 200 K)
+        assert float(result.mean()) > 200.0
+
+    def test_absolute_temperature_reconstruction(self, hr_diag, be_hr_dataset):
+        """Absolute T = anomaly + climatology: result should be in Kelvin range."""
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        # Pole-weighted global mean of synthetic data; must be substantially > 0°C
+        assert float(result.mean()) > 250.0
+
+    def test_time_dimension_is_datetime(self, hr_diag):
+        result = hr_diag._load_berkeley_earth(("1980", "2014"))
+        assert "time" in result.dims
+        # After conversion, time should be pandas/numpy datetime, not float
+        assert not np.issubdtype(result.time.dtype, np.floating)
+
+    def test_legacy_fallback_when_no_hr(self, diag):
+        """When only BERKELEY_EARTH is in config, legacy loader is used."""
+        result = diag._load_berkeley_earth(("1980", "2014"))
+        assert isinstance(result, xr.DataArray)
+        # Legacy returns data (degC+273.15, so > 200 K)
+        assert float(result.mean()) > 200.0
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # C. Grid helpers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -239,18 +390,23 @@ class TestLoadBerkeleyEarth:
 class TestCommonGrid:
     def test_shape(self):
         lats, lons = ObsComparisonDiag._common_grid()
-        assert len(lats) == 180
-        assert len(lons) == 360
+        assert len(lats) == 720   # 0.25° resolution: 180 / 0.25
+        assert len(lons) == 1440  # 0.25° resolution: 360 / 0.25
 
     def test_lat_range(self):
         lats, _ = ObsComparisonDiag._common_grid()
-        assert abs(float(lats[0]) - (-89.5)) < 0.01
-        assert abs(float(lats[-1]) - 89.5) < 0.01
+        assert abs(float(lats[0]) - (-89.875)) < 0.01
+        assert abs(float(lats[-1]) - 89.875) < 0.01
 
     def test_lon_range(self):
         _, lons = ObsComparisonDiag._common_grid()
-        assert abs(float(lons[0]) - 0.5) < 0.01
-        assert abs(float(lons[-1]) - 359.5) < 0.01
+        assert abs(float(lons[0]) - 0.125) < 0.01
+        assert abs(float(lons[-1]) - 359.875) < 0.01
+
+    def test_step_is_quarter_degree(self):
+        lats, lons = ObsComparisonDiag._common_grid()
+        np.testing.assert_allclose(np.diff(lats[:4]), 0.25, atol=1e-6)
+        np.testing.assert_allclose(np.diff(lons[:4]), 0.25, atol=1e-6)
 
 
 class TestInterpToCommon:

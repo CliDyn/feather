@@ -17,6 +17,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from feather.diag.base import DiagnosticBase
@@ -55,7 +56,7 @@ class ObsComparisonDiag(DiagnosticBase):
     """
 
     name = "obs_comparison"
-    title = "Observational Dataset Comparison (ERA5 vs Berkeley Earth)"
+    title = "Observational Dataset Comparison (ERA5 vs Berkeley Earth 0.25°)"
     domain = "sfc"
     variables = ["tas"]
     group = "evaluation"
@@ -296,11 +297,77 @@ class ObsComparisonDiag(DiagnosticBase):
         return self._load_obs_var("tas", period)
 
     def _load_berkeley_earth(self, period: tuple[str, str]) -> xr.DataArray:
-        """Load Berkeley Earth Land+Ocean 2m temperature.
+        """Load Berkeley Earth 2m temperature.
 
-        Renames dims (latitude→lat, longitude→lon), shifts lons to
-        0..360, and converts degC → K (+273.15).
+        Prefers the high-resolution 0.25° dataset (``BERKELEY_EARTH_HR``)
+        when it is present in the config, falling back to the legacy 1°
+        dataset (``BERKELEY_EARTH``) otherwise.
         """
+        if "BERKELEY_EARTH_HR" in self.config.obs_datasets:
+            return self._load_berkeley_earth_hr(period)
+        return self._load_berkeley_earth_legacy(period)
+
+    def _load_berkeley_earth_hr(self, period: tuple[str, str]) -> xr.DataArray:
+        """Load Berkeley Earth 0.25° gridded dataset.
+
+        The file stores monthly *anomalies* (°C, re: 1951-1980 climatology)
+        and a separate ``climatology`` array (12 × lat × lon, °C).
+        Absolute temperature = anomaly + climatology[month_of_year].
+
+        Time is encoded as decimal years (float); this method converts it to
+        a proper ``pandas.DatetimeIndex`` before slicing.
+        """
+        # Open as dataset to access both 'temperature' and 'climatology' variables
+        ds_cfg = self.config.obs_datasets["BERKELEY_EARTH_HR"]
+        filepath = Path(ds_cfg["path"]) / ds_cfg["variables"]["temperature"]
+        ds_full = xr.open_dataset(filepath, chunks="auto")
+
+        # Convert decimal-year time → DatetimeIndex
+        dec_years = ds_full["time"].values  # e.g. 1850.042, 1850.125, ...
+        years = dec_years.astype(int)
+        # Month derived from fractional part: 12 evenly-spaced values per year
+        months = np.round((dec_years - years) * 12).astype(int) + 1
+        months = np.clip(months, 1, 12)
+        datetimes = pd.to_datetime(
+            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        )
+        ds_full = ds_full.assign_coords(time=datetimes)
+
+        # Slice to requested period
+        start, end = period
+        anom = ds_full["temperature"].sel(time=slice(start, end))
+        clim = ds_full["climatology"]  # (month_number, latitude, longitude)
+
+        # Reconstruct absolute temperature: anomaly + climatology[month_of_year]
+        month_idx = anom.time.dt.month.values - 1  # 0-based index
+        clim_np = clim.values  # (12, nlat, nlon)
+        clim_matched = clim_np[month_idx]  # (ntime, nlat, nlon)
+        abs_temp = anom + xr.DataArray(
+            clim_matched,
+            dims=anom.dims,
+            coords=anom.coords,
+        )
+
+        # Rename dims latitude/longitude → lat/lon
+        rename = {}
+        if "latitude" in abs_temp.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in abs_temp.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            abs_temp = abs_temp.rename(rename)
+
+        # Shift −180..180 → 0..360
+        if float(abs_temp.lon.min()) < 0:
+            abs_temp = abs_temp.assign_coords(
+                lon=((abs_temp.lon + 360) % 360),
+            ).sortby("lon")
+
+        # degC → K
+        return abs_temp + 273.15
+
+    def _load_berkeley_earth_legacy(self, period: tuple[str, str]) -> xr.DataArray:
+        """Load legacy Berkeley Earth 1° Land+Ocean file (absolute °C → K)."""
         da = self.obs_loader.load("BERKELEY_EARTH", "2t", period=period)
 
         rename = {}
@@ -311,22 +378,22 @@ class ObsComparisonDiag(DiagnosticBase):
         if rename:
             da = da.rename(rename)
 
-        # Shift −180..180 → 0..360
         if float(da.lon.min()) < 0:
             da = da.assign_coords(
                 lon=((da.lon + 360) % 360),
             ).sortby("lon")
 
-        # degC → K
-        da = da + 273.15
-
-        return da
+        return da + 273.15
 
     @staticmethod
     def _common_grid() -> tuple[np.ndarray, np.ndarray]:
-        """1° common grid: lats −89.5..89.5, lons 0.5..359.5."""
-        lats = np.arange(-89.5, 90.0, 1.0)
-        lons = np.arange(0.5, 360.0, 1.0)
+        """0.25° common grid: lats −89.875..89.875, lons 0.125..359.875.
+
+        Matches the native resolution of ERA5 and Berkeley Earth 0.25°,
+        so both datasets are interpolated without loss of spatial detail.
+        """
+        lats = np.arange(-89.875, 90.0, 0.25)
+        lons = np.arange(0.125, 360.0, 0.25)
         return lats, lons
 
     @staticmethod

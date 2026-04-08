@@ -3,7 +3,7 @@ project:
   description: "Observational dataset comparison: ERA5 vs Berkeley Earth"
   experiment: "obs-only"
   period: ["1980", "2024"]
-  resolution: "ERA5 (0.25°) and Berkeley Earth (1°)"
+  resolution: "ERA5 (0.25°) and Berkeley Earth (0.25°)"
   comparison_type: "single_model"
   comparison_description: >
     Obs-only evaluation comparing ERA5 reanalysis against Berkeley Earth
@@ -44,6 +44,10 @@ obs_datasets:
     path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
     variables:
       2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
 
 cmip6:
   enabled: false
@@ -79,7 +83,7 @@ report:
 
 website:
   title: "Feather — Observational Comparison"
-  subtitle: "ERA5 vs Berkeley Earth (1980–2014 and 1980–2024)"
+  subtitle: "ERA5 vs Berkeley Earth 0.25° (1980–2014 and 1980–2024)"
   group_order:
     - evaluation
     - temperature
