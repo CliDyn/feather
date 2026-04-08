@@ -5,7 +5,7 @@ Core infrastructure:
 - :mod:`~feather.diag.base` — :class:`DiagnosticBase` abstract base class
 - :mod:`~feather.diag.registry` — ``@register`` decorator and discovery
 
-Diagnostics (13 registered):
+Diagnostics (15 registered):
 - :mod:`~feather.diag.global_biases` — climatology bias maps (18 variables)
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
