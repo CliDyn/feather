@@ -48,6 +48,10 @@ obs_datasets:
     path: "/work/bm1344/AWI/OBS/berkeleyearth"
     variables:
       temperature: "Global_TAVG_Gridded_0p25deg.nc"
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
 
 cmip6:
   enabled: false
@@ -83,10 +87,12 @@ report:
 
 website:
   title: "Feather — Observational Comparison"
-  subtitle: "ERA5 vs Berkeley Earth 0.25° (1980–2014 and 1980–2024)"
+  subtitle: "ERA5 vs Berkeley Earth 0.25° and ERA5 vs MSWEP 0.1°"
   group_order:
     - evaluation
     - temperature
+    - precipitation
   group_labels:
     evaluation: "Obs Comparison"
     temperature: "Temperature"
+    precipitation: "Precipitation"
