@@ -19,6 +19,7 @@ Diagnostics (13 registered):
 - :mod:`~feather.diag.temperature_berkeley` — temperature evaluation vs Berkeley Earth
 - :mod:`~feather.diag.teleconnections` — climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
 - :mod:`~feather.diag.obs_comparison` — ERA5 vs Berkeley Earth trends and biases
+- :mod:`~feather.diag.precip_obs_comparison` — ERA5 vs MSWEP precipitation trends and biases
 """
 
 from feather.diag.base import DiagnosticBase
@@ -39,4 +40,5 @@ import feather.diag.precipitation_mswep  # noqa: F401
 import feather.diag.temperature_berkeley  # noqa: F401
 import feather.diag.teleconnections  # noqa: F401
 import feather.diag.obs_comparison  # noqa: F401
+import feather.diag.precip_obs_comparison  # noqa: F401
 
