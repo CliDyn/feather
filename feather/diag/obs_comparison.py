@@ -133,7 +133,7 @@ class ObsComparisonDiag(DiagnosticBase):
         be_short = self._load_berkeley_earth(self.PERIOD_SHORT)
         be_long = self._load_berkeley_earth(self.PERIOD_LONG)
 
-        logger.info("Regridding to common 1° grid...")
+        logger.info("Regridding to common 0.25° grid...")
         common_lats, common_lons = self._common_grid()
         era5_s = self._interp_to_common(era5_short, common_lats, common_lons)
         era5_l = self._interp_to_common(era5_long, common_lats, common_lons)
