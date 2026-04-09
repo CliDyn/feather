@@ -1,9 +1,10 @@
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP hist-1950 high-resolution model evaluation"
+  description: "EERIE HighResMIP hist-1950 evaluation — IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (no HadGEM3)"
   experiment: "hist-1950"
   period: ["1980", "2014"]
   resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
 
 data_source:
   type: "cmor"
@@ -38,27 +39,6 @@ models:
       o2d: latlon
       o3d: latlon
     color: "#2ca02c"
-  HadGEM3-GC5:
-    institution: MOHC
-    experiment: eerie-historical
-    variant: r1i1p1f1
-    grids:
-      sfc: latlon
-      o2d: latlon
-      o3d: latlon
-    color: "#d62728"
-    # Mirror directory with symlinks: existing variables from HadGEM3-GC5-EERIE-N640-ORCA12
-    # plus psl symlinked from HadGEM3-GC5E-HH/historical (added 2025-04)
-    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
-    grid_label: "gr1"
-    variable_aliases:
-      thetao: "thetao-con"
-      so: "so-abs"
-      tos: "toscon"
-      sos: "sosabs"
-    scale_factors:
-      clt: 100
-    absolute_salinity: true
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:
@@ -171,7 +151,7 @@ nereus:
   ocean_influence_radius: 20000
   method: "linear"
 
-output_dir: "./output_eerie"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_3models"
 
 llm:
   figure_analysis:
@@ -191,7 +171,7 @@ report:
   n_highlights: 10
 
 website:
-  title: "Feather — EERIE Model Evaluation"
+  title: "Feather — EERIE 3-Model Evaluation"
   subtitle: "EERIE HighResMIP hist-1950 Simulations vs Observations (1980-2014)"
   group_order:
     - evaluation

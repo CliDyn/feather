@@ -42,3 +42,4 @@ import feather.diag.teleconnections  # noqa: F401
 import feather.diag.obs_comparison  # noqa: F401
 import feather.diag.precip_obs_comparison  # noqa: F401
 
+import feather.diag.added_value  # noqa: F401

@@ -146,7 +146,7 @@ print(result)
 
 ## Available diagnostics
 
-Feather provides 12 registered diagnostics across atmosphere, ocean, cryosphere, and cross-domain evaluation:
+Feather provides 14 registered diagnostics across atmosphere, ocean, cryosphere, cross-domain evaluation, and model intercomparison:
 
 ### Atmosphere
 
@@ -179,6 +179,14 @@ Feather provides 12 registered diagnostics across atmosphere, ocean, cryosphere,
 | `precipitation_mswep` | `PrecipitationMSWEP` | MSWEP v2.8 | Precipitation bias maps (absolute + relative), time series, seasonal cycle, zonal mean, intensity PDF |
 | `temperature_berkeley` | `TemperatureBerkeley` | Berkeley Earth | T2m bias maps, warming trend maps (global + polar), Taylor diagram |
 | `teleconnections` | `TeleconnectionDiag` | ERA5 | Climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO): index time series, spatial patterns, power spectra, seasonal variance |
+
+### Model intercomparison
+
+| Diagnostic | Class | Observation | What it produces |
+|---|---|---|---|
+| `added_value` | `AddedValueDiag` | ERA5 | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6 MMM — ensemble summary maps + per-model panels |
+
+**Added Value** (AV) quantifies where the EERIE ensemble outperforms the CMIP6 multi-model mean relative to ERA5. AV ∈ [-1, 1]: AV > 0 means EERIE reduces squared error vs CMIP6 MMM at that grid point. Two figures per period (annual, DJF, JJA): ensemble mean/median summary and one panel per individual EERIE and CMIP6 model.
 
 All diagnostics support:
 - `variables=["tas", ...]` — filter which variables to evaluate (CMOR canonical names)
@@ -390,6 +398,7 @@ feather/
     precipitation_mswep.py # Precipitation evaluation (MSWEP v2.8)
     temperature_berkeley.py # T2m evaluation (Berkeley Earth)
     teleconnections.py    # Variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
+    added_value.py        # Added Value: EERIE ensemble vs CMIP6 MMM (Dosio et al. 2015)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini, comparison-type aware)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
@@ -454,7 +463,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1372 tests (1367 unit + 5 integration) across 30 test files.
+1396 tests (1391 unit + 5 integration) across 31 test files.
 
 ## Requirements
 
