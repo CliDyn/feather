@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import cmocean
 import matplotlib.pyplot as plt
 import nereus as nr
 import numpy as np
@@ -39,6 +40,8 @@ from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import climatology, seasonal_climatology
 
 logger = logging.getLogger(__name__)
+
+_AV_CMAP = cmocean.tools.crop_by_percent(cmocean.cm.tarn, 50, which="both", N=None)
 
 
 @register
@@ -944,7 +947,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — EERIE ensemble vs CMIP6 MMM  (green = EERIE better)"
                 ),
-                cmap="cmo.diff",
+                cmap=_AV_CMAP,
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
@@ -1007,7 +1010,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — Individual Models  (green = model better)"
                 ),
-                cmap="cmo.diff",
+                cmap=_AV_CMAP,
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
