@@ -5,7 +5,7 @@ Core infrastructure:
 - :mod:`~feather.diag.base` — :class:`DiagnosticBase` abstract base class
 - :mod:`~feather.diag.registry` — ``@register`` decorator and discovery
 
-Diagnostics (13 registered):
+Diagnostics (15 registered):
 - :mod:`~feather.diag.global_biases` — climatology bias maps (18 variables)
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
@@ -18,7 +18,8 @@ Diagnostics (13 registered):
 - :mod:`~feather.diag.precipitation_mswep` — precipitation evaluation vs MSWEP v2.8
 - :mod:`~feather.diag.temperature_berkeley` — temperature evaluation vs Berkeley Earth
 - :mod:`~feather.diag.teleconnections` — climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
-- :mod:`~feather.diag.added_value` — Added Value of EERIE vs CMIP6 MMM (Dosio et al. 2015)
+- :mod:`~feather.diag.obs_comparison` — ERA5 vs Berkeley Earth trends and biases
+- :mod:`~feather.diag.precip_obs_comparison` — ERA5 vs MSWEP precipitation trends and biases
 """
 
 from feather.diag.base import DiagnosticBase
@@ -38,4 +39,7 @@ import feather.diag.climate_variability  # noqa: F401
 import feather.diag.precipitation_mswep  # noqa: F401
 import feather.diag.temperature_berkeley  # noqa: F401
 import feather.diag.teleconnections  # noqa: F401
+import feather.diag.obs_comparison  # noqa: F401
+import feather.diag.precip_obs_comparison  # noqa: F401
+
 import feather.diag.added_value  # noqa: F401
