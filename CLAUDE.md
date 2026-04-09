@@ -564,7 +564,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - 18 surface variables (same list as GlobalBiases); 3 periods per variable: annual, DJF, JJA
 - **Figure 1** (`{var}_{period}_added_value`): 2-panel — AV of EERIE ensemble mean + ensemble median
 - **Figure 2** (`{var}_{period}_added_value_models`): one panel per EERIE model (vs CMIP6 MMM) + one per CMIP6 model (vs EERIE mean)
-- **Colormap**: `cmo.tarn` (AV > 0 = teal/green = EERIE adds value; AV < 0 = brown = CMIP6 better)
+- **Colormap**: `cmo.diff` (AV > 0 = blue = EERIE adds value; AV < 0 = red = CMIP6 better)
 - **Alternative obs datasets**: `tas` uses Berkeley Earth 0.25° HR (`BERKELEY_EARTH_HR` in config) instead of ERA5; `pr` uses MSWEP v2.8 (`MSWEP` in config); all other variables use ERA5. Falls back to ERA5 if the preferred dataset is not in config.
 - **`pr` units**: mm/day — MSWEP (kg/m²/s) and all model `pr` fields multiplied by 86400 before AV computation. AV is dimensionless so values are unaffected; units are consistent.
 - `_OBS_ALT_DATASETS` class dict maps variable → preferred obs dataset name

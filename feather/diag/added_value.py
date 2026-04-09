@@ -944,7 +944,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — EERIE ensemble vs CMIP6 MMM  (green = EERIE better)"
                 ),
-                cmap="cmo.tarn",
+                cmap="cmo.diff",
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
@@ -1007,7 +1007,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Added Value"
                     f" — Individual Models  (green = model better)"
                 ),
-                cmap="cmo.tarn",
+                cmap="cmo.diff",
                 vmin=-1.0, vmax=1.0,
                 units="AV [ ]",
                 method=self._regrid_method,
