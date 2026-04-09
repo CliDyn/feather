@@ -519,6 +519,27 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **Pattern display**: all patterns (obs, model, CMIP6) regridded to common 1° grid via `_regrid_patterns_to_common()`. Rectilinear uses `xr.DataArray.interp()`, curvilinear uses `nr.regrid()` with explicit lon/lat arrays. All panels rendered with `method="linear"` in `nr.plot()` for smooth display.
 - 87 dedicated tests across `tests/test_eof.py` (13), `tests/test_spectrum.py` (9), `tests/test_teleconnections.py` (65)
 
+### AddedValueDiag diagnostic
+- 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM
+- AV = (sq_err_CMIP6 - sq_err_EERIE) / max(sq_err_CMIP6, sq_err_EERIE), bounded [-1, 1]
+- AV > 0: EERIE reduces squared error vs obs compared to CMIP6 MMM (EERIE adds value)
+- 18 surface variables (same list as GlobalBiases); 3 periods per variable: annual, DJF, JJA
+- **Figure 1** (`{var}_{period}_added_value`): 2-panel — AV of EERIE ensemble mean + ensemble median
+- **Figure 2** (`{var}_{period}_added_value_models`): one panel per EERIE model (vs CMIP6 MMM) + one per CMIP6 model (vs EERIE mean)
+- **Colormap**: `cmo.tarn` (AV > 0 = teal/green = EERIE adds value; AV < 0 = brown = CMIP6 better)
+- **Alternative obs datasets**: `tas` uses Berkeley Earth 0.25° HR (`BERKELEY_EARTH_HR` in config) instead of ERA5; `pr` uses MSWEP v2.8 (`MSWEP` in config); all other variables use ERA5. Falls back to ERA5 if the preferred dataset is not in config.
+- **`pr` units**: mm/day — MSWEP (kg/m²/s) and all model `pr` fields multiplied by 86400 before AV computation. AV is dimensionless so values are unaffected; units are consistent.
+- `_OBS_ALT_DATASETS` class dict maps variable → preferred obs dataset name
+- `_UNIT_FACTORS` class dict maps variable → unit conversion factor (pr: 86400.0)
+- `_load_obs_for_var()`: dispatches to `_load_berkeley_earth_for_av()`, `_load_mswep_for_av()`, or `_load_obs_var()`
+- `_load_berkeley_earth_for_av()`: decimal-year time → datetime, anomaly + climatology reconstruction, degC→K (same logic as ObsComparisonDiag)
+- NC checkpoint: 2 etypes × 3 periods = 6 files per variable (`{var}_{period}_{etype}_av.nc`)
+- NC path only reconstructs Figure 1; Figure 2 requires full recomputation (per-model data not persisted)
+- EERIE models regridded with per-grid interpolator cache (same pattern as GlobalBiases)
+- CMIP6 models regridded via `_regrid_to_target()` with 250 km floor on influence_radius
+- `_compute_av(m1, m2, ref)`: static, handles denom=0 via `np.errstate` + `np.where`
+- 24 dedicated tests in `tests/test_added_value.py`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
