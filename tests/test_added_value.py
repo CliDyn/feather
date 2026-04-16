@@ -400,3 +400,171 @@ class TestAddedValueRun:
         saved = diag.run(skip_existing=True)
         assert not compute_called[0]  # loaded from NC, not recomputed
         assert len(saved) >= 1
+
+
+# ── Unit tests for _frac_categories ──────────────────────────────────
+
+
+class TestFracCategories:
+    def test_all_improvement(self):
+        av = _make_latlon(0.5)
+        cats = AddedValueDiag._frac_categories(av)
+        assert cats["pct_improvement"] == pytest.approx(100.0)
+        assert cats["pct_neutral"] == pytest.approx(0.0)
+        assert cats["pct_deterioration"] == pytest.approx(0.0)
+
+    def test_all_deterioration(self):
+        av = _make_latlon(-0.5)
+        cats = AddedValueDiag._frac_categories(av)
+        assert cats["pct_improvement"] == pytest.approx(0.0)
+        assert cats["pct_deterioration"] == pytest.approx(100.0)
+        assert cats["pct_neutral"] == pytest.approx(0.0)
+
+    def test_all_neutral(self):
+        av = _make_latlon(0.0)  # exactly 0 → neutral (|AV| ≤ threshold)
+        cats = AddedValueDiag._frac_categories(av)
+        assert cats["pct_neutral"] == pytest.approx(100.0)
+        assert cats["pct_improvement"] == pytest.approx(0.0)
+        assert cats["pct_deterioration"] == pytest.approx(0.0)
+
+    def test_percentages_sum_to_100(self):
+        rng = np.random.default_rng(7)
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        data = rng.uniform(-1, 1, (len(lats), len(lons)))
+        av = xr.DataArray(data, dims=("lat", "lon"),
+                          coords={"lat": lats, "lon": lons})
+        cats = AddedValueDiag._frac_categories(av)
+        total = cats["pct_improvement"] + cats["pct_neutral"] + cats["pct_deterioration"]
+        assert total == pytest.approx(100.0, abs=1e-10)
+
+    def test_custom_threshold(self):
+        lats = np.array([-2.5, 2.5])
+        lons = np.array([2.5, 7.5])
+        data = np.array([[0.5, -0.5], [0.005, -0.005]])
+        av = xr.DataArray(data, dims=("lat", "lon"),
+                          coords={"lat": lats, "lon": lons})
+        cats_001 = AddedValueDiag._frac_categories(av, threshold=0.001)
+        cats_01 = AddedValueDiag._frac_categories(av, threshold=0.01)
+        # With tighter threshold 0.001: ±0.005 counts as improvement/deterioration
+        assert cats_001["pct_neutral"] < cats_01["pct_neutral"]
+
+    def test_nan_field(self):
+        lats = np.array([-2.5, 2.5])
+        lons = np.array([2.5])
+        data = np.full((2, 1), np.nan)
+        av = xr.DataArray(data, dims=("lat", "lon"),
+                          coords={"lat": lats, "lon": lons})
+        cats = AddedValueDiag._frac_categories(av)
+        assert np.isnan(cats["pct_improvement"])
+        assert np.isnan(cats["pct_neutral"])
+        assert np.isnan(cats["pct_deterioration"])
+
+
+# ── Multi-obs statistics tests ────────────────────────────────────────
+
+
+class TestMultiObsStats:
+    """Tests for per-obs improvement/neutral/deterioration statistics.
+
+    Uses ``tas`` throughout because MockCMIP6Loader has synthetic data for it.
+    The eerie_config has an empty obs_datasets dict, so BERKELEY_EARTH_HR is
+    not available and only ERA5 is queried — perfect for testing the single-obs
+    path without mocking additional loaders.
+    """
+
+    @pytest.fixture
+    def diag_multi(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        cmip6_loader = MockCMIP6Loader(synth_cmip6)
+        obs_loader = MockObsLoaderLatlon(synth_obs)
+        model_loader = MockCMORLoader(synth_obs)
+        return AddedValueDiag(
+            model_loader, obs_loader, eerie_config,
+            cmip6_loader=cmip6_loader,
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_obs_stats_in_compute_result(self, diag_multi):
+        results = diag_multi.compute()
+        assert "tas" in results
+        assert "obs_stats" in results["tas"]
+        # ERA5 always present; BERKELEY_EARTH_HR absent (not in config)
+        assert "ERA5" in results["tas"]["obs_stats"]
+
+    def test_obs_stats_has_annual_period(self, diag_multi):
+        results = diag_multi.compute()
+        era5_stats = results["tas"]["obs_stats"]["ERA5"]
+        assert "annual" in era5_stats
+
+    def test_obs_stats_category_keys(self, diag_multi):
+        results = diag_multi.compute()
+        annual = results["tas"]["obs_stats"]["ERA5"]["annual"]
+        for etype in ("eerie_mean", "eerie_median", "cmip6_mean"):
+            assert etype in annual, f"missing key: {etype}"
+            cats = annual[etype]
+            assert "pct_improvement" in cats
+            assert "pct_neutral" in cats
+            assert "pct_deterioration" in cats
+
+    def test_obs_stats_percentages_sum_to_100(self, diag_multi):
+        results = diag_multi.compute()
+        annual = results["tas"]["obs_stats"]["ERA5"]["annual"]
+        for etype in ("eerie_mean", "eerie_median", "cmip6_mean"):
+            cats = annual[etype]
+            total = (
+                cats["pct_improvement"]
+                + cats["pct_neutral"]
+                + cats["pct_deterioration"]
+            )
+            assert total == pytest.approx(100.0, abs=1e-9), (
+                f"{etype}: categories don't sum to 100 ({total})"
+            )
+
+    def test_obs_stats_json_saved(self, diag_multi):
+        import json as _json
+        diag_multi.compute()
+        json_path = diag_multi._obs_stats_path("tas")
+        assert json_path.exists(), f"Expected {json_path} to exist"
+        with open(json_path) as fh:
+            data = _json.load(fh)
+        assert data["variable"] == "tas"
+        assert "periods" in data
+        assert "threshold" in data
+        assert data["threshold"] == pytest.approx(0.001)
+        assert "ERA5" in data["periods"]["annual"]
+
+    def test_obs_stats_in_figure_metadata(self, diag_multi):
+        results = diag_multi.compute()
+        figures = diag_multi.plot(results)
+        # Ensemble figures (not _models) should carry per_obs_stats
+        ensemble_figs = [
+            meta for _, meta in figures
+            if not meta["figure_id"].endswith("_models")
+        ]
+        assert ensemble_figs, "expected at least one ensemble figure"
+        meta = ensemble_figs[0]
+        assert "summary_statistics" in meta
+        assert "per_obs_stats" in meta["summary_statistics"], (
+            "per_obs_stats not found in summary_statistics"
+        )
+        per_obs = meta["summary_statistics"]["per_obs_stats"]
+        assert "ERA5" in per_obs
+
+    def test_no_alternative_obs_in_empty_config(self, synth_obs, synth_cmip6, eerie_config):
+        """BERKELEY_EARTH_HR is filtered out when not in config.obs_datasets."""
+        from tests.conftest import MockCMIP6Loader
+        diag = AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+        results = diag.compute()
+        obs_stats = results["tas"]["obs_stats"]
+        # Only ERA5; BERKELEY_EARTH_HR not in config → filtered
+        assert "ERA5" in obs_stats
+        assert "BERKELEY_EARTH_HR" not in obs_stats
