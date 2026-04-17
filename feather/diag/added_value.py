@@ -21,10 +21,12 @@ with COSMO-CLM: evaluation over the present climate and analysis of the
 added value. Climate Dynamics, 44(9-10), 2637-2661.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
+import cmocean
 import matplotlib.pyplot as plt
 import nereus as nr
 import numpy as np
@@ -39,6 +41,14 @@ from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import climatology, seasonal_climatology
 
 logger = logging.getLogger(__name__)
+
+_AV_CMAP = cmocean.tools.crop_by_percent(cmocean.cm.tarn, 50, which="both", N=None)
+
+_OBS_DISPLAY_NAMES: dict[str, str] = {
+    "ERA5": "ERA5",
+    "BERKELEY_EARTH_HR": "Berkeley Earth HR",
+    "MSWEP": "MSWEP v2.8",
+}
 
 
 @register
@@ -117,12 +127,23 @@ class AddedValueDiag(DiagnosticBase):
         return True
 
     def _all_figures_exist(self, var: str) -> bool:
-        """True when all figures for both ensemble and per-model plots exist."""
+        """True when all figures for primary-obs ensemble and per-model plots exist."""
+        primary_obs = self._OBS_ALT_DATASETS.get(var, "ERA5")
+        secondary_obs = [
+            d for d in self._MULTI_OBS_DATASETS.get(var, [])
+            if d != primary_obs
+        ]
         for p in ("annual", "djf", "jja"):
             if not self._figure_exists(f"{var}_{p}_added_value"):
                 return False
             if not self._figure_exists(f"{var}_{p}_added_value_models"):
                 return False
+            for sec_obs in secondary_obs:
+                suffix = self._OBS_FIGURE_SUFFIX.get(sec_obs, sec_obs.lower())
+                if not self._figure_exists(f"{var}_{p}_added_value_{suffix}"):
+                    return False
+                if not self._figure_exists(f"{var}_{p}_added_value_models_{suffix}"):
+                    return False
         return True
 
     # -- Orchestration -------------------------------------------------------
@@ -134,10 +155,14 @@ class AddedValueDiag(DiagnosticBase):
         variable already exist, computation is skipped and figures are
         regenerated directly from the saved NetCDF (or also skipped if
         figures are present too).
+
+        After the per-variable loop, summary bar chart figures are generated
+        (one set per temporal period: annual, DJF, JJA).
         """
         logger.info("Running diagnostic: %s", self.name)
         self.nc_dir.mkdir(parents=True, exist_ok=True)
         saved: list[tuple[Path, Path]] = []
+        all_obs_stats: dict[str, dict] = {}  # {var: obs_stats}
 
         for var in self.variables:
             if skip_existing and self._all_figures_exist(var):
@@ -149,6 +174,20 @@ class AddedValueDiag(DiagnosticBase):
                             self.output_dir / f"{fid}.png",
                             self.output_dir / f"{fid}.json",
                         ))
+                # Still load obs_stats for bar charts
+                json_path = self._obs_stats_path(var)
+                if json_path.exists():
+                    try:
+                        with open(json_path) as fh:
+                            jd = json.load(fh)
+                        var_stats: dict[str, dict] = {}
+                        for pk, pd in jd.get("periods", {}).items():
+                            for on, od in pd.items():
+                                var_stats.setdefault(on, {})[pk] = od
+                        if var_stats:
+                            all_obs_stats[var] = var_stats
+                    except Exception:
+                        pass
                 continue
 
             try:
@@ -163,6 +202,9 @@ class AddedValueDiag(DiagnosticBase):
                 if var_result is None:
                     continue
 
+                if var_result.get("obs_stats"):
+                    all_obs_stats[var] = var_result["obs_stats"]
+
                 figures = self._plot_variable(var, var_result)
                 for fig, meta in figures:
                     paths = self._save(fig, meta, meta["figure_id"])
@@ -172,6 +214,29 @@ class AddedValueDiag(DiagnosticBase):
                 logger.warning(
                     "Variable %s failed — skipping", var, exc_info=True,
                 )
+
+        # ── Summary bar charts (cross-variable, one per period) ─────────────
+        if all_obs_stats:
+            for period_key in ("annual", "djf", "jja"):
+                for bar_fn, fn_name in (
+                    (self._plot_summary_bars_ensemble, "ensemble"),
+                    (self._plot_summary_bars_models,   "models"),
+                ):
+                    bar_id = f"added_value_bars_{fn_name}_{period_key}"
+                    if skip_existing and self._figure_exists(bar_id):
+                        saved.append((
+                            self.output_dir / f"{bar_id}.png",
+                            self.output_dir / f"{bar_id}.json",
+                        ))
+                        continue
+                    try:
+                        for fig, meta in bar_fn(all_obs_stats, period_key):
+                            paths = self._save(fig, meta, meta["figure_id"])
+                            saved.append(paths)
+                    except Exception:
+                        logger.warning(
+                            "Bar chart %s failed", bar_id, exc_info=True,
+                        )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -184,6 +249,22 @@ class AddedValueDiag(DiagnosticBase):
     _OBS_ALT_DATASETS: dict[str, str] = {
         "tas": "BERKELEY_EARTH_HR",
         "pr": "MSWEP",
+    }
+
+    #: Short suffix used in figure IDs for each obs dataset.
+    #: Primary obs keeps no suffix (backward compat); secondary obs gets one.
+    _OBS_FIGURE_SUFFIX: dict[str, str] = {
+        "ERA5": "era5",
+        "BERKELEY_EARTH_HR": "berkeleyearth",
+        "MSWEP": "mswep",
+    }
+
+    #: All obs datasets to evaluate against, per variable.
+    #: Used to compute per-obs improvement/neutral/deterioration statistics.
+    #: ERA5 is always listed first (primary for most variables).
+    _MULTI_OBS_DATASETS: dict[str, list[str]] = {
+        "tas": ["ERA5", "BERKELEY_EARTH_HR"],
+        "pr":  ["ERA5", "MSWEP"],
     }
 
     #: Unit conversion factors applied to both obs and model data so that
@@ -211,6 +292,31 @@ class AddedValueDiag(DiagnosticBase):
             logger.info("  Using MSWEP for %s", var)
             return self._load_mswep_for_av(period)
         return self._load_obs_var(var, period)
+
+    def _load_obs_by_name(
+        self, var: str, obs_name: str, period: tuple[str, str],
+    ) -> xr.DataArray:
+        """Load a specific obs dataset by name for AV statistics.
+
+        Parameters
+        ----------
+        obs_name : str
+            Dataset name: ``"ERA5"``, ``"BERKELEY_EARTH_HR"``, or
+            ``"MSWEP"``.
+
+        Notes
+        -----
+        Unit conventions match the primary-obs loaders:
+        - ERA5 ``pr`` is returned raw in kg/m²/s (caller applies ×86400).
+        - MSWEP is returned in mm/day (``_load_mswep_for_av`` applies ×86400
+          internally).
+        - Berkeley Earth and ERA5 ``tas`` are in K.
+        """
+        if obs_name == "BERKELEY_EARTH_HR":
+            return self._load_berkeley_earth_for_av(period)
+        if obs_name == "MSWEP":
+            return self._load_mswep_for_av(period)  # already mm/day
+        return self._load_obs_var(var, period)  # ERA5 (raw units)
 
     def _load_berkeley_earth_for_av(
         self, period: tuple[str, str],
@@ -619,9 +725,93 @@ class AddedValueDiag(DiagnosticBase):
                         period_key.lower(), etype, nc_meta,
                     )
 
+        # -- Per-obs improvement/neutral/deterioration statistics ------------
+        eerie_individual_annual = dict(zip(eerie_models_used, eerie_annual_fields))
+        eerie_seasonal_individual: dict[str, dict[str, xr.DataArray]] = {
+            season: dict(zip(eerie_seasonal_models[season], fields))
+            for season, fields in eerie_seasonal_fields.items()
+            if fields
+        }
+        obs_stats: dict[str, dict] = {}
+        if target_lats is not None:
+            obs_stats = self._compute_multi_obs_stats(
+                var,
+                eerie_mean, eerie_median, cmip6_mmm,
+                eerie_seasonal_mean, eerie_seasonal_median,
+                cmip6_seasonal_mmm,
+                target_lats, target_lons, influence_radius,
+                eerie_individual=eerie_individual_annual,
+                eerie_seasonal_individual=eerie_seasonal_individual,
+            )
+            if obs_stats:
+                self._save_obs_stats_json(var, obs_stats, nc_meta)
+
+        # -- Secondary-obs AV maps ------------------------------------------
+        primary_obs_name = self._OBS_ALT_DATASETS.get(var, "ERA5")
+        av_by_obs: dict[str, dict] = {primary_obs_name: av_results}
+
+        secondary_obs_names = [
+            d for d in self._MULTI_OBS_DATASETS.get(var, [])
+            if d != primary_obs_name
+            and (d == "ERA5" or d in self.config.obs_datasets)
+        ]
+        for sec_obs_name in secondary_obs_names:
+            try:
+                logger.info(
+                    "  Computing secondary-obs AV maps: %s / %s", var, sec_obs_name,
+                )
+                sec_da = self._load_obs_by_name(var, sec_obs_name, self.period)
+                if sec_obs_name == "ERA5" and unit_factor != 1.0:
+                    sec_da = sec_da * unit_factor
+                sec_clim = climatology(sec_da)
+                sec_seasonal = seasonal_climatology(sec_da)
+                sec_common = self._regrid_obs_to_common_grid(
+                    sec_clim, target_lats, target_lons, influence_radius,
+                )
+                sec_seasonal_common: dict[str, xr.DataArray] = {}
+                for season in ["DJF", "JJA"]:
+                    if season in sec_seasonal:
+                        sec_seasonal_common[season] = self._regrid_obs_to_common_grid(
+                            sec_seasonal[season], target_lats, target_lons,
+                            influence_radius,
+                        )
+                sec_av: dict[str, dict] = {}
+                sec_av["annual"] = _period_av(
+                    cmip6_mmm, eerie_mean, eerie_median,
+                    eerie_annual_fields, eerie_models_used,
+                    cmip6_annual_fields, cmip6_models_used,
+                    sec_common,
+                )
+                for season in ["DJF", "JJA"]:
+                    if (
+                        season in eerie_seasonal_fields
+                        and eerie_seasonal_fields[season]
+                        and season in cmip6_seasonal_mmm
+                        and season in sec_seasonal_common
+                    ):
+                        sec_av[season] = _period_av(
+                            cmip6_seasonal_mmm[season],
+                            eerie_seasonal_mean[season],
+                            eerie_seasonal_median[season],
+                            eerie_seasonal_fields[season],
+                            eerie_seasonal_models[season],
+                            cmip6_seasonal_fields[season],
+                            cmip6_seasonal_models[season],
+                            sec_seasonal_common[season],
+                        )
+                av_by_obs[sec_obs_name] = sec_av
+            except Exception:
+                logger.warning(
+                    "  Secondary-obs AV failed for %s / %s", var, sec_obs_name,
+                    exc_info=True,
+                )
+
         return {
             "var_info": var_info,
             "av": av_results,
+            "av_by_obs": av_by_obs,
+            "obs_dataset_name": primary_obs_name,
+            "obs_stats": obs_stats,
             "n_eerie_models": len(eerie_models_used),
             "eerie_models": eerie_models_used,
             "n_cmip6_models": len(cmip6_models_used),
@@ -676,11 +866,25 @@ class AddedValueDiag(DiagnosticBase):
         n_cmip6 = int(ds["av"].attrs.get("n_cmip6_models", 0))
         eerie_models = ds["av"].attrs.get("eerie_models", "").split(",")
         cmip6_models = ds["av"].attrs.get("cmip6_models", "").split(",")
+        obs_dataset_name = ds["av"].attrs.get("reference_dataset", "ERA5")
         ds.close()
+
+        # Restore obs_stats from JSON checkpoint if available
+        obs_stats: dict[str, dict] = {}
+        json_path = self._obs_stats_path(var)
+        if json_path.exists():
+            with open(json_path) as fh:
+                json_data = json.load(fh)
+            for period_key, period_data in json_data.get("periods", {}).items():
+                for _obs_name, _obs_data in period_data.items():
+                    obs_stats.setdefault(_obs_name, {})[period_key] = _obs_data
 
         return {
             "var_info": var_info,
             "av": av_results,
+            "av_by_obs": {obs_dataset_name: av_results},
+            "obs_dataset_name": obs_dataset_name,
+            "obs_stats": obs_stats,
             "n_eerie_models": n_eerie,
             "eerie_models": [m for m in eerie_models if m],
             "n_cmip6_models": n_cmip6,
@@ -746,6 +950,48 @@ class AddedValueDiag(DiagnosticBase):
             return float("nan")
         return float(np.sum(finite > 0) / len(finite))
 
+    @staticmethod
+    def _frac_categories(
+        av: xr.DataArray, threshold: float = 0.001,
+    ) -> dict[str, float]:
+        """Percentage of grid points in each AV category.
+
+        Parameters
+        ----------
+        av : xr.DataArray
+            AV field in [-1, 1].
+        threshold : float
+            Half-width of the neutral zone (default 0.001).
+
+        Returns
+        -------
+        dict with keys ``pct_improvement``, ``pct_neutral``,
+        ``pct_deterioration`` in [0, 100].  Values sum to 100.
+
+        Categories
+        ----------
+        improvement:    AV >  +threshold  (candidate reduces error)
+        neutral:       -threshold ≤ AV ≤ +threshold
+        deterioration:  AV <  -threshold  (baseline is better)
+        """
+        vals = np.asarray(av).ravel()
+        finite = vals[np.isfinite(vals)]
+        n = len(finite)
+        if n == 0:
+            return {
+                "pct_improvement": float("nan"),
+                "pct_neutral": float("nan"),
+                "pct_deterioration": float("nan"),
+            }
+        pct_imp = float(np.sum(finite > threshold) / n * 100)
+        pct_det = float(np.sum(finite < -threshold) / n * 100)
+        pct_neu = 100.0 - pct_imp - pct_det
+        return {
+            "pct_improvement": pct_imp,
+            "pct_neutral": pct_neu,
+            "pct_deterioration": pct_det,
+        }
+
     # -- NetCDF I/O ---------------------------------------------------------
 
     def _save_av_to_nc(
@@ -794,7 +1040,7 @@ class AddedValueDiag(DiagnosticBase):
                         ),
                         "model1": "CMIP6 multi-model mean",
                         "model2": f"EERIE {ensemble_type}",
-                        "reference_dataset": "ERA5",
+                        "reference_dataset": meta.get("obs_dataset", "ERA5"),
                         "ensemble_type": ensemble_type,
                         "n_eerie_models": meta["n_eerie_models"],
                         "n_cmip6_models": meta["n_cmip6_models"],
@@ -871,6 +1117,248 @@ class AddedValueDiag(DiagnosticBase):
             coords={"lat": target_lats, "lon": target_lons},
         )
 
+    # -- Multi-obs statistics -----------------------------------------------
+
+    def _regrid_obs_to_common_grid(
+        self,
+        obs_da: xr.DataArray,
+        target_lats: np.ndarray,
+        target_lons: np.ndarray,
+        influence_radius: float,
+    ) -> xr.DataArray:
+        """Regrid a lat/lon obs DataArray to the common target grid.
+
+        Used to evaluate AV statistics against secondary obs datasets
+        without changing the primary obs used for map plots.
+
+        The nereus interpolator is built with the **common grid's**
+        resolution (derived from target_lats), not the source resolution,
+        so the output always has shape (len(target_lats), len(target_lons)).
+        """
+        lat_name = "lat" if "lat" in obs_da.coords else "latitude"
+        lon_name = "lon" if "lon" in obs_da.coords else "longitude"
+        obs_lats = obs_da[lat_name].values
+        obs_lons = obs_da[lon_name].values
+
+        # Use the common (target) grid resolution, not the source resolution.
+        # nr.regrid() defines its output grid from this parameter; using the
+        # source's own resolution would create a mismatched grid when the
+        # secondary obs is coarser than the primary obs (e.g. ERA5 at 0.25°
+        # vs MSWEP common grid at 0.1°).
+        target_res = abs(float(target_lats[1] - target_lats[0]))
+
+        _, interp = nr.regrid(
+            obs_da.values,
+            lon=obs_lons, lat=obs_lats,
+            resolution=target_res,
+            influence_radius=influence_radius,
+            lon_bounds=(0.0, 360.0),
+            as_xarray=True,
+        )
+        regridded = interp(obs_da.values.ravel())
+        return xr.DataArray(
+            regridded, dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
+
+    @staticmethod
+    def _compute_period_category_stats(
+        eerie_mean: xr.DataArray,
+        eerie_median: xr.DataArray,
+        cmip6_mmm: xr.DataArray,
+        obs: xr.DataArray,
+        eerie_individual: dict[str, xr.DataArray] | None = None,
+    ) -> dict[str, dict[str, float]]:
+        """Compute improvement/neutral/deterioration fractions for one period.
+
+        Returns a dict with keys ``eerie_mean``, ``eerie_median``,
+        ``cmip6_mean``, each containing ``pct_improvement``,
+        ``pct_neutral``, ``pct_deterioration``.
+
+        ``cmip6_mean`` uses the EERIE ensemble mean as the baseline
+        (AV > 0 means CMIP6 reduces error vs EERIE).
+
+        When ``eerie_individual`` is supplied, also adds
+        ``per_eerie_models`` with per-model fractions.
+        """
+        av_em = AddedValueDiag._compute_av(cmip6_mmm, eerie_mean, obs)
+        av_emd = AddedValueDiag._compute_av(cmip6_mmm, eerie_median, obs)
+        av_c = AddedValueDiag._compute_av(eerie_mean, cmip6_mmm, obs)
+        result: dict[str, Any] = {
+            "eerie_mean":   AddedValueDiag._frac_categories(av_em),
+            "eerie_median": AddedValueDiag._frac_categories(av_emd),
+            "cmip6_mean":   AddedValueDiag._frac_categories(av_c),
+        }
+        if eerie_individual:
+            result["per_eerie_models"] = {
+                name: AddedValueDiag._frac_categories(
+                    AddedValueDiag._compute_av(cmip6_mmm, field, obs)
+                )
+                for name, field in eerie_individual.items()
+            }
+        return result
+
+    def _compute_multi_obs_stats(
+        self,
+        var: str,
+        eerie_mean: xr.DataArray,
+        eerie_median: xr.DataArray,
+        cmip6_mmm: xr.DataArray,
+        eerie_seasonal_mean: dict[str, xr.DataArray],
+        eerie_seasonal_median: dict[str, xr.DataArray],
+        cmip6_seasonal_mmm: dict[str, xr.DataArray],
+        target_lats: np.ndarray,
+        target_lons: np.ndarray,
+        influence_radius: float,
+        eerie_individual: dict[str, xr.DataArray] | None = None,
+        eerie_seasonal_individual: dict[str, dict[str, xr.DataArray]] | None = None,
+    ) -> dict[str, dict]:
+        """Compute category stats (improvement/neutral/deterioration) for each
+        available obs dataset.
+
+        Parameters
+        ----------
+        var : str
+            Variable name (CMOR canonical).
+        eerie_mean, eerie_median, cmip6_mmm : xr.DataArray
+            Annual-mean fields on the common grid.
+        eerie_seasonal_mean/median, cmip6_seasonal_mmm : dict
+            Season-keyed fields (``"DJF"``, ``"JJA"``) on the common grid.
+        target_lats, target_lons : np.ndarray
+            Common grid coordinates.
+        influence_radius : float
+            nereus influence radius in metres (for obs regridding).
+
+        Returns
+        -------
+        dict keyed by obs dataset name (e.g. ``"ERA5"``,
+        ``"BERKELEY_EARTH_HR"``, ``"MSWEP"``). Each value is a dict
+        keyed by period (``"annual"``, ``"djf"``, ``"jja"``), containing
+        ``eerie_mean``, ``eerie_median``, ``cmip6_mean`` sub-dicts of
+        ``pct_improvement``, ``pct_neutral``, ``pct_deterioration``.
+        """
+        obs_names = self._MULTI_OBS_DATASETS.get(var, ["ERA5"])
+        obs_names = [
+            n for n in obs_names
+            if n == "ERA5" or n in self.config.obs_datasets
+        ]
+        unit_factor = self._UNIT_FACTORS.get(var, 1.0)
+
+        stats: dict[str, dict] = {}
+        for obs_name in obs_names:
+            try:
+                logger.info("  Computing multi-obs stats: %s / %s", var, obs_name)
+                obs_data = self._load_obs_by_name(var, obs_name, self.period)
+                # ERA5 raw units need conversion (MSWEP/BE handle internally)
+                if obs_name == "ERA5" and unit_factor != 1.0:
+                    obs_data = obs_data * unit_factor
+
+                from feather.util.temporal import climatology as _clim
+                from feather.util.temporal import seasonal_climatology as _sclim
+                obs_clim = _clim(obs_data)
+                obs_common = self._regrid_obs_to_common_grid(
+                    obs_clim, target_lats, target_lons, influence_radius,
+                )
+
+                periods_stats: dict[str, dict] = {}
+                periods_stats["annual"] = self._compute_period_category_stats(
+                    eerie_mean, eerie_median, cmip6_mmm, obs_common,
+                    eerie_individual=eerie_individual,
+                )
+
+                obs_seasonal = _sclim(obs_data)
+                for season in ["DJF", "JJA"]:
+                    if (
+                        season in obs_seasonal
+                        and season in eerie_seasonal_mean
+                        and season in eerie_seasonal_median
+                        and season in cmip6_seasonal_mmm
+                    ):
+                        obs_s_common = self._regrid_obs_to_common_grid(
+                            obs_seasonal[season],
+                            target_lats, target_lons, influence_radius,
+                        )
+                        sea_ind = (
+                            eerie_seasonal_individual.get(season)
+                            if eerie_seasonal_individual else None
+                        )
+                        periods_stats[season.lower()] = (
+                            self._compute_period_category_stats(
+                                eerie_seasonal_mean[season],
+                                eerie_seasonal_median[season],
+                                cmip6_seasonal_mmm[season],
+                                obs_s_common,
+                                eerie_individual=sea_ind,
+                            )
+                        )
+
+                stats[obs_name] = periods_stats
+
+            except Exception:
+                logger.warning(
+                    "  Multi-obs stats failed for %s / %s — skipping",
+                    obs_name, var, exc_info=True,
+                )
+
+        return stats
+
+    def _obs_stats_path(self, var: str) -> Path:
+        """Path for the per-variable obs-comparison stats JSON."""
+        return self.nc_dir / f"{var}_obs_stats.json"
+
+    def _save_obs_stats_json(
+        self, var: str, obs_stats: dict, nc_meta: dict,
+    ) -> None:
+        """Persist per-obs improvement/neutral/deterioration stats to JSON.
+
+        The file is written to ``{nc_dir}/{var}_obs_stats.json`` and is
+        suitable for direct use in barplot comparisons across obs datasets.
+
+        Schema
+        ------
+        .. code-block:: json
+
+            {
+              "variable": "tas",
+              "period": ["1980", "2014"],
+              "threshold": 0.001,
+              "periods": {
+                "annual": {
+                  "ERA5": {
+                    "eerie_mean":   {"pct_improvement": 62.1, ...},
+                    "eerie_median": {"pct_improvement": 63.4, ...},
+                    "cmip6_mean":   {"pct_improvement": 38.2, ...}
+                  },
+                  "BERKELEY_EARTH_HR": { ... }
+                },
+                "djf": { ... },
+                "jja": { ... }
+              }
+            }
+        """
+        # Transpose obs_stats from {obs_name: {period: ...}}
+        # to {period: {obs_name: ...}} — friendlier for barplot consumers.
+        by_period: dict[str, dict] = {}
+        for obs_name, periods in obs_stats.items():
+            for period_key, period_data in periods.items():
+                by_period.setdefault(period_key, {})[obs_name] = period_data
+
+        payload = {
+            "variable": var,
+            "period": [nc_meta["period_start"], nc_meta["period_end"]],
+            "threshold": 0.001,
+            "eerie_models": nc_meta.get("eerie_models", []),
+            "n_eerie_models": nc_meta.get("n_eerie_models", 0),
+            "cmip6_models": nc_meta.get("cmip6_models", []),
+            "n_cmip6_models": nc_meta.get("n_cmip6_models", 0),
+            "periods": by_period,
+        }
+        out_path = self._obs_stats_path(var)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as fh:
+            json.dump(payload, fh, indent=2)
+        logger.info("  Saved obs stats JSON: %s", out_path)
+
     # -- Plotting -----------------------------------------------------------
 
     def plot(
@@ -887,175 +1375,535 @@ class AddedValueDiag(DiagnosticBase):
     ) -> list[tuple[plt.Figure, dict]]:
         """Generate AV map figures for a single variable.
 
-        Produces two figures per period (annual, DJF, JJA):
+        Iterates over all available obs datasets in ``vr["av_by_obs"]``.
+        For each obs dataset × period:
 
         Figure 1 — ensemble summary (two panels):
-          - AV(CMIP6 MMM, EERIE ensemble mean, ERA5)
-          - AV(CMIP6 MMM, EERIE ensemble median, ERA5)
+          - AV(CMIP6 MMM, EERIE ensemble mean, <obs>)
+          - AV(CMIP6 MMM, EERIE ensemble median, <obs>)
 
         Figure 2 — individual model panels:
-          - One panel per EERIE model:  AV(CMIP6 MMM, EERIE_i, ERA5)
-          - One panel per CMIP6 model:  AV(EERIE ens. mean, CMIP6_j, ERA5)
+          - One panel per EERIE model:  AV(CMIP6 MMM, EERIE_i, <obs>)
+          - One panel per CMIP6 model:  AV(EERIE ens. mean, CMIP6_j, <obs>)
 
-        AV > 0 means the candidate model reduces squared error vs ERA5
-        relative to the baseline (CMIP6 MMM for EERIE panels, EERIE mean
-        for CMIP6 panels).
+        The primary obs dataset keeps the legacy figure IDs (no suffix).
+        Secondary obs datasets (e.g. ERA5 for tas/pr) get an ``_{suffix}`` suffix.
         """
         figures: list[tuple[plt.Figure, dict]] = []
         var_info = vr["var_info"]
-        av = vr["av"]
+        primary_obs_name = vr.get("obs_dataset_name", "ERA5")
+        av_by_obs: dict[str, dict] = vr.get("av_by_obs", {primary_obs_name: vr["av"]})
 
-        period_labels = [("annual", "Annual")]
-        for s in ("DJF", "JJA"):
-            if s in av:
-                period_labels.append((s, s))
+        for obs_name, av in av_by_obs.items():
+            is_primary = obs_name == primary_obs_name
+            obs_suffix = (
+                ""
+                if is_primary
+                else f"_{self._OBS_FIGURE_SUFFIX.get(obs_name, obs_name.lower())}"
+            )
+            obs_label = _OBS_DISPLAY_NAMES.get(obs_name, obs_name)
 
-        for period_key, period_label in period_labels:
-            period_data = av.get(period_key)
-            if period_data is None:
-                continue
+            # Per-obs category stats for barplot metadata (primary obs only)
+            obs_stats_all: dict[str, dict] = vr.get("obs_stats", {}) if is_primary else {}
 
-            pk_lower = period_key.lower()
+            period_labels = [("annual", "Annual")]
+            for s in ("DJF", "JJA"):
+                if s in av:
+                    period_labels.append((s, s))
 
-            # ── Figure 1: ensemble mean + median ───────────────────────────
-            summary_stats: dict[str, Any] = {}
-            data_dict: dict[str, xr.DataArray] = {}
-            for etype, label in (
-                ("ensemble_mean",   "AV(EERIE Ens. Mean)"),
-                ("ensemble_median", "AV(EERIE Ens. Median)"),
-            ):
-                dom_av = period_data[f"{etype}_domain_av"]
-                frac = period_data[f"{etype}_frac_positive"]
-                panel_title = (
-                    f"{label}\n"
-                    f"domain mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+            for period_key, period_label in period_labels:
+                period_data = av.get(period_key)
+                if period_data is None:
+                    continue
+
+                pk_lower = period_key.lower()
+
+                # ── Figure 1: ensemble mean + median ───────────────────────
+                summary_stats: dict[str, Any] = {}
+                data_dict: dict[str, xr.DataArray] = {}
+                for etype, label in (
+                    ("ensemble_mean",   "AV(EERIE Ens. Mean)"),
+                    ("ensemble_median", "AV(EERIE Ens. Median)"),
+                ):
+                    dom_av = period_data[f"{etype}_domain_av"]
+                    frac = period_data[f"{etype}_frac_positive"]
+                    panel_title = (
+                        f"{label}\n"
+                        f"domain mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                    )
+                    data_dict[panel_title] = period_data[etype]
+                    summary_stats[etype] = {
+                        "domain_mean_av": dom_av,
+                        "frac_positive": frac,
+                        "n_eerie_models": vr["n_eerie_models"],
+                        "n_cmip6_models": vr["n_cmip6_models"],
+                    }
+
+                per_obs_period: dict[str, dict] = {}
+                for _obs, _periods in obs_stats_all.items():
+                    _ps = _periods.get(pk_lower)
+                    if _ps is not None:
+                        per_obs_period[_obs] = _ps
+                if per_obs_period:
+                    summary_stats["per_obs_stats"] = per_obs_period
+
+                fig1, _ = plot_combined_map(
+                    data_dict,
+                    title=(
+                        f"{var_info.long_name} {period_label} Added Value"
+                        f" — EERIE ensemble vs CMIP6 MMM"
+                        f"  (vs {obs_label}, green = EERIE better)"
+                    ),
+                    cmap=_AV_CMAP,
+                    vmin=-1.0, vmax=1.0,
+                    units="AV [ ]",
+                    method=self._regrid_method,
                 )
-                data_dict[panel_title] = period_data[etype]
-                summary_stats[etype] = {
-                    "domain_mean_av": dom_av,
-                    "frac_positive": frac,
-                    "n_eerie_models": vr["n_eerie_models"],
-                    "n_cmip6_models": vr["n_cmip6_models"],
-                }
-
-            fig1, _ = plot_combined_map(
-                data_dict,
-                title=(
-                    f"{var_info.long_name} {period_label} Added Value"
-                    f" — EERIE ensemble vs CMIP6 MMM  (green = EERIE better)"
-                ),
-                cmap="cmo.tarn",
-                vmin=-1.0, vmax=1.0,
-                units="AV [ ]",
-                method=self._regrid_method,
-            )
-            meta1 = self._build_metadata(
-                title=(
-                    f"{var_info.long_name} {period_label} Added Value "
-                    f"(EERIE ensemble vs CMIP6 MMM)"
-                ),
-                figure_id=f"{var}_{pk_lower}_added_value",
-                models=vr["eerie_models"],
-                variables=[var],
-                description=(
-                    f"Dosio et al. (2015) Added Value metric for "
-                    f"{var_info.long_name} ({period_label}), "
-                    f"{self.period[0]}-{self.period[1]}. "
-                    f"AV > 0: EERIE ensemble reduces squared error over "
-                    f"CMIP6 MMM. "
-                    f"EERIE n={vr['n_eerie_models']}, "
-                    f"CMIP6 n={vr['n_cmip6_models']}."
-                ),
-                plot_type="added_value_map",
-                period=self.period,
-                summary_statistics=summary_stats,
-                extra={
-                    "eerie_models": vr["eerie_models"],
-                    "cmip6_models": vr["cmip6_models"],
-                    "reference": "Dosio et al. (2015)",
-                },
-            )
-            figures.append((fig1, meta1))
-
-            # ── Figure 2: individual model panels (skip if no per-model data)
-            per_eerie = period_data.get("per_eerie_av", {})
-            per_cmip6 = period_data.get("per_cmip6_av", {})
-            if not per_eerie and not per_cmip6:
-                continue
-
-            models_data_dict: dict[str, xr.DataArray] = {}
-            for model_name, av_field in per_eerie.items():
-                dom_av = self._domain_mean_av(av_field, None)  # unweighted
-                frac = self._frac_positive(av_field)
-                title_str = (
-                    f"EERIE: {model_name}\n"
-                    f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                meta1 = self._build_metadata(
+                    title=(
+                        f"{var_info.long_name} {period_label} Added Value "
+                        f"(EERIE ensemble vs CMIP6 MMM, obs: {obs_label})"
+                    ),
+                    figure_id=f"{var}_{pk_lower}_added_value{obs_suffix}",
+                    models=vr["eerie_models"],
+                    variables=[var],
+                    description=(
+                        f"Dosio et al. (2015) Added Value metric for "
+                        f"{var_info.long_name} ({period_label}), "
+                        f"{self.period[0]}-{self.period[1]}. "
+                        f"Reference obs: {obs_label}. "
+                        f"AV > 0: EERIE ensemble reduces squared error over "
+                        f"CMIP6 MMM. "
+                        f"EERIE n={vr['n_eerie_models']}, "
+                        f"CMIP6 n={vr['n_cmip6_models']}."
+                    ),
+                    plot_type="added_value_map",
+                    period=self.period,
+                    summary_statistics=summary_stats,
+                    extra={
+                        "eerie_models": vr["eerie_models"],
+                        "cmip6_models": vr["cmip6_models"],
+                        "obs_dataset": obs_name,
+                        "reference": "Dosio et al. (2015)",
+                    },
                 )
-                models_data_dict[title_str] = av_field
-            for cmip6_label, av_field in per_cmip6.items():
-                dom_av = self._domain_mean_av(av_field, None)
-                frac = self._frac_positive(av_field)
-                title_str = (
-                    f"CMIP6: {cmip6_label}\n"
-                    f"vs EERIE mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
-                )
-                models_data_dict[title_str] = av_field
+                figures.append((fig1, meta1))
 
-            fig2, _ = plot_combined_map(
-                models_data_dict,
-                title=(
-                    f"{var_info.long_name} {period_label} Added Value"
-                    f" — Individual Models  (green = model better)"
-                ),
-                cmap="cmo.tarn",
-                vmin=-1.0, vmax=1.0,
-                units="AV [ ]",
-                method=self._regrid_method,
-            )
-            eerie_stats = {
-                m: {
-                    "domain_mean_av": float(
-                        np.nanmean(np.asarray(av_f))),
-                    "frac_positive": self._frac_positive(av_f),
+                # ── Figure 2: individual model panels ─────────────────────
+                per_eerie = period_data.get("per_eerie_av", {})
+                per_cmip6 = period_data.get("per_cmip6_av", {})
+                if not per_eerie and not per_cmip6:
+                    continue
+
+                models_data_dict: dict[str, xr.DataArray] = {}
+                for model_name, av_field in per_eerie.items():
+                    dom_av = self._domain_mean_av(av_field, None)
+                    frac = self._frac_positive(av_field)
+                    title_str = (
+                        f"EERIE: {model_name}\n"
+                        f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                    )
+                    models_data_dict[title_str] = av_field
+                for cmip6_label, av_field in per_cmip6.items():
+                    dom_av = self._domain_mean_av(av_field, None)
+                    frac = self._frac_positive(av_field)
+                    title_str = (
+                        f"CMIP6: {cmip6_label}\n"
+                        f"vs EERIE mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                    )
+                    models_data_dict[title_str] = av_field
+
+                fig2, _ = plot_combined_map(
+                    models_data_dict,
+                    title=(
+                        f"{var_info.long_name} {period_label} Added Value"
+                        f" — Individual Models"
+                        f"  (vs {obs_label}, green = model better)"
+                    ),
+                    cmap=_AV_CMAP,
+                    vmin=-1.0, vmax=1.0,
+                    units="AV [ ]",
+                    method=self._regrid_method,
+                )
+                eerie_stats = {
+                    m: {
+                        "domain_mean_av": float(np.nanmean(np.asarray(av_f))),
+                        "frac_positive": self._frac_positive(av_f),
+                    }
+                    for m, av_f in per_eerie.items()
                 }
-                for m, av_f in per_eerie.items()
-            }
-            cmip6_stats = {
-                lbl: {
-                    "domain_mean_av": float(
-                        np.nanmean(np.asarray(av_f))),
-                    "frac_positive": self._frac_positive(av_f),
+                cmip6_stats = {
+                    lbl: {
+                        "domain_mean_av": float(np.nanmean(np.asarray(av_f))),
+                        "frac_positive": self._frac_positive(av_f),
+                    }
+                    for lbl, av_f in per_cmip6.items()
                 }
-                for lbl, av_f in per_cmip6.items()
-            }
-            meta2 = self._build_metadata(
-                title=(
-                    f"{var_info.long_name} {period_label} Added Value "
-                    f"— Individual Models"
-                ),
-                figure_id=f"{var}_{pk_lower}_added_value_models",
-                models=vr["eerie_models"],
-                variables=[var],
-                description=(
-                    f"Per-model Dosio et al. (2015) Added Value for "
-                    f"{var_info.long_name} ({period_label}), "
-                    f"{self.period[0]}-{self.period[1]}. "
-                    f"EERIE panels: AV(CMIP6 MMM, EERIE_i, ERA5). "
-                    f"CMIP6 panels: AV(EERIE mean, CMIP6_j, ERA5). "
-                    f"Green = model better than its baseline."
-                ),
-                plot_type="added_value_map",
-                period=self.period,
-                summary_statistics={
-                    "per_eerie": eerie_stats,
-                    "per_cmip6": cmip6_stats,
-                },
-                extra={
-                    "eerie_models": vr["eerie_models"],
-                    "cmip6_models": vr["cmip6_models"],
-                    "reference": "Dosio et al. (2015)",
-                },
-            )
-            figures.append((fig2, meta2))
+                meta2 = self._build_metadata(
+                    title=(
+                        f"{var_info.long_name} {period_label} Added Value "
+                        f"— Individual Models (obs: {obs_label})"
+                    ),
+                    figure_id=f"{var}_{pk_lower}_added_value_models{obs_suffix}",
+                    models=vr["eerie_models"],
+                    variables=[var],
+                    description=(
+                        f"Per-model Dosio et al. (2015) Added Value for "
+                        f"{var_info.long_name} ({period_label}), "
+                        f"{self.period[0]}-{self.period[1]}. "
+                        f"Reference obs: {obs_label}. "
+                        f"EERIE panels: AV(CMIP6 MMM, EERIE_i, {obs_label}). "
+                        f"CMIP6 panels: AV(EERIE mean, CMIP6_j, {obs_label}). "
+                        f"Green = model better than its baseline."
+                    ),
+                    plot_type="added_value_map",
+                    period=self.period,
+                    summary_statistics={
+                        "per_eerie": eerie_stats,
+                        "per_cmip6": cmip6_stats,
+                    },
+                    extra={
+                        "eerie_models": vr["eerie_models"],
+                        "cmip6_models": vr["cmip6_models"],
+                        "obs_dataset": obs_name,
+                        "reference": "Dosio et al. (2015)",
+                    },
+                )
+                figures.append((fig2, meta2))
 
         return figures
+
+    # -- Summary bar charts -------------------------------------------------
+
+    def _plot_summary_bars_ensemble(
+        self,
+        all_obs_stats: dict[str, dict],
+        period_key: str,
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Grouped horizontal stacked bar chart — ensemble view.
+
+        3 panels: ERA5 (all variables), Berkeley Earth HR (tas only),
+        MSWEP (pr only).  For each variable within a panel:
+          3 bars (EERIE mean / EERIE median / CMIP6 mean),
+        each stacked [improvement | neutral | deterioration].
+
+        Colors: EERIE improvement = blue palette, CMIP6 = green,
+        neutral = light gray, deterioration = always red.
+        """
+        from matplotlib import gridspec as mgs
+        from matplotlib.patches import Patch
+
+        period_label = {"annual": "Annual", "djf": "DJF", "jja": "JJA"}.get(
+            period_key, period_key.upper()
+        )
+
+        # ── Gather data per obs panel ───────────────────────────────────────
+        obs_panels = [
+            ("ERA5",             "ERA5"),
+            ("BERKELEY_EARTH_HR", "Berkeley Earth HR"),
+            ("MSWEP",             "MSWEP v2.8"),
+        ]
+        panel_rows: dict[str, list[tuple[str, str, dict]]] = {}
+        for obs_name, _ in obs_panels:
+            rows: list[tuple[str, str, dict]] = []
+            for var, vr_stats in all_obs_stats.items():
+                period_stats = vr_stats.get(obs_name, {}).get(period_key, {})
+                if period_stats:
+                    rows.append((var, get_var(var).long_name, period_stats))
+            if rows:
+                panel_rows[obs_name] = rows
+
+        if not panel_rows:
+            return []
+
+        active = [(n, lbl) for n, lbl in obs_panels if n in panel_rows]
+        n_panels = len(active)
+
+        bar_h = 0.22
+        grp_pad = 0.15  # gap between variable groups
+        n_bars = 3       # EERIE mean, EERIE median, CMIP6 mean
+
+        def _panel_height(n_vars: int) -> float:
+            return n_vars * (n_bars * bar_h + grp_pad) + 0.8
+
+        heights = [_panel_height(len(panel_rows[n])) for n, _ in active]
+        fig = plt.figure(figsize=(13, max(5, sum(heights) + 1.2)))
+        gs = mgs.GridSpec(
+            n_panels, 1,
+            height_ratios=heights,
+            hspace=0.55,
+            figure=fig,
+        )
+
+        etype_colors = {
+            "eerie_mean":   "#1f77b4",
+            "eerie_median": "#6aaed6",
+            "cmip6_mean":   "#2ca02c",
+        }
+        etype_labels = {
+            "eerie_mean":   "EERIE mean",
+            "eerie_median": "EERIE median",
+            "cmip6_mean":   "CMIP6 mean",
+        }
+        neutral_color = "#d5d5d5"
+        det_color = "#c0392b"
+        etypes = ["eerie_mean", "eerie_median", "cmip6_mean"]
+
+        for pi, (obs_name, obs_label) in enumerate(active):
+            rows = panel_rows[obs_name]
+            n_vars = len(rows)
+            ax = fig.add_subplot(gs[pi])
+
+            grp_height = n_bars * bar_h + grp_pad
+            grp_centers = np.arange(n_vars) * grp_height
+            y_offsets = np.array([(i - (n_bars - 1) / 2) * bar_h
+                                  for i in range(n_bars)])
+
+            for ei, etype in enumerate(etypes):
+                imp = np.array([
+                    r[2].get(etype, {}).get("pct_improvement", 0.0) for r in rows
+                ])
+                neu = np.array([
+                    r[2].get(etype, {}).get("pct_neutral", 0.0) for r in rows
+                ])
+                det = np.array([
+                    r[2].get(etype, {}).get("pct_deterioration", 0.0) for r in rows
+                ])
+                ys = grp_centers + y_offsets[ei]
+                ec = etype_colors[etype]
+                ax.barh(ys, imp, height=bar_h, color=ec,
+                        label=etype_labels[etype])
+                ax.barh(ys, neu, height=bar_h, left=imp,
+                        color=neutral_color, label="_")
+                ax.barh(ys, det, height=bar_h, left=imp + neu,
+                        color=det_color, label="_")
+
+            ax.set_yticks(grp_centers)
+            ax.set_yticklabels([r[1] for r in rows], fontsize=8)
+            ax.invert_yaxis()
+            ax.set_xlim(0, 100)
+            ax.set_xlabel("% of grid cells", fontsize=9)
+            ax.axvline(50, color="k", lw=0.5, ls="--", alpha=0.35)
+            ax.set_title(obs_label, fontsize=10, fontweight="bold", pad=4)
+            ax.tick_params(axis="x", labelsize=8)
+
+        # Shared legend on first panel
+        first_ax = fig.axes[0]
+        legend_handles = [
+            Patch(facecolor=etype_colors[e], label=etype_labels[e])
+            for e in etypes
+        ] + [
+            Patch(facecolor=neutral_color, label="Neutral"),
+            Patch(facecolor=det_color, label="Deterioration"),
+        ]
+        first_ax.legend(
+            handles=legend_handles, fontsize=8,
+            loc="lower right", framealpha=0.85,
+        )
+
+        fig.suptitle(
+            f"Added Value — {period_label}: % improvement / neutral / deterioration\n"
+            f"EERIE ensemble vs CMIP6 MMM",
+            fontsize=11, fontweight="bold", y=1.01,
+        )
+
+        figure_id = f"added_value_bars_ensemble_{period_key}"
+        meta = self._build_metadata(
+            title=f"Added Value Summary — {period_label} (ensemble view)",
+            figure_id=figure_id,
+            models=list(self.config.models),
+            variables=list(all_obs_stats.keys()),
+            description=(
+                f"Summary bar chart of improvement/neutral/deterioration "
+                f"fractions ({period_label}) for all variables and obs datasets. "
+                f"Blue = EERIE improves, green = CMIP6 reference, red = deterioration."
+            ),
+            plot_type="added_value_bars",
+            period=self.period,
+        )
+        return [(fig, meta)]
+
+    def _plot_summary_bars_models(
+        self,
+        all_obs_stats: dict[str, dict],
+        period_key: str,
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Grouped horizontal stacked bar chart — per-EERIE-model view.
+
+        Same layout as ``_plot_summary_bars_ensemble`` but each variable
+        group shows one bar per EERIE model (blue palette) plus CMIP6 mean
+        (green).  Requires ``per_eerie_models`` in obs_stats.
+        """
+        from matplotlib import gridspec as mgs
+        from matplotlib.patches import Patch
+
+        period_label = {"annual": "Annual", "djf": "DJF", "jja": "JJA"}.get(
+            period_key, period_key.upper()
+        )
+
+        # Collect model names from first available entry
+        eerie_model_names: list[str] = []
+        for vr_stats in all_obs_stats.values():
+            for _obs, pdata in vr_stats.items():
+                pm = pdata.get(period_key, {}).get("per_eerie_models", {})
+                if pm:
+                    eerie_model_names = list(pm.keys())
+                    break
+            if eerie_model_names:
+                break
+
+        if not eerie_model_names:
+            logger.debug("No per_eerie_models data — skipping bars_models figure")
+            return []
+
+        obs_panels = [
+            ("ERA5",             "ERA5"),
+            ("BERKELEY_EARTH_HR", "Berkeley Earth HR"),
+            ("MSWEP",             "MSWEP v2.8"),
+        ]
+        panel_rows: dict[str, list[tuple[str, str, dict]]] = {}
+        for obs_name, _ in obs_panels:
+            rows: list[tuple[str, str, dict]] = []
+            for var, vr_stats in all_obs_stats.items():
+                period_stats = vr_stats.get(obs_name, {}).get(period_key, {})
+                if period_stats and period_stats.get("per_eerie_models"):
+                    rows.append((var, get_var(var).long_name, period_stats))
+            if rows:
+                panel_rows[obs_name] = rows
+
+        if not panel_rows:
+            return []
+
+        active = [(n, lbl) for n, lbl in obs_panels if n in panel_rows]
+        n_panels = len(active)
+        n_bars = len(eerie_model_names) + 1  # models + CMIP6 mean
+
+        # Blue palette: darker shades for more models
+        _blue_palette = ["#08519c", "#2171b5", "#4292c6", "#6baed6",
+                         "#9ecae1", "#c6dbef"]
+        eerie_colors = {m: _blue_palette[i % len(_blue_palette)]
+                        for i, m in enumerate(eerie_model_names)}
+        cmip6_color = "#2ca02c"
+        neutral_color = "#d5d5d5"
+        det_color = "#c0392b"
+
+        bar_h = 0.20
+        grp_pad = 0.18
+
+        def _panel_height(n_vars: int) -> float:
+            return n_vars * (n_bars * bar_h + grp_pad) + 0.8
+
+        heights = [_panel_height(len(panel_rows[n])) for n, _ in active]
+        fig = plt.figure(figsize=(13, max(5, sum(heights) + 1.2)))
+        gs = mgs.GridSpec(
+            n_panels, 1,
+            height_ratios=heights,
+            hspace=0.55,
+            figure=fig,
+        )
+
+        for pi, (obs_name, obs_label) in enumerate(active):
+            rows = panel_rows[obs_name]
+            n_vars = len(rows)
+            ax = fig.add_subplot(gs[pi])
+
+            grp_height = n_bars * bar_h + grp_pad
+            grp_centers = np.arange(n_vars) * grp_height
+            y_offsets = np.array([(i - (n_bars - 1) / 2) * bar_h
+                                  for i in range(n_bars)])
+
+            # EERIE individual models
+            for mi, model_name in enumerate(eerie_model_names):
+                imp = np.array([
+                    r[2].get("per_eerie_models", {})
+                       .get(model_name, {})
+                       .get("pct_improvement", 0.0)
+                    for r in rows
+                ])
+                neu = np.array([
+                    r[2].get("per_eerie_models", {})
+                       .get(model_name, {})
+                       .get("pct_neutral", 0.0)
+                    for r in rows
+                ])
+                det = np.array([
+                    r[2].get("per_eerie_models", {})
+                       .get(model_name, {})
+                       .get("pct_deterioration", 0.0)
+                    for r in rows
+                ])
+                ys = grp_centers + y_offsets[mi]
+                ec = eerie_colors[model_name]
+                ax.barh(ys, imp, height=bar_h, color=ec, label=model_name)
+                ax.barh(ys, neu, height=bar_h, left=imp,
+                        color=neutral_color, label="_")
+                ax.barh(ys, det, height=bar_h, left=imp + neu,
+                        color=det_color, label="_")
+
+            # CMIP6 mean bar (last in group)
+            imp_c = np.array([
+                r[2].get("cmip6_mean", {}).get("pct_improvement", 0.0)
+                for r in rows
+            ])
+            neu_c = np.array([
+                r[2].get("cmip6_mean", {}).get("pct_neutral", 0.0)
+                for r in rows
+            ])
+            det_c = np.array([
+                r[2].get("cmip6_mean", {}).get("pct_deterioration", 0.0)
+                for r in rows
+            ])
+            ys_c = grp_centers + y_offsets[len(eerie_model_names)]
+            ax.barh(ys_c, imp_c, height=bar_h, color=cmip6_color,
+                    label="CMIP6 mean")
+            ax.barh(ys_c, neu_c, height=bar_h, left=imp_c,
+                    color=neutral_color, label="_")
+            ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
+                    color=det_color, label="_")
+
+            ax.set_yticks(grp_centers)
+            ax.set_yticklabels([r[1] for r in rows], fontsize=8)
+            ax.invert_yaxis()
+            ax.set_xlim(0, 100)
+            ax.set_xlabel("% of grid cells", fontsize=9)
+            ax.axvline(50, color="k", lw=0.5, ls="--", alpha=0.35)
+            ax.set_title(obs_label, fontsize=10, fontweight="bold", pad=4)
+            ax.tick_params(axis="x", labelsize=8)
+
+        from matplotlib.patches import Patch
+        first_ax = fig.axes[0]
+        legend_handles = (
+            [Patch(facecolor=eerie_colors[m], label=m) for m in eerie_model_names]
+            + [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
+            + [
+                Patch(facecolor=neutral_color, label="Neutral"),
+                Patch(facecolor=det_color, label="Deterioration"),
+            ]
+        )
+        first_ax.legend(
+            handles=legend_handles, fontsize=8,
+            loc="lower right", framealpha=0.85,
+        )
+
+        fig.suptitle(
+            f"Added Value — {period_label}: per-model % improvement / neutral / deterioration\n"
+            f"EERIE models vs CMIP6 MMM",
+            fontsize=11, fontweight="bold", y=1.01,
+        )
+
+        figure_id = f"added_value_bars_models_{period_key}"
+        meta = self._build_metadata(
+            title=f"Added Value Summary — {period_label} (per-model view)",
+            figure_id=figure_id,
+            models=list(self.config.models),
+            variables=list(all_obs_stats.keys()),
+            description=(
+                f"Per-model summary bar chart of improvement/neutral/deterioration "
+                f"fractions ({period_label}). "
+                f"Blue shades = EERIE models vs CMIP6 MMM, "
+                f"green = CMIP6 mean vs EERIE mean, red = deterioration."
+            ),
+            plot_type="added_value_bars",
+            period=self.period,
+        )
+        return [(fig, meta)]
