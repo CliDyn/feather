@@ -670,9 +670,9 @@ class AddedValueDiag(DiagnosticBase):
                 "ensemble_median_domain_av": self._domain_mean_av(
                     av_ens_median, common_area),
                 "ensemble_mean_frac_positive": self._frac_positive(
-                    av_ens_mean),
+                    av_ens_mean, common_area),
                 "ensemble_median_frac_positive": self._frac_positive(
-                    av_ens_median),
+                    av_ens_median, common_area),
             }
 
         # Annual
@@ -847,7 +847,7 @@ class AddedValueDiag(DiagnosticBase):
                 period_data[f"{et}_domain_av"] = self._domain_mean_av(
                     av_f, area)
                 period_data[f"{et}_frac_positive"] = self._frac_positive(
-                    av_f)
+                    av_f, area)
             # Per-model AV maps are not stored in NC; skip per-model figure
             period_data["per_eerie_av"] = {}
             period_data["per_cmip6_av"] = {}
@@ -942,19 +942,35 @@ class AddedValueDiag(DiagnosticBase):
         return float(latlon_global_mean(av, area=area).values)
 
     @staticmethod
-    def _frac_positive(av: xr.DataArray) -> float:
-        """Fraction of grid points where AV > 0 (EERIE adds value)."""
+    def _frac_positive(
+        av: xr.DataArray, area: np.ndarray | None = None,
+    ) -> float:
+        """Area-weighted fraction where AV > 0 (EERIE adds value).
+
+        When *area* (m², shape matching *av*) is provided the result is
+        weighted by cell area; otherwise falls back to a simple cell count.
+        """
         vals = np.asarray(av).ravel()
-        finite = vals[np.isfinite(vals)]
-        if len(finite) == 0:
+        mask = np.isfinite(vals)
+        if not np.any(mask):
             return float("nan")
+        if area is not None:
+            w = np.asarray(area).ravel()
+            w_finite = w[mask]
+            total = np.sum(w_finite)
+            if total == 0:
+                return float("nan")
+            return float(np.sum(w_finite * (vals[mask] > 0)) / total)
+        finite = vals[mask]
         return float(np.sum(finite > 0) / len(finite))
 
     @staticmethod
     def _frac_categories(
-        av: xr.DataArray, threshold: float = 0.001,
+        av: xr.DataArray,
+        threshold: float = 0.001,
+        area: np.ndarray | None = None,
     ) -> dict[str, float]:
-        """Percentage of grid points in each AV category.
+        """Area-weighted percentage in each AV category.
 
         Parameters
         ----------
@@ -962,6 +978,9 @@ class AddedValueDiag(DiagnosticBase):
             AV field in [-1, 1].
         threshold : float
             Half-width of the neutral zone (default 0.001).
+        area : np.ndarray, optional
+            Cell areas (m², same shape as *av*).  When provided the
+            percentages are area-weighted; otherwise plain cell counts.
 
         Returns
         -------
@@ -975,17 +994,30 @@ class AddedValueDiag(DiagnosticBase):
         deterioration:  AV <  -threshold  (baseline is better)
         """
         vals = np.asarray(av).ravel()
-        finite = vals[np.isfinite(vals)]
-        n = len(finite)
-        if n == 0:
-            return {
-                "pct_improvement": float("nan"),
-                "pct_neutral": float("nan"),
-                "pct_deterioration": float("nan"),
-            }
-        pct_imp = float(np.sum(finite > threshold) / n * 100)
-        pct_det = float(np.sum(finite < -threshold) / n * 100)
-        pct_neu = 100.0 - pct_imp - pct_det
+        mask = np.isfinite(vals)
+        _nan = {
+            "pct_improvement": float("nan"),
+            "pct_neutral": float("nan"),
+            "pct_deterioration": float("nan"),
+        }
+        if not np.any(mask):
+            return _nan
+        if area is not None:
+            w = np.asarray(area).ravel()
+            w_f = w[mask]
+            v_f = vals[mask]
+            total = np.sum(w_f)
+            if total == 0:
+                return _nan
+            pct_imp = float(np.sum(w_f[v_f > threshold]) / total * 100)
+            pct_det = float(np.sum(w_f[v_f < -threshold]) / total * 100)
+            pct_neu = 100.0 - pct_imp - pct_det
+        else:
+            finite = vals[mask]
+            n = len(finite)
+            pct_imp = float(np.sum(finite > threshold) / n * 100)
+            pct_det = float(np.sum(finite < -threshold) / n * 100)
+            pct_neu = 100.0 - pct_imp - pct_det
         return {
             "pct_improvement": pct_imp,
             "pct_neutral": pct_neu,
@@ -1168,8 +1200,9 @@ class AddedValueDiag(DiagnosticBase):
         cmip6_mmm: xr.DataArray,
         obs: xr.DataArray,
         eerie_individual: dict[str, xr.DataArray] | None = None,
+        area: np.ndarray | None = None,
     ) -> dict[str, dict[str, float]]:
-        """Compute improvement/neutral/deterioration fractions for one period.
+        """Compute area-weighted improvement/neutral/degradation fractions.
 
         Returns a dict with keys ``eerie_mean``, ``eerie_median``,
         ``cmip6_mean``, each containing ``pct_improvement``,
@@ -1180,19 +1213,22 @@ class AddedValueDiag(DiagnosticBase):
 
         When ``eerie_individual`` is supplied, also adds
         ``per_eerie_models`` with per-model fractions.
+
+        When *area* is supplied, percentages are area-weighted.
         """
         av_em = AddedValueDiag._compute_av(cmip6_mmm, eerie_mean, obs)
         av_emd = AddedValueDiag._compute_av(cmip6_mmm, eerie_median, obs)
         av_c = AddedValueDiag._compute_av(eerie_mean, cmip6_mmm, obs)
         result: dict[str, Any] = {
-            "eerie_mean":   AddedValueDiag._frac_categories(av_em),
-            "eerie_median": AddedValueDiag._frac_categories(av_emd),
-            "cmip6_mean":   AddedValueDiag._frac_categories(av_c),
+            "eerie_mean":   AddedValueDiag._frac_categories(av_em, area=area),
+            "eerie_median": AddedValueDiag._frac_categories(av_emd, area=area),
+            "cmip6_mean":   AddedValueDiag._frac_categories(av_c, area=area),
         }
         if eerie_individual:
             result["per_eerie_models"] = {
                 name: AddedValueDiag._frac_categories(
-                    AddedValueDiag._compute_av(cmip6_mmm, field, obs)
+                    AddedValueDiag._compute_av(cmip6_mmm, field, obs),
+                    area=area,
                 )
                 for name, field in eerie_individual.items()
             }
@@ -1243,6 +1279,7 @@ class AddedValueDiag(DiagnosticBase):
             if n == "ERA5" or n in self.config.obs_datasets
         ]
         unit_factor = self._UNIT_FACTORS.get(var, 1.0)
+        common_area = compute_latlon_areas(target_lats, target_lons)
 
         stats: dict[str, dict] = {}
         for obs_name in obs_names:
@@ -1264,6 +1301,7 @@ class AddedValueDiag(DiagnosticBase):
                 periods_stats["annual"] = self._compute_period_category_stats(
                     eerie_mean, eerie_median, cmip6_mmm, obs_common,
                     eerie_individual=eerie_individual,
+                    area=common_area,
                 )
 
                 obs_seasonal = _sclim(obs_data)
@@ -1289,6 +1327,7 @@ class AddedValueDiag(DiagnosticBase):
                                 cmip6_seasonal_mmm[season],
                                 obs_s_common,
                                 eerie_individual=sea_ind,
+                                area=common_area,
                             )
                         )
 
@@ -1495,18 +1534,25 @@ class AddedValueDiag(DiagnosticBase):
                 if not per_eerie and not per_cmip6:
                     continue
 
+                # Derive common area from the first available AV field's grid.
+                _all_av_fields = list(per_eerie.values()) + list(per_cmip6.values())
+                _panel_area = compute_latlon_areas(
+                    _all_av_fields[0]["lat"].values,
+                    _all_av_fields[0]["lon"].values,
+                ) if _all_av_fields else None
+
                 models_data_dict: dict[str, xr.DataArray] = {}
                 for model_name, av_field in per_eerie.items():
-                    dom_av = self._domain_mean_av(av_field, None)
-                    frac = self._frac_positive(av_field)
+                    dom_av = self._domain_mean_av(av_field, _panel_area)
+                    frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
                         f"EERIE: {model_name}\n"
                         f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
                 for cmip6_label, av_field in per_cmip6.items():
-                    dom_av = self._domain_mean_av(av_field, None)
-                    frac = self._frac_positive(av_field)
+                    dom_av = self._domain_mean_av(av_field, _panel_area)
+                    frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
                         f"CMIP6: {cmip6_label}\n"
                         f"vs EERIE mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
@@ -1527,15 +1573,15 @@ class AddedValueDiag(DiagnosticBase):
                 )
                 eerie_stats = {
                     m: {
-                        "domain_mean_av": float(np.nanmean(np.asarray(av_f))),
-                        "frac_positive": self._frac_positive(av_f),
+                        "domain_mean_av": self._domain_mean_av(av_f, _panel_area),
+                        "frac_positive": self._frac_positive(av_f, _panel_area),
                     }
                     for m, av_f in per_eerie.items()
                 }
                 cmip6_stats = {
                     lbl: {
-                        "domain_mean_av": float(np.nanmean(np.asarray(av_f))),
-                        "frac_positive": self._frac_positive(av_f),
+                        "domain_mean_av": self._domain_mean_av(av_f, _panel_area),
+                        "frac_positive": self._frac_positive(av_f, _panel_area),
                     }
                     for lbl, av_f in per_cmip6.items()
                 }
@@ -1682,7 +1728,7 @@ class AddedValueDiag(DiagnosticBase):
             ax.set_yticklabels([r[1] for r in rows], fontsize=8)
             ax.invert_yaxis()
             ax.set_xlim(0, 100)
-            ax.set_xlabel("% of grid cells", fontsize=9)
+            ax.set_xlabel("% of area", fontsize=9)
             ax.axvline(50, color="k", lw=0.5, ls="--", alpha=0.35)
             ax.set_title(obs_label, fontsize=10, fontweight="bold", pad=4)
             ax.tick_params(axis="x", labelsize=8)
@@ -1694,7 +1740,7 @@ class AddedValueDiag(DiagnosticBase):
             for e in etypes
         ] + [
             Patch(facecolor=neutral_color, label="Neutral"),
-            Patch(facecolor=det_color, label="Deterioration"),
+            Patch(facecolor=det_color, label="Degradation"),
         ]
         first_ax.legend(
             handles=legend_handles, fontsize=8,
@@ -1702,7 +1748,7 @@ class AddedValueDiag(DiagnosticBase):
         )
 
         fig.suptitle(
-            f"Added Value — {period_label}: % improvement / neutral / deterioration\n"
+            f"Added Value — {period_label}: area-weighted % improvement / neutral / degradation\n"
             f"EERIE ensemble vs CMIP6 MMM",
             fontsize=11, fontweight="bold", y=1.01,
         )
@@ -1714,9 +1760,9 @@ class AddedValueDiag(DiagnosticBase):
             models=list(self.config.models),
             variables=list(all_obs_stats.keys()),
             description=(
-                f"Summary bar chart of improvement/neutral/deterioration "
+                f"Summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}) for all variables and obs datasets. "
-                f"Blue = EERIE improves, green = CMIP6 reference, red = deterioration."
+                f"Blue = EERIE improves, green = CMIP6 reference, red = degradation."
             ),
             plot_type="added_value_bars",
             period=self.period,
@@ -1865,7 +1911,7 @@ class AddedValueDiag(DiagnosticBase):
             ax.set_yticklabels([r[1] for r in rows], fontsize=8)
             ax.invert_yaxis()
             ax.set_xlim(0, 100)
-            ax.set_xlabel("% of grid cells", fontsize=9)
+            ax.set_xlabel("% of area", fontsize=9)
             ax.axvline(50, color="k", lw=0.5, ls="--", alpha=0.35)
             ax.set_title(obs_label, fontsize=10, fontweight="bold", pad=4)
             ax.tick_params(axis="x", labelsize=8)
@@ -1877,7 +1923,7 @@ class AddedValueDiag(DiagnosticBase):
             + [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
             + [
                 Patch(facecolor=neutral_color, label="Neutral"),
-                Patch(facecolor=det_color, label="Deterioration"),
+                Patch(facecolor=det_color, label="Degradation"),
             ]
         )
         first_ax.legend(
@@ -1886,7 +1932,7 @@ class AddedValueDiag(DiagnosticBase):
         )
 
         fig.suptitle(
-            f"Added Value — {period_label}: per-model % improvement / neutral / deterioration\n"
+            f"Added Value — {period_label}: per-model area-weighted % improvement / neutral / degradation\n"
             f"EERIE models vs CMIP6 MMM",
             fontsize=11, fontweight="bold", y=1.01,
         )
@@ -1898,10 +1944,10 @@ class AddedValueDiag(DiagnosticBase):
             models=list(self.config.models),
             variables=list(all_obs_stats.keys()),
             description=(
-                f"Per-model summary bar chart of improvement/neutral/deterioration "
+                f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
                 f"Blue shades = EERIE models vs CMIP6 MMM, "
-                f"green = CMIP6 mean vs EERIE mean, red = deterioration."
+                f"green = CMIP6 mean vs EERIE mean, red = degradation."
             ),
             plot_type="added_value_bars",
             period=self.period,
