@@ -455,7 +455,7 @@ class AddedValueDiag(DiagnosticBase):
         eerie_models_used: list[str] = []
 
         for model in self.config.models:
-            logger.info("  Loading EERIE model %s / %s", var, model)
+            logger.info("  Loading %s model %s / %s", self._project_name, var, model)
             try:
                 model_data = self._load_model_var(model, var, period=self.period)
             except (KeyError, FileNotFoundError):
@@ -555,7 +555,7 @@ class AddedValueDiag(DiagnosticBase):
                     eerie_seasonal_models[season].append(model)
 
         if not eerie_annual_fields:
-            logger.warning("No EERIE models found for %s — skipping", var)
+            logger.warning("No %s models found for %s — skipping", self._project_name, var)
             return None
 
         # EERIE ensemble mean and median (annual)
