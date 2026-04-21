@@ -53,16 +53,16 @@ _OBS_DISPLAY_NAMES: dict[str, str] = {
 
 @register
 class AddedValueDiag(DiagnosticBase):
-    """Added Value of EERIE ensemble vs CMIP6 MMM (Dosio et al. 2015).
+    """Added Value of the evaluated ensemble vs CMIP6 MMM (Dosio et al. 2015).
 
     Produces combined two-panel figures per variable per period
-    (annual, DJF, JJA) showing the spatial AV field for the EERIE
-    ensemble mean and ensemble median.  AV fields are also saved as
+    (annual, DJF, JJA) showing the spatial AV field for the ensemble
+    mean and ensemble median.  AV fields are also saved as
     CMORized NetCDF files for offline analysis.
     """
 
     name = "added_value"
-    title = "Added Value (EERIE vs CMIP6)"
+    title = "Added Value (ensemble vs CMIP6)"
     domain = "sfc"
     variables = [
         # Temperature & pressure
@@ -106,6 +106,7 @@ class AddedValueDiag(DiagnosticBase):
         self.period = period
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
+        self._project_name = self.config.project.get("name", "EERIE")
 
     # -- Output paths -------------------------------------------------------
 
@@ -1061,9 +1062,9 @@ class AddedValueDiag(DiagnosticBase):
                     },
                     attrs={
                         "long_name": (
-                            f"Added Value: EERIE ({ensemble_type}) vs "
+                            f"Added Value: {self._project_name} ({ensemble_type}) vs "
                             f"CMIP6 MMM for {meta['long_name']} "
-                            f"(AV>0 means EERIE adds value)"
+                            f"(AV>0 means {self._project_name} adds value)"
                         ),
                         "units": "1",
                         "valid_range": np.array([-1.0, 1.0]),
@@ -1071,7 +1072,7 @@ class AddedValueDiag(DiagnosticBase):
                             "Dosio et al. (2015), doi:10.1007/s00382-015-2869-x"
                         ),
                         "model1": "CMIP6 multi-model mean",
-                        "model2": f"EERIE {ensemble_type}",
+                        "model2": f"{self._project_name} {ensemble_type}",
                         "reference_dataset": meta.get("obs_dataset", "ERA5"),
                         "ensemble_type": ensemble_type,
                         "n_eerie_models": meta["n_eerie_models"],
@@ -1092,7 +1093,7 @@ class AddedValueDiag(DiagnosticBase):
         ds.attrs = {
             "Conventions": "CF-1.8",
             "title": (
-                f"Added Value: EERIE {ensemble_type} vs CMIP6 MMM — "
+                f"Added Value: {self._project_name} {ensemble_type} vs CMIP6 MMM — "
                 f"{meta['long_name']} ({period})"
             ),
             "institution": "Feather climate evaluation framework",
@@ -1461,8 +1462,8 @@ class AddedValueDiag(DiagnosticBase):
                 summary_stats: dict[str, Any] = {}
                 data_dict: dict[str, xr.DataArray] = {}
                 for etype, label in (
-                    ("ensemble_mean",   "AV(EERIE Ens. Mean)"),
-                    ("ensemble_median", "AV(EERIE Ens. Median)"),
+                    ("ensemble_mean",   f"AV({self._project_name} Ens. Mean)"),
+                    ("ensemble_median", f"AV({self._project_name} Ens. Median)"),
                 ):
                     dom_av = period_data[f"{etype}_domain_av"]
                     frac = period_data[f"{etype}_frac_positive"]
@@ -1490,8 +1491,8 @@ class AddedValueDiag(DiagnosticBase):
                     data_dict,
                     title=(
                         f"{var_info.long_name} {period_label} Added Value"
-                        f" — EERIE ensemble vs CMIP6 MMM"
-                        f"  (vs {obs_label}, green = EERIE better)"
+                        f" — {self._project_name} ensemble vs CMIP6 MMM"
+                        f"  (vs {obs_label}, green = {self._project_name} better)"
                     ),
                     cmap=_AV_CMAP,
                     vmin=-1.0, vmax=1.0,
@@ -1501,9 +1502,9 @@ class AddedValueDiag(DiagnosticBase):
                 meta1 = self._build_metadata(
                     title=(
                         f"{var_info.long_name} {period_label} Added Value "
-                        f"(EERIE ensemble vs CMIP6 MMM, obs: {obs_label})"
+                        f"({self._project_name} ensemble vs CMIP6 MMM, obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_added_value{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1511,9 +1512,9 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} ({period_label}), "
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
-                        f"AV > 0: EERIE ensemble reduces squared error over "
+                        f"AV > 0: {self._project_name} ensemble reduces squared error over "
                         f"CMIP6 MMM. "
-                        f"EERIE n={vr['n_eerie_models']}, "
+                        f"{self._project_name} n={vr['n_eerie_models']}, "
                         f"CMIP6 n={vr['n_cmip6_models']}."
                     ),
                     plot_type="added_value_map",
@@ -1546,7 +1547,7 @@ class AddedValueDiag(DiagnosticBase):
                     dom_av = self._domain_mean_av(av_field, _panel_area)
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
-                        f"EERIE: {model_name}\n"
+                        f"{self._project_name}: {model_name}\n"
                         f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
@@ -1555,7 +1556,7 @@ class AddedValueDiag(DiagnosticBase):
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
                         f"CMIP6: {cmip6_label}\n"
-                        f"vs EERIE mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                        f"vs {self._project_name} mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
 
@@ -1590,7 +1591,7 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} {period_label} Added Value "
                         f"— Individual Models (obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_added_value_models{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value_models{obs_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1598,8 +1599,8 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} ({period_label}), "
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
-                        f"EERIE panels: AV(CMIP6 MMM, EERIE_i, {obs_label}). "
-                        f"CMIP6 panels: AV(EERIE mean, CMIP6_j, {obs_label}). "
+                        f"{self._project_name} panels: AV(CMIP6 MMM, {self._project_name}_i, {obs_label}). "
+                        f"CMIP6 panels: AV({self._project_name} mean, CMIP6_j, {obs_label}). "
                         f"Green = model better than its baseline."
                     ),
                     plot_type="added_value_map",
@@ -1687,8 +1688,8 @@ class AddedValueDiag(DiagnosticBase):
             "cmip6_mean":   "#2ca02c",
         }
         etype_labels = {
-            "eerie_mean":   "EERIE mean",
-            "eerie_median": "EERIE median",
+            "eerie_mean":   f"{self._project_name} mean",
+            "eerie_median": f"{self._project_name} median",
             "cmip6_mean":   "CMIP6 mean",
         }
         neutral_color = "#d5d5d5"
@@ -1749,11 +1750,11 @@ class AddedValueDiag(DiagnosticBase):
 
         fig.suptitle(
             f"Added Value — {period_label}: area-weighted % improvement / neutral / degradation\n"
-            f"EERIE ensemble vs CMIP6 MMM",
+            f"{self._project_name} ensemble vs CMIP6 MMM",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
-        figure_id = f"added_value_bars_ensemble_{period_key}"
+        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}"
         meta = self._build_metadata(
             title=f"Added Value Summary — {period_label} (ensemble view)",
             figure_id=figure_id,
@@ -1762,7 +1763,7 @@ class AddedValueDiag(DiagnosticBase):
             description=(
                 f"Summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}) for all variables and obs datasets. "
-                f"Blue = EERIE improves, green = CMIP6 reference, red = degradation."
+                f"Blue = {self._project_name} improves, green = CMIP6 reference, red = degradation."
             ),
             plot_type="added_value_bars",
             period=self.period,
@@ -1933,11 +1934,11 @@ class AddedValueDiag(DiagnosticBase):
 
         fig.suptitle(
             f"Added Value — {period_label}: per-model area-weighted % improvement / neutral / degradation\n"
-            f"EERIE models vs CMIP6 MMM",
+            f"{self._project_name} models vs CMIP6 MMM",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
-        figure_id = f"added_value_bars_models_{period_key}"
+        figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}"
         meta = self._build_metadata(
             title=f"Added Value Summary — {period_label} (per-model view)",
             figure_id=figure_id,
@@ -1946,8 +1947,8 @@ class AddedValueDiag(DiagnosticBase):
             description=(
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
-                f"Blue shades = EERIE models vs CMIP6 MMM, "
-                f"green = CMIP6 mean vs EERIE mean, red = degradation."
+                f"Blue shades = {self._project_name} models vs CMIP6 MMM, "
+                f"green = CMIP6 mean vs {self._project_name} mean, red = degradation."
             ),
             plot_type="added_value_bars",
             period=self.period,
