@@ -240,6 +240,10 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.grib_loader import GRIBLoader
         return GRIBLoader(config)
 
+    if config.get_data_source_type() == "kerchunk_parquet":
+        from feather.data.kerchunk_loader import KerchunkParquetLoader
+        return KerchunkParquetLoader(config)
+
     from feather.data.loader import DataLoader, MultiCatalogLoader
 
     catalogs = config.model_catalogs

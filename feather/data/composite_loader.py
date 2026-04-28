@@ -124,6 +124,10 @@ class CompositeModelLoader:
             from feather.data.netcdf_loader import NetCDFLoader
             return NetCDFLoader(self._config)
 
+        if src_type == "kerchunk_parquet":
+            from feather.data.kerchunk_loader import KerchunkParquetLoader
+            return KerchunkParquetLoader(self._config)
+
         if src_type == "destine_catalog":
             from feather.data.loader import MultiCatalogLoader
             catalogs = self._config.model_catalogs
