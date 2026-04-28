@@ -1,0 +1,209 @@
+project:
+  name: "DestinE"
+  description: "Destination Earth Added Value: DestinE ensemble vs CMIP6 MMM"
+  experiment: "baseline_hist"
+  period: ["1990", "2014"]
+  resolution: "high-resolution (~5 km)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    This evaluation quantifies the Added Value (AV) of the Destination Earth
+    high-resolution ensemble (IFS-FESOM, IFS-NEMO, ICON at ~5 km) relative to
+    the CMIP6 multi-model mean. AV > 0 means the DestinE model reduces squared
+    error against observations compared to CMIP6; AV < 0 means CMIP6 performs
+    better. Primary reference datasets: Berkeley Earth HR (0.25°) for 2m
+    temperature, MSWEP v2.8 for precipitation, ERA5 for all other surface
+    variables.
+
+data_source:
+  type: "destine_catalog"
+
+model_catalogs:
+  2d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/2D/catalog.yaml"
+  3d: "/work/ab0995/a270088/DestinE/GENERATION2_joint/3D/catalog.yaml"
+
+models:
+  ifs-fesom:
+    grids: {sfc: healpix, o2d: healpix, pl: healpix, o3d: healpix}
+    member: 1
+    color: "#1f77b4"
+    absolute_salinity: false
+  ifs-nemo:
+    grids: {sfc: healpix, o2d: healpix, pl: healpix, o3d: healpix}
+    member: 1
+    color: "#ff7f0e"
+    absolute_salinity: true
+  icon:
+    grids: {sfc: healpix, o2d: healpix, pl: healpix, o3d: healpix}
+    member: 1
+    color: "#2ca02c"
+    absolute_salinity: false
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      sst: "ERA5_sea_surface_temperature_mon_full_sfc_1940-2024.nc"
+      msl: "ERA5_mean_sea_level_pressure_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      tcc: "ERA5_total_cloud_cover_mon_full_sfc_1940-2024.nc"
+      sshf: "ERA5_surface_sensible_heat_flux_mon_full_sfc_1940-2024.nc"
+      slhf: "ERA5_surface_latent_heat_flux_mon_full_sfc_1940-2024.nc"
+      ssr: "ERA5_surface_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      str: "ERA5_surface_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      ssrc: "ERA5_surface_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      strc: "ERA5_surface_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tsr: "ERA5_top_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      ttr: "ERA5_top_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      tsrc: "ERA5_top_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      ttrc: "ERA5_top_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tisr: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      ssrd: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      strd: "ERA5_surface_thermal_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      e: "ERA5_evaporation_mon_full_sfc_1940-2024.nc"
+      tclw: "ERA5_total_column_cloud_liquid_water_mon_full_sfc_1940-2024.nc"
+      tciw: "ERA5_total_column_cloud_ice_water_mon_full_sfc_1940-2024.nc"
+      u10: "ERA5_10m_u_component_of_wind_mon_full_sfc_1940-2024.nc"
+      v10: "ERA5_10m_v_component_of_wind_mon_full_sfc_1940-2024.nc"
+      siconc_era5: "ERA5_sea_ice_cover_mon_full_sfc_1940-2024.nc"
+  CERES_EBAF:
+    path: "{obs_root}/CERES/EBAF_v4.2.1"
+    variables:
+      toa: "CERES_EBAF-TOA_Edition4.2.1_MONTHLY_200003-202506.nc"
+      surface: "CERES_EBAF_Edition4.2.1_MONTHLY_200003-202506.nc"
+  EN4:
+    path: "{obs_root}/EN4/v4.2.2"
+    variables:
+      thetao: "thetao-EN4-1950-2024.nc"
+      so: "so-EN4-1950-2024.nc"
+  ESA_CCI:
+    path: "/work/ab0995/a270088/DestinE/OBS/ESA-CCI_temp"
+    variables:
+      analysed_sst: "ESA-CCI-L4_v3.0.1_monthly_1990_2014_sst.nc"
+      timemean: "ESA-CCI-L4_v3.0.1_timemean_1990_2014_sst.nc"
+      ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
+  OSI_SAF:
+    path: "{obs_root}/OSI-SAF/OSI-AQUA"
+    variables:
+      nh: "monthly/ice_conc_nh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+      sh: "monthly/ice_conc_sh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+  PSC:
+    path: "{obs_root}/PSC"
+    variables:
+      piomas: "PIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x120_curvgrid.nc"
+      giomas: "GIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x276_curvgrid.nc"
+  AVISO:
+    path: "{obs_root}/AVISO/vDT2024"
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
+  BERKELEY_EARTH:
+    path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
+
+cmip6:
+  enabled: true
+  catalog_path: "/home/a/a270088/PYTHON/DestinE/cmip6/cmip6_zarr_catalog.yaml"
+  regrid_resolution: 0.25
+  influence_radius: 80000
+  ensemble_mode: "one_per_model"
+  models:
+    CanESM5:
+      variant: "r1i1p1f1"
+    MPI-ESM1-2-LR:
+      variant: "r1i1p1f1"
+    GISS-E2-1-G:
+      variant: "r1i1p1f2"
+    IPSL-CM6A-LR:
+      variant: "r1i1p1f1"
+    ACCESS-ESM1-5:
+      variant: "r1i1p1f1"
+    EC-Earth3:
+      variant: "r1i1p1f1"
+    CNRM-CM6-1:
+      variant: "r1i1p1f2"
+    AWI-CM-1-1-MR:
+      variant: "r1i1p1f1"
+    CNRM-ESM2-1:
+      variant: "r1i1p1f2"
+    FGOALS-g3:
+      variant: "r1i1p1f1"
+    INM-CM5-0:
+      variant: "r1i1p1f1"
+    MRI-ESM2-0:
+      variant: "r1i1p1f1"
+
+ocean_3d:
+  depth_levels:
+    ifs-fesom: [2.5, 7.5, 12.5, 17.5, 22.5, 27.5, 32.5, 37.5, 42.5, 47.5, 52.5, 57.5, 62.5, 67.5, 72.5, 77.5, 82.5, 87.5, 92.5, 97.5, 105, 115, 125, 135, 145, 155, 165, 175, 185, 195, 210, 230, 250, 270, 290, 320, 360, 400, 440, 480, 520, 560, 600, 640, 710, 810, 950, 1110, 1255, 1415, 1600, 1810, 2035, 2275, 2525, 2775, 3025, 3275, 3525, 3775, 4025, 4275, 4525, 4775, 5025, 5275, 5525, 5825, 6175]
+    ifs-nemo: [0.506, 1.556, 2.668, 3.856, 5.14, 6.543, 8.093, 9.823, 11.774, 13.991, 16.525, 19.43, 22.758, 26.558, 30.875, 35.74, 41.18, 47.212, 53.851, 61.113, 69.022, 77.611, 86.929, 97.041, 108.03, 120.0, 133.076, 147.406, 163.164, 180.55, 199.79, 221.141, 244.891, 271.356, 300.888, 333.863, 370.688, 411.794, 457.626, 508.64, 565.292, 628.026, 697.259, 773.368, 856.679, 947.448, 1045.854, 1151.991, 1265.861, 1387.377, 1516.364, 1652.568, 1795.671, 1945.296, 2101.027, 2262.422, 2429.025, 2600.38, 2776.039, 2955.57, 3138.565, 3324.641, 3513.446, 3704.657, 3897.982, 4093.159, 4289.953, 4488.155, 4687.581, 4888.07, 5089.479, 5291.683, 5494.575, 5698.061, 5902.058]
+    icon: [1.0, 3.1, 5.45, 8.1, 11.05, 14.35, 18.05, 22.2, 26.85, 32.0, 37.65, 43.8, 50.55, 57.95, 66.0, 74.8, 84.45, 95.0, 106.5, 119.1, 132.9, 147.95, 164.35, 182.25, 201.8, 223.15, 246.45, 271.85, 299.55, 329.75, 362.65, 398.45, 437.4, 479.25, 523.45, 569.5, 617.1, 666.3, 717.15, 769.7, 824.0, 880.1, 938.05, 997.9, 1059.75, 1124.5, 1194.1, 1270.7, 1356.3, 1451.7, 1556.8, 1671.95, 1796.45, 1929.5, 2071.4, 2222.45, 2382.9, 2552.9, 2732.5, 2921.75, 3120.6, 3328.85, 3546.25, 3772.45, 4006.95, 4249.15, 4498.3, 4753.55, 5014.0, 5278.6, 5546.25, 5815.75]
+  half_levels:
+    ifs-fesom: [0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0, 95.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0, 190.0, 200.0, 220.0, 240.0, 260.0, 280.0, 300.0, 340.0, 380.0, 420.0, 460.0, 500.0, 540.0, 580.0, 620.0, 660.0, 760.0, 860.0, 1040.0, 1180.0, 1330.0, 1500.0, 1700.0, 1920.0, 2150.0, 2400.0, 2650.0, 2900.0, 3150.0, 3400.0, 3650.0, 3900.0, 4150.0, 4400.0, 4650.0, 4900.0, 5150.0, 5400.0, 5650.0, 6000.0, 6350.0]
+    icon: [0, 2.0, 4.2, 6.7, 9.5, 12.6, 16.1, 20.0, 24.4, 29.3, 34.7, 40.6, 47.0, 54.1, 61.8, 70.2, 79.4, 89.5, 100.5, 112.5, 125.7, 140.1, 155.8, 172.9, 191.6, 212.0, 234.3, 258.6, 285.1, 314.0, 345.5, 379.8, 417.1, 457.7, 500.8, 546.1, 592.9, 641.3, 691.3, 743.0, 796.4, 851.6, 908.6, 967.5, 1028.3, 1091.2, 1157.8, 1230.4, 1311.0, 1401.6, 1501.8, 1611.8, 1732.1, 1860.8, 1998.2, 2144.6, 2300.3, 2465.5, 2640.3, 2824.7, 3018.8, 3222.4, 3435.3, 3657.2, 3887.7, 4126.2, 4372.1, 4624.5, 4882.6, 5145.4, 5411.8, 5680.7, 5950.8]
+    # NEMO: half-levels computed from full levels (midpoints)
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  ocean_influence_radius: 20000
+  method: "linear"
+
+output_dir: "./output_destine_added_value"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — DestinE Added Value"
+  subtitle: "DestinE High-Resolution Ensemble Added Value vs CMIP6 (1990-2014)"
+  group_order:
+    - evaluation
+    - temperature
+    - precipitation
+    - radiation
+    - circulation
+    - ocean_surface
+    - sea_ice
+    - ocean_3d
+    - atmosphere_3d
+  group_labels:
+    evaluation: "Global Biases"
+    temperature: "Temperature"
+    precipitation: "Precipitation"
+    radiation: "Radiation Budget"
+    circulation: "Atmospheric Circulation"
+    clouds: "Clouds"
+    wind: "Wind"
+    moisture: "Moisture"
+    surface_fluxes: "Surface Fluxes"
+    ocean_surface: "Ocean Surface"
+    sea_ice: "Sea Ice"
+    ocean_3d: "Ocean 3D"
+    atmosphere_3d: "Atmosphere 3D"
