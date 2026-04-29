@@ -481,6 +481,33 @@ class TestErrors:
         with pytest.raises(FileNotFoundError):
             loader._store_path("IFS-FESOM2-SR", "atmos2d")
 
+    def test_per_model_data_root_overrides_global(self, tmp_path):
+        """ModelConfig.data_root should take precedence over global data_source.root."""
+        custom_root = tmp_path / "custom_kerchunk_root"
+        config = FeatherConfig(
+            model_catalogs={},
+            models=["M"],
+            obs_root="",
+            obs_datasets={},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "out"),
+            data_source={"type": "cmor", "root": "/cmor/root"},
+            model_configs={
+                "M": ModelConfig(
+                    name="M",
+                    variant="r2i1p1f1",
+                    data_root=str(custom_root),
+                    grids={},
+                    color="#000000",
+                )
+            },
+        )
+        loader = KerchunkParquetLoader(config)
+        with pytest.raises(FileNotFoundError, match=str(custom_root)):
+            loader._store_path("M", "atmos2d")
+
 
 # ── Variable registry coverage ───────────────────────────────────────────
 

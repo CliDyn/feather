@@ -345,7 +345,10 @@ class KerchunkParquetLoader:
         """Resolve the parquet file path for *model* and *store_type*."""
         mc = self._config.model_configs.get(model)
         variant = mc.variant if mc and mc.variant else "r1i1p1f1"
-        base = self._root / variant
+        # Per-model data_root overrides global root (needed in composite configs
+        # where the global root is the CMOR tree, not the kerchunk base).
+        root = Path(mc.data_root) if (mc and mc.data_root) else self._root
+        base = root / variant
 
         if store_type == "atmos2d":
             p = base / "atmos" / "gr025" / "2D_monthly_0.25deg_atmos_avg.parq"
