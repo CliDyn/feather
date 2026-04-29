@@ -40,3 +40,5 @@ dependencies:
     - pydantic>=2.0
     - google-genai>=1.0
     - openai>=1.0
+    - kerchunk>=0.2
+    - fastparquet>=2023.0

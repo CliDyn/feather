@@ -10,6 +10,7 @@ Feather compares high-resolution climate models against observations (ERA5, CERE
 |-----------|--------|-----------|------|-------------|
 | **DestinE** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
 | **EERIE HighResMIP** | IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 | ~10 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR directory tree |
+| **EERIE multi-member** | IFS-FESOM2-SR (r1–r3), IFS-NEMO-ER (r1–r3), ICON-ESM-ER, HadGEM3-GC5 | ~10 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR + kerchunk parquet |
 | **IFS-FESOM T319** | IFS-FESOM (T319) | ~60 km | HEALPix | per-year NetCDF |
 | **DestinE GRIB** | IFS-FESOM TCO399/TCO319 | ~25-35 km | lat/lon | GRIB files |
 | **TerraDT** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
@@ -64,8 +65,14 @@ diagnostics  →  analyze  →  report  →  website
 # DestinE (default config)
 feather --config configs/default.yaml -v
 
-# EERIE HighResMIP
+# EERIE HighResMIP (4 models)
 feather --config configs/eerie.yaml -v
+
+# EERIE — 3 IFS-NEMO-ER members + IFS-FESOM2-SR + ICON-ESM-ER + HadGEM3-GC5
+feather --config configs/eerie_ifsnemo_members.yaml -v
+
+# EERIE — all 8 members (3×IFS-FESOM2-SR + 3×IFS-NEMO-ER + ICON-ESM-ER + HadGEM3-GC5)
+feather --config configs/eerie_all_members.yaml -v
 
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
@@ -196,12 +203,14 @@ All diagnostics support:
 
 ## Configuration
 
-Feather uses YAML configuration files. Nine configs are provided:
+Feather uses YAML configuration files. Eleven configs are provided:
 
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
 | `configs/default.yaml` | DestinE (3 models) | intake catalogs | `multi_model` |
 | `configs/eerie.yaml` | EERIE HighResMIP (4 models) | CMOR directory tree | `multi_model` |
+| `configs/eerie_ifsnemo_members.yaml` | EERIE — 3 IFS-NEMO-ER + 3 other models | CMOR (hist-1950 + hist-1975) | `multi_model` |
+| `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |
@@ -216,6 +225,8 @@ The `models` key determines the config format:
 - **List** (`models: [ifs-fesom, ifs-nemo, icon]`) — legacy DestinE format, auto-populates HEALPix grid defaults
 - **Dict** (`models: {ModelA: {institution: ..., grids: ...}}`) — structured format with per-model configuration
 
+`data_source.type` selects the loading backend: `"cmor"`, `"destine_catalog"`, `"netcdf_healpix"`, `"grib"`, or `"kerchunk_parquet"`.  Individual models can override the global backend with a per-model `data_source_type` key (used by `eerie_all_members.yaml` to mix CMOR and kerchunk parquet in the same run).
+
 ### Structured config example (EERIE-style)
 
 ```yaml
@@ -229,7 +240,7 @@ project:
   comparison_description: ""             # optional free-text for LLM prompt framing
 
 data_source:
-  type: "cmor"                           # cmor | destine_catalog | netcdf_healpix | grib
+  type: "cmor"                           # cmor | destine_catalog | netcdf_healpix | grib | kerchunk_parquet
   root: "/path/to/CMOR/tree"
 
 models:
@@ -263,6 +274,26 @@ models:
     grids: {sfc: latlon, o2d: latlon, o3d: latlon}
 ```
 
+The same pattern is used in `eerie_all_members.yaml` to mix CMOR (r1 members) with kerchunk parquet (r2/r3 members):
+
+```yaml
+data_source:
+  type: "cmor"
+  root: "/path/to/CMOR/EERIE/HighResMIP"
+
+models:
+  IFS-FESOM2-SR:                         # r1: standard CMOR path
+    institution: AWI
+    variant: r1i1p1f1
+    ...
+  IFS-FESOM2-SR-r2:                      # r2: kerchunk parquet reference store
+    institution: AWI
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/path/to/kerchunks/IFS-FESOM2/hist-1950"
+    ...
+```
+
 ### Per-model overrides
 
 `ModelConfig` supports:
@@ -294,7 +325,7 @@ All configs share:
 
 ## Data backends
 
-Feather supports five data loading backends:
+Feather supports six data loading backends:
 
 | Backend | Class | Config type | Grid |
 |---------|-------|------------|------|
@@ -302,7 +333,10 @@ Feather supports five data loading backends:
 | CMOR directory tree | `CMORLoader` | `cmor` | regular lat/lon (NetCDF) |
 | Per-year NetCDF | `NetCDFLoader` | `netcdf_healpix` | HEALPix (NetCDF) |
 | GRIB files | `GRIBLoader` | `grib` | regular lat/lon (GRIB) |
+| Kerchunk parquet reference stores | `KerchunkParquetLoader` | `kerchunk_parquet` | regular lat/lon (via fsspec) |
 | Multi-source | `CompositeModelLoader` | mixed | per-model |
+
+`KerchunkParquetLoader` reads IFS-FESOM2 ensemble members stored as kerchunk parquet reference files pointing to raw GRIB/FESOM output. Store layout: `{root}/{variant}/atmos/gr025/*.parq` (atmosphere 2D/3D monthly) and `ocean/gr025/2D_daily_avg_*.parq` (ocean 2D daily, resampled to monthly). Requires `kerchunk`, `fastparquet`, and `fsspec` in the Python environment.
 
 The `CompositeModelLoader` automatically routes `load_var()` calls to the correct backend per model based on `data_source_type` in the model config.
 
@@ -368,6 +402,7 @@ feather/
     cmor_loader.py       # CMORLoader (CMOR directory tree, e.g. EERIE)
     netcdf_loader.py     # NetCDFLoader (per-year NetCDF on HEALPix grid)
     grib_loader.py       # GRIBLoader (GRIB files on regular lat/lon grid)
+    kerchunk_loader.py   # KerchunkParquetLoader (kerchunk parquet reference stores)
     composite_loader.py  # CompositeModelLoader (multi-source routing)
     obs.py               # ObsLoader (observations from config)
     cmip6.py             # CMIP6Loader (multi-model mean from zarr)
@@ -463,7 +498,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1396 tests (1391 unit + 5 integration) across 31 test files.
+1666 tests (1661 unit + 5 integration) across 32 test files.
 
 ## Requirements
 
