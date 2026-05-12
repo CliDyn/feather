@@ -226,9 +226,10 @@ class KerchunkParquetLoader:
         ds = self._open_store(model, "atmos2d")
         raw = ds[kname]
 
-        # Replace GRIB fill value
+        # Replace GRIB fill value (exact equality: 9999.0 is the GRIB sentinel,
+        # never a real value even for Pa-unit fields like psl ~100 000 Pa)
         data = raw.values.copy().astype(np.float32)
-        data[data >= _ATMOS_FILL_VALUE] = np.nan
+        data[data == _ATMOS_FILL_VALUE] = np.nan
         if scale != 1.0:
             data *= np.float32(scale)
 
