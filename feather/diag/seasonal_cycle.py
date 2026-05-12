@@ -207,6 +207,8 @@ class SeasonalCycleDiag(DiagnosticBase):
                         "J", "A", "S", "O", "N", "D"]
 
         var_info = vr["var_info"]
+        _off = var_info.display_offset          # e.g. -273.15 for K\u2192\u00b0C, 0 otherwise
+        _disp_units = var_info.display_units or var_info.units
 
         fig, ax = plt.subplots(figsize=(8, 5))
         months = np.arange(1, 13)
@@ -217,7 +219,7 @@ class SeasonalCycleDiag(DiagnosticBase):
         for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
             label = "CMIP6 members" if i == 0 else "_nolegend_"
             ax.plot(
-                months, monthly.values,
+                months, monthly.values + _off,
                 color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                 label=label,
             )
@@ -227,7 +229,7 @@ class SeasonalCycleDiag(DiagnosticBase):
         # Layer 2: CMIP6 MMM line (middle)
         if vr.get("cmip6_monthly") is not None:
             ax.plot(
-                months, vr["cmip6_monthly"].values,
+                months, vr["cmip6_monthly"].values + _off,
                 marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
                 linewidth=1.5, linestyle="--",
             )
@@ -236,14 +238,14 @@ class SeasonalCycleDiag(DiagnosticBase):
         for model, monthly in vr["models"].items():
             color = self.config.get_model_color(model)
             ax.plot(
-                months, monthly.values,
+                months, monthly.values + _off,
                 marker="o", label=model, color=color,
             )
 
         # Layer 4: Observations (top)
         obs_monthly = vr["obs"]
         ax.plot(
-            months, obs_monthly.values,
+            months, obs_monthly.values + _off,
             marker="s", label=var_info.obs_dataset, color=OBS_COLOR,
             linewidth=2,
         )
@@ -251,7 +253,7 @@ class SeasonalCycleDiag(DiagnosticBase):
         ax.set_xticks(months)
         ax.set_xticklabels(month_labels)
         ax.set_title(f"{var_info.long_name} \u2014 Seasonal Cycle")
-        ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
+        ax.set_ylabel(f"{var_info.long_name} ({_disp_units})")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()

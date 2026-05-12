@@ -362,7 +362,7 @@ class AddedValueDiag(DiagnosticBase):
         # Convert decimal-year time → DatetimeIndex
         dec_years = ds_full["time"].values
         years = dec_years.astype(int)
-        months = np.round((dec_years - years) * 12).astype(int) + 1
+        months = np.floor((dec_years - years) * 12).astype(int) + 1
         months = np.clip(months, 1, 12)
         datetimes = pd.to_datetime(
             [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]

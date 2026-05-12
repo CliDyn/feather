@@ -55,6 +55,8 @@ class VarInfo:
     obs_unit_offset: float = 0.0   # Add after multiplying
     cmor_obs_sign: float = 1.0    # Sign flip for obs when comparing vs CMOR data
     group: str = ""
+    display_offset: float = 0.0   # Subtract from values at plot time (e.g. -273.15 for K→°C)
+    display_units: str = ""        # Display label override (e.g. "°C"); empty → use units
 
 
 VARIABLE_REGISTRY: dict[str, VarInfo] = {
@@ -72,6 +74,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         destine_variable="avg_2t",
         cmip6_variable="tas", cmip6_table="Amon",
         group="temperature",
+        display_offset=-273.15, display_units="°C",
     ),
     "ts": VarInfo(
         name="ts", long_name="Skin Temperature", units="K",
@@ -82,6 +85,7 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         # Comparison is only meaningful over ocean.
         cmip6_variable="ts", cmip6_table="Amon",
         group="temperature",
+        display_offset=-273.15, display_units="°C",
     ),
     "psl": VarInfo(
         name="psl", long_name="Mean Sea Level Pressure", units="Pa",

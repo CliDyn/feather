@@ -166,6 +166,50 @@ def cmip6_berkeley_config(tmp_path):
     )
 
 
+@pytest.fixture
+def synth_be_hr_nc(tmp_path):
+    """Synthetic 0.25° Berkeley Earth HR NetCDF file (minimal structure)."""
+    lats = np.array([-87.5, -82.5, -77.5], dtype=np.float32)
+    lons = np.array([-177.5, -172.5, -167.5], dtype=np.float32)  # -180..180
+    # Decimal-year time: Jan-Dec 1990
+    dec_years = np.array([1990 + (m - 0.5) / 12 for m in range(1, 13)])
+    # Monthly anomaly (degC, small values)
+    anom = np.zeros((12, len(lats), len(lons)), dtype=np.float32)
+    # Climatology: lat-gradient base in degC (month_number × lat × lon)
+    clim_base = 15.0 - 40.0 * np.abs(lats[:, np.newaxis] / 90.0)
+    clim = np.broadcast_to(clim_base[np.newaxis, :, :], (12, len(lats), len(lons))).copy().astype(np.float32)
+    ds = xr.Dataset(
+        {
+            "temperature": xr.DataArray(anom, dims=("time", "latitude", "longitude")),
+            "climatology": xr.DataArray(clim, dims=("month_number", "latitude", "longitude")),
+        },
+        coords={"latitude": lats, "longitude": lons, "time": dec_years},
+    )
+    nc_path = tmp_path / "Global_TAVG_Gridded_0p25deg.nc"
+    ds.to_netcdf(nc_path)
+    return nc_path
+
+
+@pytest.fixture
+def berkeley_config_hr(tmp_path, synth_be_hr_nc):
+    """FeatherConfig with BERKELEY_EARTH_HR dataset (0.25° file)."""
+    return FeatherConfig(
+        model_catalogs={},
+        models=["ifs-fesom"],
+        obs_root="",
+        obs_datasets={
+            "BERKELEY_EARTH_HR": {
+                "path": str(synth_be_hr_nc.parent),
+                "variables": {"temperature": synth_be_hr_nc.name},
+            },
+        },
+        cmip6={"enabled": False},
+        dask={},
+        nereus={"influence_radius": 1_000_000},
+        output_dir=str(tmp_path / "output"),
+    )
+
+
 # ── Mock loaders ──────────────────────────────────────────────────────
 
 
@@ -412,6 +456,62 @@ class TestBerkeleyEarthLoading:
         diag = _make_diag(loader, obs, cfg)
         with pytest.raises(KeyError):
             diag._load_berkeley_earth()
+
+
+class TestBerkeleyEarthHRLoading:
+    """Test the 0.25° HR Berkeley Earth loading path."""
+
+    def test_hr_dispatch_when_hr_in_config(self, berkeley_config_hr, synth_temp_obs):
+        """When BERKELEY_EARTH_HR is in config, _load_berkeley_earth uses HR path."""
+        loader = MockTempModelLoader(xr.Dataset())
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, berkeley_config_hr)
+        result = diag._load_berkeley_earth(period=("1990", "1990"))
+        assert result is not None
+        assert "lat" in result.dims
+        assert "lon" in result.dims
+        # Result should be in Kelvin (climatology base ~15°C + 273.15 ≈ 288K)
+        assert float(result.mean()) > 200
+
+    def test_legacy_dispatch_without_hr(self, synth_temp_obs_degc, berkeley_config):
+        """When only BERKELEY_EARTH in config, _load_berkeley_earth uses legacy path."""
+        obs = MockBerkeleyObsLoader(synth_temp_obs_degc)
+        loader = MockTempModelLoader(xr.Dataset())
+        diag = _make_diag(loader, obs, berkeley_config)
+        result = diag._load_berkeley_earth()
+        assert float(result.mean()) > 200  # in Kelvin
+
+    def test_hr_absolute_temp_from_anomaly_plus_clim(self, berkeley_config_hr,
+                                                      synth_temp_obs):
+        """HR loader reconstructs absolute temperature (anomaly + climatology)."""
+        loader = MockTempModelLoader(xr.Dataset())
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, berkeley_config_hr)
+        result = diag._load_berkeley_earth_hr(period=("1990", "1990"))
+        # Climatology base ~15°C + 0 anomaly + 273.15 → ~288K in tropics
+        assert float(result.mean()) > 200
+        assert "lat" in result.dims
+        assert "lon" in result.dims
+
+    def test_hr_lon_shifted_to_0_360(self, berkeley_config_hr, synth_temp_obs):
+        """HR loader shifts lons from -180..180 to 0..360."""
+        loader = MockTempModelLoader(xr.Dataset())
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, berkeley_config_hr)
+        result = diag._load_berkeley_earth_hr(period=("1990", "1990"))
+        assert float(result.lon.min()) >= 0
+        assert float(result.lon.max()) <= 360
+
+    def test_hr_dims_renamed(self, berkeley_config_hr, synth_temp_obs):
+        """HR loader renames latitude/longitude → lat/lon."""
+        loader = MockTempModelLoader(xr.Dataset())
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, berkeley_config_hr)
+        result = diag._load_berkeley_earth_hr(period=("1990", "1990"))
+        assert "lat" in result.dims
+        assert "lon" in result.dims
+        assert "latitude" not in result.dims
+        assert "longitude" not in result.dims
 
 
 class TestSharedDataLoading:
@@ -765,7 +865,7 @@ class TestTrends:
         if figures:
             _, meta = figures[0]
             assert meta["figure_id"] == "tas_trend_combined"
-            assert "K/decade" in meta.get("computation_notes", "")
+            assert "°C/decade" in meta.get("computation_notes", "")
         import matplotlib.pyplot as plt
         plt.close("all")
 
@@ -1334,4 +1434,4 @@ class TestPrompts:
     def test_figure_analysis_has_warming_trends(self):
         from feather.llm.prompts import build_figure_analysis_system
         system = build_figure_analysis_system()
-        assert "warming trend" in system.lower() or "K/decade" in system
+        assert "warming trend" in system.lower() or "°C/decade" in system
