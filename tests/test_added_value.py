@@ -532,7 +532,7 @@ class TestMultiObsStats:
         assert data["variable"] == "tas"
         assert "periods" in data
         assert "threshold" in data
-        assert data["threshold"] == pytest.approx(0.001)
+        assert data["threshold"] == pytest.approx(0.005)
         assert "ERA5" in data["periods"]["annual"]
 
     def test_obs_stats_in_figure_metadata(self, diag_multi):

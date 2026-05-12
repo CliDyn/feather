@@ -147,6 +147,10 @@ class AddedValueDiag(DiagnosticBase):
                     return False
         return True
 
+    def _bars_models_eerie_id(self, period_key: str) -> str:
+        """Figure ID for the EERIE-only (no CMIP6 bar) models bar chart."""
+        return f"added_value_bars_models_eerie_{period_key}_{self.period[0]}_{self.period[1]}"
+
     # -- Orchestration -------------------------------------------------------
 
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
@@ -237,6 +241,25 @@ class AddedValueDiag(DiagnosticBase):
                     except Exception:
                         logger.warning(
                             "Bar chart %s failed", bar_id, exc_info=True,
+                        )
+
+                # Additional EERIE-only bar chart (no CMIP6 mean bar)
+                eerie_bar_id = self._bars_models_eerie_id(period_key)
+                if skip_existing and self._figure_exists(eerie_bar_id):
+                    saved.append((
+                        self.output_dir / f"{eerie_bar_id}.png",
+                        self.output_dir / f"{eerie_bar_id}.json",
+                    ))
+                else:
+                    try:
+                        for fig, meta in self._plot_summary_bars_models(
+                            all_obs_stats, period_key, show_cmip6_bar=False,
+                        ):
+                            paths = self._save(fig, meta, meta["figure_id"])
+                            saved.append(paths)
+                    except Exception:
+                        logger.warning(
+                            "Bar chart %s failed", eerie_bar_id, exc_info=True,
                         )
 
         logger.info(
@@ -968,7 +991,7 @@ class AddedValueDiag(DiagnosticBase):
     @staticmethod
     def _frac_categories(
         av: xr.DataArray,
-        threshold: float = 0.001,
+        threshold: float = 0.005,
         area: np.ndarray | None = None,
     ) -> dict[str, float]:
         """Area-weighted percentage in each AV category.
@@ -978,7 +1001,7 @@ class AddedValueDiag(DiagnosticBase):
         av : xr.DataArray
             AV field in [-1, 1].
         threshold : float
-            Half-width of the neutral zone (default 0.001).
+            Half-width of the neutral zone (default 0.005).
         area : np.ndarray, optional
             Cell areas (m², same shape as *av*).  When provided the
             percentages are area-weighted; otherwise plain cell counts.
@@ -1361,7 +1384,7 @@ class AddedValueDiag(DiagnosticBase):
             {
               "variable": "tas",
               "period": ["1980", "2014"],
-              "threshold": 0.001,
+              "threshold": 0.005,
               "periods": {
                 "annual": {
                   "ERA5": {
@@ -1386,7 +1409,7 @@ class AddedValueDiag(DiagnosticBase):
         payload = {
             "variable": var,
             "period": [nc_meta["period_start"], nc_meta["period_end"]],
-            "threshold": 0.001,
+            "threshold": 0.005,
             "eerie_models": nc_meta.get("eerie_models", []),
             "n_eerie_models": nc_meta.get("n_eerie_models", 0),
             "cmip6_models": nc_meta.get("cmip6_models", []),
@@ -1635,7 +1658,7 @@ class AddedValueDiag(DiagnosticBase):
         each stacked [improvement | neutral | deterioration].
 
         Colors: EERIE improvement = blue palette, CMIP6 = green,
-        neutral = light gray, deterioration = always red.
+        neutral = light gray, deterioration = white.
         """
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
@@ -1693,7 +1716,7 @@ class AddedValueDiag(DiagnosticBase):
             "cmip6_mean":   "CMIP6 mean",
         }
         neutral_color = "#d5d5d5"
-        det_color = "#c0392b"
+        det_color = "white"
         etypes = ["eerie_mean", "eerie_median", "cmip6_mean"]
 
         for pi, (obs_name, obs_label) in enumerate(active):
@@ -1763,7 +1786,7 @@ class AddedValueDiag(DiagnosticBase):
             description=(
                 f"Summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}) for all variables and obs datasets. "
-                f"Blue = {self._project_name} improves, green = CMIP6 reference, red = degradation."
+                f"Blue = {self._project_name} improves, green = CMIP6 reference, white = degradation."
             ),
             plot_type="added_value_bars",
             period=self.period,
@@ -1774,12 +1797,20 @@ class AddedValueDiag(DiagnosticBase):
         self,
         all_obs_stats: dict[str, dict],
         period_key: str,
+        show_cmip6_bar: bool = True,
     ) -> list[tuple[plt.Figure, dict]]:
         """Grouped horizontal stacked bar chart — per-EERIE-model view.
 
         Same layout as ``_plot_summary_bars_ensemble`` but each variable
-        group shows one bar per EERIE model (blue palette) plus CMIP6 mean
-        (green).  Requires ``per_eerie_models`` in obs_stats.
+        group shows one bar per EERIE model (blue palette) plus optionally
+        the CMIP6 mean bar (green).  Requires ``per_eerie_models`` in
+        obs_stats.
+
+        Parameters
+        ----------
+        show_cmip6_bar : bool
+            When False, omit the CMIP6 mean bar and produce a separate
+            figure ID (``added_value_bars_models_eerie_{period}``).
         """
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
@@ -1823,16 +1854,16 @@ class AddedValueDiag(DiagnosticBase):
 
         active = [(n, lbl) for n, lbl in obs_panels if n in panel_rows]
         n_panels = len(active)
-        n_bars = len(eerie_model_names) + 1  # models + CMIP6 mean
+        # +2 ensemble summary bars when EERIE-only view
+        n_bars = len(eerie_model_names) + (1 if show_cmip6_bar else 2)
 
-        # Blue palette: darker shades for more models
-        _blue_palette = ["#08519c", "#2171b5", "#4292c6", "#6baed6",
-                         "#9ecae1", "#c6dbef"]
-        eerie_colors = {m: _blue_palette[i % len(_blue_palette)]
-                        for i, m in enumerate(eerie_model_names)}
+        eerie_colors = {m: self.config.get_model_color(m)
+                        for m in eerie_model_names}
         cmip6_color = "#2ca02c"
+        ensemble_mean_color = "#c5b0d5"    # light purple
+        ensemble_median_color = "#9467bd"  # purple
         neutral_color = "#d5d5d5"
-        det_color = "#c0392b"
+        det_color = "white"
 
         bar_h = 0.20
         grp_pad = 0.18
@@ -1887,26 +1918,52 @@ class AddedValueDiag(DiagnosticBase):
                 ax.barh(ys, det, height=bar_h, left=imp + neu,
                         color=det_color, label="_")
 
-            # CMIP6 mean bar (last in group)
-            imp_c = np.array([
-                r[2].get("cmip6_mean", {}).get("pct_improvement", 0.0)
-                for r in rows
-            ])
-            neu_c = np.array([
-                r[2].get("cmip6_mean", {}).get("pct_neutral", 0.0)
-                for r in rows
-            ])
-            det_c = np.array([
-                r[2].get("cmip6_mean", {}).get("pct_deterioration", 0.0)
-                for r in rows
-            ])
-            ys_c = grp_centers + y_offsets[len(eerie_model_names)]
-            ax.barh(ys_c, imp_c, height=bar_h, color=cmip6_color,
-                    label="CMIP6 mean")
-            ax.barh(ys_c, neu_c, height=bar_h, left=imp_c,
-                    color=neutral_color, label="_")
-            ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
-                    color=det_color, label="_")
+            # CMIP6 mean bar (last in group, optional)
+            if show_cmip6_bar:
+                imp_c = np.array([
+                    r[2].get("cmip6_mean", {}).get("pct_improvement", 0.0)
+                    for r in rows
+                ])
+                neu_c = np.array([
+                    r[2].get("cmip6_mean", {}).get("pct_neutral", 0.0)
+                    for r in rows
+                ])
+                det_c = np.array([
+                    r[2].get("cmip6_mean", {}).get("pct_deterioration", 0.0)
+                    for r in rows
+                ])
+                ys_c = grp_centers + y_offsets[len(eerie_model_names)]
+                ax.barh(ys_c, imp_c, height=bar_h, color=cmip6_color,
+                        label="CMIP6 mean")
+                ax.barh(ys_c, neu_c, height=bar_h, left=imp_c,
+                        color=neutral_color, label="_")
+                ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
+                        color=det_color, label="_")
+
+            # Ensemble mean + median summary bars (EERIE-only view)
+            else:
+                for ei, (etype, ec, elabel) in enumerate([
+                    ("eerie_mean",   ensemble_mean_color,   "Ensemble mean"),
+                    ("eerie_median", ensemble_median_color, "Ensemble median"),
+                ]):
+                    imp_e = np.array([
+                        r[2].get(etype, {}).get("pct_improvement", 0.0)
+                        for r in rows
+                    ])
+                    neu_e = np.array([
+                        r[2].get(etype, {}).get("pct_neutral", 0.0)
+                        for r in rows
+                    ])
+                    det_e = np.array([
+                        r[2].get(etype, {}).get("pct_deterioration", 0.0)
+                        for r in rows
+                    ])
+                    ys_e = grp_centers + y_offsets[len(eerie_model_names) + ei]
+                    ax.barh(ys_e, imp_e, height=bar_h, color=ec, label=elabel)
+                    ax.barh(ys_e, neu_e, height=bar_h, left=imp_e,
+                            color=neutral_color, label="_")
+                    ax.barh(ys_e, det_e, height=bar_h, left=imp_e + neu_e,
+                            color=det_color, label="_")
 
             ax.set_yticks(grp_centers)
             ax.set_yticklabels([r[1] for r in rows], fontsize=8)
@@ -1921,7 +1978,13 @@ class AddedValueDiag(DiagnosticBase):
         first_ax = fig.axes[0]
         legend_handles = (
             [Patch(facecolor=eerie_colors[m], label=m) for m in eerie_model_names]
-            + [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
+            + (
+                [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
+                if show_cmip6_bar else [
+                    Patch(facecolor=ensemble_mean_color,   label="Ensemble mean"),
+                    Patch(facecolor=ensemble_median_color, label="Ensemble median"),
+                ]
+            )
             + [
                 Patch(facecolor=neutral_color, label="Neutral"),
                 Patch(facecolor=det_color, label="Degradation"),
@@ -1932,24 +1995,39 @@ class AddedValueDiag(DiagnosticBase):
             loc="lower right", framealpha=0.85,
         )
 
-        fig.suptitle(
-            f"Added Value — {period_label}: per-model area-weighted % improvement / neutral / degradation\n"
-            f"{self._project_name} models vs CMIP6 MMM",
-            fontsize=11, fontweight="bold", y=1.01,
-        )
-
-        figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}"
-        meta = self._build_metadata(
-            title=f"Added Value Summary — {period_label} (per-model view)",
-            figure_id=figure_id,
-            models=list(self.config.models),
-            variables=list(all_obs_stats.keys()),
-            description=(
+        if show_cmip6_bar:
+            suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM"
+            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}"
+            title = f"Added Value Summary — {period_label} (per-model view)"
+            description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
                 f"Blue shades = {self._project_name} models vs CMIP6 MMM, "
-                f"green = CMIP6 mean vs {self._project_name} mean, red = degradation."
-            ),
+                f"green = CMIP6 mean vs {self._project_name} mean, white = degradation."
+            )
+        else:
+            suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM (EERIE only)"
+            figure_id = self._bars_models_eerie_id(period_key)
+            title = f"Added Value Summary — {period_label} (EERIE models only)"
+            description = (
+                f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
+                f"fractions ({period_label}), EERIE models only (CMIP6 mean bar excluded). "
+                f"Individual model colors from config; light purple = ensemble mean, "
+                f"purple = ensemble median, white = degradation."
+            )
+
+        fig.suptitle(
+            f"Added Value — {period_label}: per-model area-weighted % improvement / neutral / degradation\n"
+            f"{suptitle_suffix}",
+            fontsize=11, fontweight="bold", y=1.01,
+        )
+
+        meta = self._build_metadata(
+            title=title,
+            figure_id=figure_id,
+            models=list(self.config.models),
+            variables=list(all_obs_stats.keys()),
+            description=description,
             plot_type="added_value_bars",
             period=self.period,
         )
