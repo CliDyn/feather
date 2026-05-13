@@ -580,7 +580,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 obs_period - _K_TO_C, bias_dict,
                 title=f"2m Temperature {period_label}",
                 obs_title="Berkeley Earth",
-                cmap="RdBu_r",
+                cmap="cmo.thermal",
                 bias_cmap="RdBu_r",
                 vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
                 vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
