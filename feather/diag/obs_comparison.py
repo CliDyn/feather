@@ -326,7 +326,7 @@ class ObsComparisonDiag(DiagnosticBase):
         dec_years = ds_full["time"].values  # e.g. 1850.042, 1850.125, ...
         years = dec_years.astype(int)
         # Month derived from fractional part: 12 evenly-spaced values per year
-        months = np.round((dec_years - years) * 12).astype(int) + 1
+        months = np.floor((dec_years - years) * 12).astype(int) + 1
         months = np.clip(months, 1, 12)
         datetimes = pd.to_datetime(
             [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]

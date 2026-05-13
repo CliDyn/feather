@@ -1233,6 +1233,20 @@ class GlobalBiases(DiagnosticBase):
                 disp_cmap = "YlGnBu"
                 disp_bias_cmap = "BrBG"
                 disp_units = "mm/day"
+            elif var_info.display_offset != 0.0:
+                # Temperature (K→°C): apply constant offset to the obs absolute
+                # panel and its colorbar limits; bias panels are invariant.
+                _off = var_info.display_offset
+                obs_plot = obs_period + _off
+                bias_plot = bias_dict
+                vmin_p = ((p_cb["vmin"] + _off)
+                          if p_cb.get("vmin") is not None else None)
+                vmax_p = ((p_cb["vmax"] + _off)
+                          if p_cb.get("vmax") is not None else None)
+                bvmax_p = p_cb.get("bias_vmax")
+                disp_cmap = var_info.cmap
+                disp_bias_cmap = "RdBu_r"
+                disp_units = var_info.display_units or var_info.units
             else:
                 obs_plot = obs_period
                 bias_plot = bias_dict
@@ -1241,7 +1255,7 @@ class GlobalBiases(DiagnosticBase):
                 bvmax_p = p_cb.get("bias_vmax")
                 disp_cmap = var_info.cmap
                 disp_bias_cmap = "RdBu_r"
-                disp_units = var_info.units
+                disp_units = var_info.display_units or var_info.units
 
             # ── Absolute bias figure ─────────────────────────────────────────
             fig, axes = plot_combined_bias_map(

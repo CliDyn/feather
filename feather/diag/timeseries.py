@@ -237,6 +237,8 @@ class TimeseriesDiag(DiagnosticBase):
         annual means as thicker foreground lines.
         """
         var_info = vr["var_info"]
+        _off = var_info.display_offset          # e.g. -273.15 for K\u2192\u00b0C, 0 otherwise
+        _disp_units = var_info.display_units or var_info.units
         all_models = list(self.config.models)
 
         fig, ax = plt.subplots(figsize=(12, 5))
@@ -250,14 +252,14 @@ class TimeseriesDiag(DiagnosticBase):
         # CMIP6 individual monthly
         for _mname, ts in cmip6_indiv.items():
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values + _off,
                     color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
 
         # CMIP6 MMM monthly
         if vr.get("cmip6_ts") is not None:
             cmip6_ts = vr["cmip6_ts"]
             time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values,
+            ax.plot(time_vals, cmip6_ts.values + _off,
                     color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
@@ -265,13 +267,13 @@ class TimeseriesDiag(DiagnosticBase):
         for model, ts in vr["models"].items():
             color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values + _off,
                     color=color, alpha=0.3, linewidth=0.7)
 
         # Obs monthly
         obs_ts = vr["obs"]
         obs_time = _to_plot_time(obs_ts.time.values)
-        ax.plot(obs_time, obs_ts.values,
+        ax.plot(obs_time, obs_ts.values + _off,
                 color=OBS_COLOR, alpha=0.3, linewidth=0.7)
 
         # --- Annual pass (foreground, thick with labels) ---
@@ -287,7 +289,7 @@ class TimeseriesDiag(DiagnosticBase):
                      if i == 0 else "_nolegend_")
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values + _off,
                     color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                     label=label)
 
@@ -295,7 +297,7 @@ class TimeseriesDiag(DiagnosticBase):
         if vr.get("cmip6_ts") is not None:
             cmip6_annual = annual_mean(vr["cmip6_ts"])
             time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values,
+            ax.plot(time_vals, cmip6_annual.values + _off,
                     label=f"CMIP6 MMM ({n_cmip6_mmm})", color=CMIP6_COLOR,
                     linewidth=2.0, linestyle="--")
 
@@ -304,14 +306,14 @@ class TimeseriesDiag(DiagnosticBase):
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values + _off,
                     label=model, color=color, linewidth=2.0)
 
         # Ensemble median annual (dashed)
         if vr.get("ens_median") is not None:
             ens_med_annual = annual_mean(vr["ens_median"])
             time_vals = _to_plot_time(ens_med_annual.time.values)
-            ax.plot(time_vals, ens_med_annual.values,
+            ax.plot(time_vals, ens_med_annual.values + _off,
                     label=f"EERIE ensemble median ({n_eerie})",
                     color=ENS_COLOR, linewidth=2.5, linestyle="--")
 
@@ -319,18 +321,18 @@ class TimeseriesDiag(DiagnosticBase):
         if vr.get("ens_mean") is not None:
             ens_mean_annual = annual_mean(vr["ens_mean"])
             time_vals = _to_plot_time(ens_mean_annual.time.values)
-            ax.plot(time_vals, ens_mean_annual.values,
+            ax.plot(time_vals, ens_mean_annual.values + _off,
                     label=f"EERIE ensemble mean ({n_eerie})",
                     color=ENS_COLOR, linewidth=2.5)
 
         # Obs annual
         obs_annual = annual_mean(obs_ts)
         obs_annual_time = _to_plot_time(obs_annual.time.values)
-        ax.plot(obs_annual_time, obs_annual.values,
+        ax.plot(obs_annual_time, obs_annual.values + _off,
                 label=var_info.obs_dataset, color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title(f"{var_info.long_name} \u2014 Global Mean")
-        ax.set_ylabel(f"{var_info.long_name} ({var_info.units})")
+        ax.set_ylabel(f"{var_info.long_name} ({_disp_units})")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()

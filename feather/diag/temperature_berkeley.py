@@ -5,7 +5,7 @@ A (x3): Bias maps (annual, DJF, JJA) vs Berkeley Earth
 B (x1): Global-mean time series (monthly + annual)
 C (x1): Seasonal cycle (12-month climatology)
 D (x1): Zonal mean profile
-E (x3): Warming trend maps — global (K/decade), Arctic, Antarctic
+E (x3): Warming trend maps — global (°C/decade), Arctic, Antarctic
 F (x1): Taylor diagram (pattern corr vs normalised STD)
 """
 
@@ -38,6 +38,8 @@ from feather.util.temporal import (
 )
 
 logger = logging.getLogger(__name__)
+
+_K_TO_C = 273.15   # subtract from K values to get °C for display
 
 
 @register
@@ -223,9 +225,77 @@ class TemperatureBerkeley(DiagnosticBase):
     ) -> xr.DataArray:
         """Load Berkeley Earth Land+Ocean data.
 
-        Renames dims (latitude→lat, longitude→lon), shifts lons from
-        -180..180 to 0..360, and converts degC to K (+273.15).
+        Prefers the high-resolution 0.25° dataset (``BERKELEY_EARTH_HR``)
+        when present in the config, falling back to the legacy 1° dataset
+        (``BERKELEY_EARTH``) otherwise.
         """
+        if "BERKELEY_EARTH_HR" in self.config.obs_datasets:
+            return self._load_berkeley_earth_hr(period)
+        return self._load_berkeley_earth_legacy(period)
+
+    def _load_berkeley_earth_hr(
+        self, period: tuple[str, str] | None = None,
+    ) -> xr.DataArray:
+        """Load Berkeley Earth 0.25° gridded dataset.
+
+        The file stores monthly *anomalies* (°C, re: 1951-1980 climatology)
+        and a separate ``climatology`` array (12 × lat × lon, °C).
+        Absolute temperature = anomaly + climatology[month_of_year].
+
+        Time is encoded as decimal years (float); this method converts it to
+        a proper ``pandas.DatetimeIndex`` before slicing.
+        """
+        import pandas as pd
+
+        ds_cfg = self.config.obs_datasets["BERKELEY_EARTH_HR"]
+        filepath = Path(ds_cfg["path"]) / ds_cfg["variables"]["temperature"]
+        ds_full = xr.open_dataset(filepath, chunks="auto")
+
+        # Convert decimal-year time → DatetimeIndex
+        dec_years = ds_full["time"].values
+        years = dec_years.astype(int)
+        months = np.floor((dec_years - years) * 12).astype(int) + 1
+        months = np.clip(months, 1, 12)
+        datetimes = pd.to_datetime(
+            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        )
+        ds_full = ds_full.assign_coords(time=datetimes)
+
+        # Slice to requested period
+        start, end = period if period else (None, None)
+        anom = ds_full["temperature"].sel(time=slice(start, end))
+        clim = ds_full["climatology"]  # (month_number, latitude, longitude)
+
+        # Reconstruct absolute temperature: anomaly + climatology[month_of_year]
+        month_idx = anom.time.dt.month.values - 1  # 0-based
+        clim_np = clim.values  # (12, nlat, nlon)
+        clim_matched = clim_np[month_idx]  # (ntime, nlat, nlon)
+        abs_temp = anom + xr.DataArray(
+            clim_matched, dims=anom.dims, coords=anom.coords,
+        )
+
+        # Rename dims latitude/longitude → lat/lon
+        rename = {}
+        if "latitude" in abs_temp.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in abs_temp.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            abs_temp = abs_temp.rename(rename)
+
+        # Shift −180..180 → 0..360
+        if float(abs_temp.lon.min()) < 0:
+            abs_temp = abs_temp.assign_coords(
+                lon=((abs_temp.lon + 360) % 360),
+            ).sortby("lon")
+
+        # degC → K
+        return abs_temp + 273.15
+
+    def _load_berkeley_earth_legacy(
+        self, period: tuple[str, str] | None = None,
+    ) -> xr.DataArray:
+        """Load legacy Berkeley Earth 1° Land+Ocean file (absolute °C → K)."""
         da = self.obs_loader.load("BERKELEY_EARTH", "2t", period=period)
 
         # Rename dims
@@ -244,9 +314,7 @@ class TemperatureBerkeley(DiagnosticBase):
             ).sortby("lon")
 
         # Convert degC to K
-        da = da + 273.15
-
-        return da
+        return da + 273.15
 
     # ── Shared data loading ──────────────────────────────────────────
 
@@ -294,7 +362,7 @@ class TemperatureBerkeley(DiagnosticBase):
             "influence_radius", 80_000.0,
         )
 
-        # Obs climatologies (on Berkeley Earth 1° grid)
+        # Obs climatologies (on Berkeley Earth obs grid)
         obs_clim = climatology(berkeley, self.period).compute()
         obs_seasonal = seasonal_climatology(berkeley, self.period)
 
@@ -509,15 +577,15 @@ class TemperatureBerkeley(DiagnosticBase):
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
             fig, axes = plot_combined_bias_map(
-                obs_period, bias_dict,
+                obs_period - _K_TO_C, bias_dict,
                 title=f"2m Temperature {period_label}",
                 obs_title="Berkeley Earth",
-                cmap="RdBu_r",
+                cmap="cmo.thermal",
                 bias_cmap="RdBu_r",
-                vmin=p_cb.get("vmin"),
-                vmax=p_cb.get("vmax"),
+                vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
+                vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
                 bias_vmax=p_cb.get("bias_vmax"),
-                units="K",
+                units="°C",
                 method=self._regrid_method,
             )
 
@@ -588,25 +656,25 @@ class TemperatureBerkeley(DiagnosticBase):
         # Monthly pass (background)
         for _mname, ts in cmip6_indiv.items():
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values - _K_TO_C,
                     color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
 
         if results.get("cmip6_ts") is not None:
             cmip6_ts = results["cmip6_ts"]
             time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values,
+            ax.plot(time_vals, cmip6_ts.values - _K_TO_C,
                     color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values,
+            ax.plot(time_vals, ts.values - _K_TO_C,
                     color=color, alpha=0.3, linewidth=0.7)
 
         obs_ts = results["obs"]
         obs_time = _to_plot_time(obs_ts.time.values)
-        ax.plot(obs_time, obs_ts.values,
+        ax.plot(obs_time, obs_ts.values - _K_TO_C,
                 color=OBS_COLOR, alpha=0.3, linewidth=0.7)
 
         # Annual pass (foreground)
@@ -614,14 +682,14 @@ class TemperatureBerkeley(DiagnosticBase):
             label = "CMIP6 members" if i == 0 else "_nolegend_"
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values - _K_TO_C,
                     color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                     label=label)
 
         if results.get("cmip6_ts") is not None:
             cmip6_annual = annual_mean(results["cmip6_ts"])
             time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values,
+            ax.plot(time_vals, cmip6_annual.values - _K_TO_C,
                     label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=2.0, linestyle="--")
 
@@ -629,16 +697,16 @@ class TemperatureBerkeley(DiagnosticBase):
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values,
+            ax.plot(time_vals, ts_annual.values - _K_TO_C,
                     label=model, color=color, linewidth=2.0)
 
         obs_annual = annual_mean(obs_ts)
         obs_annual_time = _to_plot_time(obs_annual.time.values)
-        ax.plot(obs_annual_time, obs_annual.values,
+        ax.plot(obs_annual_time, obs_annual.values - _K_TO_C,
                 label="Berkeley Earth", color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title("2m Temperature \u2014 Global Mean")
-        ax.set_ylabel("Temperature (K)")
+        ax.set_ylabel("Temperature (\u00b0C)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -711,7 +779,7 @@ class TemperatureBerkeley(DiagnosticBase):
         cmip6_indiv = results.get("cmip6_individual_monthly", {})
         for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
             label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ax.plot(months, monthly.values,
+            ax.plot(months, monthly.values - _K_TO_C,
                     color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                     label=label)
         if cmip6_indiv:
@@ -719,24 +787,24 @@ class TemperatureBerkeley(DiagnosticBase):
 
         # Layer 2: CMIP6 MMM
         if results.get("cmip6_monthly") is not None:
-            ax.plot(months, results["cmip6_monthly"].values,
+            ax.plot(months, results["cmip6_monthly"].values - _K_TO_C,
                     marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=1.5, linestyle="--")
 
         # Layer 3: Model lines
         for model, monthly in results["models"].items():
             color = self.config.get_model_color(model)
-            ax.plot(months, monthly.values,
+            ax.plot(months, monthly.values - _K_TO_C,
                     marker="o", label=model, color=color)
 
         # Layer 4: Observations
-        ax.plot(months, results["obs"].values,
+        ax.plot(months, results["obs"].values - _K_TO_C,
                 marker="s", label="Berkeley Earth", color=OBS_COLOR, linewidth=2)
 
         ax.set_xticks(months)
         ax.set_xticklabels(month_labels)
         ax.set_title("2m Temperature \u2014 Seasonal Cycle")
-        ax.set_ylabel("Temperature (K)")
+        ax.set_ylabel("Temperature (\u00b0C)")
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -835,7 +903,7 @@ class TemperatureBerkeley(DiagnosticBase):
         # CMIP6 MMM
         if results.get("cmip6_zonal") is not None:
             zm = results["cmip6_zonal"]
-            ax.plot(zm.values, zm.lat.values,
+            ax.plot(zm.values - _K_TO_C, zm.lat.values,
                     label="CMIP6 MMM", color=CMIP6_COLOR,
                     linewidth=1.5, linestyle="--")
             all_models.append("CMIP6 MMM")
@@ -843,17 +911,17 @@ class TemperatureBerkeley(DiagnosticBase):
         # Models
         for model, zm in results["models"].items():
             color = self.config.get_model_color(model)
-            ax.plot(zm.values, zm.lat.values,
+            ax.plot(zm.values - _K_TO_C, zm.lat.values,
                     label=model, color=color, linewidth=1.5)
             all_models.append(model)
 
         # Observations
         obs_zm = results["obs"]
-        ax.plot(obs_zm.values, obs_zm.lat.values,
+        ax.plot(obs_zm.values - _K_TO_C, obs_zm.lat.values,
                 label="Berkeley Earth", color=OBS_COLOR, linewidth=2.5)
 
         ax.set_ylabel("Latitude")
-        ax.set_xlabel("Temperature (K)")
+        ax.set_xlabel("Temperature (°C)")
         ax.set_title("2m Temperature \u2014 Zonal Mean")
         ax.set_ylim(-90, 90)
         ax.legend(loc="upper right")
@@ -880,7 +948,7 @@ class TemperatureBerkeley(DiagnosticBase):
     # ── Group E: Warming trends ──────────────────────────────────────
 
     def _compute_trends(self, shared: dict) -> dict[str, Any]:
-        """Compute linear T2m trends (K/decade) on a common 0.25° grid."""
+        """Compute linear T2m trends (°C/decade) on a common 0.25° grid."""
         logger.info("Computing temperature trends...")
         model_coords = shared["model_coords"]
         influence_radius = self.config.nereus.get(
@@ -891,11 +959,11 @@ class TemperatureBerkeley(DiagnosticBase):
         # Raw trends on native grids (kept for polar maps)
         model_trends_native: dict[str, xr.DataArray] = {}
         for model, da in shared["model_monthly"].items():
-            trend = linear_trend(da.compute()) * 10  # K/decade
+            trend = linear_trend(da.compute()) * 10  # °C/decade
             model_trends_native[model] = trend
 
         berkeley = shared["berkeley"]
-        obs_trend_native = linear_trend(berkeley.compute()) * 10  # K/decade
+        obs_trend_native = linear_trend(berkeley.compute()) * 10  # °C/decade
 
         # Regrid everything to common nereus grid
         _trend_interp_cache: dict[int, Any] = {}
@@ -1046,11 +1114,11 @@ class TemperatureBerkeley(DiagnosticBase):
         fig, axes = plot_combined_bias_map(
             obs_trend, bias_dict,
             title="2m Temperature Trends",
-            obs_title="Berkeley Earth (K/decade)",
+            obs_title="Berkeley Earth (°C/decade)",
             cmap="RdBu_r",
             bias_cmap="RdBu_r",
             vmin=-obs_vmax, vmax=obs_vmax,
-            units="K/decade",
+            units="°C/decade",
             method=self._regrid_method,
         )
 
@@ -1060,7 +1128,7 @@ class TemperatureBerkeley(DiagnosticBase):
             models=all_models,
             variables=["tas"],
             description=(
-                "Linear trends in 2m temperature (K/decade) over the "
+                "Linear trends in 2m temperature (°C/decade) over the "
                 "analysis period. Obs panel shows Berkeley Earth trends; "
                 "bias panels show model-obs trend differences."
             ),
@@ -1068,7 +1136,7 @@ class TemperatureBerkeley(DiagnosticBase):
             obs_variable="2m temperature",
             plot_type="combined_bias_map",
             period=self.period,
-            computation_notes="Linear OLS regression per grid point, x10 for K/decade",
+            computation_notes="Linear OLS regression per grid point, x10 for °C/decade",
         )
         figures.append((fig, meta))
 
@@ -1178,7 +1246,7 @@ class TemperatureBerkeley(DiagnosticBase):
             cmap="RdBu_r", norm=plt.Normalize(-vmax, vmax),
         )
         fig.colorbar(sm, cax=cbar_ax, orientation="horizontal",
-                     label="K/decade")
+                     label="°C/decade")
 
         fig.suptitle(
             f"2m Temperature Trends \u2014 {pole_name}",
@@ -1193,14 +1261,14 @@ class TemperatureBerkeley(DiagnosticBase):
             variables=["tas"],
             description=(
                 f"Polar stereographic map of 2m temperature linear trends "
-                f"(K/decade) in the {pole_name} region."
+                f"(°C/decade) in the {pole_name} region."
             ),
             obs_dataset="Berkeley Earth",
             obs_variable="2m temperature",
             plot_type="polar_map",
             spatial_extent=pole_name,
             period=self.period,
-            computation_notes="Linear OLS regression per grid point, x10 for K/decade",
+            computation_notes="Linear OLS regression per grid point, x10 for °C/decade",
         )
         return fig, meta
 
