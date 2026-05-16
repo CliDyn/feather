@@ -303,7 +303,20 @@ class KerchunkParquetLoader:
         if scale != 1.0:
             data = data * scale
         if offset != 0.0:
-            data = data + offset
+            # Guard against double-conversion: when xarray's CF decoder
+            # (mask_and_scale=True, which may not be fully disabled by the
+            # mask_and_scale=False kwarg in some xarray/zarr versions) has
+            # already applied add_offset, it moves the value from raw.attrs
+            # to raw.encoding.  Skip the explicit offset in that case.
+            already_decoded = raw.encoding.get("add_offset", None) == offset
+            if already_decoded:
+                logger.debug(
+                    "Skipping explicit offset %.4f for %s — zarr CF decode "
+                    "already applied it (raw.encoding['add_offset']=%.4f)",
+                    offset, variable, offset,
+                )
+            else:
+                data = data + offset
 
         # Resample daily → monthly mean (label on month start)
         data = (
@@ -312,8 +325,12 @@ class KerchunkParquetLoader:
             .mean(skipna=True)
         )
         data = data.rename(variable)
+        # After the K→°C offset is applied (either explicitly or via CF
+        # decode), set units="degC" so _needs_celsius_conversion returns False
+        # and avoids a spurious extra subtraction of 273.15 downstream.
+        out_units = "degC" if offset == -273.15 else raw.attrs.get("units", "")
         data.attrs.update(
-            units=raw.attrs.get("units", ""),
+            units=out_units,
             long_name=raw.attrs.get("long_name", variable),
         )
         return data
@@ -338,6 +355,7 @@ class KerchunkParquetLoader:
             engine="zarr",
             consolidated=False,
             chunks={},
+            mask_and_scale=False,  # raw values only; we apply offsets explicitly
         )
         self._store_cache[key] = ds
         return ds

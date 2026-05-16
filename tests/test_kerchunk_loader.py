@@ -384,6 +384,42 @@ class TestOcean2D:
         da = loader.load_var("IFS-FESOM2-SR", "tos")
         assert da.name == "tos"
 
+    def test_tos_units_attr_is_degc_after_offset(self, tmp_path, monkeypatch):
+        """After K→°C offset the units attr must say 'degC', not 'K'.
+
+        Without this, _needs_celsius_conversion in ocean_sst sees 'K' and
+        subtracts 273.15 again, producing a triple-conversion (~-548°C bias).
+        """
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tos")
+        assert da.attrs.get("units", "").lower() in ("degc", "°c", "c", "celsius")
+
+    def test_tos_offset_skipped_when_zarr_cf_decoded(self, tmp_path, monkeypatch):
+        """If zarr CF decode already applied add_offset, skip explicit offset.
+
+        This covers the case where mask_and_scale=False is not fully honoured
+        by a particular xarray/zarr version: raw.encoding['add_offset']==-273.15
+        signals that CF decode ran; explicit offset is then skipped to avoid a
+        double K→°C conversion (~-275°C bias).
+        """
+        # Simulate a zarr store where xarray CF-decoded avg_tos:
+        # data is already in °C (~11.85) but raw.encoding records the offset.
+        store = _make_ocean2d_store()
+        store["avg_tos"].values[:] = 11.85  # already °C
+        # Mark the variable as CF-decoded by putting add_offset in encoding
+        store["avg_tos"].encoding["add_offset"] = -273.15
+
+        loader, _ = _make_loader(tmp_path, monkeypatch, ocean2d=store)
+        da = loader.load_var("IFS-FESOM2-SR", "tos")
+        # Should stay at ~11.85°C; NOT drop to 11.85 - 273.15 = -261.3°C
+        assert float(da.mean()) == pytest.approx(11.85, abs=0.5)
+
+    def test_siconc_units_attr_preserved(self, tmp_path, monkeypatch):
+        """siconc has no offset; original units attr should be kept."""
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "siconc")
+        assert da.attrs.get("units") == "K"  # raw synthetic data has "K"
+
     def test_all_ocean2d_variables_loadable(self, tmp_path, monkeypatch):
         loader, _ = _make_loader(tmp_path, monkeypatch)
         for var in _OCEAN2D:
