@@ -40,6 +40,24 @@ def _to_celsius(da):
     return da - _K_TO_C
 
 
+def _needs_celsius_conversion(da, model_src: str) -> bool:
+    """Return True if *da* needs K→°C conversion before comparison.
+
+    Decision order:
+    1. ``units`` attribute says "kelvin" / "K"  → True
+    2. ``units`` attribute says "degC" / "°C"   → False
+    3. No usable units attr: fall back to data-source heuristic
+       (CMOR stores tos in °C; all other backends store it in K).
+    """
+    units = da.attrs.get("units", "").strip().lower()
+    if units in ("k", "kelvin"):
+        return True
+    if units in ("c", "celsius", "degc", "°c"):
+        return False
+    # Heuristic fallback: CMOR tos is in °C, everything else in K
+    return model_src != "cmor"
+
+
 def _ocean_global_mean(da):
     """Cosine-latitude-weighted mean for regular lat/lon ocean data.
 
@@ -220,7 +238,15 @@ class OceanSST(DiagnosticBase):
                 logger.warning("tos not available for %s", model)
                 continue
             model_src = self.config.get_model_data_source_type(model)
-            model_monthly[model] = da if model_src == "cmor" else _to_celsius(da)
+            convert = _needs_celsius_conversion(da, model_src)
+            da_c = _to_celsius(da) if convert else da
+            logger.info(
+                "  %s tos: src=%s units_attr=%s K→°C=%s",
+                model, model_src,
+                da.attrs.get("units", "?"),
+                convert,
+            )
+            model_monthly[model] = da_c
             model_coords[model] = (lon, lat)
         return model_monthly, model_coords
 
@@ -252,8 +278,19 @@ class OceanSST(DiagnosticBase):
         logger.info("Computing SST bias maps...")
 
         # Load obs
-        obs_timemean = self._load_obs_timemean()  # annual mean
-        obs_ymonmean = self._load_obs_ymonmean()  # monthly clim
+        obs_timemean = self._load_obs_timemean()  # annual mean, in °C
+        obs_ymonmean = self._load_obs_ymonmean()  # monthly clim, in °C
+        logger.info(
+            "  ESA-CCI timemean after K→°C: min=%.2f max=%.2f",
+            float(np.nanmin(obs_timemean.values)),
+            float(np.nanmax(obs_timemean.values)),
+        )
+        if float(np.nanmin(obs_timemean.values)) > 100:
+            logger.warning(
+                "  ESA-CCI timemean min=%.1f looks like Kelvin — "
+                "_to_celsius may not have been applied!",
+                float(np.nanmin(obs_timemean.values)),
+            )
 
         # Compute DJF/JJA obs from monthly climatology
         # ymonmean has month dimension (1-12)
@@ -435,6 +472,18 @@ class OceanSST(DiagnosticBase):
             ]:
                 obs_common = periods_data[pkey]["obs_common"]
                 bias = regrid - obs_common
+                bias_vals = bias.values[np.isfinite(bias.values)]
+                logger.info(
+                    "  %s %s: model_regrid=[%.2f,%.2f] "
+                    "obs_common=[%.2f,%.2f] bias=[%.2f,%.2f]",
+                    model, pkey,
+                    float(np.nanmin(regrid.values)),
+                    float(np.nanmax(regrid.values)),
+                    float(np.nanmin(obs_common.values)),
+                    float(np.nanmax(obs_common.values)),
+                    float(bias_vals.min()) if len(bias_vals) else float("nan"),
+                    float(bias_vals.max()) if len(bias_vals) else float("nan"),
+                )
                 bias_gmean = float(
                     latlon_global_mean(bias, area=common_area).values
                 )
