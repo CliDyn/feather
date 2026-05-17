@@ -303,17 +303,31 @@ class KerchunkParquetLoader:
         if scale != 1.0:
             data = data * scale
         if offset != 0.0:
-            # Guard against double-conversion: when xarray's CF decoder
-            # (mask_and_scale=True, which may not be fully disabled by the
-            # mask_and_scale=False kwarg in some xarray/zarr versions) has
-            # already applied add_offset, it moves the value from raw.attrs
-            # to raw.encoding.  Skip the explicit offset in that case.
+            # Guard against double-conversion when xarray's zarr backend has
+            # already applied add_offset via CF decoding.  The netcdf backend
+            # moves the attribute to raw.encoding after decode, but the zarr
+            # backend does NOT — so we cannot rely on raw.encoding.  Instead
+            # we use a value-based heuristic: for the K→°C offset (-273.15)
+            # a single-timestep mean that is already < 100 means the data is
+            # in °C (zarr decoded it), so we skip the explicit subtraction.
             already_decoded = raw.encoding.get("add_offset", None) == offset
+            if not already_decoded and offset == -273.15:
+                try:
+                    sample = float(data.isel(time=0, drop=True).mean().compute().values)
+                    if np.isfinite(sample) and sample < 100.0:
+                        already_decoded = True
+                        logger.debug(
+                            "K→°C for %s skipped (value-based): sample=%.2f already °C",
+                            variable, sample,
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "K→°C sample check failed for %s (%s); applying offset", variable, exc
+                    )
             if already_decoded:
                 logger.debug(
-                    "Skipping explicit offset %.4f for %s — zarr CF decode "
-                    "already applied it (raw.encoding['add_offset']=%.4f)",
-                    offset, variable, offset,
+                    "Skipping explicit offset %.4f for %s — already applied by zarr decode",
+                    offset, variable,
                 )
             else:
                 data = data + offset

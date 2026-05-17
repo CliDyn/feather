@@ -395,19 +395,18 @@ class TestOcean2D:
         assert da.attrs.get("units", "").lower() in ("degc", "°c", "c", "celsius")
 
     def test_tos_offset_skipped_when_zarr_cf_decoded(self, tmp_path, monkeypatch):
-        """If zarr CF decode already applied add_offset, skip explicit offset.
+        """Value-based detection skips explicit offset when data is already °C.
 
-        This covers the case where mask_and_scale=False is not fully honoured
-        by a particular xarray/zarr version: raw.encoding['add_offset']==-273.15
-        signals that CF decode ran; explicit offset is then skipped to avoid a
-        double K→°C conversion (~-275°C bias).
+        Simulates the case where xarray's zarr backend CF-decoded avg_tos
+        (applying add_offset = -273.15) before we see it.  The zarr backend
+        does NOT populate raw.encoding['add_offset'], so we rely on sampling
+        the first-timestep mean: if it is < 100 the data is already in °C and
+        we must NOT subtract 273.15 again (~-275°C double-conversion bug).
         """
-        # Simulate a zarr store where xarray CF-decoded avg_tos:
-        # data is already in °C (~11.85) but raw.encoding records the offset.
+        # Data already in °C (~11.85) — simulates zarr CF auto-decode.
+        # No encoding entry is set; the value-based path must catch this.
         store = _make_ocean2d_store()
-        store["avg_tos"].values[:] = 11.85  # already °C
-        # Mark the variable as CF-decoded by putting add_offset in encoding
-        store["avg_tos"].encoding["add_offset"] = -273.15
+        store["avg_tos"].values[:] = 11.85  # already °C, sample < 100
 
         loader, _ = _make_loader(tmp_path, monkeypatch, ocean2d=store)
         da = loader.load_var("IFS-FESOM2-SR", "tos")
