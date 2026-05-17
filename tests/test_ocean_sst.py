@@ -1035,3 +1035,163 @@ class TestCMORConversion:
         # Original synth data is ~270-300K, Celsius should be ~-3 to 27
         assert float(da.mean().values) < 40
         assert float(da.mean().values) > -10
+
+
+# ── Kerchunk/mixed-source K→°C conversion ───────────────────────────
+
+
+class TestKerchunkConversion:
+    """Kerchunk parquet tos is in Kelvin — must always apply K→°C.
+
+    Covers the mixed CMOR+kerchunk scenario in eerie_all_members.yaml
+    where r1 is CMOR (°C) and r2/r3 are kerchunk_parquet (K).
+    """
+
+    @pytest.fixture
+    def synth_latlon_tos_kelvin(self):
+        """Synthetic latlon tos in Kelvin (as kerchunk data stores it)."""
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range(
+            "1990-01", periods=12, freq="MS", calendar="standard",
+        )
+        lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+        # SST in K: warm equator (~300K), cold poles (~270K)
+        temp_base = 300 - 30 * np.abs(lat_grid / 90.0)
+        seasonal = 3 * np.sin(2 * np.pi * (np.arange(12) - 3) / 12)
+        temp_3d = (
+            temp_base[np.newaxis, :, :]
+            + seasonal[:, np.newaxis, np.newaxis]
+        )
+        da = xr.DataArray(
+            temp_3d, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+            attrs={"units": "kelvin"},
+        )
+        return da
+
+    @pytest.fixture
+    def synth_latlon_tos_celsius(self):
+        """Synthetic latlon tos in °C (as CMOR stores it)."""
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range(
+            "1990-01", periods=12, freq="MS", calendar="standard",
+        )
+        lat_grid, _ = np.meshgrid(lats, lons, indexing="ij")
+        temp_base = 27 - 30 * np.abs(lat_grid / 90.0)
+        seasonal = 3 * np.sin(2 * np.pi * (np.arange(12) - 3) / 12)
+        temp_3d = (
+            temp_base[np.newaxis, :, :]
+            + seasonal[:, np.newaxis, np.newaxis]
+        )
+        da = xr.DataArray(
+            temp_3d, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+            attrs={"units": "degC"},
+        )
+        return da
+
+    @pytest.fixture
+    def mixed_source_config(self, tmp_path):
+        """Config with CMOR r1 + kerchunk_parquet r2 (like eerie_all_members)."""
+        return FeatherConfig(
+            model_catalogs={},
+            models={
+                "IFS-FESOM2-SR": {
+                    "institution": "AWI",
+                    "experiment": "hist-1950",
+                    "variant": "r1i1p1f1",
+                    "grids": {"sfc": "latlon", "o2d": "latlon", "o3d": "latlon"},
+                    "color": "#1f77b4",
+                    # No data_source_type → inherits global "cmor"
+                },
+                "IFS-FESOM2-SR-r2": {
+                    "institution": "AWI",
+                    "experiment": "hist-1950",
+                    "variant": "r2i1p1f1",
+                    "grids": {"sfc": "latlon", "o2d": "latlon", "o3d": "latlon"},
+                    "color": "#5aabdf",
+                    "data_source_type": "kerchunk_parquet",
+                },
+            },
+            obs_root="",
+            obs_datasets={
+                "ESA_CCI": {
+                    "path": "/fake",
+                    "variables": {
+                        "analysed_sst": "monthly.nc",
+                        "timemean": "timemean.nc",
+                        "ymonmean": "ymonmean.nc",
+                    },
+                },
+            },
+            cmip6={"enabled": False},
+            dask={},
+            nereus={
+                "influence_radius": 1_000_000,
+                "ocean_influence_radius": 1_000_000,
+                "resolution": 5.0,
+            },
+            output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor", "root": "/fake"},
+        )
+
+    def test_needs_celsius_conversion_kelvin_attr(self, synth_latlon_tos_kelvin):
+        """units='kelvin' attr forces conversion regardless of data source."""
+        from feather.diag.ocean_sst import _needs_celsius_conversion
+        assert _needs_celsius_conversion(synth_latlon_tos_kelvin, "cmor") is True
+
+    def test_needs_celsius_conversion_degc_attr(self, synth_latlon_tos_celsius):
+        """units='degC' attr suppresses conversion regardless of data source."""
+        from feather.diag.ocean_sst import _needs_celsius_conversion
+        assert _needs_celsius_conversion(synth_latlon_tos_celsius, "kerchunk_parquet") is False
+
+    def test_needs_celsius_conversion_no_attr_cmor(self):
+        """No units attr + CMOR source → heuristic skips conversion."""
+        from feather.diag.ocean_sst import _needs_celsius_conversion
+        da = xr.DataArray([1.0])  # no units attr
+        assert _needs_celsius_conversion(da, "cmor") is False
+
+    def test_needs_celsius_conversion_no_attr_kerchunk(self):
+        """No units attr + kerchunk source → heuristic applies conversion."""
+        from feather.diag.ocean_sst import _needs_celsius_conversion
+        da = xr.DataArray([1.0])  # no units attr
+        assert _needs_celsius_conversion(da, "kerchunk_parquet") is True
+
+    def test_kerchunk_applies_kelvin_conversion(
+        self,
+        synth_latlon_tos_kelvin,
+        synth_latlon_tos_celsius,
+        mock_esa_cci_obs_loader,
+        mixed_source_config,
+    ):
+        """Kerchunk model (units=kelvin) must be converted; CMOR model must not."""
+        def _side_effect(model, variable, **kwargs):
+            if model == "IFS-FESOM2-SR":
+                return synth_latlon_tos_celsius   # °C
+            return synth_latlon_tos_kelvin         # K
+
+        mock_loader = MagicMock()
+        mock_loader.load_var.side_effect = _side_effect
+
+        diag = OceanSST(
+            model_loader=mock_loader,
+            obs_loader=mock_esa_cci_obs_loader,
+            config=mixed_source_config,
+        )
+        model_monthly, _ = diag._load_model_data()
+
+        cmor_da = model_monthly["IFS-FESOM2-SR"]
+        kerchunk_da = model_monthly["IFS-FESOM2-SR-r2"]
+
+        # CMOR: already °C — mean should be ~12°C, not ~285°C
+        assert float(cmor_da.mean().values) > -10
+        assert float(cmor_da.mean().values) < 40
+
+        # Kerchunk: was K, now should be °C — same range
+        assert float(kerchunk_da.mean().values) > -10
+        assert float(kerchunk_da.mean().values) < 40
+
+        # Kerchunk should NOT be ~285 (unconverted Kelvin)
+        assert float(kerchunk_da.mean().values) < 100

@@ -303,7 +303,34 @@ class KerchunkParquetLoader:
         if scale != 1.0:
             data = data * scale
         if offset != 0.0:
-            data = data + offset
+            # Guard against double-conversion when xarray's zarr backend has
+            # already applied add_offset via CF decoding.  The netcdf backend
+            # moves the attribute to raw.encoding after decode, but the zarr
+            # backend does NOT — so we cannot rely on raw.encoding.  Instead
+            # we use a value-based heuristic: for the K→°C offset (-273.15)
+            # a single-timestep mean that is already < 100 means the data is
+            # in °C (zarr decoded it), so we skip the explicit subtraction.
+            already_decoded = raw.encoding.get("add_offset", None) == offset
+            if not already_decoded and offset == -273.15:
+                try:
+                    sample = float(data.isel(time=0, drop=True).mean().compute().values)
+                    if np.isfinite(sample) and sample < 100.0:
+                        already_decoded = True
+                        logger.debug(
+                            "K→°C for %s skipped (value-based): sample=%.2f already °C",
+                            variable, sample,
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "K→°C sample check failed for %s (%s); applying offset", variable, exc
+                    )
+            if already_decoded:
+                logger.debug(
+                    "Skipping explicit offset %.4f for %s — already applied by zarr decode",
+                    offset, variable,
+                )
+            else:
+                data = data + offset
 
         # Resample daily → monthly mean (label on month start)
         data = (
@@ -312,8 +339,12 @@ class KerchunkParquetLoader:
             .mean(skipna=True)
         )
         data = data.rename(variable)
+        # After the K→°C offset is applied (either explicitly or via CF
+        # decode), set units="degC" so _needs_celsius_conversion returns False
+        # and avoids a spurious extra subtraction of 273.15 downstream.
+        out_units = "degC" if offset == -273.15 else raw.attrs.get("units", "")
         data.attrs.update(
-            units=raw.attrs.get("units", ""),
+            units=out_units,
             long_name=raw.attrs.get("long_name", variable),
         )
         return data
@@ -338,6 +369,7 @@ class KerchunkParquetLoader:
             engine="zarr",
             consolidated=False,
             chunks={},
+            mask_and_scale=False,  # raw values only; we apply offsets explicitly
         )
         self._store_cache[key] = ds
         return ds
