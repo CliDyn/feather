@@ -555,8 +555,9 @@ class TestComputePlotWrappers:
         results = sea_ice_diag.compute()
         figures = sea_ice_diag.plot(results)
         assert isinstance(figures, list)
-        # 3 timeseries + 3 seasonal + 3 extremes + 4 spatial = 13
-        assert len(figures) == 13
+        # 3 timeseries + 3 seasonal + 3 extremes + 4 spatial
+        # + 4 bias maps (E) + 2 ens summary (F) = 19
+        assert len(figures) == 19
         for fig, meta in figures:
             assert isinstance(fig, plt.Figure)
             assert isinstance(meta, dict)
@@ -572,7 +573,7 @@ class TestRun:
     @patch("nereus.plot")
     def test_run_saves_figures(self, mock_nr_plot, sea_ice_diag):
         saved = sea_ice_diag.run(skip_existing=False)
-        assert len(saved) == 13
+        assert len(saved) == 19
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -584,11 +585,11 @@ class TestRun:
     def test_run_skip_existing(self, mock_nr_plot, sea_ice_diag):
         # First run
         saved1 = sea_ice_diag.run(skip_existing=False)
-        assert len(saved1) == 13
+        assert len(saved1) == 19
 
         # Second run with skip_existing
         saved2 = sea_ice_diag.run(skip_existing=True)
-        assert len(saved2) == 13  # Still returns paths
+        assert len(saved2) == 19  # Still returns paths
         plt.close("all")
 
     @patch("nereus.plot")
@@ -597,29 +598,41 @@ class TestRun:
         assert sea_ice_diag.output_dir.exists()
         pngs = list(sea_ice_diag.output_dir.glob("*.png"))
         jsons = list(sea_ice_diag.output_dir.glob("*.json"))
-        assert len(pngs) == 13
-        assert len(jsons) == 13
+        assert len(pngs) == 19
+        assert len(jsons) == 19
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_figure_ids(self, mock_nr_plot, sea_ice_diag):
-        """All 13 expected figure IDs are produced."""
+        """All 19 expected figure IDs are produced."""
         saved = sea_ice_diag.run(skip_existing=False)
         figure_ids = {p.stem for p, _ in saved}
         expected = {
+            # Group A: time series
             "sea_ice_area_timeseries",
             "sea_ice_extent_timeseries",
             "sea_ice_volume_timeseries",
+            # Group B: seasonal cycles
             "sea_ice_area_seasonal_cycle",
             "sea_ice_extent_seasonal_cycle",
             "sea_ice_volume_seasonal_cycle",
+            # Group C: extremes
             "sea_ice_area_extremes",
             "sea_ice_extent_extremes",
             "sea_ice_volume_extremes",
+            # Group D: absolute spatial maps
             "siconc_nh_spatial",
             "siconc_sh_spatial",
             "sithick_nh_spatial",
             "sithick_sh_spatial",
+            # Group E: bias maps
+            "siconc_nh_bias",
+            "siconc_sh_bias",
+            "sithick_nh_bias",
+            "sithick_sh_bias",
+            # Group F: ensemble summary
+            "siconc_ens_summary",
+            "sithick_ens_summary",
         }
         assert figure_ids == expected
         plt.close("all")
@@ -1418,11 +1431,11 @@ class TestCMIP6ComputePlotWrappers:
     def test_plot_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         results = sea_ice_diag_cmip6.compute()
         figures = sea_ice_diag_cmip6.plot(results)
-        assert len(figures) == 13
+        assert len(figures) == 19
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         saved = sea_ice_diag_cmip6.run(skip_existing=False)
-        assert len(saved) == 13
+        assert len(saved) == 19
         plt.close("all")

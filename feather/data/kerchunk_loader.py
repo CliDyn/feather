@@ -115,7 +115,7 @@ _ATMOS3D: dict[str, tuple[str, float]] = {
 _OCEAN2D: dict[str, tuple[str, float, float]] = {
     # (kerchunk_name, scale, offset)  → result = raw * scale + offset
     "tos":      ("avg_tos",      1.0, -273.15),   # K → °C
-    "siconc":   ("avg_siconc",   1.0,  0.0),      # fraction 0-1
+    "siconc":   ("avg_siconc", 100.0,  0.0),      # raw fraction 0-1 → % 0-100
     "sithick":  ("avg_sithick",  1.0,  0.0),      # m
     "sisnthick":("avg_sisnthick",1.0,  0.0),      # m
     "sos":      ("avg_sos",      1.0,  0.0),      # g/kg ≈ PSU
