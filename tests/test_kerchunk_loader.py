@@ -371,13 +371,13 @@ class TestOcean2D:
         da = loader.load_var("IFS-FESOM2-SR", "tos")
         assert np.isnan(da.values).any()
 
-    def test_siconc_no_offset(self, tmp_path, monkeypatch):
-        """siconc has scale=1, offset=0; raw 0.5 stays 0.5."""
+    def test_siconc_scaled_to_percent(self, tmp_path, monkeypatch):
+        """siconc raw fraction 0.5 → scaled ×100 → 50.0 % output."""
         store = _make_ocean2d_store()
         store["avg_siconc"].values[:] = 0.5
         loader, _ = _make_loader(tmp_path, monkeypatch, ocean2d=store)
         da = loader.load_var("IFS-FESOM2-SR", "siconc")
-        assert float(da.mean()) == pytest.approx(0.5, abs=1e-3)
+        assert float(da.mean()) == pytest.approx(50.0, abs=0.1)
 
     def test_tos_name_set(self, tmp_path, monkeypatch):
         loader, _ = _make_loader(tmp_path, monkeypatch)

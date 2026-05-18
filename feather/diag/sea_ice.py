@@ -1065,6 +1065,9 @@ class SeaIceDiag(DiagnosticBase):
             except (KeyError, FileNotFoundError):
                 continue
 
+            if is_conc:
+                da = self._validate_sea_ice_units(model, da, var)
+
             lon, lat = self._load_model_coords(model, var)
             grid_type = self.config.get_grid_type(model, self.domain)
 
