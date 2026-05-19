@@ -4,6 +4,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--api-key", action="store", default=None,
+        help="Vertex AI API key for Gemini connectivity tests",
+    )
+
 from feather.config import FeatherConfig
 from feather.data.loader import DataLoader
 from feather.data.variables import VARIABLE_REGISTRY, get_var
