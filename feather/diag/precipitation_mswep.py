@@ -88,13 +88,15 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         # Determine which groups need computing
         bias_ids = [
-            f"pr_{p}_bias_combined" for p in ["annual", "djf", "jja"]
+            f"pr_{p}_bias_combined"
+            for p in ["annual", "djf", "mam", "jja", "son"]
         ]
         need_a = not skip_existing or not all(
             self._figure_exists(fid) for fid in bias_ids
         )
         rel_bias_ids = [
-            f"pr_{p}_relative_bias" for p in ["annual", "djf", "jja"]
+            f"pr_{p}_relative_bias"
+            for p in ["annual", "djf", "mam", "jja", "son"]
         ]
         need_b = not skip_existing or not all(
             self._figure_exists(fid) for fid in rel_bias_ids
@@ -431,7 +433,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             # Seasonal biases
             seasonal_biases: dict[str, Any] = {}
             seasonal_regrids: dict[str, Any] = {}
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seas:
                     s_np = _interp_cache[n_src](model_seas[season].values.ravel())
                     s_regrid = xr.DataArray(
@@ -508,7 +510,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         cmip6_individual_data = results.get("cmip6_individual_data", {})
 
         periods = [("annual", "Annual Mean")]
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in cb:
                 periods.append((season, season))
 
@@ -635,7 +637,7 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         # ── Seasonal (DJF, JJA) ─────────────────────────────────────────
         rel_bias_seasonal: dict[str, dict] = {}
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in obs_seasonal_clim:
                 continue
             obs_s = obs_seasonal_clim[season]
@@ -667,7 +669,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         figures = []
 
         periods = [("annual", "Annual")]
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in results.get("rel_bias_seasonal", {}):
                 periods.append((season, season))
 
@@ -1217,7 +1219,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         member_pairs = self.cmip6_loader.get_member_pairs()
 
         annual_fields = []
-        seasonal_fields: dict[str, list] = {"DJF": [], "JJA": []}
+        seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
@@ -1236,7 +1238,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             annual_fields.append(regridded)
             models_used.append(label)
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     "pr", model, variant=variant,
                     period=self.period, season=season,
@@ -1272,7 +1274,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             )),
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if not seasonal_fields[season]:
                 continue
             if season not in obs_seasonal_common:
@@ -1333,7 +1335,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                 "bias_gmean": bias_gmean,
             }
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     "pr", model, variant=variant,
                     period=self.period, season=season,
@@ -1386,7 +1388,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             )),
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in cmip6_individual_data:
                 continue
             if season not in obs_seasonal_common:
@@ -1457,7 +1459,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         }
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             s_fields = [
                 mr["seasonal_regrids"][season]
                 for mr in model_results.values()

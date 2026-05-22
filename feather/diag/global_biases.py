@@ -99,19 +99,20 @@ class GlobalBiases(DiagnosticBase):
         for var in self.variables:
             # Check if all period figures already exist
             figure_ids = [
-                f"{var}_{p}_bias_combined" for p in ["annual", "djf", "jja"]
+                f"{var}_{p}_bias_combined"
+                for p in ["annual", "djf", "mam", "jja", "son"]
             ]
             # For precipitation, also require relative-bias figures
             if var == "pr":
                 figure_ids += [
                     f"pr_{p}_relative_bias_combined"
-                    for p in ["annual", "djf", "jja"]
+                    for p in ["annual", "djf", "mam", "jja", "son"]
                 ]
             # Ensemble summary figures (only when ≥2 models configured)
             if len(self.config.models) >= 2:
                 figure_ids += [
                     f"{var}_{p}_ens_bias_combined"
-                    for p in ["annual", "djf", "jja"]
+                    for p in ["annual", "djf", "mam", "jja", "son"]
                 ]
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
@@ -302,10 +303,10 @@ class GlobalBiases(DiagnosticBase):
                 latlon_global_mean(annual_bias ** 2, area=common_area).values
             ))
 
-            # --- Seasonal biases (DJF, JJA) ---
+            # --- Seasonal biases (DJF, MAM, JJA, SON) ---
             seasonal_biases: dict[str, Any] = {}
             seasonal_regrids: dict[str, Any] = {}
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seasonal:
                     s_np = _interp_cache[n_src](
                         model_seasonal[season].values.ravel()
@@ -331,7 +332,7 @@ class GlobalBiases(DiagnosticBase):
             )
 
             seasonal_ttest_stats: dict[str, dict] = {}
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in seasonal_regrids and season in obs_seasonal_common:
                     s_t, s_p = spatial_ttest(
                         seasonal_regrids[season], obs_seasonal_common[season],
@@ -489,7 +490,7 @@ class GlobalBiases(DiagnosticBase):
         }
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in obs_seasonal_common:
                 continue
             s_fields = [
@@ -553,7 +554,7 @@ class GlobalBiases(DiagnosticBase):
         member_pairs = self.cmip6_loader.get_member_pairs()
 
         annual_fields = []
-        seasonal_fields: dict[str, list] = {"DJF": [], "JJA": []}
+        seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
@@ -573,7 +574,7 @@ class GlobalBiases(DiagnosticBase):
             annual_fields.append(regridded)
             models_used.append(label)
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     var, model, variant=variant,
                     period=self.period, season=season,
@@ -624,7 +625,7 @@ class GlobalBiases(DiagnosticBase):
         }
 
         # MMM seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if not seasonal_fields[season]:
                 continue
             if season not in obs_seasonal_common:
@@ -690,7 +691,7 @@ class GlobalBiases(DiagnosticBase):
             "rmse": cmip6_rmse,
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in cmip6_individual_data:
                 continue
             if season not in obs_seasonal_common:
@@ -778,7 +779,7 @@ class GlobalBiases(DiagnosticBase):
             }
 
             # Seasonal
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     var, model, variant=variant,
                     period=self.period, season=season,
@@ -860,7 +861,7 @@ class GlobalBiases(DiagnosticBase):
             "ftest_pvalue": mmm_fp,
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in cmip6_individual_data:
                 continue
             if season not in obs_seasonal_common:
@@ -1025,7 +1026,7 @@ class GlobalBiases(DiagnosticBase):
         }
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             s_fields = [
                 mr["seasonal_regrids"][season]
                 for mr in model_results.values()
@@ -1096,7 +1097,7 @@ class GlobalBiases(DiagnosticBase):
         is_pr = (var == "pr")
 
         periods = [("annual", "Annual Mean")]
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in cb:
                 periods.append((season, season))
 
