@@ -68,8 +68,8 @@ class FigureAnalyzer:
                 f"Vertex AI API key not found. Set the '{api_key_env}' "
                 "environment variable or pass api_key= to FigureAnalyzer."
             )
-        self.client = genai.Client(vertexai=True, api_key=key)
-        logger.info("Using Gemini model: %s (Vertex AI Express)", self.model_name)
+        self.client = genai.Client(api_key=key)
+        logger.info("Using Gemini model: %s (Gemini Developer API)", self.model_name)
 
         # Extract prompt context from config for templated system prompts
         self._prompt_models = config.models
