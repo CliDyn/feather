@@ -85,7 +85,8 @@ class GlobalTrends(DiagnosticBase):
 
         for var in self.variables:
             figure_ids = [
-                f"{var}_{p}_trend_combined" for p in ["annual", "djf", "jja"]
+                f"{var}_{p}_trend_combined"
+                for p in ["annual", "djf", "mam", "jja", "son"]
             ]
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
@@ -157,7 +158,7 @@ class GlobalTrends(DiagnosticBase):
 
         # Compute obs seasonal annual means and trends
         obs_seasonal_trends = {}
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             obs_season_annual = seasonal_annual_mean(obs_data, season)
             if len(obs_season_annual.year) >= 2:
                 obs_seasonal_trends[season] = (
@@ -284,7 +285,7 @@ class GlobalTrends(DiagnosticBase):
             # Seasonal trends
             seasonal_regrids: dict[str, Any] = {}
             seasonal_trend_diffs: dict[str, Any] = {}
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 model_season_annual = seasonal_annual_mean(
                     model_data, season,
                 )
@@ -399,7 +400,7 @@ class GlobalTrends(DiagnosticBase):
 
         # -- Annual trends per model --
         annual_trends = []
-        seasonal_trends: dict[str, list] = {"DJF": [], "JJA": []}
+        seasonal_trends: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
@@ -430,7 +431,7 @@ class GlobalTrends(DiagnosticBase):
             models_used.append(label)
 
             # Seasonal trends
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = seasonal_annual_mean(da, season)
                 if hasattr(da_s, "compute"):
                     da_s = da_s.compute()
@@ -471,7 +472,7 @@ class GlobalTrends(DiagnosticBase):
         }
 
         # MMM seasonal trends
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if not seasonal_trends[season]:
                 continue
             s_stacked = xr.concat(seasonal_trends[season], dim="member")
@@ -556,7 +557,7 @@ class GlobalTrends(DiagnosticBase):
             }
 
             # Seasonal
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = seasonal_annual_mean(da, season)
                 if hasattr(da_s, "compute"):
                     da_s = da_s.compute()
@@ -661,7 +662,7 @@ class GlobalTrends(DiagnosticBase):
         cmip6_individual_data : dict, optional
             Individual CMIP6 model trend data.
 
-        Returns a dict keyed by period name ("annual", "DJF", "JJA")
+        Returns a dict keyed by period name ("annual", "DJF", "MAM", "JJA", "SON")
         with ``vmin``, ``vmax`` (field panels) and ``bias_vmax``
         (symmetric trend difference panel) values.
         """
@@ -706,7 +707,7 @@ class GlobalTrends(DiagnosticBase):
         }
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             s_fields = [
                 mr["seasonal_regrids"][season]
                 for mr in model_results.values()
@@ -763,7 +764,7 @@ class GlobalTrends(DiagnosticBase):
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
 
         periods = [("annual", "Annual")]
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in cb:
                 periods.append((season, season))
 

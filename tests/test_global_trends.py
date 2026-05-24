@@ -426,7 +426,7 @@ class TestGlobalTrendsCompute:
         assert abs(trend) < 0.5  # near zero
 
     def test_seasonal_trends_present(self, minimal_config):
-        """Seasonal trends are computed for DJF and JJA."""
+        """Seasonal trends are computed for all four seasons."""
         model_ds = self._make_trending_healpix(n_years=10)
         obs_ds = self._make_trending_obs(n_years=10)
         diag = self._make_diag(model_ds, obs_ds, minimal_config)
@@ -577,11 +577,15 @@ class TestGlobalTrendsPlot:
                     "annual_rmse": 0.5,
                     "seasonal_regrids": {
                         "DJF": model_trend,
+                        "MAM": model_trend * 0.9,
                         "JJA": model_trend * 0.8,
+                        "SON": model_trend * 0.7,
                     },
                     "seasonal_trend_diffs": {
                         "DJF": trend_diff,
+                        "MAM": trend_diff * 0.9,
                         "JJA": trend_diff * 0.8,
+                        "SON": trend_diff * 0.7,
                     },
                 },
             },
@@ -589,7 +593,9 @@ class TestGlobalTrendsPlot:
                 "trend": obs_trend,
                 "seasonal_trends": {
                     "DJF": obs_trend,
+                    "MAM": obs_trend * 0.95,
                     "JJA": obs_trend * 0.9,
+                    "SON": obs_trend * 0.85,
                 },
                 "global_mean_trend": 3.0,
             },
@@ -597,7 +603,9 @@ class TestGlobalTrendsPlot:
             "colorbar_ranges": {
                 "annual": {"vmin": -1.0, "vmax": 1.0, "bias_vmax": 0.5},
                 "DJF": {"vmin": -1.0, "vmax": 1.0, "bias_vmax": 0.5},
+                "MAM": {"vmin": -0.9, "vmax": 0.9, "bias_vmax": 0.45},
                 "JJA": {"vmin": -0.8, "vmax": 0.8, "bias_vmax": 0.4},
+                "SON": {"vmin": -0.7, "vmax": 0.7, "bias_vmax": 0.35},
             },
         }
 
@@ -614,16 +622,16 @@ class TestGlobalTrendsPlot:
         assert all(isinstance(f, tuple) and len(f) == 2 for f in figures)
         plt.close("all")
 
-    def test_three_figures_per_variable(self, mock_model_loader,
-                                         mock_obs_loader, minimal_config):
-        """Produces 3 figures: annual, DJF, JJA."""
+    def test_five_figures_per_variable(self, mock_model_loader,
+                                        mock_obs_loader, minimal_config):
+        """Produces 5 figures: annual, DJF, MAM, JJA, SON."""
         diag = GlobalTrends(
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["tas"],
         )
         vr = self._make_mock_result()
         figures = diag._plot_variable("tas", vr)
-        assert len(figures) == 3
+        assert len(figures) == 5
         plt.close("all")
 
     def test_metadata_diagnostic_name(self, mock_model_loader,
@@ -763,7 +771,7 @@ class TestGlobalTrendsPlot:
         vr = self._make_mock_result()
         results = {"tas": vr}
         figures = diag.plot(results)
-        assert len(figures) == 3
+        assert len(figures) == 5
         plt.close("all")
 
     def test_no_figures_when_empty_dict(self, mock_model_loader,
@@ -819,8 +827,8 @@ class TestGlobalTrendsRun:
 
     @staticmethod
     def _mock_plot_figures():
-        """Return 3 fake (fig, meta) pairs."""
-        periods = ["annual", "djf", "jja"]
+        """Return 5 fake (fig, meta) pairs."""
+        periods = ["annual", "djf", "mam", "jja", "son"]
         figures = []
         for p in periods:
             fig = MagicMock(spec=plt.Figure)
@@ -848,7 +856,7 @@ class TestGlobalTrendsRun:
         """run() creates PNG + JSON files (full real run)."""
         diag = self._make_diag(minimal_config)
         saved = diag.run(skip_existing=False)
-        assert len(saved) == 3
+        assert len(saved) == 5
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -860,7 +868,7 @@ class TestGlobalTrendsRun:
         # Pre-create all figure files
         out_dir = diag.output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
-        for p in ["annual", "djf", "jja"]:
+        for p in ["annual", "djf", "mam", "jja", "son"]:
             fid = f"tas_{p}_trend_combined"
             (out_dir / f"{fid}.png").write_bytes(b"png")
             (out_dir / f"{fid}.json").write_text('{"diagnostic_name":"global_trends"}')
@@ -868,7 +876,7 @@ class TestGlobalTrendsRun:
         with patch.object(diag, "_compute_variable") as mock_compute:
             saved = diag.run(skip_existing=True)
             mock_compute.assert_not_called()  # skipped!
-        assert len(saved) == 3
+        assert len(saved) == 5
 
     def test_run_regenerates_partial(self, minimal_config):
         """run() regenerates when only some figures exist."""
@@ -884,7 +892,7 @@ class TestGlobalTrendsRun:
         with patch.object(diag, "_compute_variable", return_value=result), \
              patch.object(diag, "_plot_variable", return_value=figures):
             saved = diag.run(skip_existing=True)
-        assert len(saved) == 3
+        assert len(saved) == 5
 
     def test_run_returns_path_tuples(self, minimal_config):
         """run() returns list of (Path, Path) tuples."""
@@ -934,7 +942,7 @@ class TestGlobalTrendsRun:
         result = self._mock_compute_result()
         # Mock figures with both models in metadata
         figures = []
-        for p in ["annual", "djf", "jja"]:
+        for p in ["annual", "djf", "mam", "jja", "son"]:
             fig = MagicMock(spec=plt.Figure)
             fig.savefig = lambda path, **kw: Path(path).write_bytes(b"png")
             meta = {
@@ -949,7 +957,7 @@ class TestGlobalTrendsRun:
              patch.object(diag, "_plot_variable", return_value=figures):
             saved = diag.run(skip_existing=False)
 
-        assert len(saved) == 3
+        assert len(saved) == 5
         for _, json_path in saved:
             with open(json_path) as f:
                 meta = json.load(f)
@@ -1294,7 +1302,7 @@ class TestGlobalTrendsEndToEnd:
         results = diag.compute()
         figures = diag.plot(results)
 
-        assert len(figures) == 3
+        assert len(figures) == 5
         for fig, meta in figures:
             assert isinstance(fig, plt.Figure)
             assert meta["diagnostic_name"] == "global_trends"
@@ -1558,7 +1566,7 @@ class TestGlobalTrendsCMIP6MMM:
         assert "rmse" in annual
 
     def test_cmip6_seasonal_trends(self, cmip6_mmm_result):
-        """Seasonal CMIP6 MMM trends computed for DJF and JJA."""
+        """Seasonal CMIP6 MMM trends computed for all four seasons."""
         result, _ = cmip6_mmm_result
         assert "DJF" in result["cmip6_data"]
         assert "JJA" in result["cmip6_data"]

@@ -120,8 +120,8 @@ class AddedValueDiag(DiagnosticBase):
         return self.nc_dir / f"{var}_{period}_{ensemble_type}_av.nc"
 
     def _all_nc_exist(self, var: str) -> bool:
-        """True when all 6 NC files (3 periods × 2 ensemble types) exist."""
-        for period in ("annual", "djf", "jja"):
+        """True when all 10 NC files (5 periods × 2 ensemble types) exist."""
+        for period in ("annual", "djf", "mam", "jja", "son"):
             for etype in ("ensemble_mean", "ensemble_median"):
                 if not self._nc_path(var, period, etype).exists():
                     return False
@@ -134,7 +134,7 @@ class AddedValueDiag(DiagnosticBase):
             d for d in self._MULTI_OBS_DATASETS.get(var, [])
             if d != primary_obs
         ]
-        for p in ("annual", "djf", "jja"):
+        for p in ("annual", "djf", "mam", "jja", "son"):
             if not self._figure_exists(f"{var}_{p}_added_value"):
                 return False
             if not self._figure_exists(f"{var}_{p}_added_value_models"):
@@ -162,7 +162,7 @@ class AddedValueDiag(DiagnosticBase):
         figures are present too).
 
         After the per-variable loop, summary bar chart figures are generated
-        (one set per temporal period: annual, DJF, JJA).
+        (one set per temporal period: annual, DJF, MAM, JJA, SON).
         """
         logger.info("Running diagnostic: %s", self.name)
         self.nc_dir.mkdir(parents=True, exist_ok=True)
@@ -172,7 +172,7 @@ class AddedValueDiag(DiagnosticBase):
         for var in self.variables:
             if skip_existing and self._all_figures_exist(var):
                 logger.info("Skipping %s — all figures exist", var)
-                for p in ("annual", "djf", "jja"):
+                for p in ("annual", "djf", "mam", "jja", "son"):
                     for suffix in ("added_value", "added_value_models"):
                         fid = f"{var}_{p}_{suffix}"
                         saved.append((
@@ -222,7 +222,7 @@ class AddedValueDiag(DiagnosticBase):
 
         # ── Summary bar charts (cross-variable, one per period) ─────────────
         if all_obs_stats:
-            for period_key in ("annual", "djf", "jja"):
+            for period_key in ("annual", "djf", "mam", "jja", "son"):
                 for bar_fn, fn_name in (
                     (self._plot_summary_bars_ensemble, "ensemble"),
                     (self._plot_summary_bars_models,   "models"),
@@ -472,9 +472,9 @@ class AddedValueDiag(DiagnosticBase):
 
         eerie_annual_fields: list[xr.DataArray] = []
         eerie_seasonal_fields: dict[str, list[xr.DataArray]] = {
-            "DJF": [], "JJA": [],
+            "DJF": [], "MAM": [], "JJA": [], "SON": [],
         }
-        eerie_seasonal_models: dict[str, list[str]] = {"DJF": [], "JJA": []}
+        eerie_seasonal_models: dict[str, list[str]] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         eerie_models_used: list[str] = []
 
         for model in self.config.models:
@@ -546,7 +546,7 @@ class AddedValueDiag(DiagnosticBase):
                     )
                     common_area = compute_latlon_areas(target_lats, target_lons)
 
-                    for season in ["DJF", "JJA"]:
+                    for season in ["DJF", "MAM", "JJA", "SON"]:
                         if season in obs_seasonal:
                             obs_s = obs_seasonal[season]
                             obs_seasonal_common[season] = xr.DataArray(
@@ -567,7 +567,7 @@ class AddedValueDiag(DiagnosticBase):
             eerie_annual_fields.append(annual_regrid)
             eerie_models_used.append(model)
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seasonal:
                     s_data = model_seasonal[season].values.ravel()
                     s_vals = _interp_cache[n_src](s_data)
@@ -599,9 +599,9 @@ class AddedValueDiag(DiagnosticBase):
         logger.info("  Computing CMIP6 MMM for %s...", var)
         cmip6_annual_fields: list[xr.DataArray] = []
         cmip6_seasonal_fields: dict[str, list[xr.DataArray]] = {
-            "DJF": [], "JJA": [],
+            "DJF": [], "MAM": [], "JJA": [], "SON": [],
         }
-        cmip6_seasonal_models: dict[str, list[str]] = {"DJF": [], "JJA": []}
+        cmip6_seasonal_models: dict[str, list[str]] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         cmip6_models_used: list[str] = []
         cmip6_interp_cache: dict[tuple, Any] = {}
 
@@ -624,7 +624,7 @@ class AddedValueDiag(DiagnosticBase):
             cmip6_annual_fields.append(regridded * unit_factor)
             cmip6_models_used.append(label)
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     var, model, variant=variant,
                     period=self.period, season=season,
@@ -708,7 +708,7 @@ class AddedValueDiag(DiagnosticBase):
         )
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if (
                 season in eerie_seasonal_fields
                 and eerie_seasonal_fields[season]
@@ -793,7 +793,7 @@ class AddedValueDiag(DiagnosticBase):
                     sec_clim, target_lats, target_lons, influence_radius,
                 )
                 sec_seasonal_common: dict[str, xr.DataArray] = {}
-                for season in ["DJF", "JJA"]:
+                for season in ["DJF", "MAM", "JJA", "SON"]:
                     if season in sec_seasonal:
                         sec_seasonal_common[season] = self._regrid_obs_to_common_grid(
                             sec_seasonal[season], target_lats, target_lons,
@@ -806,7 +806,7 @@ class AddedValueDiag(DiagnosticBase):
                     cmip6_annual_fields, cmip6_models_used,
                     sec_common,
                 )
-                for season in ["DJF", "JJA"]:
+                for season in ["DJF", "MAM", "JJA", "SON"]:
                     if (
                         season in eerie_seasonal_fields
                         and eerie_seasonal_fields[season]
@@ -851,7 +851,7 @@ class AddedValueDiag(DiagnosticBase):
         av_results: dict[str, dict] = {}
         _etypes = ("ensemble_mean", "ensemble_median")
 
-        for period in ("annual", "djf", "jja"):
+        for period in ("annual", "djf", "mam", "jja", "son"):
             paths = {
                 et: self._nc_path(var, period, et) for et in _etypes
             }
@@ -1067,7 +1067,7 @@ class AddedValueDiag(DiagnosticBase):
         var : str
             Feather variable name (e.g. ``"tas"``).
         period : str
-            Period label (``"annual"``, ``"djf"``, ``"jja"``).
+            Period label (``"annual"``, ``"djf"``, ``"mam"``, ``"jja"``, ``"son"``).
         ensemble_type : str
             ``"mean"`` or ``"median"``.
         meta : dict
@@ -1293,7 +1293,7 @@ class AddedValueDiag(DiagnosticBase):
         -------
         dict keyed by obs dataset name (e.g. ``"ERA5"``,
         ``"BERKELEY_EARTH_HR"``, ``"MSWEP"``). Each value is a dict
-        keyed by period (``"annual"``, ``"djf"``, ``"jja"``), containing
+        keyed by period (``"annual"``, ``"djf"``, ``"mam"``, ``"jja"``, ``"son"``), containing
         ``eerie_mean``, ``eerie_median``, ``cmip6_mean`` sub-dicts of
         ``pct_improvement``, ``pct_neutral``, ``pct_deterioration``.
         """
@@ -1329,7 +1329,7 @@ class AddedValueDiag(DiagnosticBase):
                 )
 
                 obs_seasonal = _sclim(obs_data)
-                for season in ["DJF", "JJA"]:
+                for season in ["DJF", "MAM", "JJA", "SON"]:
                     if (
                         season in obs_seasonal
                         and season in eerie_seasonal_mean
@@ -1395,7 +1395,9 @@ class AddedValueDiag(DiagnosticBase):
                   "BERKELEY_EARTH_HR": { ... }
                 },
                 "djf": { ... },
-                "jja": { ... }
+                "mam": { ... },
+                "jja": { ... },
+                "son": { ... }
               }
             }
         """
@@ -1470,7 +1472,7 @@ class AddedValueDiag(DiagnosticBase):
             obs_stats_all: dict[str, dict] = vr.get("obs_stats", {}) if is_primary else {}
 
             period_labels = [("annual", "Annual")]
-            for s in ("DJF", "JJA"):
+            for s in ("DJF", "MAM", "JJA", "SON"):
                 if s in av:
                     period_labels.append((s, s))
 
@@ -1663,7 +1665,7 @@ class AddedValueDiag(DiagnosticBase):
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
 
-        period_label = {"annual": "Annual", "djf": "DJF", "jja": "JJA"}.get(
+        period_label = {"annual": "Annual", "djf": "DJF", "mam": "MAM", "jja": "JJA", "son": "SON"}.get(
             period_key, period_key.upper()
         )
 
@@ -1815,7 +1817,7 @@ class AddedValueDiag(DiagnosticBase):
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
 
-        period_label = {"annual": "Annual", "djf": "DJF", "jja": "JJA"}.get(
+        period_label = {"annual": "Annual", "djf": "DJF", "mam": "MAM", "jja": "JJA", "son": "SON"}.get(
             period_key, period_key.upper()
         )
 

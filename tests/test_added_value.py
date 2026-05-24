@@ -288,12 +288,12 @@ class TestAddedValueDiagIntegration:
             "expected at least one per-model figure"
 
     def test_skip_when_nc_exists(self, diag, tmp_path, monkeypatch):
-        """_all_nc_exist returns True only when all 6 NC files are present."""
+        """_all_nc_exist returns True only when all 10 NC files are present."""
         var = "tas"
         # Before computation no NC files exist
         assert not diag._all_nc_exist(var)
         diag.compute()
-        # After computation: 2 etypes × 3 periods = 6 NC files
+        # After computation: 2 etypes × 5 periods = 10 NC files
         assert diag._all_nc_exist(var)
 
     def test_load_from_nc(self, diag):
