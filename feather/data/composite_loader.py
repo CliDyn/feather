@@ -155,14 +155,26 @@ class CompositeModelLoader:
         model: str,
         variable: str,
         *,
+        table: str | None = None,
         period: tuple[str, str] | None = None,
         time_mean: bool = False,
     ) -> xr.DataArray:
-        """Load a variable, routing to the correct backend."""
+        """Load a variable, routing to the correct backend.
+
+        Parameters
+        ----------
+        table : str, optional
+            CMOR table (e.g. ``"day"``).  Forwarded to backends that
+            accept it (CMORLoader); silently ignored by others.
+        """
+        import inspect
+
         backend = self._get_backend(model)
-        return backend.load_var(
-            model, variable, period=period, time_mean=time_mean,
-        )
+        sig = inspect.signature(backend.load_var)
+        kwargs: dict = {"period": period, "time_mean": time_mean}
+        if "table" in sig.parameters and table is not None:
+            kwargs["table"] = table
+        return backend.load_var(model, variable, **kwargs)
 
     def load_coords(
         self, model: str, variable: str,
