@@ -5,7 +5,7 @@ Core infrastructure:
 - :mod:`~feather.diag.base` — :class:`DiagnosticBase` abstract base class
 - :mod:`~feather.diag.registry` — ``@register`` decorator and discovery
 
-Diagnostics (16 registered):
+Diagnostics (17 registered):
 - :mod:`~feather.diag.global_biases` — climatology bias maps (18 variables)
 - :mod:`~feather.diag.timeseries` — global-mean time series
 - :mod:`~feather.diag.seasonal_cycle` — monthly climatological cycle
@@ -21,6 +21,7 @@ Diagnostics (16 registered):
 - :mod:`~feather.diag.obs_comparison` — ERA5 vs Berkeley Earth trends and biases
 - :mod:`~feather.diag.precip_obs_comparison` — ERA5 vs MSWEP precipitation trends and biases
 - :mod:`~feather.diag.tropical_nights` — Tropical Nights Index (TN > 20 °C, daily tasmin)
+- :mod:`~feather.diag.heatwave` — Heatwave Indices (TX90: HWN, HWF, HWD, HWM, HWA)
 """
 
 from feather.diag.base import DiagnosticBase
@@ -45,3 +46,4 @@ import feather.diag.precip_obs_comparison  # noqa: F401
 
 import feather.diag.added_value  # noqa: F401
 import feather.diag.tropical_nights  # noqa: F401
+import feather.diag.heatwave  # noqa: F401
