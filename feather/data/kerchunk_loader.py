@@ -7,6 +7,7 @@ Store layout (auto-detected under ``{root}/{variant}/``)::
 
     atmos/gr025/2D_monthly_0.25deg_atmos_avg.parq   # 2-D sfc monthly
     atmos/gr025/3D_monthly_0.25deg_atmos_avg.parq   # 3-D pl monthly
+    atmos/gr025/2D_daily_0.25deg_atmos_min.parq     # 2-D sfc daily minimum (tasmin)
     ocean/gr025/2D_daily_avg_*.parq                  # ocean 2-D daily
 
 Grid conventions
@@ -110,6 +111,11 @@ _ATMOS3D: dict[str, tuple[str, float]] = {
     "wap":  ("mw", 1.0),
 }
 
+# Atmos 2-D daily minimum variables (e.g. from 2D_daily_0.25deg_atmos_min.parq)
+_ATMOS2D_DAILY_MIN: dict[str, tuple[str, float]] = {
+    "tasmin": ("mn2t24", 1.0),   # K, daily minimum 2 m temperature
+}
+
 # Ocean 2-D variables (daily → resampled to monthly in loader)
 # Raw tos is in K; subtract 273.15 to match CMORLoader (°C).
 _OCEAN2D: dict[str, tuple[str, float, float]] = {
@@ -206,6 +212,9 @@ class KerchunkParquetLoader:
         if variable in _ATMOS3D:
             return self._load_atmos3d_var(model, variable)
 
+        if variable in _ATMOS2D_DAILY_MIN:
+            return self._load_atmos2d_daily_min_var(model, variable)
+
         if variable in _ATMOS2D:
             return self._load_atmos2d_var(model, variable)
 
@@ -214,7 +223,7 @@ class KerchunkParquetLoader:
 
         raise KeyError(
             f"Variable {variable!r} not supported by KerchunkParquetLoader. "
-            f"Known: {sorted(_ATMOS2D) + sorted(_OCEAN2D) + sorted(_DERIVED)}"
+            f"Known: {sorted(_ATMOS2D) + sorted(_ATMOS2D_DAILY_MIN) + sorted(_OCEAN2D) + sorted(_DERIVED)}"
         )
 
     # ------------------------------------------------------------------
@@ -228,6 +237,28 @@ class KerchunkParquetLoader:
 
         # Replace GRIB fill value (exact equality: 9999.0 is the GRIB sentinel,
         # never a real value even for Pa-unit fields like psl ~100 000 Pa)
+        data = raw.values.copy().astype(np.float32)
+        data[data == _ATMOS_FILL_VALUE] = np.nan
+        if scale != 1.0:
+            data *= np.float32(scale)
+
+        time = ds["time"].values
+        lat, lon, data_3d = self._reshape_atmos_flat(data, ds)
+        da = xr.DataArray(
+            data_3d,
+            dims=["time", "lat", "lon"],
+            coords={"time": time, "lat": lat, "lon": lon},
+            name=variable,
+            attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
+        )
+        return da
+
+    def _load_atmos2d_daily_min_var(self, model: str, variable: str) -> xr.DataArray:
+        """Load a daily-minimum atmos variable from the dedicated min store."""
+        kname, scale = _ATMOS2D_DAILY_MIN[variable]
+        ds = self._open_store(model, "atmos2d_daily_min")
+        raw = ds[kname]
+
         data = raw.values.copy().astype(np.float32)
         data[data == _ATMOS_FILL_VALUE] = np.nan
         if scale != 1.0:
@@ -385,6 +416,8 @@ class KerchunkParquetLoader:
 
         if store_type == "atmos2d":
             p = base / "atmos" / "gr025" / "2D_monthly_0.25deg_atmos_avg.parq"
+        elif store_type == "atmos2d_daily_min":
+            p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_min.parq"
         elif store_type == "atmos3d":
             p = base / "atmos" / "gr025" / "3D_monthly_0.25deg_atmos_avg.parq"
         elif store_type == "ocean2d":
@@ -428,7 +461,16 @@ class KerchunkParquetLoader:
         if model in self._grid_cache:
             return self._grid_cache[model]
 
-        ds = self._open_store(model, "atmos2d")
+        for store_type in ("atmos2d", "atmos2d_daily_min"):
+            try:
+                ds = self._open_store(model, store_type)
+                break
+            except FileNotFoundError:
+                continue
+        else:
+            raise FileNotFoundError(
+                f"No atmos store found for {model!r} to derive grid coordinates"
+            )
         lat_flat = ds["lat"].values
         lon_flat = ds["lon"].values
 
