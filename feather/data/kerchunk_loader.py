@@ -254,22 +254,51 @@ class KerchunkParquetLoader:
         return da
 
     def _load_atmos2d_daily_min_var(self, model: str, variable: str) -> xr.DataArray:
-        """Load a daily-minimum atmos variable from the dedicated min store."""
+        """Load a daily-minimum atmos variable lazily from the dedicated min store.
+
+        Unlike the monthly atmos2d loader, this method does NOT call .values so
+        the full (n_days × n_cells) array is never pulled into memory.  All
+        transformations (fill-value masking, reshape, lat/lon reordering) stay
+        as lazy dask operations, keeping memory usage proportional to one chunk.
+        """
+        import dask.array as dsa
+
         kname, scale = _ATMOS2D_DAILY_MIN[variable]
         ds = self._open_store(model, "atmos2d_daily_min")
-        raw = ds[kname]
+        raw = ds[kname]  # dask-backed: shape (n_time, n_cells)
 
-        data = raw.values.copy().astype(np.float32)
-        data[data == _ATMOS_FILL_VALUE] = np.nan
+        # --- grid coordinates (tiny, safe to materialise) ---
+        lat_flat = ds["lat"].values
+        lon_flat = ds["lon"].values
+        n_lat, n_lon = self._detect_grid_shape(lat_flat)
+
+        lat_2d = lat_flat.reshape(n_lat, n_lon)
+        lon_2d = lon_flat.reshape(n_lat, n_lon)
+        lat_1d = lat_2d[:, 0]
+        lon_1d = lon_2d[0, :]
+        lon_1d = np.where(lon_1d < 0, lon_1d + 360.0, lon_1d)
+
+        lat_sort = np.argsort(lat_1d)
+        lon_sort = np.argsort(lon_1d)
+        lat_1d = lat_1d[lat_sort]
+        lon_1d = lon_1d[lon_sort]
+
+        # --- lazy transforms on the dask array ---
+        data = raw.data.astype(np.float32)           # keep lazy
+        data = dsa.where(data == _ATMOS_FILL_VALUE, np.nan, data)
         if scale != 1.0:
-            data *= np.float32(scale)
+            data = data * np.float32(scale)
+
+        # Reshape flat spatial dim → (time, lat, lon) then reorder axes
+        n_time = data.shape[0]
+        data = data.reshape(n_time, n_lat, n_lon)
+        data = data[:, lat_sort, :][:, :, lon_sort]
 
         time = ds["time"].values
-        lat, lon, data_3d = self._reshape_atmos_flat(data, ds)
         da = xr.DataArray(
-            data_3d,
+            data,
             dims=["time", "lat", "lon"],
-            coords={"time": time, "lat": lat, "lon": lon},
+            coords={"time": time, "lat": lat_1d, "lon": lon_1d},
             name=variable,
             attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
         )
