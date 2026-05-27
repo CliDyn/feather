@@ -153,7 +153,7 @@ print(result)
 
 ## Available diagnostics
 
-Feather provides 14 registered diagnostics across atmosphere, ocean, cryosphere, cross-domain evaluation, and model intercomparison:
+Feather provides 17 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
 
 ### Atmosphere
 
@@ -179,6 +179,24 @@ Feather provides 14 registered diagnostics across atmosphere, ocean, cryosphere,
 |---|---|---|---|
 | `sea_ice` | `SeaIceDiag` | OSI-SAF, PIOMAS/GIOMAS | Sea ice area/extent/volume time series, seasonal cycles, trends, polar spatial maps |
 
+### Extremes
+
+| Diagnostic | Class | Observation | What it produces |
+|---|---|---|---|
+| `tropical_nights` | `TropicalNightsDiag` | Berkeley Earth Land TMIN | Annual tropical nights count (TN > 20 °C) per grid point; land-only bias map vs Berkeley Earth |
+| `heatwave` | `HeatwaveDiag` | Berkeley Earth Land TMAX | Five TX90 heatwave indices (HWN, HWF, HWD, HWM, HWA): climatological maps + annual time series; TMAX bias map |
+
+The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
+
+The **Heatwave diagnostic** computes five interconnected indices using the TX90 method (tasmax > DOY-specific 90th-percentile threshold, runs ≥ 3 consecutive days):
+- **HWN** — heatwave number (events per year)
+- **HWF** — heatwave frequency (heatwave days per year)
+- **HWD** — heatwave duration (length of longest event, days)
+- **HWM** — heatwave magnitude (mean tasmax on heatwave days, °C)
+- **HWA** — heatwave amplitude (peak tasmax on heatwave days, °C)
+
+Summer windows are hemisphere-aware (NH: May–Sep; SH: Nov–Mar). Requires daily `tasmax` (CMOR `day/tasmax` table or kerchunk-parquet mx2t24 store). Per-model NC checkpoints stored in `{output_dir}/heatwave/`.
+
 ### Cross-domain
 
 | Diagnostic | Class | Observation | What it produces |
@@ -186,14 +204,16 @@ Feather provides 14 registered diagnostics across atmosphere, ocean, cryosphere,
 | `precipitation_mswep` | `PrecipitationMSWEP` | MSWEP v2.8 | Precipitation bias maps (absolute + relative), time series, seasonal cycle, zonal mean, intensity PDF |
 | `temperature_berkeley` | `TemperatureBerkeley` | Berkeley Earth | T2m bias maps, warming trend maps (global + polar), Taylor diagram |
 | `teleconnections` | `TeleconnectionDiag` | ERA5 | Climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO): index time series, spatial patterns, power spectra, seasonal variance |
+| `obs_comparison` | `ObsComparisonDiag` | ERA5 + Berkeley Earth | ERA5 vs Berkeley Earth T2m trend and bias comparison across two periods (1980–2014, 1980–2024) |
+| `precip_obs_comparison` | `PrecipObsComparisonDiag` | ERA5 + MSWEP v2.8 | ERA5 vs MSWEP precipitation trend and bias comparison across two periods (1980–2014, 1980–2023) |
 
 ### Model intercomparison
 
 | Diagnostic | Class | Observation | What it produces |
 |---|---|---|---|
-| `added_value` | `AddedValueDiag` | ERA5 | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6 MMM — ensemble summary maps + per-model panels |
+| `added_value` | `AddedValueDiag` | ERA5 / Berkeley Earth / MSWEP | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6 MMM — ensemble summary maps + per-model panels |
 
-**Added Value** (AV) quantifies where the EERIE ensemble outperforms the CMIP6 multi-model mean relative to ERA5. AV ∈ [-1, 1]: AV > 0 means EERIE reduces squared error vs CMIP6 MMM at that grid point. Two figures per period (annual, DJF, JJA): ensemble mean/median summary and one panel per individual EERIE and CMIP6 model.
+**Added Value** (AV) quantifies where the EERIE ensemble outperforms the CMIP6 multi-model mean relative to observations. AV ∈ [-1, 1]: AV > 0 means EERIE reduces squared error vs CMIP6 MMM at that grid point. Two figures per period (annual, DJF, JJA): ensemble mean/median summary and one panel per individual EERIE and CMIP6 model.
 
 All diagnostics support:
 - `variables=["tas", ...]` — filter which variables to evaluate (CMOR canonical names)
@@ -372,6 +392,15 @@ output/
     precipitation_mswep/
     temperature_berkeley/
     teleconnections/
+    obs_comparison/
+    precip_obs_comparison/
+    added_value/
+    tropical_nights/
+    heatwave/
+  tropical_nights/                    # NC checkpoints (outside figures tree)
+    {model}_tropical_nights_tn20_{start}_{end}.nc
+  heatwave/                           # NC checkpoints (outside figures tree)
+    {model}_heatwave_tx90_{start}_{end}.nc
   analysis/                         # LLM analysis (Gemini)
     global_biases/
       tas_annual_bias_combined_analysis.json
@@ -406,7 +435,7 @@ feather/
     composite_loader.py  # CompositeModelLoader (multi-source routing)
     obs.py               # ObsLoader (observations from config)
     cmip6.py             # CMIP6Loader (multi-model mean from zarr)
-    variables.py         # VARIABLE_REGISTRY (33 vars, CMOR canonical names)
+    variables.py         # VARIABLE_REGISTRY (36 vars, CMOR canonical names)
   util/
     spatial.py           # Zonal/global means, regridding, latlon areas
     temporal.py          # Climatology, anomaly, deseason, detrend
@@ -433,7 +462,11 @@ feather/
     precipitation_mswep.py # Precipitation evaluation (MSWEP v2.8)
     temperature_berkeley.py # T2m evaluation (Berkeley Earth)
     teleconnections.py    # Variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
+    obs_comparison.py     # ERA5 vs Berkeley Earth T2m trends and biases
+    precip_obs_comparison.py # ERA5 vs MSWEP precipitation trends and biases
     added_value.py        # Added Value: EERIE ensemble vs CMIP6 MMM (Dosio et al. 2015)
+    tropical_nights.py    # Tropical Nights Index (TN > 20 °C, daily tasmin)
+    heatwave.py           # Heatwave Indices (TX90: HWN, HWF, HWD, HWM, HWA)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini, comparison-type aware)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
@@ -498,7 +531,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1666 tests (1661 unit + 5 integration) across 32 test files.
+1784 tests (1774 unit + 10 integration) across 34 test files.
 
 ## Requirements
 
