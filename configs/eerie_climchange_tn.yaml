@@ -1,0 +1,105 @@
+project:
+  name: "EERIE"
+  description: "EERIE HighResMIP Tropical Nights climate change signal (SSP2-4.5)"
+  experiment: "hist-1950"
+  period: ["1981", "2000"]
+  resolution: "high-resolution (~10 km atm)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    Comparison of climate change signals in Tropical Nights (TN > 20 °C)
+    between EERIE models under SSP2-4.5, using the hist-1950 reference period
+    (1981–2000) and the SSP2-4.5 future period (2031–2050).
+  climate_change:
+    reference_period: ["1981", "2000"]
+    future_period:    ["2031", "2050"]
+    hist_load_period: ["1981", "2014"]   # full hist-1950 window for time series
+    ssp_load_period:  ["2015", "2050"]   # full ssp245 window for time series
+    models:
+      IFS-FESOM2-SR:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+      IFS-FESOM2-SR-r2:
+        hist_data_source:   kerchunk_native
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950
+        future_data_source: kerchunk_native
+        future_data_root:   /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/ssp245
+        future_only_to:     "2030"       # run currently ends ~2030 (before 2031–2050 window)
+      ICON-ESM-ER:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:
+  IFS-FESOM2-SR:
+    institution: AWI
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#1f77b4"
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    experiment: hist-1950
+    variant: r2i1p1f1
+    grids:
+      sfc: latlon
+    color: "#aec7e8"
+    data_source_type: kerchunk_parquet
+  ICON-ESM-ER:
+    institution: MPI-M
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#2ca02c"
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+  BERKELEY_EARTH_TMIN:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Land_TMIN_Gridded_0p25deg.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "./output_eerie_climchange_tn"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — EERIE Tropical Nights Climate Change"
+  subtitle: "EERIE HighResMIP SSP2-4.5 Tropical Nights Signal (ref 1981–2000 vs future 2031–2050)"
+  group_order:
+    - extremes
+  group_labels:
+    extremes: "Extreme Events"

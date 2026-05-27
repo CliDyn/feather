@@ -169,6 +169,7 @@ class KerchunkParquetLoader:
         model: str,
         variable: str,
         *,
+        table: str | None = None,   # accepted for API parity with CMORLoader; ignored
         period: tuple[str, str] | None = None,
         time_mean: bool = False,
     ) -> xr.DataArray:
@@ -219,9 +220,19 @@ class KerchunkParquetLoader:
             return self._load_atmos3d_var(model, variable)
 
         if variable in _ATMOS2D_DAILY_MIN:
+            mc = self._config.model_configs.get(model)
+            if mc and mc.data_source_type == "kerchunk_native":
+                return self._load_atmos2d_daily_min_var(
+                    model, variable, store_type="atmos2d_native_daily_min"
+                )
             return self._load_atmos2d_daily_min_var(model, variable)
 
         if variable in _ATMOS2D_DAILY_MAX:
+            mc = self._config.model_configs.get(model)
+            if mc and mc.data_source_type == "kerchunk_native":
+                return self._load_atmos2d_daily_max_var(
+                    model, variable, store_type="atmos2d_native_daily_max"
+                )
             return self._load_atmos2d_daily_max_var(model, variable)
 
         if variable in _ATMOS2D:
@@ -262,18 +273,28 @@ class KerchunkParquetLoader:
         )
         return da
 
-    def _load_atmos2d_daily_min_var(self, model: str, variable: str) -> xr.DataArray:
+    def _load_atmos2d_daily_min_var(
+        self,
+        model: str,
+        variable: str,
+        *,
+        store_type: str = "atmos2d_daily_min",
+    ) -> xr.DataArray:
         """Load a daily-minimum atmos variable lazily from the dedicated min store.
 
         Unlike the monthly atmos2d loader, this method does NOT call .values so
         the full (n_days × n_cells) array is never pulled into memory.  All
         transformations (fill-value masking, reshape, lat/lon reordering) stay
         as lazy dask operations, keeping memory usage proportional to one chunk.
+
+        *store_type* selects between the 0.25° gridded store
+        (``"atmos2d_daily_min"``) and the native-resolution store
+        (``"atmos2d_native_daily_min"``).
         """
         import dask.array as dsa
 
         kname, scale = _ATMOS2D_DAILY_MIN[variable]
-        ds = self._open_store(model, "atmos2d_daily_min")
+        ds = self._open_store(model, store_type)
         raw = ds[kname]  # dask-backed: shape (n_time, n_cells)
 
         # --- grid coordinates (tiny, safe to materialise) ---
@@ -313,12 +334,18 @@ class KerchunkParquetLoader:
         )
         return da
 
-    def _load_atmos2d_daily_max_var(self, model: str, variable: str) -> xr.DataArray:
+    def _load_atmos2d_daily_max_var(
+        self,
+        model: str,
+        variable: str,
+        *,
+        store_type: str = "atmos2d_daily_max",
+    ) -> xr.DataArray:
         """Load a daily-maximum atmos variable lazily from the dedicated max store."""
         import dask.array as dsa
 
         kname, scale = _ATMOS2D_DAILY_MAX[variable]
-        ds = self._open_store(model, "atmos2d_daily_max")
+        ds = self._open_store(model, store_type)
         raw = ds[kname]
 
         lat_flat = ds["lat"].values
@@ -500,6 +527,10 @@ class KerchunkParquetLoader:
             p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_min.parq"
         elif store_type == "atmos2d_daily_max":
             p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_max.parq"
+        elif store_type == "atmos2d_native_daily_min":
+            p = base / "atmos" / "native" / "2D_daily_native_atmos_min.parq"
+        elif store_type == "atmos2d_native_daily_max":
+            p = base / "atmos" / "native" / "2D_daily_native_atmos_max.parq"
         elif store_type == "atmos3d":
             p = base / "atmos" / "gr025" / "3D_monthly_0.25deg_atmos_avg.parq"
         elif store_type == "ocean2d":
@@ -543,7 +574,12 @@ class KerchunkParquetLoader:
         if model in self._grid_cache:
             return self._grid_cache[model]
 
-        for store_type in ("atmos2d", "atmos2d_daily_min", "atmos2d_daily_max"):
+        mc = self._config.model_configs.get(model)
+        if mc and mc.data_source_type == "kerchunk_native":
+            candidate_stores = ("atmos2d_native_daily_min", "atmos2d_native_daily_max")
+        else:
+            candidate_stores = ("atmos2d", "atmos2d_daily_min", "atmos2d_daily_max")
+        for store_type in candidate_stores:
             try:
                 ds = self._open_store(model, store_type)
                 break
