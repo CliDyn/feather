@@ -663,8 +663,7 @@ def test_plot_tmin_bias_included_when_obs_available(tmp_path, hist_da, simple_co
         dims=("lat", "lon"),
         coords={"lat": lats, "lon": lons},
     )
-    results["obs_mean_tmin"] = obs_k
-    # Also ensure model tmin is populated
+    # obs_mean_tmin is now a per-model dict
     results["model_mean_tmin"] = {
         m: xr.DataArray(
             np.full((len(lats), len(lons)), 292.0),
@@ -673,6 +672,7 @@ def test_plot_tmin_bias_included_when_obs_available(tmp_path, hist_da, simple_co
         )
         for m in results["models"]
     }
+    results["obs_mean_tmin"] = {m: obs_k for m in results["models"]}
     figs = diag.plot(results)
     ids = [meta["figure_id"] for _, meta in figs]
     assert "tropical_nights_change_tmin_bias" in ids
