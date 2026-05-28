@@ -181,14 +181,14 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         """Return loader for the SSP2-4.5 experiment, or None if unavailable."""
         cc_cfg = self._cc_models.get(model, {})
 
-        # Respect declared run end: skip future if run ends before fut_period starts
+        # Log if run ends before the future climatology window (time series still loaded)
         fut_only_to = cc_cfg.get("future_only_to")
         if fut_only_to and int(fut_only_to) < int(self.fut_period[0]):
             logger.info(
-                "  %s: future run ends %s < %s — future period not available",
+                "  %s: future run ends %s < %s — no change map, "
+                "but SSP time series will be loaded",
                 model, fut_only_to, self.fut_period[0],
             )
-            return None
 
         src = cc_cfg.get("future_data_source", "cmor")
         if src == "kerchunk_native":
@@ -559,6 +559,16 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 lat_coord = hist_tn["lat"]
                 lon_coord = hist_tn["lon"]
 
+            # Re-apply land mask here so NC checkpoints saved before masking
+            # was introduced also yield land-only time series and climatologies.
+            land_mask = self._load_land_mask(
+                np.asarray(hist_tn["lat"]), np.asarray(hist_tn["lon"])
+            )
+            if land_mask is not None:
+                hist_tn = hist_tn.where(land_mask)
+                if hist_tmin is not None:
+                    hist_tmin = hist_tmin.where(land_mask)
+
             ref_slice = hist_tn.sel(year=slice(*self.ref_period))
             ref_clim[model] = ref_slice.mean("year")
             hist_series[model] = self._land_mean_series(hist_tn)
@@ -580,6 +590,9 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             if ssp_tn is None:
                 logger.warning("  %s: SSP TN load failed — reference only", model)
                 continue
+
+            if land_mask is not None:
+                ssp_tn = ssp_tn.where(land_mask)
 
             ssp_series[model] = self._land_mean_series(ssp_tn)
 

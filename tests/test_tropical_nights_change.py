@@ -383,8 +383,11 @@ def test_make_cmor_loader_does_not_mutate_original(tmp_path):
 # ── Unit tests: _make_fut_loader with future_only_to ─────────────────────────
 
 
-def test_make_fut_loader_returns_none_when_run_ends_early(tmp_path):
-    """future_only_to < fut_period[0] means no future loader."""
+def test_make_fut_loader_still_returns_loader_when_run_ends_early(tmp_path):
+    """future_only_to < fut_period[0]: loader is still created for the time
+    series; the change map will simply be empty because fut_slice is empty."""
+    from feather.data.cmor_loader import CMORLoader
+
     cc = {
         "reference_period": ["1981", "1985"],
         "future_period":    ["2031", "2050"],
@@ -396,7 +399,7 @@ def test_make_fut_loader_returns_none_when_run_ends_early(tmp_path):
                 "hist_experiment":    "hist-1950",
                 "future_data_source": "cmor",
                 "future_experiment":  "highres-future-ssp245",
-                "future_only_to":     "2030",  # ends before 2031
+                "future_only_to":     "2030",  # ends before 2031 — no change map
             },
         },
     }
@@ -404,7 +407,9 @@ def test_make_fut_loader_returns_none_when_run_ends_early(tmp_path):
     diag = TropicalNightsChangeDiag(
         _MockLoader(_make_daily_tasmin()), _MockObsLoader(), config
     )
-    assert diag._make_fut_loader("model-A") is None
+    # Loader must still be created so the SSP time series (2015–2030) is loaded
+    ldr = diag._make_fut_loader("model-A")
+    assert isinstance(ldr, CMORLoader)
 
 
 def test_make_fut_loader_returns_loader_when_run_reaches_future(tmp_path):

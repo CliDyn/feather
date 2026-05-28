@@ -26,6 +26,10 @@ project:
         future_data_source: kerchunk_native
         future_data_root:   /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/ssp245
         future_only_to:     "2030"       # run currently ends ~2030 (before 2031–2050 window)
+      IFS-FESOM2-SR-r3:
+        hist_data_source:   kerchunk_native
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950
+        # no future data for r3
       ICON-ESM-ER:
         hist_experiment:    hist-1950
         hist_data_source:   cmor
@@ -51,6 +55,14 @@ models:
     grids:
       sfc: latlon
     color: "#aec7e8"
+    data_source_type: kerchunk_parquet
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    experiment: hist-1950
+    variant: r3i1p1f1
+    grids:
+      sfc: latlon
+    color: "#6baed6"
     data_source_type: kerchunk_parquet
   ICON-ESM-ER:
     institution: MPI-M
