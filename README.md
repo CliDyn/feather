@@ -74,6 +74,11 @@ feather --config configs/eerie_ifsnemo_members.yaml -v
 # EERIE — all 8 members (3×IFS-FESOM2-SR + 3×IFS-NEMO-ER + ICON-ESM-ER + HadGEM3-GC5)
 feather --config configs/eerie_all_members.yaml -v
 
+# EERIE Tropical Nights climate change signal (SSP2-4.5)
+feather --config configs/eerie_climchange_tn.yaml \
+        --steps diagnostics \
+        --diagnostics tropical_nights_change -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -153,7 +158,7 @@ print(result)
 
 ## Available diagnostics
 
-Feather provides 17 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
+Feather provides 18 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
 
 ### Atmosphere
 
@@ -184,9 +189,17 @@ Feather provides 17 registered diagnostics across atmosphere, ocean, cryosphere,
 | Diagnostic | Class | Observation | What it produces |
 |---|---|---|---|
 | `tropical_nights` | `TropicalNightsDiag` | Berkeley Earth Land TMIN | Annual tropical nights count (TN > 20 °C) per grid point; land-only bias map vs Berkeley Earth |
+| `tropical_nights_change` | `TropicalNightsChangeDiag` | Berkeley Earth Land TMIN | Climate change signal in TN under SSP2-4.5: [Reference \| Future \| Change] maps per model, land-mean time series hist+SSP stitched, mean Tmin bias map |
 | `heatwave` | `HeatwaveDiag` | Berkeley Earth Land TMAX | Five TX90 heatwave indices (HWN, HWF, HWD, HWM, HWA): climatological maps + annual time series; TMAX bias map |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
+
+The **Tropical Nights Climate Change Signal** (`tropical_nights_change`) compares mean annual TN between a historical reference period (default 1981–2000) and a future period (default 2031–2050) under SSP2-4.5. It is purpose-built for experiments that span multiple data backends (e.g. CMOR r1 + kerchunk-native r2/r3):
+- **Group A** — Combined map: one row per model × three columns [Reference climatology | Future climatology | Change (Future − Reference)]. Sequential YlOrRd colormap for absolute counts; diverging RdYlBu_r for the change column. Models whose SSP run ends before the future period show a placeholder in columns 2–3.
+- **Group B** — Stitched land-mean time series: historical segment (hist-1950) joined to SSP2-4.5 at 2015 with a dashed vertical line; reference and future windows highlighted; dashed black line shows Berkeley Earth approximate observed TN (months with mean TMIN > 20 °C weighted by days-in-month).
+- **Group C** — Mean daily Tmin bias map vs Berkeley Earth Land TMIN over the reference period (skipped when BE data is unavailable).
+
+Configuration lives under `project.climate_change` (see `configs/eerie_climchange_tn.yaml`). Each model declares its hist/future data source (`cmor` or `kerchunk_native`) and optionally a `future_only_to` year. Land masking is applied per-model using the Berkeley Earth land mask (NaN over ocean). Per-model NC checkpoints written to `{output_dir}/tropical_nights_change/`.
 
 The **Heatwave diagnostic** computes five interconnected indices using the TX90 method (tasmax > DOY-specific 90th-percentile threshold, runs ≥ 3 consecutive days):
 - **HWN** — heatwave number (events per year)
@@ -223,7 +236,7 @@ All diagnostics support:
 
 ## Configuration
 
-Feather uses YAML configuration files. Eleven configs are provided:
+Feather uses YAML configuration files. Twelve configs are provided:
 
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
@@ -231,6 +244,7 @@ Feather uses YAML configuration files. Eleven configs are provided:
 | `configs/eerie.yaml` | EERIE HighResMIP (4 models) | CMOR directory tree | `multi_model` |
 | `configs/eerie_ifsnemo_members.yaml` | EERIE — 3 IFS-NEMO-ER + 3 other models | CMOR (hist-1950 + hist-1975) | `multi_model` |
 | `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
+| `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |
@@ -356,7 +370,11 @@ Feather supports six data loading backends:
 | Kerchunk parquet reference stores | `KerchunkParquetLoader` | `kerchunk_parquet` | regular lat/lon (via fsspec) |
 | Multi-source | `CompositeModelLoader` | mixed | per-model |
 
-`KerchunkParquetLoader` reads IFS-FESOM2 ensemble members stored as kerchunk parquet reference files pointing to raw GRIB/FESOM output. Store layout: `{root}/{variant}/atmos/gr025/*.parq` (atmosphere 2D/3D monthly) and `ocean/gr025/2D_daily_avg_*.parq` (ocean 2D daily, resampled to monthly). Requires `kerchunk`, `fastparquet`, and `fsspec` in the Python environment.
+`KerchunkParquetLoader` reads IFS-FESOM2 ensemble members stored as kerchunk parquet reference files pointing to raw GRIB/FESOM output. Two store layouts are supported:
+- **Regridded 0.25°** (`gr025`): `{root}/{variant}/atmos/gr025/*.parq` — atmosphere 2D/3D monthly; `ocean/gr025/2D_daily_avg_*.parq` ocean 2D daily. Used by `eerie_all_members.yaml`.
+- **Native grid** (`native`): `{root}/{variant}/atmos/native/2D_daily_native_atmos_min.parq` / `…_max.parq` — daily min/max on the native HEALPix grid. Selected via `data_source_type: kerchunk_native` in the model config; used by `eerie_climchange_tn.yaml` for the `tropical_nights_change` diagnostic.
+
+Requires `kerchunk`, `fastparquet`, and `fsspec` in the Python environment.
 
 The `CompositeModelLoader` automatically routes `load_var()` calls to the correct backend per model based on `data_source_type` in the model config.
 
@@ -396,9 +414,13 @@ output/
     precip_obs_comparison/
     added_value/
     tropical_nights/
+    tropical_nights_change/
     heatwave/
   tropical_nights/                    # NC checkpoints (outside figures tree)
     {model}_tropical_nights_tn20_{start}_{end}.nc
+  tropical_nights_change/             # NC checkpoints (outside figures tree)
+    {model}_tn_hist_{start}_{end}.nc
+    {model}_tn_ssp_{start}_{end}.nc
   heatwave/                           # NC checkpoints (outside figures tree)
     {model}_heatwave_tx90_{start}_{end}.nc
   analysis/                         # LLM analysis (Gemini)
@@ -466,6 +488,7 @@ feather/
     precip_obs_comparison.py # ERA5 vs MSWEP precipitation trends and biases
     added_value.py        # Added Value: EERIE ensemble vs CMIP6 MMM (Dosio et al. 2015)
     tropical_nights.py    # Tropical Nights Index (TN > 20 °C, daily tasmin)
+    tropical_nights_change.py # Tropical Nights climate change signal (SSP2-4.5)
     heatwave.py           # Heatwave Indices (TX90: HWN, HWF, HWD, HWM, HWA)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini, comparison-type aware)
@@ -531,7 +554,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1784 tests (1774 unit + 10 integration) across 34 test files.
+1829 tests (1819 unit + 10 integration) across 40 test files.
 
 ## Requirements
 
