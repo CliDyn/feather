@@ -397,6 +397,31 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         destine_variable="avg_q",
         group="atmosphere_3d",
     ),
+
+    # ═══════════════════════════════════════════════════════════════════
+    #  Climate extremes indices  (domain = "sfc", daily inputs)
+    # ═══════════════════════════════════════════════════════════════════
+
+    "tasmin": VarInfo(
+        name="tasmin", long_name="Daily Minimum 2m Temperature", units="K",
+        domain="sfc", cmap="cmo.thermal",
+        obs_dataset="ERA5",   # ERA5 daily tasmin not available at standard path
+        obs_variable="mn2t",
+        destine_variable="",
+        cmip6_variable="tasmin", cmip6_table="day",
+        group="extremes",
+        display_offset=-273.15, display_units="°C",
+    ),
+    "tasmax": VarInfo(
+        name="tasmax", long_name="Daily Maximum 2m Temperature", units="K",
+        domain="sfc", cmap="cmo.thermal",
+        obs_dataset="ERA5",   # ERA5 daily tasmax not available at standard path
+        obs_variable="mx2t",
+        destine_variable="",
+        cmip6_variable="tasmax", cmip6_table="day",
+        group="extremes",
+        display_offset=-273.15, display_units="°C",
+    ),
 }
 
 # Reverse mapping: DestinE variable name → canonical (CMOR) name

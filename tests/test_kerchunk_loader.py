@@ -8,6 +8,7 @@ from feather.config import FeatherConfig, ModelConfig
 from feather.data.kerchunk_loader import (
     KerchunkParquetLoader,
     _ATMOS2D,
+    _ATMOS2D_DAILY_MIN,
     _ATMOS3D,
     _DERIVED,
     _OCEAN2D,
@@ -569,3 +570,101 @@ class TestVariableRegistry:
     def test_ocean2d_tos_has_kelvin_offset(self):
         _, scale, offset = _OCEAN2D["tos"]
         assert offset == pytest.approx(-273.15, abs=1e-6)
+
+    def test_atmos2d_daily_min_has_tasmin(self):
+        assert "tasmin" in _ATMOS2D_DAILY_MIN
+
+    def test_tasmin_not_in_atmos2d(self):
+        assert "tasmin" not in _ATMOS2D
+
+    def test_tasmin_scale_is_one(self):
+        _, scale = _ATMOS2D_DAILY_MIN["tasmin"]
+        assert scale == pytest.approx(1.0)
+
+
+def _make_atmos2d_daily_min_store(n_days=30):
+    """Synthetic daily-min atmos-2D Dataset (time=daily, flat value dim)."""
+    time = xr.date_range("1980-01-01", periods=n_days, freq="D")
+    lat_flat, lon_flat = _make_atmos_lat_lon()
+    data = np.full((n_days, N_CELLS), 295.0, dtype=np.float32)  # above TN threshold
+
+    kname, _ = _ATMOS2D_DAILY_MIN["tasmin"]
+    ds_vars = {kname: xr.DataArray(data, dims=["time", "value"], attrs={"units": "K"})}
+    return xr.Dataset(
+        ds_vars,
+        coords={"time": time, "lat": ("value", lat_flat), "lon": ("value", lon_flat)},
+    )
+
+
+class TestAtmos2DDailyMin:
+    """Tests for the daily-minimum atmos store (tasmin / mn2t24)."""
+
+    def _make_loader_with_daily_min(self, tmp_path, monkeypatch):
+        config = _make_config(tmp_path)
+        loader = KerchunkParquetLoader(config)
+        daily_min_ds = _make_atmos2d_daily_min_store()
+        monthly_ds = _make_atmos2d_store()
+
+        def fake_open_store(m, store_type):
+            if store_type == "atmos2d_daily_min":
+                return daily_min_ds
+            return monthly_ds
+
+        monkeypatch.setattr(loader, "_open_store", fake_open_store)
+        return loader
+
+    def test_tasmin_loads_without_error(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin")
+        assert da is not None
+
+    def test_tasmin_has_time_lat_lon_dims(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin")
+        assert set(da.dims) == {"time", "lat", "lon"}
+
+    def test_tasmin_lat_ascending(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin")
+        lats = da["lat"].values
+        assert np.all(np.diff(lats) > 0)
+
+    def test_tasmin_lon_in_0_360_range(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin")
+        lons = da["lon"].values
+        assert np.all(lons >= 0.0) and np.all(lons < 360.0)
+
+    def test_tasmin_values_preserved(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin")
+        assert float(da.mean()) == pytest.approx(295.0, abs=0.1)
+
+    def test_tasmin_period_slicing(self, tmp_path, monkeypatch):
+        loader = self._make_loader_with_daily_min(tmp_path, monkeypatch)
+        da = loader.load_var("IFS-FESOM2-SR", "tasmin", period=("1980", "1980"))
+        assert len(da["time"]) > 0
+
+    def test_store_path_daily_min(self, tmp_path):
+        config = _make_config(tmp_path)
+        loader = KerchunkParquetLoader(config)
+        with pytest.raises(FileNotFoundError, match="2D_daily_0.25deg_atmos_min"):
+            loader._store_path("IFS-FESOM2-SR", "atmos2d_daily_min")
+
+    def test_get_atmos_grid_falls_back_to_daily_min(self, tmp_path, monkeypatch):
+        """_get_atmos_grid should use atmos2d_daily_min when atmos2d is missing."""
+        config = _make_config(tmp_path)
+        loader = KerchunkParquetLoader(config)
+        daily_min_ds = _make_atmos2d_daily_min_store()
+
+        def fake_open_store(m, store_type):
+            if store_type == "atmos2d":
+                raise FileNotFoundError("no monthly store")
+            if store_type == "atmos2d_daily_min":
+                return daily_min_ds
+            raise FileNotFoundError(f"unknown store {store_type}")
+
+        monkeypatch.setattr(loader, "_open_store", fake_open_store)
+        lon, lat = loader._get_atmos_grid("IFS-FESOM2-SR")
+        assert lon.ndim == 1
+        assert lat.ndim == 1

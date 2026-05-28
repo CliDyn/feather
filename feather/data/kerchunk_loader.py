@@ -7,6 +7,8 @@ Store layout (auto-detected under ``{root}/{variant}/``)::
 
     atmos/gr025/2D_monthly_0.25deg_atmos_avg.parq   # 2-D sfc monthly
     atmos/gr025/3D_monthly_0.25deg_atmos_avg.parq   # 3-D pl monthly
+    atmos/gr025/2D_daily_0.25deg_atmos_min.parq     # 2-D sfc daily minimum (tasmin)
+    atmos/gr025/2D_daily_0.25deg_atmos_max.parq     # 2-D sfc daily maximum (tasmax)
     ocean/gr025/2D_daily_avg_*.parq                  # ocean 2-D daily
 
 Grid conventions
@@ -110,6 +112,16 @@ _ATMOS3D: dict[str, tuple[str, float]] = {
     "wap":  ("mw", 1.0),
 }
 
+# Atmos 2-D daily minimum variables (e.g. from 2D_daily_0.25deg_atmos_min.parq)
+_ATMOS2D_DAILY_MIN: dict[str, tuple[str, float]] = {
+    "tasmin": ("mn2t24", 1.0),   # K, daily minimum 2 m temperature
+}
+
+# Atmos 2-D daily maximum variables (e.g. from 2D_daily_0.25deg_atmos_max.parq)
+_ATMOS2D_DAILY_MAX: dict[str, tuple[str, float]] = {
+    "tasmax": ("mx2t24", 1.0),   # K, daily maximum 2 m temperature
+}
+
 # Ocean 2-D variables (daily → resampled to monthly in loader)
 # Raw tos is in K; subtract 273.15 to match CMORLoader (°C).
 _OCEAN2D: dict[str, tuple[str, float, float]] = {
@@ -157,6 +169,7 @@ class KerchunkParquetLoader:
         model: str,
         variable: str,
         *,
+        table: str | None = None,   # accepted for API parity with CMORLoader; ignored
         period: tuple[str, str] | None = None,
         time_mean: bool = False,
     ) -> xr.DataArray:
@@ -206,6 +219,22 @@ class KerchunkParquetLoader:
         if variable in _ATMOS3D:
             return self._load_atmos3d_var(model, variable)
 
+        if variable in _ATMOS2D_DAILY_MIN:
+            mc = self._config.model_configs.get(model)
+            if mc and mc.data_source_type == "kerchunk_native":
+                return self._load_atmos2d_daily_min_var(
+                    model, variable, store_type="atmos2d_native_daily_min"
+                )
+            return self._load_atmos2d_daily_min_var(model, variable)
+
+        if variable in _ATMOS2D_DAILY_MAX:
+            mc = self._config.model_configs.get(model)
+            if mc and mc.data_source_type == "kerchunk_native":
+                return self._load_atmos2d_daily_max_var(
+                    model, variable, store_type="atmos2d_native_daily_max"
+                )
+            return self._load_atmos2d_daily_max_var(model, variable)
+
         if variable in _ATMOS2D:
             return self._load_atmos2d_var(model, variable)
 
@@ -214,7 +243,7 @@ class KerchunkParquetLoader:
 
         raise KeyError(
             f"Variable {variable!r} not supported by KerchunkParquetLoader. "
-            f"Known: {sorted(_ATMOS2D) + sorted(_OCEAN2D) + sorted(_DERIVED)}"
+            f"Known: {sorted(_ATMOS2D) + sorted(_ATMOS2D_DAILY_MIN) + sorted(_ATMOS2D_DAILY_MAX) + sorted(_OCEAN2D) + sorted(_DERIVED)}"
         )
 
     # ------------------------------------------------------------------
@@ -239,6 +268,115 @@ class KerchunkParquetLoader:
             data_3d,
             dims=["time", "lat", "lon"],
             coords={"time": time, "lat": lat, "lon": lon},
+            name=variable,
+            attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
+        )
+        return da
+
+    def _load_atmos2d_daily_min_var(
+        self,
+        model: str,
+        variable: str,
+        *,
+        store_type: str = "atmos2d_daily_min",
+    ) -> xr.DataArray:
+        """Load a daily-minimum atmos variable lazily from the dedicated min store.
+
+        Unlike the monthly atmos2d loader, this method does NOT call .values so
+        the full (n_days × n_cells) array is never pulled into memory.  All
+        transformations (fill-value masking, reshape, lat/lon reordering) stay
+        as lazy dask operations, keeping memory usage proportional to one chunk.
+
+        *store_type* selects between the 0.25° gridded store
+        (``"atmos2d_daily_min"``) and the native-resolution store
+        (``"atmos2d_native_daily_min"``).
+        """
+        import dask.array as dsa
+
+        kname, scale = _ATMOS2D_DAILY_MIN[variable]
+        ds = self._open_store(model, store_type)
+        raw = ds[kname]  # dask-backed: shape (n_time, n_cells)
+
+        # --- grid coordinates (tiny, safe to materialise) ---
+        lat_flat = ds["lat"].values
+        lon_flat = ds["lon"].values
+        n_lat, n_lon = self._detect_grid_shape(lat_flat)
+
+        lat_2d = lat_flat.reshape(n_lat, n_lon)
+        lon_2d = lon_flat.reshape(n_lat, n_lon)
+        lat_1d = lat_2d[:, 0]
+        lon_1d = lon_2d[0, :]
+        lon_1d = np.where(lon_1d < 0, lon_1d + 360.0, lon_1d)
+
+        lat_sort = np.argsort(lat_1d)
+        lon_sort = np.argsort(lon_1d)
+        lat_1d = lat_1d[lat_sort]
+        lon_1d = lon_1d[lon_sort]
+
+        # --- lazy transforms on the dask array ---
+        data = raw.data.astype(np.float32)           # keep lazy
+        data = dsa.where(data == _ATMOS_FILL_VALUE, np.nan, data)
+        if scale != 1.0:
+            data = data * np.float32(scale)
+
+        # Reshape flat spatial dim → (time, lat, lon) then reorder axes
+        n_time = data.shape[0]
+        data = data.reshape(n_time, n_lat, n_lon)
+        data = data[:, lat_sort, :][:, :, lon_sort]
+
+        time = ds["time"].values
+        da = xr.DataArray(
+            data,
+            dims=["time", "lat", "lon"],
+            coords={"time": time, "lat": lat_1d, "lon": lon_1d},
+            name=variable,
+            attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
+        )
+        return da
+
+    def _load_atmos2d_daily_max_var(
+        self,
+        model: str,
+        variable: str,
+        *,
+        store_type: str = "atmos2d_daily_max",
+    ) -> xr.DataArray:
+        """Load a daily-maximum atmos variable lazily from the dedicated max store."""
+        import dask.array as dsa
+
+        kname, scale = _ATMOS2D_DAILY_MAX[variable]
+        ds = self._open_store(model, store_type)
+        raw = ds[kname]
+
+        lat_flat = ds["lat"].values
+        lon_flat = ds["lon"].values
+        n_lat, n_lon = self._detect_grid_shape(lat_flat)
+
+        lat_2d = lat_flat.reshape(n_lat, n_lon)
+        lon_2d = lon_flat.reshape(n_lat, n_lon)
+        lat_1d = lat_2d[:, 0]
+        lon_1d = lon_2d[0, :]
+        lon_1d = np.where(lon_1d < 0, lon_1d + 360.0, lon_1d)
+
+        lat_sort = np.argsort(lat_1d)
+        lon_sort = np.argsort(lon_1d)
+        lat_1d = lat_1d[lat_sort]
+        lon_1d = lon_1d[lon_sort]
+
+        data = raw.data.astype(np.float32)
+        data = dsa.where(data == _ATMOS_FILL_VALUE, np.nan, data)
+        if scale != 1.0:
+            data = data * np.float32(scale)
+
+        n_time = data.shape[0]
+        data = data.reshape(n_time, n_lat, n_lon)
+        data = data[:, lat_sort, :][:, :, lon_sort]
+
+        time = ds["time"].values
+        da = xr.DataArray(
+            data,
+            dims=["time", "lat", "lon"],
+            coords={"time": time, "lat": lat_1d, "lon": lon_1d},
             name=variable,
             attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
         )
@@ -385,6 +523,14 @@ class KerchunkParquetLoader:
 
         if store_type == "atmos2d":
             p = base / "atmos" / "gr025" / "2D_monthly_0.25deg_atmos_avg.parq"
+        elif store_type == "atmos2d_daily_min":
+            p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_min.parq"
+        elif store_type == "atmos2d_daily_max":
+            p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_max.parq"
+        elif store_type == "atmos2d_native_daily_min":
+            p = base / "atmos" / "native" / "2D_daily_native_atmos_min.parq"
+        elif store_type == "atmos2d_native_daily_max":
+            p = base / "atmos" / "native" / "2D_daily_native_atmos_max.parq"
         elif store_type == "atmos3d":
             p = base / "atmos" / "gr025" / "3D_monthly_0.25deg_atmos_avg.parq"
         elif store_type == "ocean2d":
@@ -428,7 +574,21 @@ class KerchunkParquetLoader:
         if model in self._grid_cache:
             return self._grid_cache[model]
 
-        ds = self._open_store(model, "atmos2d")
+        mc = self._config.model_configs.get(model)
+        if mc and mc.data_source_type == "kerchunk_native":
+            candidate_stores = ("atmos2d_native_daily_min", "atmos2d_native_daily_max")
+        else:
+            candidate_stores = ("atmos2d", "atmos2d_daily_min", "atmos2d_daily_max")
+        for store_type in candidate_stores:
+            try:
+                ds = self._open_store(model, store_type)
+                break
+            except FileNotFoundError:
+                continue
+        else:
+            raise FileNotFoundError(
+                f"No atmos store found for {model!r} to derive grid coordinates"
+            )
         lat_flat = ds["lat"].values
         lon_flat = ds["lon"].values
 
