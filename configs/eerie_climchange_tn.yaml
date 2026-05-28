@@ -14,6 +14,7 @@ project:
     future_period:    ["2031", "2050"]
     hist_load_period: ["1981", "2014"]   # full hist-1950 window for time series
     ssp_load_period:  ["2015", "2050"]   # full ssp245 window for time series
+    obs_end_year:     "2025"             # cap BE obs series (avoid incomplete final years)
     models:
       IFS-FESOM2-SR:
         hist_experiment:    hist-1950

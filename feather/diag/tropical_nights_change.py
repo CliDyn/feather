@@ -334,10 +334,11 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             )
             ds = ds.assign_coords(time=datetimes)
 
-            # Full hist+ssp period
+            # Full hist period up to obs_end_year (defaults to hist end to avoid
+            # partial final years in the BE file driving a spurious downward trend).
             start = self.hist_load_period[0]
-            end = self.ssp_load_period[1]
-            anom = ds["temperature"].sel(time=slice(start, end))
+            obs_end = self._cc_cfg.get("obs_end_year", self.hist_load_period[1])
+            anom = ds["temperature"].sel(time=slice(start, obs_end))
             clim = ds["climatology"]
 
             # Reconstruct absolute temperature (°C)
@@ -528,7 +529,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
           hist_series     : {model: DataArray(year)}     — land-mean TN, hist
           ssp_series      : {model: DataArray(year)}     — land-mean TN, ssp
           model_mean_tmin : {model: DataArray(lat, lon)} — period-mean Tmin (K)
-          obs_mean_tmin   : DataArray | None             — BE Tmin (K)
+          obs_mean_tmin   : dict[str, DataArray]          — per-model BE Tmin (K)
           lat / lon       : shared coordinates
         """
         models: list[str] = []
@@ -564,13 +565,18 @@ class TropicalNightsChangeDiag(DiagnosticBase):
 
             # Re-apply land mask here so NC checkpoints saved before masking
             # was introduced also yield land-only time series and climatologies.
+            # Use .values (plain numpy boolean array) to avoid xarray's coordinate
+            # alignment, which can create alternating NaN rows (stripes) when the
+            # interpolated mask's lat/lon coordinates differ by float precision
+            # from the DataArray's own coordinates (e.g. native-resolution data).
             land_mask = self._load_land_mask(
                 np.asarray(hist_tn["lat"]), np.asarray(hist_tn["lon"])
             )
-            if land_mask is not None:
-                hist_tn = hist_tn.where(land_mask)
+            land_mask_np = land_mask.values if land_mask is not None else None
+            if land_mask_np is not None:
+                hist_tn = hist_tn.where(land_mask_np)
                 if hist_tmin is not None:
-                    hist_tmin = hist_tmin.where(land_mask)
+                    hist_tmin = hist_tmin.where(land_mask_np)
 
             ref_slice = hist_tn.sel(year=slice(*self.ref_period))
             ref_clim[model] = ref_slice.mean("year")
@@ -594,8 +600,8 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 logger.warning("  %s: SSP TN load failed — reference only", model)
                 continue
 
-            if land_mask is not None:
-                ssp_tn = ssp_tn.where(land_mask)
+            if land_mask_np is not None:
+                ssp_tn = ssp_tn.where(land_mask_np)
 
             ssp_series[model] = self._land_mean_series(ssp_tn)
 
@@ -610,12 +616,18 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                     model, self.fut_period[0],
                 )
 
-        # Berkeley Earth TMIN for Group C and obs TN series for Group B
-        obs_mean_tmin = None
-        if lat_coord is not None:
-            obs_mean_tmin = self._load_be_mean_tmin(
-                lat_coord.values, lon_coord.values, self.ref_period
+        # Berkeley Earth TMIN for Group C: interpolate to each model's own grid
+        # so that per-model bias subtraction works without coordinate conflicts.
+        obs_mean_tmin: dict[str, xr.DataArray] = {}
+        for _m, _m_tmin in model_mean_tmin.items():
+            _obs = self._load_be_mean_tmin(
+                np.asarray(_m_tmin["lat"]),
+                np.asarray(_m_tmin["lon"]),
+                self.ref_period,
             )
+            if _obs is not None:
+                obs_mean_tmin[_m] = _obs
+        obs_series = self._compute_be_tn_series()
         obs_series = self._compute_be_tn_series()
 
         return {
@@ -647,7 +659,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         figs.append(self._plot_timeseries(results))
 
         # Group C: mean Tmin bias vs Berkeley Earth (only when obs available)
-        if results.get("obs_mean_tmin") is not None and results["model_mean_tmin"]:
+        if results.get("obs_mean_tmin") and results["model_mean_tmin"]:
             figs.append(self._plot_tmin_bias(results))
 
         return figs
@@ -802,22 +814,24 @@ class TropicalNightsChangeDiag(DiagnosticBase):
 
         for model in results["models"]:
             color = self.config.get_model_color(model)
-            labeled = False
-
-            if model in results["hist_series"]:
-                s = results["hist_series"][model]
+            h = results["hist_series"].get(model)
+            s = results["ssp_series"].get(model)
+            if h is not None and s is not None:
+                # Concatenate for a seamless line across the 2014/2015 boundary.
+                combined = xr.concat([h, s], dim="year")
+                ax.plot(
+                    np.asarray(combined["year"]), np.asarray(combined),
+                    color=color, lw=1.5, label=model,
+                )
+            elif h is not None:
+                ax.plot(
+                    np.asarray(h["year"]), np.asarray(h),
+                    color=color, lw=1.5, label=model,
+                )
+            elif s is not None:
                 ax.plot(
                     np.asarray(s["year"]), np.asarray(s),
                     color=color, lw=1.5, label=model,
-                )
-                labeled = True
-
-            if model in results["ssp_series"]:
-                s = results["ssp_series"][model]
-                ax.plot(
-                    np.asarray(s["year"]), np.asarray(s),
-                    color=color, lw=1.5,
-                    **({"label": "_nolegend_"} if labeled else {"label": model}),
                 )
 
         # Observed TN (Berkeley Earth approximate)
@@ -864,11 +878,18 @@ class TropicalNightsChangeDiag(DiagnosticBase):
 
     def _plot_tmin_bias(self, results: dict) -> tuple[plt.Figure, dict]:
         """Group E: model mean Tmin bias vs Berkeley Earth (reference period)."""
-        models = [m for m in results["models"] if m in results["model_mean_tmin"]]
-        obs_k = results["obs_mean_tmin"]
+        obs_mean_tmin = results["obs_mean_tmin"]  # dict[model, DataArray(lat, lon)]
+        models = [
+            m for m in results["models"]
+            if m in results["model_mean_tmin"] and m in obs_mean_tmin
+        ]
+        # Use the first available model's obs for the obs display panel.
+        obs_k = next(iter(obs_mean_tmin.values()))
         obs_c = obs_k - _K_TO_C
+        # Per-model bias: obs already interpolated to each model's own grid so
+        # the subtraction is coordinate-safe even when models differ slightly.
         bias_dict = {
-            m: results["model_mean_tmin"][m] - obs_k
+            m: results["model_mean_tmin"][m] - obs_mean_tmin[m]
             for m in models
         }
         fig, _ = plot_combined_bias_map(
