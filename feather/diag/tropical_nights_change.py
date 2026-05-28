@@ -224,9 +224,12 @@ class TropicalNightsChangeDiag(DiagnosticBase):
     def _be_tmin_path(self) -> Path | None:
         ds_cfg = self.config.obs_datasets.get("BERKELEY_EARTH_TMIN", {})
         if ds_cfg:
-            p = Path(ds_cfg.get("path", ""))
-            if p.exists():
-                return p
+            base = Path(ds_cfg.get("path", ""))
+            # variables dict maps var name → filename; return first existing file
+            for fname in ds_cfg.get("variables", {}).values():
+                p = base / fname
+                if p.exists():
+                    return p
         if _BE_TMIN_LAND_PATH.exists():
             return _BE_TMIN_LAND_PATH
         return None
