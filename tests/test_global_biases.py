@@ -231,21 +231,21 @@ class TestGlobalBiasesSkipExisting:
 
     def test_skip_when_all_figures_exist(self, mock_model_loader,
                                           mock_obs_loader, minimal_config):
-        """run() skips variable when all 3 period figures exist."""
+        """run() skips variable when all 5 period figures exist."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["tas"],
         )
-        # Pre-create all 3 period figures
+        # Pre-create all 5 period figures
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        for period in ["annual", "djf", "jja"]:
+        for period in ["annual", "djf", "mam", "jja", "son"]:
             fid = f"tas_{period}_bias_combined"
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
 
         saved = diag.run(skip_existing=True)
 
-        assert len(saved) == 3
+        assert len(saved) == 5
         # Files should not have been overwritten
         for png_path, _ in saved:
             assert png_path.read_bytes() == b"fake"
@@ -258,7 +258,7 @@ class TestGlobalBiasesSkipExisting:
             variables=["tas"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        for period in ["annual", "djf", "jja"]:
+        for period in ["annual", "djf", "mam", "jja", "son"]:
             fid = f"tas_{period}_bias_combined"
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
@@ -270,7 +270,7 @@ class TestGlobalBiasesSkipExisting:
         ):
             saved = diag.run(skip_existing=False)
 
-        assert len(saved) == 3
+        assert len(saved) == 5
 
     def test_no_skip_when_partial_files(self, mock_model_loader,
                                          mock_obs_loader, minimal_config):
@@ -292,8 +292,8 @@ class TestGlobalBiasesSkipExisting:
         ):
             saved = diag.run(skip_existing=True)
 
-        # Should have recomputed (3 new figures)
-        assert len(saved) == 3
+        # Should have recomputed (5 new figures)
+        assert len(saved) == 5
 
     def test_incremental_save_per_variable(self, mock_model_loader,
                                             mock_obs_loader, minimal_config):
@@ -315,8 +315,8 @@ class TestGlobalBiasesSkipExisting:
             mock_plot.return_value = (_make_saveable_fig(), [None, None])
             saved = diag.run(skip_existing=False)
 
-        # 3 period figures for 1 variable
-        assert len(saved) == 3
+        # 5 period figures for 1 variable
+        assert len(saved) == 5
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -365,7 +365,7 @@ class TestGlobalBiasesPlot:
         seasonal_biases = {}
         seasonal_regrids = {}
         obs_seasonal = seasonal_climatology(synth_obs["t2m"])
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in model_seasonal and season in obs_seasonal:
                 ms = model_seasonal[season]
                 s_np = interpolator(ms.values.ravel())
@@ -385,14 +385,14 @@ class TestGlobalBiasesPlot:
         f_stat, f_pval = spatial_variance_ratio(regridded, obs_clim_common)
 
         obs_seasonal_common = {}
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in obs_seasonal:
                 obs_seasonal_common[season] = obs_seasonal[season].interp(
                     lat=target_lats, lon=target_lons,
                 )
 
         seasonal_ttest_stats = {}
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in seasonal_regrids and season in obs_seasonal_common:
                 s_t, s_p = spatial_ttest(
                     seasonal_regrids[season], obs_seasonal_common[season],
@@ -452,7 +452,7 @@ class TestGlobalBiasesPlot:
         self, synth_healpix, synth_obs, minimal_config,
         mock_model_loader, mock_obs_loader,
     ):
-        """plot() returns 3 combined figures: annual + DJF + JJA."""
+        """plot() returns 5 combined figures: annual + DJF + MAM + JJA + SON."""
         results = self._make_mock_results(synth_healpix, synth_obs)
 
         diag = GlobalBiases(
@@ -467,8 +467,8 @@ class TestGlobalBiasesPlot:
         ):
             pairs = diag.plot(results)
 
-        # 3 combined figures: annual + DJF + JJA
-        assert len(pairs) == 3
+        # 5 combined figures: annual + DJF + MAM + JJA + SON
+        assert len(pairs) == 5
         for fig, meta in pairs:
             assert isinstance(meta, dict)
             assert "figure_id" in meta
@@ -636,7 +636,7 @@ class TestGlobalBiasesCMIP6:
         self, synth_healpix, synth_obs, cmip6_config,
         mock_model_loader, mock_obs_loader, mock_cmip6_loader,
     ):
-        """CMIP6 MMM appears in the combined figure (3 total figures)."""
+        """CMIP6 MMM appears in the combined figure (5 total figures)."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
@@ -651,8 +651,8 @@ class TestGlobalBiasesCMIP6:
         ):
             pairs = diag.plot(results)
 
-        # Still 3 combined figures (annual + DJF + JJA), CMIP6 is inside them
-        assert len(pairs) == 3
+        # Still 5 combined figures (annual + DJF + MAM + JJA + SON), CMIP6 inside
+        assert len(pairs) == 5
         figure_ids = [meta["figure_id"] for _, meta in pairs]
         assert "tas_annual_bias_combined" in figure_ids
 
@@ -834,8 +834,8 @@ class TestGlobalBiasesCMIP6Individual:
         ):
             pairs = diag.plot(results)
 
-        # Still 3 combined figures
-        assert len(pairs) == 3
+        # Still 5 combined figures
+        assert len(pairs) == 5
 
         annual_meta = next(
             meta for _, meta in pairs
@@ -849,11 +849,11 @@ class TestGlobalBiasesCMIP6Individual:
         ]
         assert len(cmip6_models) >= 1
 
-    def test_individual_figure_count_is_3(
+    def test_individual_figure_count_is_5(
         self, mock_model_loader, mock_obs_loader,
         cmip6_config, mock_cmip6_loader,
     ):
-        """Figure count remains 3 even with individual CMIP6 models."""
+        """Figure count is 5 even with individual CMIP6 models."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, cmip6_config,
             cmip6_loader=mock_cmip6_loader,
@@ -869,7 +869,7 @@ class TestGlobalBiasesCMIP6Individual:
         ):
             pairs = diag.plot(results)
 
-        assert len(pairs) == 3
+        assert len(pairs) == 5
 
     def test_individual_seasonal_data(
         self, mock_model_loader, mock_obs_loader,
@@ -958,10 +958,10 @@ class TestPrecipitationBias:
             "cmip6_individual_data": {},
         }
 
-    def test_pr_generates_six_figures(
+    def test_pr_generates_ten_figures(
         self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
     ):
-        """_plot_variable('pr') returns 6 figures: 3 absolute + 3 relative."""
+        """_plot_variable('pr') returns 10 figures: 5 absolute + 5 relative."""
         vr = self._make_pr_vr(synth_obs)
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
@@ -969,7 +969,7 @@ class TestPrecipitationBias:
         )
         figures = diag._plot_variable("pr", vr)
         plt.close("all")
-        assert len(figures) == 6
+        assert len(figures) == 10
 
     def test_pr_absolute_bias_figure_ids(
         self, synth_obs, mock_model_loader, mock_obs_loader, minimal_config,
@@ -983,7 +983,7 @@ class TestPrecipitationBias:
         figures = diag._plot_variable("pr", vr)
         plt.close("all")
         ids = {meta["figure_id"] for _, meta in figures}
-        for period in ["annual", "djf", "jja"]:
+        for period in ["annual", "djf", "mam", "jja", "son"]:
             assert f"pr_{period}_bias_combined" in ids
 
     def test_pr_relative_bias_figure_ids(
@@ -998,7 +998,7 @@ class TestPrecipitationBias:
         figures = diag._plot_variable("pr", vr)
         plt.close("all")
         ids = {meta["figure_id"] for _, meta in figures}
-        for period in ["annual", "djf", "jja"]:
+        for period in ["annual", "djf", "mam", "jja", "son"]:
             assert f"pr_{period}_relative_bias_combined" in ids
 
     def test_pr_relative_bias_plot_type(
@@ -1016,15 +1016,15 @@ class TestPrecipitationBias:
             meta for _, meta in figures
             if "relative_bias" in meta["figure_id"]
         ]
-        assert len(rel_metas) == 3
+        assert len(rel_metas) == 5
         for meta in rel_metas:
             assert meta["plot_type"] == "combined_map"
 
-    def test_pr_non_pr_still_three_figures(
+    def test_pr_non_pr_still_five_figures(
         self, synth_healpix, synth_obs, mock_model_loader,
         mock_obs_loader, minimal_config,
     ):
-        """tas (non-pr) still produces only 3 absolute bias figures."""
+        """tas (non-pr) produces 5 absolute bias figures (annual + 4 seasons)."""
         from feather.data.variables import get_var
         from feather.util.temporal import climatology, seasonal_climatology
 
@@ -1079,20 +1079,20 @@ class TestPrecipitationBias:
         ):
             figures = diag._plot_variable("tas", vr)
         plt.close("all")
-        assert len(figures) == 3
+        assert len(figures) == 5
 
     def test_pr_skip_requires_six_figure_ids(
         self, mock_model_loader, mock_obs_loader, minimal_config,
     ):
-        """run() only skips pr when all 6 figure IDs (abs + rel) exist."""
+        """run() only skips pr when all 10 figure IDs (abs + rel) exist."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["pr"],
         )
         diag.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create only the 3 absolute bias files — relative are missing
-        for period in ["annual", "djf", "jja"]:
+        # Create only the 5 absolute bias files — relative are missing
+        for period in ["annual", "djf", "mam", "jja", "son"]:
             fid = f"pr_{period}_bias_combined"
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
             (diag.output_dir / f"{fid}.json").write_text("{}")
@@ -1112,7 +1112,7 @@ class TestPrecipitationBias:
     def test_pr_skip_when_all_six_exist(
         self, mock_model_loader, mock_obs_loader, minimal_config,
     ):
-        """run() skips pr when all 6 figure IDs exist."""
+        """run() skips pr when all 10 figure IDs exist (5 abs + 5 rel)."""
         diag = GlobalBiases(
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["pr"],
@@ -1120,8 +1120,10 @@ class TestPrecipitationBias:
         diag.output_dir.mkdir(parents=True, exist_ok=True)
 
         all_ids = (
-            [f"pr_{p}_bias_combined" for p in ["annual", "djf", "jja"]]
-            + [f"pr_{p}_relative_bias_combined" for p in ["annual", "djf", "jja"]]
+            [f"pr_{p}_bias_combined"
+             for p in ["annual", "djf", "mam", "jja", "son"]]
+            + [f"pr_{p}_relative_bias_combined"
+               for p in ["annual", "djf", "mam", "jja", "son"]]
         )
         for fid in all_ids:
             (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
@@ -1129,7 +1131,7 @@ class TestPrecipitationBias:
 
         saved = diag.run(skip_existing=True)
 
-        assert len(saved) == 6
+        assert len(saved) == 10
         for png_path, _ in saved:
             assert png_path.read_bytes() == b"fake"
 
@@ -1495,7 +1497,7 @@ class TestGlobalBiasesEnsemble:
             meta for _, meta in figures
             if "ens_bias_combined" in meta["figure_id"]
         ]
-        assert len(ens_metas) == 3  # annual, DJF, JJA
+        assert len(ens_metas) == 5  # annual, DJF, MAM, JJA, SON
         for meta in ens_metas:
             assert meta["plot_type"] == "combined_bias_map"
             assert meta.get("summary_statistics") is not None
@@ -1582,7 +1584,7 @@ class TestGlobalBiasesEnsemble:
         diag.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create all per-model figures but NOT the ens figures
-        for p in ["annual", "djf", "jja"]:
+        for p in ["annual", "djf", "mam", "jja", "son"]:
             (diag.output_dir / f"tas_{p}_bias_combined.png").write_bytes(b"x")
             (diag.output_dir / f"tas_{p}_bias_combined.json").write_text("{}")
 
@@ -1604,13 +1606,13 @@ class TestGlobalBiasesEnsemble:
         diag.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Create all required figure files
-        for p in ["annual", "djf", "jja"]:
+        for p in ["annual", "djf", "mam", "jja", "son"]:
             for suffix in [".png", ".json"]:
                 (diag.output_dir / f"tas_{p}_bias_combined{suffix}").write_bytes(b"x")
                 (diag.output_dir / f"tas_{p}_ens_bias_combined{suffix}").write_bytes(b"x")
 
         saved = diag.run(skip_existing=True)
 
-        # All pre-existing → should skip and return 6 paths (3 per-model + 3 ens)
-        assert len(saved) == 6
+        # All pre-existing → should skip and return 10 paths (5 per-model + 5 ens)
+        assert len(saved) == 10
         assert all(paths[0].read_bytes() == b"x" for paths in saved)

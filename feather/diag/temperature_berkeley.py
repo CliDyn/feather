@@ -81,7 +81,8 @@ class TemperatureBerkeley(DiagnosticBase):
 
         # Determine which groups need computing
         bias_ids = [
-            f"tas_{p}_bias_combined" for p in ["annual", "DJF", "JJA"]
+            f"tas_{p}_bias_combined"
+            for p in ["annual", "DJF", "MAM", "JJA", "SON"]
         ]
         need_a = not skip_existing or not all(
             self._figure_exists(fid) for fid in bias_ids
@@ -460,7 +461,7 @@ class TemperatureBerkeley(DiagnosticBase):
             seasonal_biases: dict[str, Any] = {}
             seasonal_regrids: dict[str, Any] = {}
             interp = _interp_cache[n_src]
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seas:
                     s_np = interp(model_seas[season].values.ravel())
                     s_regrid = xr.DataArray(
@@ -531,7 +532,7 @@ class TemperatureBerkeley(DiagnosticBase):
         cmip6_individual_data = results.get("cmip6_individual_data", {})
 
         periods = [("annual", "Annual Mean")]
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season in cb:
                 periods.append((season, season))
 
@@ -1325,7 +1326,7 @@ class TemperatureBerkeley(DiagnosticBase):
 
             # Seasonal
             model_seas = seasonal_climatology(model_data, self.period)
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seas.data_vars and season in obs_seasonal.data_vars:
                     ms = model_seas[season].compute()
                     ms_regridded, _ = nr.regrid(
@@ -1380,7 +1381,7 @@ class TemperatureBerkeley(DiagnosticBase):
         interp_cache: dict[tuple, Any] = {}
 
         annual_fields = []
-        seasonal_fields: dict[str, list] = {"DJF": [], "JJA": []}
+        seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
@@ -1398,7 +1399,7 @@ class TemperatureBerkeley(DiagnosticBase):
             annual_fields.append(regridded)
             models_used.append(f"{model}/{variant}")
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     "tas", model, variant=variant,
                     period=self.period, season=season,
@@ -1421,7 +1422,7 @@ class TemperatureBerkeley(DiagnosticBase):
             "std_ratio": self._std_ratio(mmm_annual, obs_annual, obs_area),
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if seasonal_fields[season] and season in obs_seasonal.data_vars:
                 mmm_s = xr.concat(
                     seasonal_fields[season], dim="member",
@@ -1508,7 +1509,7 @@ class TemperatureBerkeley(DiagnosticBase):
         member_pairs = self.cmip6_loader.get_member_pairs()
 
         annual_fields = []
-        seasonal_fields: dict[str, list] = {"DJF": [], "JJA": []}
+        seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
@@ -1526,7 +1527,7 @@ class TemperatureBerkeley(DiagnosticBase):
             annual_fields.append(regridded)
             models_used.append(f"{model}/{variant}")
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     "tas", model, variant=variant,
                     period=self.period, season=season,
@@ -1557,7 +1558,7 @@ class TemperatureBerkeley(DiagnosticBase):
             ),
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if not seasonal_fields[season]:
                 continue
             if season not in obs_seasonal_common:
@@ -1616,7 +1617,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 "bias_gmean": bias_gmean,
             }
 
-            for season in ["DJF", "JJA"]:
+            for season in ["DJF", "MAM", "JJA", "SON"]:
                 da_s = self.cmip6_loader.load_var_for_model_var(
                     "tas", model, variant=variant,
                     period=self.period, season=season,
@@ -1664,7 +1665,7 @@ class TemperatureBerkeley(DiagnosticBase):
             ),
         }
 
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             if season not in cmip6_individual_data:
                 continue
             if season not in obs_seasonal_common:
@@ -1733,7 +1734,7 @@ class TemperatureBerkeley(DiagnosticBase):
         }
 
         # Seasonal
-        for season in ["DJF", "JJA"]:
+        for season in ["DJF", "MAM", "JJA", "SON"]:
             s_fields = [
                 mr["seasonal_regrids"][season]
                 for mr in model_results.values()
