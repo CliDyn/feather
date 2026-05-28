@@ -157,7 +157,6 @@ class TropicalNightsChangeDiag(DiagnosticBase):
 
         mc_orig = self.config.model_configs.get(model) or ModelConfig(name=model)
         mc = copy.copy(mc_orig)
-        mc.data_source_type = "kerchunk_native"
         mc.variant = variant
         mc.data_root = ""       # use global root from data_source, not per-model
         cfg = copy.copy(self.config)
