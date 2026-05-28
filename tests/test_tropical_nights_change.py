@@ -239,24 +239,25 @@ def test_count_tn_days_threshold_value():
     assert abs(_TN_THRESHOLD_K - (_K_TO_C + 20.0)) < 1e-6
 
 
-# ── Unit tests: _safe_vmax ────────────────────────────────────────────────────
+# ── Unit tests: _collect_finite ───────────────────────────────────────────────
 
 
-def test_safe_vmax_normal():
-    data = {"m": np.array([0.0, 10.0, 20.0, 100.0])}
-    result = TropicalNightsChangeDiag._safe_vmax(data)
-    assert result > 0
+def test_collect_finite_normal():
+    arrays = [np.array([0.0, 10.0, 20.0, 100.0])]
+    result = TropicalNightsChangeDiag._collect_finite(arrays)
+    assert len(result) == 4
+    assert np.all(np.isfinite(result))
 
 
-def test_safe_vmax_all_nan():
-    data = {"m": np.array([np.nan, np.nan])}
-    result = TropicalNightsChangeDiag._safe_vmax(data)
-    assert result == 1.0
+def test_collect_finite_all_nan():
+    arrays = [np.array([np.nan, np.nan])]
+    result = TropicalNightsChangeDiag._collect_finite(arrays)
+    assert len(result) == 0
 
 
-def test_safe_vmax_empty_dict():
-    result = TropicalNightsChangeDiag._safe_vmax({})
-    assert result == 1.0
+def test_collect_finite_empty_list():
+    result = TropicalNightsChangeDiag._collect_finite([])
+    assert len(result) == 0
 
 
 # ── Unit tests: NC paths ──────────────────────────────────────────────────────
@@ -477,8 +478,8 @@ def test_compute_returns_expected_keys(tmp_path, hist_da, ssp_da, simple_config)
     diag = _make_diag(simple_config, hist_da, ssp_da)
     results = diag.compute()
     for key in ("models", "ref_clim", "fut_clim", "change",
-                 "hist_series", "ssp_series", "model_mean_tmin",
-                 "obs_mean_tmin", "lat", "lon"):
+                 "hist_series", "ssp_series", "obs_series",
+                 "model_mean_tmin", "obs_mean_tmin", "lat", "lon"):
         assert key in results, f"Missing key: {key}"
 
 
@@ -562,29 +563,22 @@ def test_land_mean_series_returns_1d(tmp_path, hist_da, simple_config):
         "model-A", loader, ("1981", "1985"),
         diag._nc_hist_path("model-A"),
     )
-    series = diag._land_mean_series(tn, land_mask=None)
+    series = diag._land_mean_series(tn)
     assert "year" in series.dims
     assert series.ndim == 1
 
 
-def test_land_mean_series_with_land_mask_all_zeros(tmp_path, hist_da, simple_config):
-    """All-zero land mask → series all NaN/zero (no land area)."""
+def test_land_mean_series_all_nan_returns_nan(tmp_path, hist_da, simple_config):
+    """All-NaN TN (no land data) → series is NaN or zero."""
     diag = _make_diag(simple_config, hist_da)
     loader = _MockLoader(hist_da)
     tn, _ = diag._load_and_save_tn(
         "model-A", loader, ("1981", "1985"),
         diag._nc_hist_path("model-A"),
     )
-    nlat = len(tn["lat"])
-    nlon = len(tn["lon"])
-    mask = xr.DataArray(
-        np.zeros((nlat, nlon), dtype=bool),
-        dims=("lat", "lon"),
-        coords={"lat": tn["lat"], "lon": tn["lon"]},
-    )
-    series = diag._land_mean_series(tn, land_mask=mask)
-    # All-zero weight mean → should be 0.0 or NaN
-    assert np.all(np.isfinite(series.values) | np.isnan(series.values))
+    tn_all_nan = tn.where(False)  # mask every cell → all NaN
+    series = diag._land_mean_series(tn_all_nan)
+    assert np.all(np.isnan(series.values) | (series.values == 0.0))
 
 
 # ── Unit tests: plot() ────────────────────────────────────────────────────────
@@ -600,7 +594,7 @@ def test_plot_returns_empty_when_no_models(tmp_path, simple_config):
     results = {
         "models": [],
         "ref_clim": {}, "fut_clim": {}, "change": {},
-        "hist_series": {}, "ssp_series": {},
+        "hist_series": {}, "ssp_series": {}, "obs_series": None,
         "model_mean_tmin": {}, "obs_mean_tmin": None,
         "lat": None, "lon": None,
     }
@@ -609,33 +603,37 @@ def test_plot_returns_empty_when_no_models(tmp_path, simple_config):
     plt.close("all")
 
 
-def test_plot_produces_ref_map(tmp_path, hist_da, ssp_da, simple_config):
+def test_plot_produces_combined_panels(tmp_path, hist_da, ssp_da, simple_config):
+    """Combined [ref|future|change] figure is always produced."""
     diag = _make_diag(simple_config, hist_da, ssp_da)
     results = diag.compute()
     figs = diag.plot(results)
     ids = [meta["figure_id"] for _, meta in figs]
-    assert "tropical_nights_change_ref_map" in ids
+    assert "tropical_nights_change_panels" in ids
     plt.close("all")
 
 
-def test_plot_produces_fut_and_change_when_available(tmp_path, hist_da, ssp_da, simple_config):
-    diag = _make_diag(simple_config, hist_da, ssp_da)
-    results = diag.compute()
-    figs = diag.plot(results)
-    ids = [meta["figure_id"] for _, meta in figs]
-    assert "tropical_nights_change_fut_map" in ids
-    assert "tropical_nights_change_delta_map" in ids
-    plt.close("all")
-
-
-def test_plot_no_fut_when_no_fut_data(tmp_path, hist_da, simple_config):
-    """When fut_clim is empty, no fut/change figures are produced."""
+def test_plot_combined_panels_present_even_without_fut(tmp_path, hist_da, simple_config):
+    """Combined panel figure is produced even when no future data exists."""
     diag = _make_diag(simple_config, hist_da, ssp_da=None)
     results = diag.compute()
     figs = diag.plot(results)
     ids = [meta["figure_id"] for _, meta in figs]
-    assert "tropical_nights_change_fut_map" not in ids
-    assert "tropical_nights_change_delta_map" not in ids
+    assert "tropical_nights_change_panels" in ids
+    plt.close("all")
+
+
+def test_plot_combined_panels_ref_period_in_metadata(tmp_path, hist_da, ssp_da, simple_config):
+    """Combined panel metadata description includes reference period."""
+    diag = _make_diag(simple_config, hist_da, ssp_da)
+    results = diag.compute()
+    figs = diag.plot(results)
+    panels_meta = next(
+        meta for _, meta in figs if meta["figure_id"] == "tropical_nights_change_panels"
+    )
+    # Both the configured ref and fut periods must appear in the description
+    assert "1981" in panels_meta["description"]
+    assert "1985" in panels_meta["description"]  # end of ref period in simple_config
     plt.close("all")
 
 
@@ -687,17 +685,17 @@ def test_plot_tmin_bias_skipped_when_no_obs(tmp_path, hist_da, simple_config):
 
 
 def test_plot_figure_count_with_fut_data(tmp_path, hist_da, ssp_da, simple_config):
-    """With future data: ref + fut + change + timeseries = 4 figures (no BE obs)."""
+    """With future data: combined panels + timeseries = 2 figures (no BE obs)."""
     diag = _make_diag(simple_config, hist_da, ssp_da)
     results = diag.compute()
     results["obs_mean_tmin"] = None
     figs = diag.plot(results)
-    assert len(figs) == 4
+    assert len(figs) == 2
     plt.close("all")
 
 
 def test_plot_figure_count_without_fut_data(tmp_path, hist_da, simple_config):
-    """Without future data: ref + timeseries = 2 figures (no BE obs)."""
+    """Without future data: combined panels + timeseries = 2 figures (no BE obs)."""
     diag = _make_diag(simple_config, hist_da, ssp_da=None)
     results = diag.compute()
     results["obs_mean_tmin"] = None

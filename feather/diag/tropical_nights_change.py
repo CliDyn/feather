@@ -4,14 +4,15 @@ Compares mean annual Tropical Nights (TN > 20 °C) between a historical
 reference period (hist-1950) and a future period (ssp245), quantifying the
 climate change signal for each model.
 
-Produces five figure groups:
+Produces three figure groups:
 
-A (×1): Mean TN20 map — reference period (one panel per model).
-B (×1): Mean TN20 map — future period (models with SSP2-4.5 data only).
-C (×1): Change map ΔTN = future − reference (symmetric diverging colormap).
-D (×1): Stitched annual time series hist+ssp245 with vertical line at 2015
+A (×1): Combined map — N_models rows × 3 columns:
+         [Reference period | Future period | Change (ΔTN = Future − Reference)]
+         Title includes "Reference period: {ref_period[0]}–{ref_period[1]}".
+         Models without SSP2-4.5 data show a placeholder in columns 2–3.
+B (×1): Stitched annual time series hist+ssp245 with vertical line at 2015
          and shaded reference / future windows.
-E (×1): Mean daily Tmin bias vs Berkeley Earth Land TMIN (reference period).
+C (×1): Mean daily Tmin bias vs Berkeley Earth Land TMIN (reference period).
          Skipped when BE data is unavailable.
 
 Per-model NetCDF checkpoints (outside figures tree):
@@ -59,7 +60,7 @@ import xarray as xr
 from feather.config import ModelConfig
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.plot.maps import plot_combined_bias_map
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 
 logger = logging.getLogger(__name__)
@@ -306,17 +307,95 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             logger.warning("  Could not load BE Land TMIN: %s", exc)
             return None
 
-    def _land_mean_series(
-        self, tn_annual: xr.DataArray, land_mask: xr.DataArray | None
-    ) -> xr.DataArray:
-        """Area-weighted global land-mean of annual TN count (year,)."""
-        areas = compute_latlon_areas(
-            np.asarray(tn_annual["lat"]), np.asarray(tn_annual["lon"])
-        )
-        areas_da = xr.DataArray(areas, dims=("lat", "lon"))
-        if land_mask is not None:
-            areas_da = areas_da.where(land_mask, 0.0)
-        return latlon_global_mean(tn_annual, areas_da)
+    def _compute_be_tn_series(self) -> xr.DataArray | None:
+        """Approximate annual TN from Berkeley Earth monthly TMIN (land mean).
+
+        For each month, if the mean absolute temperature > 20 °C the entire
+        month counts as TN days (days_in_month).  Returns an area-weighted
+        global land mean with a ``year`` coordinate, or None if unavailable.
+        """
+        import pandas as pd
+
+        path = self._be_tmin_path()
+        if path is None:
+            return None
+        try:
+            ds = xr.open_dataset(path, chunks="auto")
+            # Decode decimal-year time axis → datetime
+            dec_years = ds["time"].values
+            years_int = dec_years.astype(int)
+            months_int = np.floor((dec_years - years_int) * 12).astype(int) + 1
+            months_int = np.clip(months_int, 1, 12)
+            datetimes = pd.to_datetime(
+                [f"{y:04d}-{m:02d}-01" for y, m in zip(years_int, months_int)]
+            )
+            ds = ds.assign_coords(time=datetimes)
+
+            # Full hist+ssp period
+            start = self.hist_load_period[0]
+            end = self.ssp_load_period[1]
+            anom = ds["temperature"].sel(time=slice(start, end))
+            clim = ds["climatology"]
+
+            # Reconstruct absolute temperature (°C)
+            month_idx = anom.time.dt.month.values - 1
+            clim_matched = clim.values[month_idx]
+            abs_temp_c = anom + xr.DataArray(
+                clim_matched, dims=anom.dims, coords=anom.coords
+            )
+
+            # Rename lat/lon dims if needed
+            rename = {}
+            if "latitude" in abs_temp_c.dims:
+                rename["latitude"] = "lat"
+            if "longitude" in abs_temp_c.dims:
+                rename["longitude"] = "lon"
+            if rename:
+                abs_temp_c = abs_temp_c.rename(rename)
+            if float(abs_temp_c.lon.min()) < 0:
+                abs_temp_c = abs_temp_c.assign_coords(
+                    lon=((abs_temp_c.lon + 360) % 360)
+                ).sortby("lon")
+
+            # Days per month → TN contribution
+            days_per_month = xr.DataArray(
+                abs_temp_c.time.dt.days_in_month.values,
+                dims=["time"],
+                coords={"time": abs_temp_c.time},
+            )
+            tn_monthly = xr.where(abs_temp_c > 20.0, days_per_month, 0.0)
+
+            # Apply land mask (NaN over ocean)
+            land_mask_da = ds.get("land_mask")
+            if land_mask_da is not None:
+                rename2 = {}
+                if "latitude" in land_mask_da.dims:
+                    rename2["latitude"] = "lat"
+                if "longitude" in land_mask_da.dims:
+                    rename2["longitude"] = "lon"
+                if rename2:
+                    land_mask_da = land_mask_da.rename(rename2)
+                if float(land_mask_da.lon.min()) < 0:
+                    land_mask_da = land_mask_da.assign_coords(
+                        lon=((land_mask_da.lon + 360) % 360)
+                    ).sortby("lon")
+                tn_monthly = tn_monthly.where(land_mask_da > 0.5)
+
+            # Sum per calendar year → area-weighted land mean
+            tn_annual = tn_monthly.groupby("time.year").sum("time")
+            return latlon_global_mean(tn_annual).compute()
+
+        except Exception as exc:
+            logger.warning("  Could not compute BE TN series: %s", exc)
+            return None
+
+    def _land_mean_series(self, tn_annual: xr.DataArray) -> xr.DataArray:
+        """Area-weighted land-mean of annual TN count (year,).
+
+        NaN cells (ocean, already masked in ``_load_and_save_tn``) are skipped
+        by ``xr.DataArray.weighted``, so no explicit mask is needed here.
+        """
+        return latlon_global_mean(tn_annual)
 
     # ── NC I/O ─────────────────────────────────────────────────────────
 
@@ -337,15 +416,18 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         period: tuple[str, str],
         nc_path: Path,
         *,
-        land_mask: xr.DataArray | None = None,
         ref_period: tuple[str, str] | None = None,
     ) -> tuple[xr.DataArray | None, xr.DataArray | None]:
         """Load annual TN count + optional period-mean Tmin from NC or raw data.
 
+        Land masking is applied per-model from the loaded data's own coordinates
+        (Berkeley Earth land mask interpolated to the model grid).  This ensures
+        models on different grids each get the correct mask.
+
         Returns
         -------
         (tn_annual, tmin_mean)
-            ``tn_annual``: DataArray(year, lat, lon), or None on failure.
+            ``tn_annual``: DataArray(year, lat, lon), NaN over ocean, or None on failure.
             ``tmin_mean``: DataArray(lat, lon) mean over *ref_period* if provided
                 and the NC was freshly computed; None otherwise.
         """
@@ -364,14 +446,17 @@ class TropicalNightsChangeDiag(DiagnosticBase):
 
         tn_raw = self._count_tn_days(da)
 
-        # Compute mean Tmin over ref_period for obs comparison (Group E)
+        # Compute mean Tmin over ref_period for obs comparison (Group C)
         tmin_raw: xr.DataArray | None = None
         if ref_period is not None:
             ref_slice = da.sel(time=slice(*ref_period))
             if len(ref_slice.time) > 0:
                 tmin_raw = ref_slice.mean("time")
 
-        # Apply land mask
+        # Per-model land-only masking (NaN over ocean)
+        land_mask = self._load_land_mask(
+            np.asarray(da["lat"]), np.asarray(da["lon"])
+        )
         if land_mask is not None:
             tn_raw = tn_raw.where(land_mask)
             if tmin_raw is not None:
@@ -452,7 +537,6 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         model_mean_tmin: dict[str, xr.DataArray] = {}
         lat_coord: xr.DataArray | None = None
         lon_coord: xr.DataArray | None = None
-        shared_land_mask: xr.DataArray | None = None
 
         for model in self.config.models:
             logger.info("  Processing: %s", model)
@@ -474,13 +558,10 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             if lat_coord is None:
                 lat_coord = hist_tn["lat"]
                 lon_coord = hist_tn["lon"]
-                shared_land_mask = self._load_land_mask(
-                    lat_coord.values, lon_coord.values
-                )
 
             ref_slice = hist_tn.sel(year=slice(*self.ref_period))
             ref_clim[model] = ref_slice.mean("year")
-            hist_series[model] = self._land_mean_series(hist_tn, shared_land_mask)
+            hist_series[model] = self._land_mean_series(hist_tn)
             if hist_tmin is not None:
                 model_mean_tmin[model] = hist_tmin
 
@@ -500,7 +581,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 logger.warning("  %s: SSP TN load failed — reference only", model)
                 continue
 
-            ssp_series[model] = self._land_mean_series(ssp_tn, shared_land_mask)
+            ssp_series[model] = self._land_mean_series(ssp_tn)
 
             fut_slice = ssp_tn.sel(year=slice(*self.fut_period))
             if len(fut_slice.year) > 0:
@@ -513,12 +594,13 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                     model, self.fut_period[0],
                 )
 
-        # Berkeley Earth TMIN for Group E
+        # Berkeley Earth TMIN for Group C and obs TN series for Group B
         obs_mean_tmin = None
         if lat_coord is not None:
             obs_mean_tmin = self._load_be_mean_tmin(
                 lat_coord.values, lon_coord.values, self.ref_period
             )
+        obs_series = self._compute_be_tn_series()
 
         return {
             "models": models,
@@ -527,6 +609,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             "change": change,
             "hist_series": hist_series,
             "ssp_series": ssp_series,
+            "obs_series": obs_series,
             "model_mean_tmin": model_mean_tmin,
             "obs_mean_tmin": obs_mean_tmin,
             "lat": lat_coord,
@@ -541,125 +624,138 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             logger.warning("%s: no model data — no figures", self.name)
             return figs
 
-        figs.append(self._plot_ref_map(results))
+        # Group A: combined [Reference | Future | Change] per model
+        figs.append(self._plot_change_panels(results))
 
-        if results["fut_clim"]:
-            figs.append(self._plot_fut_map(results))
-
-        if results["change"]:
-            figs.append(self._plot_change_map(results))
-
+        # Group B: stitched time series
         figs.append(self._plot_timeseries(results))
 
+        # Group C: mean Tmin bias vs Berkeley Earth (only when obs available)
         if results.get("obs_mean_tmin") is not None and results["model_mean_tmin"]:
             figs.append(self._plot_tmin_bias(results))
 
         return figs
 
     @staticmethod
-    def _safe_vmax(data_dict: dict) -> float:
-        """98th-percentile vmax across all arrays; fallback 1.0."""
-        if not data_dict:
-            return 1.0
-        all_finite = np.concatenate([
-            np.asarray(d).ravel()[np.isfinite(np.asarray(d).ravel())]
-            for d in data_dict.values()
-        ])
-        if len(all_finite) == 0:
-            return 1.0
-        return max(float(np.percentile(all_finite, 98)), 1.0)
+    def _collect_finite(arrays: list) -> np.ndarray:
+        """Concatenate finite values from a list of arrays; return empty array if none."""
+        parts = [np.asarray(a).ravel() for a in arrays]
+        if not parts:
+            return np.array([], dtype=np.float64)
+        merged = np.concatenate(parts)
+        return merged[np.isfinite(merged)]
 
-    def _plot_ref_map(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Group A: mean TN20 map, reference period."""
+    def _plot_change_panels(self, results: dict) -> tuple[plt.Figure, dict]:
+        """Combined figure: N_models rows × 3 columns [Reference | Future | Change].
+
+        Each row is one model.  The first two columns share a sequential YlOrRd
+        colormap; the third uses a diverging RdYlBu_r colormap centered on zero.
+        Models without SSP2-4.5 future data show a placeholder in columns 2–3.
+        """
+        import nereus as nr
+        from nereus.plotting import get_projection
+        from feather.plot.maps import _flatten_latlon
+
         models = results["models"]
-        data_dict = {m: results["ref_clim"][m] for m in models}
-        fig, _ = plot_combined_map(
-            data_dict,
-            title=(
-                f"{self.title}\n"
-                f"Reference Period {self.ref_period[0]}–{self.ref_period[1]} (land only)"
-            ),
-            cmap="YlOrRd",
-            vmin=0,
-            vmax=self._safe_vmax(data_dict),
-            units="days/year",
+        n_models = len(models)
+
+        # Shared vmax for ref/future columns (vmin is always 0)
+        rf_finite = self._collect_finite(
+            [results["ref_clim"][m] for m in models if m in results["ref_clim"]]
+            + [results["fut_clim"][m] for m in models if m in results["fut_clim"]]
         )
+        vmax_rf = max(float(np.percentile(rf_finite, 98)), 1.0) if len(rf_finite) > 0 else 1.0
+
+        # Symmetric ±vlim for change column
+        ch_finite = self._collect_finite(
+            list(results.get("change", {}).values())
+        )
+        vlim = max(float(np.percentile(np.abs(ch_finite), 98)), 1.0) if len(ch_finite) > 0 else 10.0
+
+        proj = get_projection("rob")
+        fig, axes = plt.subplots(
+            n_models, 3,
+            figsize=(21, 5 * n_models),
+            subplot_kw={"projection": proj},
+        )
+        # Normalise to 2-D array even when n_models == 1
+        if n_models == 1:
+            axes = axes[np.newaxis, :]
+
+        col_titles = [
+            f"Reference period {self.ref_period[0]}–{self.ref_period[1]}",
+            f"Future period {self.fut_period[0]}–{self.fut_period[1]}",
+            f"Change (Future − Reference)\n"
+            f"{self.fut_period[0]}–{self.fut_period[1]} minus "
+            f"{self.ref_period[0]}–{self.ref_period[1]}",
+        ]
+        cmaps = ["YlOrRd", "YlOrRd", "RdYlBu_r"]
+        vmins = [0, 0, -vlim]
+        vmaxs = [vmax_rf, vmax_rf, vlim]
+
+        for row, model in enumerate(models):
+            row_interp = None  # shared interpolator within a row (same grid)
+            panels = [
+                results["ref_clim"].get(model),
+                results["fut_clim"].get(model),
+                results["change"].get(model),
+            ]
+            for col, (data, ctitle, cmap, vmin, vmax) in enumerate(
+                zip(panels, col_titles, cmaps, vmins, vmaxs)
+            ):
+                ax = axes[row, col]
+                # Row label on first column
+                panel_title = (
+                    f"{model}\n{ctitle}" if col == 0 else ctitle
+                )
+                if data is not None:
+                    vals, lons, lats = _flatten_latlon(data)
+                    _, _, row_interp = nr.plot(
+                        vals, lons, lats,
+                        ax=ax,
+                        projection="rob",
+                        resolution=0.25,
+                        interpolator=row_interp,
+                        cmap=cmap,
+                        vmin=vmin,
+                        vmax=vmax,
+                        colorbar=True,
+                        colorbar_label="days/year",
+                        title=panel_title,
+                    )
+                else:
+                    # Placeholder for missing future / change data
+                    ax.set_title(panel_title, fontsize=9)
+                    ax.text(
+                        0.5, 0.5, "No SSP2-4.5 data available",
+                        transform=ax.transAxes,
+                        ha="center", va="center",
+                        fontsize=10, color="gray", style="italic",
+                    )
+
+        fig.suptitle(
+            f"{self.title}\n"
+            f"Reference period: {self.ref_period[0]}–{self.ref_period[1]}  ·  "
+            f"Future period: {self.fut_period[0]}–{self.fut_period[1]}",
+            fontsize=13, fontweight="bold", y=1.01,
+        )
+        fig.tight_layout()
+
+        all_fut_models = list(results.get("fut_clim", {}).keys())
         meta = self._build_metadata(
-            title=f"{self.title} — Reference Period",
-            figure_id="tropical_nights_change_ref_map",
+            title=(
+                f"{self.title} — Reference / Future / Change"
+            ),
+            figure_id="tropical_nights_change_panels",
             models=models,
             description=(
-                f"Mean annual Tropical Nights (TN > 20 °C) over the reference "
-                f"period {self.ref_period[0]}–{self.ref_period[1]} from hist-1950 runs. "
-                "Land-only; computed from CMOR daily tasmin."
-            ),
-            period=self.ref_period,
-            plot_type="map",
-        )
-        return fig, meta
-
-    def _plot_fut_map(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Group B: mean TN20 map, future period."""
-        fut_models = list(results["fut_clim"].keys())
-        data_dict = {m: results["fut_clim"][m] for m in fut_models}
-        fig, _ = plot_combined_map(
-            data_dict,
-            title=(
-                f"{self.title}\n"
-                f"Future Period {self.fut_period[0]}–{self.fut_period[1]} (land only)"
-            ),
-            cmap="YlOrRd",
-            vmin=0,
-            vmax=self._safe_vmax(data_dict),
-            units="days/year",
-        )
-        meta = self._build_metadata(
-            title=f"{self.title} — Future Period",
-            figure_id="tropical_nights_change_fut_map",
-            models=fut_models,
-            description=(
-                f"Mean annual Tropical Nights (TN > 20 °C) over the future "
-                f"period {self.fut_period[0]}–{self.fut_period[1]} from SSP2-4.5 runs. "
-                "Land-only; computed from CMOR daily tasmin."
-            ),
-            period=self.fut_period,
-            plot_type="map",
-        )
-        return fig, meta
-
-    def _plot_change_map(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Group C: ΔTN change map (future − reference)."""
-        change_models = list(results["change"].keys())
-        change_dict = {m: results["change"][m] for m in change_models}
-
-        # Symmetric diverging range
-        all_finite = np.concatenate([
-            np.asarray(d).ravel()[np.isfinite(np.asarray(d).ravel())]
-            for d in change_dict.values()
-        ])
-        vlim = (float(np.percentile(np.abs(all_finite), 98)) or 1.0) if len(all_finite) > 0 else 10.0
-
-        fig, _ = plot_combined_map(
-            change_dict,
-            title=(
-                f"{self.title}\n"
-                f"Change: {self.fut_period[0]}–{self.fut_period[1]} minus "
-                f"{self.ref_period[0]}–{self.ref_period[1]} (land only)"
-            ),
-            cmap="RdYlBu_r",
-            vmin=-vlim,
-            vmax=vlim,
-            units="days/year",
-        )
-        meta = self._build_metadata(
-            title=f"{self.title} — Change Map",
-            figure_id="tropical_nights_change_delta_map",
-            models=change_models,
-            description=(
-                f"Change in mean annual Tropical Nights (days/year): future period "
-                f"({self.fut_period[0]}–{self.fut_period[1]}) minus reference period "
-                f"({self.ref_period[0]}–{self.ref_period[1]}). "
-                "Positive: more tropical nights in the future (warming signal)."
+                f"Three-panel climate change summary for each model (rows). "
+                f"Left: mean annual Tropical Nights (TN > 20 °C) over the reference "
+                f"period {self.ref_period[0]}–{self.ref_period[1]}. "
+                f"Centre: mean TN over the future period "
+                f"{self.fut_period[0]}–{self.fut_period[1]} under SSP2-4.5. "
+                f"Right: change (future − reference) with diverging colormap. "
+                f"Models with SSP2-4.5 data: {', '.join(all_fut_models) or 'none'}."
             ),
             period=(self.ref_period[0], self.fut_period[1]),
             plot_type="map",
@@ -706,6 +802,15 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                     **({"label": "_nolegend_"} if labeled else {"label": model}),
                 )
 
+        # Observed TN (Berkeley Earth approximate)
+        obs_s = results.get("obs_series")
+        if obs_s is not None:
+            ax.plot(
+                np.asarray(obs_s["year"]), np.asarray(obs_s),
+                color="k", lw=2, ls="--", label="Berkeley Earth (approx.)",
+                zorder=10,
+            )
+
         ax.set_xlabel("Year")
         ax.set_ylabel("Tropical Nights (days/year)")
         ax.set_title(
@@ -728,6 +833,8 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 f"{self.hist_load_period[1]}) joining SSP2-4.5 from {_HIST_BOUNDARY_YEAR}. "
                 f"Blue shading: reference period ({self.ref_period[0]}–{self.ref_period[1]}); "
                 f"red shading: future period ({self.fut_period[0]}–{self.fut_period[1]}). "
+                "Dashed black line: Berkeley Earth approximate TN (months with mean "
+                "TMIN > 20 °C weighted by days in month). "
                 "Models without future data show only the historical segment."
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
