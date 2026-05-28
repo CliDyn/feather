@@ -196,7 +196,10 @@ def compute_hw_indices_year(
 
     # ── HWM: mean anomaly over all heatwave days ──────────────────────
     anom_sum = np.where(in_event, anom, 0.0).sum(axis=0)
-    hwm = np.where(hwf > 0, anom_sum / hwf, np.nan).astype(np.float32)
+    # np.where evaluates both branches; suppress the divide-by-zero warning
+    # at grid points with no heatwave days (hwf == 0) — those become NaN.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        hwm = np.where(hwf > 0, anom_sum / hwf, np.nan).astype(np.float32)
 
     return {"HWF": hwf, "HWD": hwd, "HWN": hwn, "HWA": hwa, "HWM": hwm}
 
