@@ -113,6 +113,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             cc.get("ssp_load_period", ["2015", "2050"])
         )
         self._cc_models: dict = cc.get("models", {})
+        self._obs_end_year: str = cc.get("obs_end_year", self.hist_load_period[1])
 
     # ── Paths ──────────────────────────────────────────────────────────
 
@@ -337,7 +338,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             # Full hist period up to obs_end_year (defaults to hist end to avoid
             # partial final years in the BE file driving a spurious downward trend).
             start = self.hist_load_period[0]
-            obs_end = self._cc_cfg.get("obs_end_year", self.hist_load_period[1])
+            obs_end = self._obs_end_year
             anom = ds["temperature"].sel(time=slice(start, obs_end))
             clim = ds["climatology"]
 
