@@ -937,8 +937,8 @@ class HeatwaveChangeDiag(DiagnosticBase):
                 f"applied to both periods."
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
-            obs_dataset="",
-            obs_variable="",
+            obs_dataset="BERKELEY_EARTH_TMAX",
+            obs_variable="temperature",
             plot_type="timeseries",
         )
         return fig, meta
