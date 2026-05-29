@@ -1,20 +1,21 @@
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP Tropical Nights climate change signal (SSP2-4.5)"
+  description: "EERIE HighResMIP Heatwave climate change signal (SSP2-4.5)"
   experiment: "hist-1950"
   period: ["1981", "2000"]
   resolution: "high-resolution (~10 km atm)"
   comparison_type: "multi_model"
   comparison_description: >-
-    Comparison of climate change signals in Tropical Nights (TN > 20 °C)
-    between EERIE models under SSP2-4.5, using the hist-1950 reference period
-    (1981–2000) and the SSP2-4.5 future period (2031–2050).
+    Comparison of climate change signals in five heatwave indices (HWF, HWD, HWN,
+    HWA, HWM — Perkins & Alexander 2013) between EERIE models under SSP2-4.5,
+    using the hist-1950 reference period (1981–2000) and the SSP2-4.5 future
+    period (2031–2050).  T90 (90th percentile of daily Tmax) computed from the
+    reference period and applied to both periods.
   climate_change:
     reference_period: ["1981", "2000"]
     future_period:    ["2031", "2050"]
     hist_load_period: ["1981", "2014"]   # full hist-1950 window for time series
     ssp_load_period:  ["2015", "2050"]   # full ssp245 window for time series
-    obs_end_year:     "2025"             # cap BE obs series (avoid incomplete final years)
     models:
       IFS-FESOM2-SR:
         hist_experiment:    hist-1950
@@ -75,10 +76,10 @@ models:
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:
-  BERKELEY_EARTH_TMIN:
+  BERKELEY_EARTH_TMAX:
     path: "/work/bm1344/AWI/OBS/berkeleyearth"
     variables:
-      temperature: "Land_TMIN_Gridded_0p25deg.nc"
+      temperature: "Land_TMAX_Gridded_0p25deg.nc"
 
 cmip6:
   enabled: false
@@ -93,7 +94,7 @@ nereus:
   influence_radius: 80000
   method: "linear"
 
-output_dir: "./output_eerie_climchange_tn"
+output_dir: "./output_eerie_climchange_hw"
 
 llm:
   figure_analysis:
@@ -106,8 +107,8 @@ llm:
     skip_existing: true
 
 website:
-  title: "Feather — EERIE Tropical Nights Climate Change"
-  subtitle: "EERIE HighResMIP SSP2-4.5 Tropical Nights Signal (ref 1981–2000 vs future 2031–2050)"
+  title: "Feather — EERIE Heatwave Climate Change"
+  subtitle: "EERIE HighResMIP SSP2-4.5 Heatwave Signal (ref 1981–2000 vs future 2031–2050)"
   group_order:
     - extremes
   group_labels:
