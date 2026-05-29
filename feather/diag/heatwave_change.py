@@ -864,6 +864,8 @@ class HeatwaveChangeDiag(DiagnosticBase):
                 f"Models with SSP2-4.5 data: {', '.join(all_fut_models) or 'none'}."
             ),
             period=(self.ref_period[0], self.fut_period[1]),
+            obs_dataset="",
+            obs_variable="",
             plot_type="map",
         )
         return fig, meta
@@ -935,6 +937,8 @@ class HeatwaveChangeDiag(DiagnosticBase):
                 f"applied to both periods."
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
+            obs_dataset="",
+            obs_variable="",
             plot_type="timeseries",
         )
         return fig, meta

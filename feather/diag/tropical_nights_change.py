@@ -774,6 +774,8 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 f"Models with SSP2-4.5 data: {', '.join(all_fut_models) or 'none'}."
             ),
             period=(self.ref_period[0], self.fut_period[1]),
+            obs_dataset="",
+            obs_variable="",
             plot_type="map",
         )
         return fig, meta
@@ -854,6 +856,8 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 "Models without future data show only the historical segment."
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
+            obs_dataset="BERKELEY_EARTH_TMIN",
+            obs_variable="temperature",
             plot_type="timeseries",
         )
         return fig, meta
