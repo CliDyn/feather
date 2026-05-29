@@ -79,6 +79,11 @@ feather --config configs/eerie_climchange_tn.yaml \
         --steps diagnostics \
         --diagnostics tropical_nights_change -v
 
+# EERIE Heatwave indices climate change signal (SSP2-4.5)
+feather --config configs/eerie_climchange_hw.yaml \
+        --steps diagnostics \
+        --diagnostics heatwave_change -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -158,7 +163,7 @@ print(result)
 
 ## Available diagnostics
 
-Feather provides 18 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
+Feather provides 19 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
 
 ### Atmosphere
 
@@ -191,6 +196,7 @@ Feather provides 18 registered diagnostics across atmosphere, ocean, cryosphere,
 | `tropical_nights` | `TropicalNightsDiag` | Berkeley Earth Land TMIN | Annual tropical nights count (TN > 20 °C) per grid point; land-only bias map vs Berkeley Earth |
 | `tropical_nights_change` | `TropicalNightsChangeDiag` | Berkeley Earth Land TMIN | Climate change signal in TN under SSP2-4.5: [Reference \| Future \| Change] maps per model, land-mean time series hist+SSP stitched, mean Tmin bias map |
 | `heatwave` | `HeatwaveDiag` | Berkeley Earth Land TMAX | Five TX90 heatwave indices (HWN, HWF, HWD, HWM, HWA): climatological maps + annual time series; TMAX bias map |
+| `heatwave_change` | `HeatwaveChangeDiag` | Berkeley Earth Land TMAX | Climate change signal in five TX90 heatwave indices under SSP2-4.5: [Reference \| Future \| Change] maps per model per index, land-mean time series hist+SSP stitched, mean Tmax bias map |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -209,6 +215,13 @@ The **Heatwave diagnostic** computes five interconnected indices using the TX90 
 - **HWA** — heatwave amplitude (peak tasmax on heatwave days, °C)
 
 Summer windows are hemisphere-aware (NH: May–Sep; SH: Nov–Mar). Requires daily `tasmax` (CMOR `day/tasmax` table or kerchunk-parquet mx2t24 store). Per-model NC checkpoints stored in `{output_dir}/heatwave/`.
+
+The **Heatwave Climate Change Signal** (`heatwave_change`) compares all five TX90 indices between a historical reference period (default 1981–2000) and a future period (default 2031–2050) under SSP2-4.5. The T90 threshold is computed once from the reference period and applied to both periods. One figure set is produced per index:
+- **Group A** — Combined change map: one row per model × three columns [Reference climatology | Future climatology | Change (Future − Reference)]. Sequential colormap for absolute values; diverging RdYlBu_r for the change column. Models whose SSP run ends before the future period show a placeholder in columns 2–3.
+- **Group B** — Stitched land-mean time series: historical segment joined to SSP2-4.5 at 2015 with a dashed vertical line; reference and future windows highlighted.
+- **Group C** — Mean daily Tmax bias map vs Berkeley Earth Land TMAX over the reference period (skipped when BE data is unavailable).
+
+Configuration lives under `project.climate_change` (see `configs/eerie_climchange_hw.yaml`). Each model declares its hist/future data source (`cmor` or `kerchunk_native`). Land masking is applied per-model using the Berkeley Earth land mask. Per-model NC checkpoints written to `{output_dir}/heatwave_change/`.
 
 ### Cross-domain
 
@@ -236,7 +249,7 @@ All diagnostics support:
 
 ## Configuration
 
-Feather uses YAML configuration files. Twelve configs are provided:
+Feather uses YAML configuration files. Thirteen configs are provided:
 
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
@@ -245,6 +258,7 @@ Feather uses YAML configuration files. Twelve configs are provided:
 | `configs/eerie_ifsnemo_members.yaml` | EERIE — 3 IFS-NEMO-ER + 3 other models | CMOR (hist-1950 + hist-1975) | `multi_model` |
 | `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
 | `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
+| `configs/eerie_climchange_hw.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 heatwave signal | CMOR + kerchunk native | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |
@@ -416,6 +430,7 @@ output/
     tropical_nights/
     tropical_nights_change/
     heatwave/
+    heatwave_change/
   tropical_nights/                    # NC checkpoints (outside figures tree)
     {model}_tropical_nights_tn20_{start}_{end}.nc
   tropical_nights_change/             # NC checkpoints (outside figures tree)
@@ -423,6 +438,9 @@ output/
     {model}_tn_ssp_{start}_{end}.nc
   heatwave/                           # NC checkpoints (outside figures tree)
     {model}_heatwave_tx90_{start}_{end}.nc
+  heatwave_change/                    # NC checkpoints (outside figures tree)
+    {model}_hw_hist_{start}_{end}.nc
+    {model}_hw_ssp_{start}_{end}.nc
   analysis/                         # LLM analysis (Gemini)
     global_biases/
       tas_annual_bias_combined_analysis.json
@@ -490,6 +508,7 @@ feather/
     tropical_nights.py    # Tropical Nights Index (TN > 20 °C, daily tasmin)
     tropical_nights_change.py # Tropical Nights climate change signal (SSP2-4.5)
     heatwave.py           # Heatwave Indices (TX90: HWN, HWF, HWD, HWM, HWA)
+    heatwave_change.py    # Heatwave climate change signal (SSP2-4.5)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini, comparison-type aware)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
@@ -554,7 +573,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1829 tests (1819 unit + 10 integration) across 40 test files.
+1880 tests across 41 test files.
 
 ## Requirements
 
