@@ -37,6 +37,27 @@ project:
         hist_data_source:   cmor
         future_experiment:  highres-future-ssp245
         future_data_source: cmor
+      IFS-NEMO-ER-r1:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r2:
+        hist_experiment:    hist-1975
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r3:
+        hist_experiment:    hist-1975
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
 
 data_source:
   type: "cmor"
@@ -73,6 +94,27 @@ models:
     grids:
       sfc: latlon
     color: "#2ca02c"
+  IFS-NEMO-ER-r1:
+    institution: BSC
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#ff7f0e"
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    experiment: hist-1975
+    variant: r2i1p1f1
+    grids:
+      sfc: latlon
+    color: "#ffbb78"
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    experiment: hist-1975
+    variant: r3i1p1f1
+    grids:
+      sfc: latlon
+    color: "#d62728"
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:
@@ -94,7 +136,7 @@ nereus:
   influence_radius: 80000
   method: "linear"
 
-output_dir: "./output_eerie_climchange_hw"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_7members_indices"
 
 llm:
   figure_analysis:
