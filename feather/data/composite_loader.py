@@ -128,6 +128,10 @@ class CompositeModelLoader:
             from feather.data.kerchunk_loader import KerchunkParquetLoader
             return KerchunkParquetLoader(self._config)
 
+        if src_type == "cordex":
+            from feather.data.cordex_loader import CORDEXLoader
+            return CORDEXLoader(self._config)
+
         if src_type == "destine_catalog":
             from feather.data.loader import MultiCatalogLoader
             catalogs = self._config.model_catalogs

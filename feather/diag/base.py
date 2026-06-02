@@ -243,7 +243,8 @@ class DiagnosticBase(ABC):
             )
 
         if self.config.get_data_source_type() in ("cmor", "netcdf_healpix",
-                                                      "grib_healpix"):
+                                                      "grib_healpix", "cordex",
+                                                      "cmip5", "cmip6_nc"):
             return self.model_loader.load_var(
                 model, variable, period=period, time_mean=time_mean,
             )
@@ -281,7 +282,7 @@ class DiagnosticBase(ABC):
             return self.model_loader.load_coords(model, variable)
 
         src = self.config.get_data_source_type()
-        if src == "cmor":
+        if src in ("cmor", "cordex", "cmip5", "cmip6_nc"):
             da = self.model_loader.load_var(model, variable)
             return np.asarray(da.lon), np.asarray(da.lat)
 

@@ -1,0 +1,200 @@
+project:
+  name: "Africa Climate Classification — CORDEX-CORE AFR-22"
+  description: >-
+    Köppen–Trewartha climate classification over Africa (AFR-22 domain) for the
+    1981–2010 reference period. CORDEX-CORE regional members are assembled by
+    stitching historical (1981–2005) with rcp85 (2006–2010); ERAINT-driven
+    evaluation runs cover 1981–2010 directly. Phase 1 (reference classification).
+  region: africa
+  experiment: historical
+  period: ["1981", "2010"]
+  resolution: "regional (~25 km, AFR-22 0.22° rotated grid)"
+  comparison_type: "multi_model"
+
+# All models are CORDEX-CORE → single-source CORDEXLoader.
+data_source:
+  type: "cordex"
+  root: "/pool/data/CORDEX/data/cordex/output/AFR-22"
+
+models:
+  # ── GCM-driven members (reference = historical 1981–2005 + rcp85 2006–2010) ──
+  REMO2015_HadGEM2-ES:
+    data_source_type: cordex
+    institution: GERICS
+    gcm: MOHC-HadGEM2-ES
+    rcm: GERICS-REMO2015
+    variant: r1i1p1
+    driving_gcm: HadGEM2-ES
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#1f77b4"
+  REMO2015_MPI-ESM-LR:
+    data_source_type: cordex
+    institution: GERICS
+    gcm: MPI-M-MPI-ESM-LR
+    rcm: GERICS-REMO2015
+    variant: r1i1p1
+    driving_gcm: MPI-ESM-LR
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#4f9bd9"
+  REMO2015_NorESM1-M:
+    data_source_type: cordex
+    institution: GERICS
+    gcm: NCC-NorESM1-M
+    rcm: GERICS-REMO2015
+    variant: r1i1p1
+    driving_gcm: NorESM1-M
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#9fcfe8"
+
+  CCLM5_HadGEM2-ES:
+    data_source_type: cordex
+    institution: CLMcom-KIT
+    gcm: MOHC-HadGEM2-ES
+    rcm: CLMcom-KIT-CCLM5-0-15
+    variant: r1i1p1
+    driving_gcm: HadGEM2-ES
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#2ca02c"
+  CCLM5_MPI-ESM-LR:
+    data_source_type: cordex
+    institution: CLMcom-KIT
+    gcm: MPI-M-MPI-ESM-LR
+    rcm: CLMcom-KIT-CCLM5-0-15
+    variant: r1i1p1
+    driving_gcm: MPI-ESM-LR
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#5fbf5f"
+  CCLM5_NorESM1-M:
+    data_source_type: cordex
+    institution: CLMcom-KIT
+    gcm: NCC-NorESM1-M
+    rcm: CLMcom-KIT-CCLM5-0-15
+    variant: r1i1p1
+    driving_gcm: NorESM1-M
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#98df8a"
+
+  RegCM4_HadGEM2-ES:
+    data_source_type: cordex
+    institution: ICTP
+    gcm: MOHC-HadGEM2-ES
+    rcm: ICTP-RegCM4-7
+    variant: r1i1p1
+    driving_gcm: HadGEM2-ES
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#d62728"
+  RegCM4_MPI-ESM-MR:
+    data_source_type: cordex
+    institution: ICTP
+    gcm: MPI-M-MPI-ESM-MR
+    rcm: ICTP-RegCM4-7
+    variant: r1i1p1
+    driving_gcm: MPI-ESM-MR
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#e8702a"
+  RegCM4_NorESM1-M:
+    data_source_type: cordex
+    institution: ICTP
+    gcm: NCC-NorESM1-M
+    rcm: ICTP-RegCM4-7
+    variant: r1i1p1
+    driving_gcm: NorESM1-M
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#ff9896"
+
+  CanRCM4_CanESM2:
+    data_source_type: cordex
+    institution: CCCma
+    gcm: CCCma-CanESM2
+    rcm: CCCma-CanRCM4
+    variant: r1i1p1
+    driving_gcm: CanESM2
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#9467bd"
+
+  # ── ERAINT-driven evaluation members (1981–2010, perfect boundaries) ──
+  REMO2015_ERAINT:
+    data_source_type: cordex
+    institution: GERICS
+    gcm: ECMWF-ERAINT
+    rcm: GERICS-REMO2015
+    variant: r1i1p1
+    experiments: [evaluation]
+    grids: {sfc: latlon}
+    color: "#7f7f7f"
+  CCLM5_ERAINT:
+    data_source_type: cordex
+    institution: CLMcom-KIT
+    gcm: ECMWF-ERAINT
+    rcm: CLMcom-KIT-CCLM5-0-15
+    variant: r1i1p1
+    experiments: [evaluation]
+    grids: {sfc: latlon}
+    color: "#9c9c9c"
+  RegCM4_ERAINT:
+    data_source_type: cordex
+    institution: ICTP
+    gcm: ECMWF-ERAINT
+    rcm: ICTP-RegCM4-7
+    variant: r1i1p1
+    experiments: [evaluation]
+    grids: {sfc: latlon}
+    color: "#bcbcbc"
+  CanRCM4_ERAINT:
+    data_source_type: cordex
+    institution: CCCma
+    gcm: ECMWF-ERAINT
+    rcm: CCCma-CanRCM4
+    variant: r1i1p1
+    experiments: [evaluation]
+    grids: {sfc: latlon}
+    color: "#d9d9d9"
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_africa_climate"
+
+website:
+  title: "Feather — Africa Climate Classification"
+  subtitle: "CORDEX-CORE AFR-22 — Köppen–Trewartha (1981–2010)"
+  group_order:
+    - climate_classification
+  group_labels:
+    climate_classification: "Climate Classification"

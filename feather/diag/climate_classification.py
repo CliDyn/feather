@@ -72,6 +72,11 @@ _ENS_MEAN = "EERIE Ensemble Mean"
 _ENS_MEDIAN = "EERIE Ensemble Median"
 _CMIP6_MMM = "CMIP6 MMM"
 
+# Regional target-grid bounds (lon in -180..180 when min < 0).
+_REGIONS: dict[str, dict] = {
+    "africa": {"lon_bounds": (-26.0, 60.0), "lat_bounds": (-48.0, 44.0)},
+}
+
 
 @register
 class KTClimateClassification(DiagnosticBase):
@@ -98,6 +103,16 @@ class KTClimateClassification(DiagnosticBase):
         self.period = period
         self._res = float(self.config.nereus.get("resolution", 0.25))
         self._ir = float(self.config.nereus.get("influence_radius", 80_000.0))
+        # Region → target-grid bounds.  Global default keeps the historical
+        # 0..360 convention; a named region uses its (possibly negative) bounds.
+        self._region = str(self.config.project.get("region", "")).lower()
+        bounds = _REGIONS.get(self._region)
+        if bounds:
+            self._lon_bounds = tuple(bounds["lon_bounds"])
+            self._lat_bounds = tuple(bounds["lat_bounds"])
+        else:
+            self._lon_bounds = (0.0, 360.0)
+            self._lat_bounds = (-90.0, 90.0)
         # Common target grid (populated on first regrid)
         self._tlat: np.ndarray | None = None
         self._tlon: np.ndarray | None = None
@@ -497,16 +512,19 @@ class KTClimateClassification(DiagnosticBase):
 
         lat_name = "lat" if "lat" in clim.coords else "latitude"
         lon_name = "lon" if "lon" in clim.coords else "longitude"
-        lat = np.asarray(clim[lat_name].values)
-        # Normalise source longitudes to 0..360 (matching the target grid's
-        # lon_bounds) and reorder the data columns to match, so that
-        # western-hemisphere points are not dropped during regridding —
-        # otherwise sources on a -180..180 grid leave half the globe NaN.
-        lon = np.mod(np.asarray(clim[lon_name].values), 360.0)
-        order = np.argsort(lon)
-        lon = lon[order]
-        clim = clim.isel({lon_name: order})
-        lon2d, lat2d = np.meshgrid(lon, lat)
+        latv = np.asarray(clim[lat_name].values)
+        lonv = self._to_target_lon_convention(np.asarray(clim[lon_name].values))
+
+        if lonv.ndim == 1:
+            # Regular grid: sort columns by longitude (so the source matches
+            # the target lon convention and no hemisphere is dropped).
+            order = np.argsort(lonv)
+            lonv = lonv[order]
+            clim = clim.isel({lon_name: order})
+            lon2d, lat2d = np.meshgrid(lonv, latv)
+        else:
+            # 2-D (rotated-pole) grid: pass coordinate arrays as-is.
+            lon2d, lat2d = lonv, latv
 
         interp = None
         out = []
@@ -516,7 +534,8 @@ class KTClimateClassification(DiagnosticBase):
                 _, interp = nr.regrid(
                     field, lon=lon2d, lat=lat2d,
                     resolution=self._res, influence_radius=ir,
-                    lon_bounds=(0.0, 360.0), as_xarray=True,
+                    lon_bounds=self._lon_bounds, lat_bounds=self._lat_bounds,
+                    as_xarray=True,
                 )
                 if self._tlat is None:
                     self._tlat = np.asarray(interp.target_lat[:, 0])
@@ -531,6 +550,16 @@ class KTClimateClassification(DiagnosticBase):
                 "lat": self._tlat, "lon": self._tlon,
             },
         )
+
+    def _to_target_lon_convention(self, lon: np.ndarray) -> np.ndarray:
+        """Convert longitudes to the target grid's convention.
+
+        Regional grids use -180..180 (so a negative ``lon_bounds`` like Africa
+        maps the western part correctly); the global grid keeps 0..360.
+        """
+        if self._lon_bounds[0] < 0:
+            return ((lon + 180.0) % 360.0) - 180.0
+        return np.mod(lon, 360.0)
 
     def _apply_land_mask(self, code: xr.DataArray) -> xr.DataArray:
         mask = self._get_land_mask()
@@ -555,8 +584,10 @@ class KTClimateClassification(DiagnosticBase):
                 rename["longitude"] = "lon"
             if rename:
                 mask = mask.rename(rename)
-            if float(mask.lon.min()) < 0:
-                mask = mask.assign_coords(lon=((mask.lon + 360) % 360)).sortby("lon")
+            # Match the target grid's longitude convention before interpolation.
+            mask = mask.assign_coords(
+                lon=self._to_target_lon_convention(np.asarray(mask.lon.values)),
+            ).sortby("lon")
             mask_i = mask.interp(
                 lat=xr.DataArray(self._tlat, dims="lat"),
                 lon=xr.DataArray(self._tlon, dims="lon"),
@@ -726,9 +757,19 @@ class KTClimateClassification(DiagnosticBase):
         n = len(panels)
         ncols = min(3, n)
         nrows = math.ceil(n / ncols)
-        proj = ccrs.Robinson(central_longitude=0)
+        # Zoom to the region when one is configured; else global Robinson.
+        regional = bool(self._region)
+        if regional:
+            proj = ccrs.PlateCarree()
+            extent = [self._lon_bounds[0], self._lon_bounds[1],
+                      self._lat_bounds[0], self._lat_bounds[1]]
+            panel_w, panel_h = 4.6, 4.6
+        else:
+            proj = ccrs.Robinson(central_longitude=0)
+            extent = None
+            panel_w, panel_h = 6.5, 3.6
         fig, axes = plt.subplots(
-            nrows, ncols, figsize=(6.5 * ncols, 3.6 * nrows),
+            nrows, ncols, figsize=(panel_w * ncols, panel_h * nrows),
             subplot_kw={"projection": proj},
         )
         axes = np.atleast_1d(axes).ravel()
@@ -741,7 +782,10 @@ class KTClimateClassification(DiagnosticBase):
                 shading="auto",
             )
             ax.coastlines(linewidth=0.4)
-            ax.set_global()
+            if regional:
+                ax.set_extent(extent, crs=ccrs.PlateCarree())
+            else:
+                ax.set_global()
             ax.set_title(label, fontsize=10)
         for ax in axes[n:]:
             ax.axis("off")
