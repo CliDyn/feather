@@ -12,16 +12,21 @@ Sources classified:
 - every model in the config (model ``tas`` + ``pr``),
 - **ERA5** (``t2m`` + ``tp``),
 - **Berkeley Earth HR + MSWEP** (BE-HR temperature + MSWEP precipitation),
-- **CMIP6 multi-model mean** (when ``cmip6.enabled``).
+- the **EERIE ensemble mean and median** (per-cell mean/median of the model
+  ``tas`` and ``pr`` climatologies, then classified),
+- the **CMIP6 multi-model mean** (when ``cmip6.enabled``).
 
-Outputs:
+Outputs (all in ``{output_dir}/climate_classification/``):
 
-- per-source NetCDF of the integer ``kt_code`` field (land only), written
-  to ``{output_dir}/climate_classification/`` for later regional analysis,
+- ``{source}_clim_{period}.nc`` — monthly ``tas`` (°C) and ``pr`` (mm/month)
+  climatology per source (global + land-only), on the common grid, for ERA5,
+  Berkeley Earth HR, MSWEP, every EERIE model, every CMIP6 model, the EERIE
+  ensemble mean/median, and the CMIP6 MMM,
+- ``{source}_kt_{period}.nc`` — integer ``kt_code`` field (land only) per
+  classified source,
 - a CSV of % land area per KT type per source,
-- a multi-panel discrete classification **map** figure,
-- a grouped **bar chart** of % land area per KT type,
-- a **summary table** (heatmap) of % land area per type per source.
+- a multi-panel discrete classification map, an ensemble-comparison map, a
+  grouped bar chart, and a summary table.
 """
 
 import json
@@ -57,9 +62,14 @@ _BE_LAND_PATHS = [
 _K_TO_C = 273.15
 # kg m-2 s-1 → mm/month uses seconds-per-day (days_in_month applied per step)
 _SEC_PER_DAY = 86400.0
-# Display order for source panels: models first, then obs, then CMIP6 MMM.
+
+# Source labels
 _ERA5 = "ERA5"
+_BE_HR = "Berkeley Earth HR"
+_MSWEP = "MSWEP"
 _BE_MSWEP = "BE-HR + MSWEP"
+_ENS_MEAN = "EERIE Ensemble Mean"
+_ENS_MEDIAN = "EERIE Ensemble Median"
 _CMIP6_MMM = "CMIP6 MMM"
 
 
@@ -91,6 +101,7 @@ class KTClimateClassification(DiagnosticBase):
         # Common target grid (populated on first regrid)
         self._tlat: np.ndarray | None = None
         self._tlon: np.ndarray | None = None
+        self._land_mask: xr.DataArray | None = None  # cached once grid is known
 
     # ── Paths ─────────────────────────────────────────────────────────
 
@@ -99,11 +110,18 @@ class KTClimateClassification(DiagnosticBase):
         """Directory for per-source KT NetCDF files (outside figures tree)."""
         return Path(self.config.output_dir) / "climate_classification"
 
+    @staticmethod
+    def _safe(source: str) -> str:
+        s = source.replace("/", "_").replace(" ", "_").replace("+", "")
+        return "_".join(filter(None, s.split("_")))
+
     def _nc_path(self, source: str) -> Path:
         start, end = self.period
-        safe = source.replace("/", "_").replace(" ", "_").replace("+", "")
-        safe = "_".join(filter(None, safe.split("_")))
-        return self.nc_dir / f"{safe}_kt_{start}_{end}.nc"
+        return self.nc_dir / f"{self._safe(source)}_kt_{start}_{end}.nc"
+
+    def _clim_path(self, source: str) -> Path:
+        start, end = self.period
+        return self.nc_dir / f"{self._safe(source)}_clim_{start}_{end}.nc"
 
     def _csv_path(self) -> Path:
         start, end = self.period
@@ -150,77 +168,130 @@ class KTClimateClassification(DiagnosticBase):
     # ── Compute ────────────────────────────────────────────────────────
 
     def compute(self) -> dict[str, Any]:
-        """Classify every source, save NetCDF + CSV, return results dict.
+        """Collect per-source climatologies, classify, persist, return results.
 
         Returns
         -------
         dict with keys:
 
-        - ``codes``     : ordered dict[source → DataArray(lat, lon)] (land only)
+        - ``codes``     : dict[source → DataArray(lat, lon)] (land-only KT code)
         - ``area_pct``  : dict[source → dict[label → percent]]
-        - ``models``    : list[str] — model sources only
-        - ``sources``   : list[str] — full panel order
+        - ``models``    : list[str] — EERIE model sources only
+        - ``sources``   : list[str] — classified sources
+        - ``ens_mean``/``ens_median`` : DataArray | None — ensemble KT codes
         - ``lat``/``lon``: common grid coordinates
         """
-        codes: dict[str, xr.DataArray] = {}
+        # Regridded monthly climatology per source: tas in °C, pr in cm/month.
+        clims_tas: dict[str, xr.DataArray] = {}
+        clims_pr: dict[str, xr.DataArray] = {}
 
-        # ── Models ─────────────────────────────────────────────────────
+        # ── EERIE models (tas + pr) ────────────────────────────────────
+        model_sources: list[str] = []
         for model in self.config.models:
             try:
-                code = self._classify_model(model)
+                tmon, pmon = self._model_clim(model)
             except (KeyError, FileNotFoundError, ValueError) as exc:
                 logger.warning("  %s: skipping — %s", model, exc)
                 continue
-            codes[model] = code
+            clims_tas[model] = tmon
+            clims_pr[model] = pmon
+            model_sources.append(model)
 
-        model_sources = list(codes.keys())
-
-        # ── ERA5 ───────────────────────────────────────────────────────
+        # ── ERA5 (tas + pr) ────────────────────────────────────────────
         try:
-            codes[_ERA5] = self._classify_era5()
-        except Exception as exc:  # obs failures shouldn't kill the diagnostic
+            tas = self._load_obs_var("tas", self.period)
+            pr = self._load_obs_var("pr", self.period)
+            clims_tas[_ERA5] = self._regrid_monthly(self._clim_tas(tas), self._ir)
+            clims_pr[_ERA5] = self._regrid_monthly(self._clim_pr(pr), self._ir)
+        except Exception as exc:
             logger.warning("  ERA5: skipping — %s", exc)
 
-        # ── Berkeley Earth HR + MSWEP ──────────────────────────────────
+        # ── Berkeley Earth HR (tas only) ───────────────────────────────
         try:
-            codes[_BE_MSWEP] = self._classify_be_mswep()
+            clims_tas[_BE_HR] = self._regrid_monthly(
+                self._be_hr_monthly_clim(), self._ir,
+            )
         except Exception as exc:
-            logger.warning("  BE-HR + MSWEP: skipping — %s", exc)
+            logger.warning("  Berkeley Earth HR: skipping — %s", exc)
 
-        # ── CMIP6 multi-model mean ─────────────────────────────────────
-        if self.cmip6_enabled:
-            try:
-                code = self._classify_cmip6_mmm()
-                if code is not None:
-                    codes[_CMIP6_MMM] = code
-            except Exception as exc:
-                logger.warning("  CMIP6 MMM: skipping — %s", exc)
+        # ── MSWEP (pr only) ────────────────────────────────────────────
+        try:
+            pr = self.obs_loader.load_mswep(self.period)
+            clims_pr[_MSWEP] = self._regrid_monthly(self._clim_pr(pr), self._ir)
+        except Exception as exc:
+            logger.warning("  MSWEP: skipping — %s", exc)
 
         if self._tlat is None:
             logger.warning("KTClimateClassification: no data classified")
-            return {"codes": {}, "area_pct": {}, "models": [],
-                    "sources": [], "lat": None, "lon": None}
+            return {"codes": {}, "area_pct": {}, "models": [], "sources": [],
+                    "ens_mean": None, "ens_median": None, "lat": None, "lon": None}
 
-        # ── Area percentages + persistence ─────────────────────────────
+        self.nc_dir.mkdir(parents=True, exist_ok=True)
+
+        # ── CMIP6 members (tas + pr) — save each, accumulate MMM ────────
+        cmip6_sum_t = cmip6_sum_p = None
+        cmip6_n = 0
+        if self.cmip6_enabled:
+            cmip6_sum_t, cmip6_sum_p, cmip6_n = self._collect_cmip6_clims()
+
+        # ── Derived climatologies ──────────────────────────────────────
+        if len(model_sources) >= 2:
+            stack_t = xr.concat([clims_tas[m] for m in model_sources], dim="member")
+            stack_p = xr.concat([clims_pr[m] for m in model_sources], dim="member")
+            clims_tas[_ENS_MEAN] = stack_t.mean("member")
+            clims_pr[_ENS_MEAN] = stack_p.mean("member")
+            clims_tas[_ENS_MEDIAN] = stack_t.median("member")
+            clims_pr[_ENS_MEDIAN] = stack_p.median("member")
+        if cmip6_n > 0:
+            clims_tas[_CMIP6_MMM] = cmip6_sum_t / cmip6_n
+            clims_pr[_CMIP6_MMM] = cmip6_sum_p / cmip6_n
+
+        # ── Classification (maps/table set) ────────────────────────────
+        codes: dict[str, xr.DataArray] = {}
+        for src in model_sources:
+            codes[src] = self._classify_from(clims_tas[src], clims_pr[src])
+        if _ERA5 in clims_tas and _ERA5 in clims_pr:
+            codes[_ERA5] = self._classify_from(clims_tas[_ERA5], clims_pr[_ERA5])
+        if _BE_HR in clims_tas and _MSWEP in clims_pr:
+            codes[_BE_MSWEP] = self._classify_from(clims_tas[_BE_HR], clims_pr[_MSWEP])
+        if _CMIP6_MMM in clims_tas:
+            codes[_CMIP6_MMM] = self._classify_from(
+                clims_tas[_CMIP6_MMM], clims_pr[_CMIP6_MMM],
+            )
+
+        # Ensemble KT codes (classified from the ensemble climatology)
+        ens_mean_code = ens_median_code = None
+        if _ENS_MEAN in clims_tas:
+            ens_mean_code = self._classify_from(
+                clims_tas[_ENS_MEAN], clims_pr[_ENS_MEAN],
+            )
+            ens_median_code = self._classify_from(
+                clims_tas[_ENS_MEDIAN], clims_pr[_ENS_MEDIAN],
+            )
+
+        # ── Area percentages ───────────────────────────────────────────
         area_np = compute_latlon_areas(self._tlat, self._tlon)
         area_da = xr.DataArray(
             area_np, dims=("lat", "lon"),
             coords={"lat": self._tlat, "lon": self._tlon},
         )
         area_pct = {
-            src: area_percent_by_type(code, area_da)
-            for src, code in codes.items()
+            src: area_percent_by_type(code, area_da) for src, code in codes.items()
         }
+        # Include the EERIE ensemble mean/median in the bar chart and table
+        # (they are shown on the ensemble map, not the per-source maps).
+        if ens_mean_code is not None:
+            area_pct[_ENS_MEAN] = area_percent_by_type(ens_mean_code, area_da)
+            area_pct[_ENS_MEDIAN] = area_percent_by_type(ens_median_code, area_da)
 
-        # EERIE ensemble mean / median of the per-cell KT code
-        ens_mean, ens_median = self._eerie_ensemble(codes, model_sources)
-
-        self.nc_dir.mkdir(parents=True, exist_ok=True)
+        # ── Persistence ────────────────────────────────────────────────
+        for src in set(clims_tas) | set(clims_pr):
+            self._save_clim_nc(src, clims_tas.get(src), clims_pr.get(src))
         for src, code in codes.items():
             self._save_nc(src, code)
-        if ens_mean is not None:
-            self._save_nc("EERIE_ens_mean", ens_mean)
-            self._save_nc("EERIE_ens_median", ens_median)
+        if ens_mean_code is not None:
+            self._save_nc(_ENS_MEAN, ens_mean_code)
+            self._save_nc(_ENS_MEDIAN, ens_median_code)
         self._write_csv(area_pct)
 
         return {
@@ -228,69 +299,38 @@ class KTClimateClassification(DiagnosticBase):
             "area_pct": area_pct,
             "models": model_sources,
             "sources": list(codes.keys()),
-            "ens_mean": ens_mean,
-            "ens_median": ens_median,
+            "ens_mean": ens_mean_code,
+            "ens_median": ens_median_code,
             "lat": self._tlat,
             "lon": self._tlon,
         }
 
-    @staticmethod
-    def _eerie_ensemble(
-        codes: dict[str, xr.DataArray], models: list[str],
-    ) -> tuple[xr.DataArray | None, xr.DataArray | None]:
-        """Per-cell ensemble mean and median KT code across EERIE models.
+    # ── Per-source climatology collection ──────────────────────────────
 
-        KT codes are roughly ordered by thermal regime (1 Ar … 14 Fi), so a
-        per-cell mean/median of the integer codes summarises the ensemble's
-        central climate type.  Results are rounded to the nearest valid code;
-        cells where no model is classified stay NaN.
-        """
-        member_codes = [codes[m] for m in models if m in codes]
-        if len(member_codes) < 2:
-            return None, None
-        stack = xr.concat(member_codes, dim="member")
-        mean = stack.mean("member")
-        median = stack.median("member")
-        mean = mean.round().where(mean.notnull())
-        median = median.round().where(median.notnull())
-        return mean, median
-
-    # ── Per-source classification ──────────────────────────────────────
-
-    def _classify_model(self, model: str) -> xr.DataArray:
-        """Classify one model from its monthly tas + pr."""
-        logger.info("  %s: classifying", model)
+    def _model_clim(self, model: str) -> tuple[xr.DataArray, xr.DataArray]:
+        """Regridded monthly tas (°C) + pr (cm/month) climatology for a model."""
+        logger.info("  %s: climatology", model)
         tas = self._load_model_var(model, "tas", period=self.period)
         pr = self._load_model_var(model, "pr", period=self.period)
-        tmon = self._clim_tas(tas)
-        pmon = self._clim_pr(pr)
-        return self._regrid_and_classify(tmon, pmon, self._ir)
+        tmon = self._regrid_monthly(self._clim_tas(tas), self._ir)
+        pmon = self._regrid_monthly(self._clim_pr(pr), self._ir)
+        return tmon, pmon
 
-    def _classify_era5(self) -> xr.DataArray:
-        logger.info("  ERA5: classifying")
-        tas = self._load_obs_var("tas", self.period)
-        pr = self._load_obs_var("pr", self.period)
-        tmon = self._clim_tas(tas)
-        pmon = self._clim_pr(pr)
-        return self._regrid_and_classify(tmon, pmon, self._ir)
+    def _collect_cmip6_clims(self):
+        """Save each CMIP6 member's climatology; return (sum_tas, sum_pr, n).
 
-    def _classify_be_mswep(self) -> xr.DataArray:
-        logger.info("  BE-HR + MSWEP: classifying")
-        tmon = self._be_hr_monthly_clim()          # already °C
-        pr = self.obs_loader.load_mswep(self.period)
-        pmon = self._clim_pr(pr)
-        return self._regrid_and_classify(tmon, pmon, self._ir)
-
-    def _classify_cmip6_mmm(self) -> xr.DataArray | None:
-        logger.info("  CMIP6 MMM: classifying")
-        ir = max(self._ir, 250_000.0)              # coarse-grid floor
+        The running sums (in classification units) feed the CMIP6 MMM, while
+        each member's climatology is persisted to NetCDF as it is computed so
+        member fields need not all be held in memory.
+        """
         from feather.data.variables import get_var
 
+        ir = max(self._ir, 250_000.0)  # coarse-grid floor for CMIP6
         tas_info = get_var("tas")
         pr_info = get_var("pr")
 
-        tmon_members: list[xr.DataArray] = []
-        pmon_members: list[xr.DataArray] = []
+        sum_t = sum_p = None
+        n = 0
         for model in self.cmip6_loader.models:
             tas = self.cmip6_loader.load_var(
                 tas_info.cmip6_variable, model,
@@ -306,17 +346,21 @@ class KTClimateClassification(DiagnosticBase):
                 continue
             tmon = self._regrid_monthly(self._clim_tas(tas), ir)
             pmon = self._regrid_monthly(self._clim_pr(pr), ir)
-            tmon_members.append(tmon)
-            pmon_members.append(pmon)
+            self._save_clim_nc(f"CMIP6 {model}", tmon, pmon)
+            sum_t = tmon if sum_t is None else sum_t + tmon
+            sum_p = pmon if sum_p is None else sum_p + pmon
+            n += 1
 
-        if not tmon_members:
-            logger.info("  CMIP6 MMM: no members available")
-            return None
+        if n == 0:
+            logger.info("  CMIP6: no members available")
+        return sum_t, sum_p, n
 
-        tmon_mmm = xr.concat(tmon_members, dim="member").mean("member")
-        pmon_mmm = xr.concat(pmon_members, dim="member").mean("member")
+    def _classify_from(
+        self, tmon: xr.DataArray, pmon: xr.DataArray,
+    ) -> xr.DataArray:
+        """Classify a (tas °C, pr cm) climatology pair, return land-only code."""
         lat_da = xr.DataArray(self._tlat, dims="lat", coords={"lat": self._tlat})
-        code = classify_kt(tmon_mmm, pmon_mmm, lat_da)
+        code = classify_kt(tmon, pmon, lat_da)
         return self._apply_land_mask(code)
 
     # ── Climatology helpers ────────────────────────────────────────────
@@ -382,16 +426,7 @@ class KTClimateClassification(DiagnosticBase):
             tmon = tmon.rename(rename)
         return tmon.compute()
 
-    # ── Regridding ─────────────────────────────────────────────────────
-
-    def _regrid_and_classify(
-        self, tmon: xr.DataArray, pmon: xr.DataArray, ir: float,
-    ) -> xr.DataArray:
-        tmon_c = self._regrid_monthly(tmon, ir)
-        pmon_c = self._regrid_monthly(pmon, ir)
-        lat_da = xr.DataArray(self._tlat, dims="lat", coords={"lat": self._tlat})
-        code = classify_kt(tmon_c, pmon_c, lat_da)
-        return self._apply_land_mask(code)
+    # ── Regridding / masking ───────────────────────────────────────────
 
     def _regrid_monthly(self, clim: xr.DataArray, ir: float) -> xr.DataArray:
         """Regrid a (month, lat, lon) climatology to the common grid.
@@ -439,13 +474,15 @@ class KTClimateClassification(DiagnosticBase):
         )
 
     def _apply_land_mask(self, code: xr.DataArray) -> xr.DataArray:
-        mask = self._load_land_mask()
+        mask = self._get_land_mask()
         if mask is not None:
             code = code.where(mask)
         return code
 
-    def _load_land_mask(self) -> xr.DataArray | None:
-        """Berkeley Earth land mask interpolated to the common grid (bool)."""
+    def _get_land_mask(self) -> xr.DataArray | None:
+        """Berkeley Earth land mask on the common grid (bool), cached."""
+        if self._land_mask is not None:
+            return self._land_mask
         path = self._be_land_file()
         if path is None:
             return None
@@ -466,7 +503,8 @@ class KTClimateClassification(DiagnosticBase):
                 lon=xr.DataArray(self._tlon, dims="lon"),
                 method="nearest", kwargs={"fill_value": 0.0},
             )
-            return mask_i > 0.5
+            self._land_mask = mask_i > 0.5
+            return self._land_mask
         except Exception as exc:
             logger.warning("  Could not load BE land mask: %s", exc)
             return None
@@ -494,6 +532,64 @@ class KTClimateClassification(DiagnosticBase):
         path = self._nc_path(source)
         ds.to_netcdf(path)
         logger.info("  Saved KT NetCDF: %s", path)
+
+    def _save_clim_nc(
+        self,
+        source: str,
+        tas: xr.DataArray | None,
+        pr: xr.DataArray | None,
+    ) -> None:
+        """Persist monthly tas (°C) / pr (mm/month) climatology for one source.
+
+        Saves both the full global field and a land-only version, on the
+        common grid.  ``tas`` is expected in °C and ``pr`` in cm/month
+        (classification units); pr is converted to mm/month on write.
+        """
+        start, end = self.period
+        mask = self._get_land_mask()
+        data: dict[str, xr.DataArray] = {}
+
+        if tas is not None:
+            t = tas.astype("float32")
+            data["tas_clim"] = t.assign_attrs(
+                long_name="Monthly climatology of 2m air temperature", units="degC",
+            )
+            if mask is not None:
+                data["tas_clim_land"] = t.where(mask).assign_attrs(
+                    long_name="Monthly tas climatology (land only)", units="degC",
+                )
+        if pr is not None:
+            p = (pr * 10.0).astype("float32")  # cm/month → mm/month
+            data["pr_clim"] = p.assign_attrs(
+                long_name="Monthly climatology of precipitation", units="mm/month",
+            )
+            if mask is not None:
+                data["pr_clim_land"] = p.where(mask).assign_attrs(
+                    long_name="Monthly pr climatology (land only)", units="mm/month",
+                )
+        if not data:
+            return
+
+        ds = xr.Dataset(
+            data,
+            attrs={
+                "Conventions": "CF-1.8",
+                "title": f"Monthly climatology — {source} ({start}–{end})",
+                "institution": "Feather climate evaluation framework",
+                "source": "feather/diag/climate_classification.py",
+                "source_dataset": source,
+                "period_start": start,
+                "period_end": end,
+                "grid": "common regular lat/lon (nereus.resolution)",
+                "note": (
+                    "tas_clim/pr_clim are global; *_land are masked to land "
+                    "(Berkeley Earth land mask)."
+                ),
+            },
+        )
+        path = self._clim_path(source)
+        ds.to_netcdf(path)
+        logger.info("  Saved climatology NetCDF: %s", path)
 
     def _write_csv(self, area_pct: dict[str, dict[str, float]]) -> None:
         df = pd.DataFrame(area_pct).reindex(KT_LABELS)
@@ -525,6 +621,19 @@ class KTClimateClassification(DiagnosticBase):
             order.append(_CMIP6_MMM)
         order += [s for s in codes if s not in order]   # any stragglers
         return order
+
+    def _table_sources(self, results: dict) -> list[str]:
+        """Source order for the bar chart / table: like the maps, plus the
+        EERIE ensemble mean/median inserted ahead of the CMIP6 MMM."""
+        order = self._ordered_sources(results)
+        pct = results["area_pct"]
+        extra = [s for s in (_ENS_MEAN, _ENS_MEDIAN) if s in pct]
+        if not extra:
+            return order
+        if _CMIP6_MMM in order:
+            i = order.index(_CMIP6_MMM)
+            return order[:i] + extra + order[i:]
+        return order + extra
 
     @staticmethod
     def _kt_cmap_norm():
@@ -609,8 +718,8 @@ class KTClimateClassification(DiagnosticBase):
         for s in (_ERA5, _BE_MSWEP):
             if s in codes:
                 panels.append((s, codes[s]))
-        panels.append(("EERIE Ensemble Mean", results["ens_mean"]))
-        panels.append(("EERIE Ensemble Median", results["ens_median"]))
+        panels.append((_ENS_MEAN, results["ens_mean"]))
+        panels.append((_ENS_MEDIAN, results["ens_median"]))
         if _CMIP6_MMM in codes:
             panels.append((_CMIP6_MMM, codes[_CMIP6_MMM]))
 
@@ -625,9 +734,10 @@ class KTClimateClassification(DiagnosticBase):
             models=results["models"],
             description=(
                 "Köppen–Trewartha classification: ERA5 and Berkeley Earth HR + "
-                "MSWEP observations, the per-cell EERIE ensemble mean and median "
-                "KT code, and the CMIP6 multi-model mean. Land only, common "
-                "0.25° grid."
+                "MSWEP observations, the EERIE ensemble mean and median "
+                "(classified from the per-cell mean/median of model tas and pr "
+                "climatologies), and the CMIP6 multi-model mean. Land only, "
+                "common 0.25° grid."
             ),
             period=self.period,
             plot_type="map",
@@ -636,7 +746,7 @@ class KTClimateClassification(DiagnosticBase):
 
     def _plot_bar(self, results: dict) -> tuple[plt.Figure, dict]:
         """Grouped bar chart of % land area per KT type per source."""
-        sources = self._ordered_sources(results)
+        sources = self._table_sources(results)
         area_pct = results["area_pct"]
         x = np.arange(len(KT_LABELS))
         width = 0.8 / max(len(sources), 1)
@@ -670,7 +780,7 @@ class KTClimateClassification(DiagnosticBase):
 
     def _plot_table(self, results: dict) -> tuple[plt.Figure, dict]:
         """Heatmap-style summary table of % land area per type per source."""
-        sources = self._ordered_sources(results)
+        sources = self._table_sources(results)
         area_pct = results["area_pct"]
         data = np.array(
             [[area_pct[src][lbl] for lbl in KT_LABELS] for src in sources]
