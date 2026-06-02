@@ -386,9 +386,25 @@ class KTClimateClassification(DiagnosticBase):
         logger.info("  %s: climatology", model)
         tas = self._load_model_var(model, "tas", period=self.period)
         pr = self._load_model_var(model, "pr", period=self.period)
-        tmon = self._regrid_monthly(self._clim_tas(tas), self._ir)
-        pmon = self._regrid_monthly(self._clim_pr(pr), self._ir)
+        ir = self._model_influence_radius(model)
+        tmon = self._regrid_monthly(self._clim_tas(tas), ir)
+        pmon = self._regrid_monthly(self._clim_pr(pr), ir)
         return tmon, pmon
+
+    def _model_influence_radius(self, model: str) -> float:
+        """Influence radius for regridding a model to the common grid.
+
+        Coarse global models (CMIP5/CMIP6, ~1–2°) need a larger radius than
+        the default (tuned for high-res sources) so a fine target grid is not
+        left with NaN gaps between source points.
+        """
+        try:
+            src = self.config.get_model_data_source_type(model)
+        except Exception:
+            src = ""
+        if src in ("cmip5", "cmip6_nc"):
+            return max(self._ir, 250_000.0)
+        return self._ir
 
     def _collect_cmip6_clims(self):
         """Save each CMIP6 member's climatology; return (sum_tas, sum_pr, n).

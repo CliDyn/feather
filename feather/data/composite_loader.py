@@ -132,6 +132,14 @@ class CompositeModelLoader:
             from feather.data.cordex_loader import CORDEXLoader
             return CORDEXLoader(self._config)
 
+        if src_type == "cmip5":
+            from feather.data.cmip5_loader import CMIP5Loader
+            return CMIP5Loader(self._config)
+
+        if src_type == "cmip6_nc":
+            from feather.data.cmip6_nc_loader import CMIP6NCLoader
+            return CMIP6NCLoader(self._config)
+
         if src_type == "destine_catalog":
             from feather.data.loader import MultiCatalogLoader
             catalogs = self._config.model_catalogs

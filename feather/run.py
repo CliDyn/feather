@@ -248,6 +248,14 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.cordex_loader import CORDEXLoader
         return CORDEXLoader(config)
 
+    if config.get_data_source_type() == "cmip5":
+        from feather.data.cmip5_loader import CMIP5Loader
+        return CMIP5Loader(config)
+
+    if config.get_data_source_type() == "cmip6_nc":
+        from feather.data.cmip6_nc_loader import CMIP6NCLoader
+        return CMIP6NCLoader(config)
+
     from feather.data.loader import DataLoader, MultiCatalogLoader
 
     catalogs = config.model_catalogs

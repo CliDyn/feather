@@ -11,10 +11,12 @@ project:
   resolution: "regional (~25 km, AFR-22 0.22° rotated grid)"
   comparison_type: "multi_model"
 
-# All models are CORDEX-CORE → single-source CORDEXLoader.
+# Mixed backends (CORDEX + CMIP5 + CMIP6) → CompositeModelLoader.
 data_source:
   type: "cordex"
   root: "/pool/data/CORDEX/data/cordex/output/AFR-22"
+  cmip5_root: "/pool/data/CMIP5/data/cmip5/output1"
+  cmip6_root: "/work/ik1017/CMIP6/data/CMIP6"
 
 models:
   # ── GCM-driven members (reference = historical 1981–2005 + rcp85 2006–2010) ──
@@ -159,6 +161,95 @@ models:
     experiments: [evaluation]
     grids: {sfc: latlon}
     color: "#d9d9d9"
+
+  # ── CMIP5 driving GCMs (1st member; reference = historical + rcp85 stitch) ──
+  CMIP5_CanESM2:
+    data_source_type: cmip5
+    institution: CCCma
+    gcm: CanESM2
+    variant: r1i1p1
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#8c564b"
+  CMIP5_HadGEM2-ES:
+    data_source_type: cmip5
+    institution: MOHC
+    gcm: HadGEM2-ES
+    variant: r1i1p1
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#a0635a"
+  CMIP5_MPI-ESM-LR:
+    data_source_type: cmip5
+    institution: MPI-M
+    gcm: MPI-ESM-LR
+    variant: r1i1p1
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#b5776c"
+  CMIP5_MPI-ESM-MR:
+    data_source_type: cmip5
+    institution: MPI-M
+    gcm: MPI-ESM-MR
+    variant: r1i1p1
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#c98e84"
+  CMIP5_NorESM1-M:
+    data_source_type: cmip5
+    institution: NCC
+    gcm: NorESM1-M
+    variant: r1i1p1
+    experiments: [historical, rcp85]
+    grids: {sfc: latlon}
+    color: "#8c6d31"
+
+  # ── CMIP6 successors (historical reference; ssp585 added in Phase 2) ──
+  CMIP6_CanESM5:
+    data_source_type: cmip6_nc
+    institution: CCCma
+    gcm: CanESM5
+    variant: r1i1p1f1
+    driving_gcm: CanESM2
+    experiments: [historical]
+    grids: {sfc: latlon}
+    color: "#e377c2"
+  CMIP6_UKESM1-0-LL:
+    data_source_type: cmip6_nc
+    institution: MOHC
+    gcm: UKESM1-0-LL
+    variant: r1i1p1f2
+    driving_gcm: HadGEM2-ES
+    experiments: [historical]
+    grids: {sfc: latlon}
+    color: "#ec92cf"
+  CMIP6_MPI-ESM1-2-LR:
+    data_source_type: cmip6_nc
+    institution: MPI-M
+    gcm: MPI-ESM1-2-LR
+    variant: r1i1p1f1
+    driving_gcm: MPI-ESM-LR
+    experiments: [historical]
+    grids: {sfc: latlon}
+    color: "#f2acdb"
+  CMIP6_MPI-ESM1-2-HR:
+    data_source_type: cmip6_nc
+    institution: MPI-M
+    gcm: MPI-ESM1-2-HR
+    variant: r1i1p1f1
+    driving_gcm: MPI-ESM-MR
+    experiments: [historical]
+    grids: {sfc: latlon}
+    color: "#f7c6e7"
+  CMIP6_NorESM2-MM:
+    data_source_type: cmip6_nc
+    institution: NCC
+    gcm: NorESM2-MM
+    variant: r1i1p1f1
+    driving_gcm: NorESM1-M
+    experiments: [historical]
+    grids: {sfc: latlon}
+    color: "#bcbd22"
 
 obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
 obs_datasets:
