@@ -131,6 +131,7 @@ class KTClimateClassification(DiagnosticBase):
 
         fig_ids = [
             "kt_classification_maps",
+            "kt_classification_ensemble",
             "kt_area_bar",
             "kt_area_table",
         ]
@@ -211,9 +212,15 @@ class KTClimateClassification(DiagnosticBase):
             for src, code in codes.items()
         }
 
+        # EERIE ensemble mean / median of the per-cell KT code
+        ens_mean, ens_median = self._eerie_ensemble(codes, model_sources)
+
         self.nc_dir.mkdir(parents=True, exist_ok=True)
         for src, code in codes.items():
             self._save_nc(src, code)
+        if ens_mean is not None:
+            self._save_nc("EERIE_ens_mean", ens_mean)
+            self._save_nc("EERIE_ens_median", ens_median)
         self._write_csv(area_pct)
 
         return {
@@ -221,9 +228,32 @@ class KTClimateClassification(DiagnosticBase):
             "area_pct": area_pct,
             "models": model_sources,
             "sources": list(codes.keys()),
+            "ens_mean": ens_mean,
+            "ens_median": ens_median,
             "lat": self._tlat,
             "lon": self._tlon,
         }
+
+    @staticmethod
+    def _eerie_ensemble(
+        codes: dict[str, xr.DataArray], models: list[str],
+    ) -> tuple[xr.DataArray | None, xr.DataArray | None]:
+        """Per-cell ensemble mean and median KT code across EERIE models.
+
+        KT codes are roughly ordered by thermal regime (1 Ar … 14 Fi), so a
+        per-cell mean/median of the integer codes summarises the ensemble's
+        central climate type.  Results are rounded to the nearest valid code;
+        cells where no model is classified stay NaN.
+        """
+        member_codes = [codes[m] for m in models if m in codes]
+        if len(member_codes) < 2:
+            return None, None
+        stack = xr.concat(member_codes, dim="member")
+        mean = stack.mean("member")
+        median = stack.median("member")
+        mean = mean.round().where(mean.notnull())
+        median = median.round().where(median.notnull())
+        return mean, median
 
     # ── Per-source classification ──────────────────────────────────────
 
@@ -374,7 +404,14 @@ class KTClimateClassification(DiagnosticBase):
         lat_name = "lat" if "lat" in clim.coords else "latitude"
         lon_name = "lon" if "lon" in clim.coords else "longitude"
         lat = np.asarray(clim[lat_name].values)
-        lon = np.asarray(clim[lon_name].values)
+        # Normalise source longitudes to 0..360 (matching the target grid's
+        # lon_bounds) and reorder the data columns to match, so that
+        # western-hemisphere points are not dropped during regridding —
+        # otherwise sources on a -180..180 grid leave half the globe NaN.
+        lon = np.mod(np.asarray(clim[lon_name].values), 360.0)
+        order = np.argsort(lon)
+        lon = lon[order]
+        clim = clim.isel({lon_name: order})
         lon2d, lat2d = np.meshgrid(lon, lat)
 
         interp = None
@@ -472,9 +509,22 @@ class KTClimateClassification(DiagnosticBase):
             logger.warning("KTClimateClassification: no sources — no figures")
             return figs
         figs.append(self._plot_maps(results))
+        ensemble = self._plot_ensemble_maps(results)
+        if ensemble is not None:
+            figs.append(ensemble)
         figs.append(self._plot_bar(results))
         figs.append(self._plot_table(results))
         return figs
+
+    def _ordered_sources(self, results: dict) -> list[str]:
+        """Panel/source order: observations, then EERIE models, then CMIP6 MMM."""
+        codes = results["codes"]
+        order = [s for s in (_ERA5, _BE_MSWEP) if s in codes]
+        order += [m for m in results["models"] if m in codes]
+        if _CMIP6_MMM in codes:
+            order.append(_CMIP6_MMM)
+        order += [s for s in codes if s not in order]   # any stragglers
+        return order
 
     @staticmethod
     def _kt_cmap_norm():
@@ -484,17 +534,20 @@ class KTClimateClassification(DiagnosticBase):
         norm = BoundaryNorm(np.arange(0.5, 15.5, 1.0), cmap.N)
         return cmap, norm
 
-    def _plot_maps(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Multi-panel discrete KT classification maps."""
-        import cartopy.crs as ccrs
+    def _render_kt_maps(
+        self,
+        panels: list[tuple[str, xr.DataArray]],
+        lon: np.ndarray,
+        lat: np.ndarray,
+        suptitle: str,
+    ) -> plt.Figure:
+        """Render labelled KT-code panels with a shared discrete colorbar."""
         import math
 
-        sources = results["sources"]
-        lon = results["lon"]
-        lat = results["lat"]
-        cmap, norm = self._kt_cmap_norm()
+        import cartopy.crs as ccrs
 
-        n = len(sources)
+        cmap, norm = self._kt_cmap_norm()
+        n = len(panels)
         ncols = min(3, n)
         nrows = math.ceil(n / ncols)
         proj = ccrs.Robinson(central_longitude=0)
@@ -505,8 +558,7 @@ class KTClimateClassification(DiagnosticBase):
         axes = np.atleast_1d(axes).ravel()
 
         mesh = None
-        for ax, src in zip(axes, sources):
-            code = results["codes"][src]
+        for ax, (label, code) in zip(axes, panels):
             mesh = ax.pcolormesh(
                 lon, lat, code.values,
                 transform=ccrs.PlateCarree(), cmap=cmap, norm=norm,
@@ -514,30 +566,68 @@ class KTClimateClassification(DiagnosticBase):
             )
             ax.coastlines(linewidth=0.4)
             ax.set_global()
-            ax.set_title(src, fontsize=10)
-        for ax in axes[len(sources):]:
+            ax.set_title(label, fontsize=10)
+        for ax in axes[n:]:
             ax.axis("off")
 
-        fig.suptitle(
-            f"{self.title} (land only, {self.period[0]}–{self.period[1]})",
-            fontsize=13,
-        )
-        # Discrete colorbar with type labels
+        fig.suptitle(suptitle, fontsize=13)
         cbar = fig.colorbar(
             mesh, ax=axes.tolist(), orientation="horizontal",
             fraction=0.04, pad=0.04, ticks=np.arange(1, 15),
         )
         cbar.ax.set_xticklabels(KT_LABELS, fontsize=8)
+        return fig
 
+    def _plot_maps(self, results: dict) -> tuple[plt.Figure, dict]:
+        """Multi-panel discrete KT classification maps (one panel per source)."""
+        sources = self._ordered_sources(results)
+        panels = [(s, results["codes"][s]) for s in sources]
+        fig = self._render_kt_maps(
+            panels, results["lon"], results["lat"],
+            f"{self.title} (land only, {self.period[0]}–{self.period[1]})",
+        )
         meta = self._build_metadata(
             title=f"{self.title} — Maps",
             figure_id="kt_classification_maps",
             models=results["models"],
             description=(
                 "Köppen–Trewartha (KT14) climate type per grid cell, land only, "
-                "on a common 0.25° grid. One panel per model, ERA5, the Berkeley "
-                "Earth HR + MSWEP observational combination, and the CMIP6 "
-                "multi-model mean (when available)."
+                "on a common 0.25° grid. Panels are ordered ERA5, Berkeley Earth "
+                "HR + MSWEP, the EERIE models, then the CMIP6 multi-model mean."
+            ),
+            period=self.period,
+            plot_type="map",
+        )
+        return fig, meta
+
+    def _plot_ensemble_maps(self, results: dict) -> tuple[plt.Figure, dict] | None:
+        """Observations vs EERIE ensemble mean/median vs CMIP6 MMM (5 panels)."""
+        if results.get("ens_mean") is None:
+            return None
+        codes = results["codes"]
+        panels: list[tuple[str, xr.DataArray]] = []
+        for s in (_ERA5, _BE_MSWEP):
+            if s in codes:
+                panels.append((s, codes[s]))
+        panels.append(("EERIE Ensemble Mean", results["ens_mean"]))
+        panels.append(("EERIE Ensemble Median", results["ens_median"]))
+        if _CMIP6_MMM in codes:
+            panels.append((_CMIP6_MMM, codes[_CMIP6_MMM]))
+
+        fig = self._render_kt_maps(
+            panels, results["lon"], results["lat"],
+            f"{self.title} — Observations vs EERIE Ensemble "
+            f"({self.period[0]}–{self.period[1]})",
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — Ensemble Comparison",
+            figure_id="kt_classification_ensemble",
+            models=results["models"],
+            description=(
+                "Köppen–Trewartha classification: ERA5 and Berkeley Earth HR + "
+                "MSWEP observations, the per-cell EERIE ensemble mean and median "
+                "KT code, and the CMIP6 multi-model mean. Land only, common "
+                "0.25° grid."
             ),
             period=self.period,
             plot_type="map",
@@ -546,7 +636,7 @@ class KTClimateClassification(DiagnosticBase):
 
     def _plot_bar(self, results: dict) -> tuple[plt.Figure, dict]:
         """Grouped bar chart of % land area per KT type per source."""
-        sources = results["sources"]
+        sources = self._ordered_sources(results)
         area_pct = results["area_pct"]
         x = np.arange(len(KT_LABELS))
         width = 0.8 / max(len(sources), 1)
@@ -580,7 +670,7 @@ class KTClimateClassification(DiagnosticBase):
 
     def _plot_table(self, results: dict) -> tuple[plt.Figure, dict]:
         """Heatmap-style summary table of % land area per type per source."""
-        sources = results["sources"]
+        sources = self._ordered_sources(results)
         area_pct = results["area_pct"]
         data = np.array(
             [[area_pct[src][lbl] for lbl in KT_LABELS] for src in sources]

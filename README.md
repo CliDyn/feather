@@ -229,7 +229,14 @@ Configuration lives under `project.climate_change` (see `configs/eerie_climchang
 |---|---|---|---|
 | `climate_classification` | `KTClimateClassification` | ERA5, Berkeley Earth HR + MSWEP | Köppen–Trewartha (KT14) land climate type per grid cell; discrete classification maps, % land-area bar chart, and summary table per source |
 
-The **Köppen–Trewartha Climate Classification** (`climate_classification`) classifies the monthly climatology of `tas` and `pr` into the 14 KT types (Ar, Aw, As, BW, BS, Cs, Cw, Cf, Do, Dc, Eo, Ec, Ft, Fi) using the Trewartha dryness threshold `R = 2.3·Tann − 0.64·Pw + 41` (cm) and the F→E→B→D→C→A priority order. The classification is restricted to land via the Berkeley Earth land mask and computed on a common 0.25° grid so per-type area fractions are directly comparable. Each model is classified from its own `tas`+`pr`; observations come from ERA5 (`t2m`+`tp`) and a Berkeley Earth HR + MSWEP combination; the CMIP6 multi-model mean is included when enabled. Three figures are produced (discrete classification maps, a grouped bar chart of % land area per type, and a heatmap summary table), plus per-source NetCDF of the integer `kt_code` field and a `kt_area_percent` CSV written to `{output_dir}/climate_classification/` for later regional analysis. See `feather/util/koeppen_trewartha.py` for the pure, vectorised classifier.
+The **Köppen–Trewartha Climate Classification** (`climate_classification`) classifies the monthly climatology of `tas` and `pr` into the 14 KT types (Ar, Aw, As, BW, BS, Cs, Cw, Cf, Do, Dc, Eo, Ec, Ft, Fi) using the Trewartha dryness threshold `R = 2.3·Tann − 0.64·Pw + 41` (cm) and the F→E→B→D→C→A priority order. The classification is restricted to land via the Berkeley Earth land mask and computed on a common 0.25° grid so per-type area fractions are directly comparable. Each model is classified from its own `tas`+`pr`; observations come from ERA5 (`t2m`+`tp`) and a Berkeley Earth HR + MSWEP combination; the CMIP6 multi-model mean is included when enabled. Four figures are produced:
+
+- **Classification maps** — one discrete KT panel per source, ordered ERA5, Berkeley Earth HR + MSWEP, the EERIE models, then the CMIP6 multi-model mean.
+- **Ensemble comparison** — five panels: the two observational datasets, the per-cell EERIE ensemble **mean** and **median** KT code, and the CMIP6 MMM.
+- **Bar chart** — % land area per KT type, grouped by type with one bar per source.
+- **Summary table** — heatmap of % land area per type per source (each source sums to 100 %).
+
+Per-source NetCDF of the integer `kt_code` field (including the EERIE ensemble mean/median) and a `kt_area_percent` CSV are written to `{output_dir}/climate_classification/` for later regional analysis. See `feather/util/koeppen_trewartha.py` for the pure, vectorised classifier.
 
 ### Cross-domain
 
