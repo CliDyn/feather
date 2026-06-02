@@ -405,11 +405,14 @@ class KTClimateClassification(DiagnosticBase):
 
     # ── Per-source climatology collection ──────────────────────────────
 
-    def _model_clim(self, model: str) -> tuple[xr.DataArray, xr.DataArray]:
+    def _model_clim(
+        self, model: str, period: tuple[str, str] | None = None,
+    ) -> tuple[xr.DataArray, xr.DataArray]:
         """Regridded monthly tas (°C) + pr (cm/month) climatology for a model."""
-        logger.info("  %s: climatology", model)
-        tas = self._load_model_var(model, "tas", period=self.period)
-        pr = self._load_model_var(model, "pr", period=self.period)
+        period = period or self.period
+        logger.info("  %s: climatology %s", model, period)
+        tas = self._load_model_var(model, "tas", period=period)
+        pr = self._load_model_var(model, "pr", period=period)
         ir = self._model_influence_radius(model)
         tmon = self._regrid_monthly(self._clim_tas(tas), ir)
         pmon = self._regrid_monthly(self._clim_pr(pr), ir)

@@ -10,6 +10,12 @@ project:
   period: ["1981", "2010"]
   resolution: "regional (~25 km, AFR-22 0.22° rotated grid)"
   comparison_type: "multi_model"
+  # Phase 2 — global warming level for the climate_shifts diagnostic.
+  gwl:
+    level: 2.0                 # °C above pre-industrial baseline
+    baseline: [1850, 1900]     # pre-industrial reference years
+    window: 30                 # window length (years), centred on the crossing
+    max_year: 2100             # ignore post-2100 (CMIP5 rcp85 runs to 2300)
 
 # Mixed backends (CORDEX + CMIP5 + CMIP6) → CompositeModelLoader.
 data_source:
@@ -231,7 +237,7 @@ models:
     gcm: CanESM5
     variant: r1i1p1f1
     driving_gcm: CanESM2
-    experiments: [historical]
+    experiments: [historical, ssp585]
     grids: {sfc: latlon}
     color: "#e377c2"
   CMIP6_UKESM1-0-LL:
@@ -241,7 +247,7 @@ models:
     gcm: UKESM1-0-LL
     variant: r1i1p1f2
     driving_gcm: HadGEM2-ES
-    experiments: [historical]
+    experiments: [historical, ssp585]
     grids: {sfc: latlon}
     color: "#ec92cf"
   CMIP6_MPI-ESM1-2-LR:
@@ -251,7 +257,7 @@ models:
     gcm: MPI-ESM1-2-LR
     variant: r1i1p1f1
     driving_gcm: MPI-ESM-LR
-    experiments: [historical]
+    experiments: [historical, ssp585]
     grids: {sfc: latlon}
     color: "#f2acdb"
   CMIP6_MPI-ESM1-2-HR:
@@ -261,7 +267,7 @@ models:
     gcm: MPI-ESM1-2-HR
     variant: r1i1p1f1
     driving_gcm: MPI-ESM-MR
-    experiments: [historical]
+    experiments: [historical, ssp585]
     grids: {sfc: latlon}
     color: "#f7c6e7"
   CMIP6_NorESM2-MM:
@@ -271,7 +277,7 @@ models:
     gcm: NorESM2-MM
     variant: r1i1p1f1
     driving_gcm: NorESM1-M
-    experiments: [historical]
+    experiments: [historical, ssp585]
     grids: {sfc: latlon}
     color: "#bcbd22"
 
