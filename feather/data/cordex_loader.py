@@ -119,7 +119,7 @@ class CORDEXLoader:
             )
             ds = xr.open_mfdataset(
                 nc_files, chunks="auto", combine="by_coords",
-                decode_timedelta=False,
+                decode_timedelta=False, use_cftime=True,
             )
             if variable not in ds:
                 raise KeyError(

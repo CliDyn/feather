@@ -388,6 +388,16 @@ class KTClimateClassification(DiagnosticBase):
                 ensembles[label] = {"mean": mean_name, "median": median_name,
                                     "members": members}
 
+        # Force a full recompute when the config expects ensembles the cache
+        # cannot supply (e.g. a stale cache from a previous ensemble layout).
+        expected = {label for label, members in groups.items() if len(members) >= 2}
+        if expected and not expected.issubset(ensembles):
+            logger.info(
+                "  Cached ensembles stale/incomplete (have %s, need %s) — recomputing",
+                sorted(ensembles), sorted(expected),
+            )
+            return None
+
         ref = next(iter(codes.values()))
         self._tlat = np.asarray(ref["lat"].values)
         self._tlon = np.asarray(ref["lon"].values)

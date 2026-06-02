@@ -28,7 +28,7 @@ models:
   # ── GCM-driven members (reference = historical 1981–2005 + rcp85 2006–2010) ──
   REMO2015_HadGEM2-ES:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: GERICS
     gcm: MOHC-HadGEM2-ES
     rcm: GERICS-REMO2015
@@ -39,7 +39,7 @@ models:
     color: "#1f77b4"
   REMO2015_MPI-ESM-LR:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: GERICS
     gcm: MPI-M-MPI-ESM-LR
     rcm: GERICS-REMO2015
@@ -50,7 +50,7 @@ models:
     color: "#4f9bd9"
   REMO2015_NorESM1-M:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: GERICS
     gcm: NCC-NorESM1-M
     rcm: GERICS-REMO2015
@@ -62,7 +62,7 @@ models:
 
   CCLM5_HadGEM2-ES:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: CLMcom-KIT
     gcm: MOHC-HadGEM2-ES
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -73,7 +73,7 @@ models:
     color: "#2ca02c"
   CCLM5_MPI-ESM-LR:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: CLMcom-KIT
     gcm: MPI-M-MPI-ESM-LR
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -84,7 +84,7 @@ models:
     color: "#5fbf5f"
   CCLM5_NorESM1-M:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: CLMcom-KIT
     gcm: NCC-NorESM1-M
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -96,7 +96,7 @@ models:
 
   RegCM4_HadGEM2-ES:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: ICTP
     gcm: MOHC-HadGEM2-ES
     rcm: ICTP-RegCM4-7
@@ -107,7 +107,7 @@ models:
     color: "#d62728"
   RegCM4_MPI-ESM-MR:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: ICTP
     gcm: MPI-M-MPI-ESM-MR
     rcm: ICTP-RegCM4-7
@@ -118,7 +118,7 @@ models:
     color: "#e8702a"
   RegCM4_NorESM1-M:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: ICTP
     gcm: NCC-NorESM1-M
     rcm: ICTP-RegCM4-7
@@ -130,7 +130,7 @@ models:
 
   CanRCM4_CanESM2:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-hist
     institution: CCCma
     gcm: CCCma-CanESM2
     rcm: CCCma-CanRCM4
@@ -143,7 +143,7 @@ models:
   # ── ERAINT-driven evaluation members (1981–2010, perfect boundaries) ──
   REMO2015_ERAINT:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-eval
     institution: GERICS
     gcm: ECMWF-ERAINT
     rcm: GERICS-REMO2015
@@ -153,7 +153,7 @@ models:
     color: "#7f7f7f"
   CCLM5_ERAINT:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-eval
     institution: CLMcom-KIT
     gcm: ECMWF-ERAINT
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -163,7 +163,7 @@ models:
     color: "#9c9c9c"
   RegCM4_ERAINT:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-eval
     institution: ICTP
     gcm: ECMWF-ERAINT
     rcm: ICTP-RegCM4-7
@@ -173,7 +173,7 @@ models:
     color: "#bcbcbc"
   CanRCM4_ERAINT:
     data_source_type: cordex
-    ensemble: CORDEX
+    ensemble: CORDEX-eval
     institution: CCCma
     gcm: ECMWF-ERAINT
     rcm: CCCma-CanRCM4

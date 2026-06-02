@@ -112,7 +112,7 @@ class ClimateShiftsDiag(KTClimateClassification):
         if not windows:
             return {"families": {}}
 
-        # 3. Family ensembles (mean of member climatologies, ref & future)
+        # 3. Group members into families
         families: dict[str, dict] = {}
         for model, win in windows.items():
             mc = self.config.model_configs.get(model)
@@ -128,39 +128,50 @@ class ClimateShiftsDiag(KTClimateClassification):
 
         self.nc_dir.mkdir(parents=True, exist_ok=True)
         rows: list[dict] = []          # per-source area-shift table rows
+        sources: dict[str, dict] = {}  # per-source ref/future codes + pct
+
+        # Per-source classification (kept for the per-source shift maps)
+        for model, win in windows.items():
+            rc = self._classify_from(ref_t[model], ref_p[model])
+            fc = self._classify_from(fut_t[model], fut_p[model])
+            self._save_code(model, "ref", rc, win)
+            self._save_code(model, self._gwl_tag, fc, win)
+            rp = area_percent_by_type(rc, area_da)
+            fp = area_percent_by_type(fc, area_da)
+            sources[model] = {"ref_code": rc, "fut_code": fc,
+                              "ref_pct": rp, "fut_pct": fp, "window": win}
+            for lbl in KT_LABELS:
+                rows.append({
+                    "family": self.config.model_configs[model].ensemble,
+                    "source": model, "kt_type": lbl,
+                    "ref_pct": rp[lbl], "future_pct": fp[lbl],
+                    "change_pct": fp[lbl] - rp[lbl],
+                    "window": f"{win[0]}-{win[1]}",
+                })
+
+        # Per-family ensemble mean and median (of the member climatologies)
         for label, fam in families.items():
             members = fam["members"]
-            ref_mean_t = xr.concat([ref_t[m] for m in members], "member").mean("member")
-            ref_mean_p = xr.concat([ref_p[m] for m in members], "member").mean("member")
-            fut_mean_t = xr.concat([fut_t[m] for m in members], "member").mean("member")
-            fut_mean_p = xr.concat([fut_p[m] for m in members], "member").mean("member")
-            ref_code = self._classify_from(ref_mean_t, ref_mean_p)
-            fut_code = self._classify_from(fut_mean_t, fut_mean_p)
-
-            fam["ref_code"] = ref_code
-            fam["fut_code"] = fut_code
-            fam["ref_pct"] = area_percent_by_type(ref_code, area_da)
-            fam["fut_pct"] = area_percent_by_type(fut_code, area_da)
-            fam["transition"] = transition_matrix(ref_code, fut_code, area_da)
             fam["window"] = _modal_window(fam["windows"])
-
-            self._save_code(f"{label}_ens_mean", "ref", ref_code, fam["window"])
-            self._save_code(f"{label}_ens_mean", self._gwl_tag, fut_code, fam["window"])
-
-            for m in members:
-                rc = self._classify_from(ref_t[m], ref_p[m])
-                fc = self._classify_from(fut_t[m], fut_p[m])
-                self._save_code(m, "ref", rc, windows[m])
-                self._save_code(m, self._gwl_tag, fc, windows[m])
-                rp = area_percent_by_type(rc, area_da)
-                fp = area_percent_by_type(fc, area_da)
-                for lbl in KT_LABELS:
-                    rows.append({
-                        "family": label, "source": m, "kt_type": lbl,
-                        "ref_pct": rp[lbl], "future_pct": fp[lbl],
-                        "change_pct": fp[lbl] - rp[lbl],
-                        "window": f"{windows[m][0]}-{windows[m][1]}",
-                    })
+            ref_t_stack = xr.concat([ref_t[m] for m in members], "member")
+            ref_p_stack = xr.concat([ref_p[m] for m in members], "member")
+            fut_t_stack = xr.concat([fut_t[m] for m in members], "member")
+            fut_p_stack = xr.concat([fut_p[m] for m in members], "member")
+            for stat in ("mean", "median"):
+                rt = getattr(ref_t_stack, stat)("member")
+                rp_ = getattr(ref_p_stack, stat)("member")
+                ft = getattr(fut_t_stack, stat)("member")
+                fp_ = getattr(fut_p_stack, stat)("member")
+                ref_code = self._classify_from(rt, rp_)
+                fut_code = self._classify_from(ft, fp_)
+                fam[stat] = {
+                    "ref_code": ref_code, "fut_code": fut_code,
+                    "ref_pct": area_percent_by_type(ref_code, area_da),
+                    "fut_pct": area_percent_by_type(fut_code, area_da),
+                    "transition": transition_matrix(ref_code, fut_code, area_da),
+                }
+                self._save_code(f"{label}_ens_{stat}", "ref", ref_code, fam["window"])
+                self._save_code(f"{label}_ens_{stat}", self._gwl_tag, fut_code, fam["window"])
 
         pd.DataFrame(rows).to_csv(
             self.nc_dir / f"kt_area_shift_{self._gwl_tag}.csv", index=False,
@@ -168,6 +179,7 @@ class ClimateShiftsDiag(KTClimateClassification):
 
         return {
             "families": families,
+            "sources": sources,
             "windows": windows,
             "lat": self._tlat,
             "lon": self._tlon,
@@ -234,44 +246,48 @@ class ClimateShiftsDiag(KTClimateClassification):
 
     def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
         figs: list[tuple[plt.Figure, dict]] = []
-        figs.append(self._plot_shift_maps(results))
-        figs.append(self._plot_area_shift_bar(results))
+        for stat in ("mean", "median"):
+            figs.append(self._plot_shift_maps(results, stat))
+            figs.append(self._plot_area_shift_bar(results, stat))
+            figs.append(self._plot_transition_matrices(results, stat))
         figs.append(self._plot_net_gain_loss(results))
-        figs.append(self._plot_transition_matrices(results))
+        # Per-source [ref | future | change] maps, one figure per family.
+        for label in results["families"]:
+            figs.append(self._plot_source_shift_maps(results, label))
         return figs
 
-    def _plot_shift_maps(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Per family: [reference | future (GWL) | change] ensemble-mean maps."""
+    def _render_shift_rows(self, panels, lon, lat, suptitle):
+        """Render rows of [reference | future | change] KT maps.
+
+        *panels* is a list of dicts with keys: ``label``, ``ref``, ``fut``,
+        ``window``.
+        """
         import cartopy.crs as ccrs
         from matplotlib.colors import BoundaryNorm, ListedColormap
 
-        families = results["families"]
-        lon, lat = results["lon"], results["lat"]
         cmap, norm = self._kt_cmap_norm()
-        lon_plot = np.where(np.asarray(lon) > 180.0, np.asarray(lon) - 360.0, np.asarray(lon))
+        lon = np.asarray(lon)
+        lon_plot = np.where(lon > 180.0, lon - 360.0, lon)
         order = np.argsort(lon_plot)
         lon_plot = lon_plot[order]
         extent = [self._lon_bounds[0], self._lon_bounds[1],
                   self._lat_bounds[0], self._lat_bounds[1]]
-
-        nfam = len(families)
-        fig, axes = plt.subplots(
-            nfam, 3, figsize=(15, 4.4 * nfam),
-            subplot_kw={"projection": ccrs.PlateCarree()},
-            squeeze=False,
-        )
-        # binary change colormap
         chg_cmap = ListedColormap(["#dddddd", "#d62728"])
         chg_norm = BoundaryNorm([-0.5, 0.5, 1.5], 2)
 
-        for r, (label, fam) in enumerate(families.items()):
-            w = fam["window"]
+        n = len(panels)
+        fig, axes = plt.subplots(
+            n, 3, figsize=(15, 3.9 * n),
+            subplot_kw={"projection": ccrs.PlateCarree()}, squeeze=False,
+        )
+        for r, p in enumerate(panels):
+            w = p["window"]
+            changed = (p["fut"] != p["ref"]).where(p["ref"].notnull())
             cols = [
-                (f"{label} — Reference {self.period[0]}–{self.period[1]}", fam["ref_code"], cmap, norm),
-                (f"{label} — {self._level:g}°C ({w[0]}–{w[1]})", fam["fut_code"], cmap, norm),
+                (f"{p['label']} — Reference {self.period[0]}–{self.period[1]}", p["ref"], cmap, norm),
+                (f"{p['label']} — {self._level:g}°C ({w[0]}–{w[1]})", p["fut"], cmap, norm),
+                (f"{p['label']} — Change (shifted=red)", changed, chg_cmap, chg_norm),
             ]
-            changed = (fam["fut_code"] != fam["ref_code"]).where(fam["ref_code"].notnull())
-            cols.append((f"{label} — Change (shifted=red)", changed, chg_cmap, chg_norm))
             for c, (title, field, cm, nm) in enumerate(cols):
                 ax = axes[r, c]
                 ax.pcolormesh(
@@ -281,104 +297,152 @@ class ClimateShiftsDiag(KTClimateClassification):
                 ax.coastlines(linewidth=0.4)
                 ax.set_extent(extent, crs=ccrs.PlateCarree())
                 ax.set_title(title, fontsize=9)
+        fig.suptitle(suptitle, fontsize=13)
+        fig.tight_layout(rect=[0, 0, 1, 0.99])
+        return fig
 
-        fig.suptitle(
-            f"{self.title} — {self._level:g}°C GWL vs Reference", fontsize=13,
+    def _plot_shift_maps(self, results, stat) -> tuple[plt.Figure, dict]:
+        """Ensemble (mean or median) [ref | future | change] maps, per family."""
+        families = results["families"]
+        panels = [
+            {"label": f"{label} ({stat})", "ref": fam[stat]["ref_code"],
+             "fut": fam[stat]["fut_code"], "window": fam["window"]}
+            for label, fam in families.items()
+        ]
+        fig = self._render_shift_rows(
+            panels, results["lon"], results["lat"],
+            f"{self.title} — {self._level:g}°C GWL vs Reference (ensemble {stat})",
         )
-        fig.tight_layout(rect=[0, 0, 1, 0.98])
         meta = self._build_metadata(
-            title=f"{self.title} — Shift Maps",
-            figure_id="kt_shift_maps",
+            title=f"{self.title} — Shift Maps ({stat})",
+            figure_id=f"kt_shift_maps_{stat}",
             models=[m for f in families.values() for m in f["members"]],
             description=(
-                "Per model family: ensemble-mean KT classification for the "
-                "reference period and at the warming level, plus a change map "
-                "(cells where the KT type shifts in red). Land only."
+                f"Per family: ensemble-{stat} KT classification for the reference "
+                "period and at the warming level, plus a change map (shifted cells "
+                "in red). Land only."
             ),
             period=self.period, plot_type="map",
         )
         return fig, meta
 
-    def _plot_area_shift_bar(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Reference vs future % land area per KT type, per family."""
+    def _plot_source_shift_maps(self, results, label) -> tuple[plt.Figure, dict]:
+        """Per-source [ref | future | change] maps for one family's members."""
+        fam = results["families"][label]
+        sources = results["sources"]
+        panels = [
+            {"label": m, "ref": sources[m]["ref_code"], "fut": sources[m]["fut_code"],
+             "window": sources[m]["window"]}
+            for m in fam["members"]
+        ]
+        fig = self._render_shift_rows(
+            panels, results["lon"], results["lat"],
+            f"{self.title} — {label} members ({self._level:g}°C vs reference)",
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — {label} Member Shifts",
+            figure_id=f"kt_shift_maps_source_{self._safe(label)}",
+            models=fam["members"],
+            description=(
+                f"Per-member KT classification for the {label} family: reference, "
+                "warming-level, and change maps for each source. Land only."
+            ),
+            period=self.period, plot_type="map",
+        )
+        return fig, meta
+
+    def _plot_area_shift_bar(self, results, stat) -> tuple[plt.Figure, dict]:
+        """Reference vs future % land area per KT type, per family (mean/median)."""
         families = results["families"]
         nfam = len(families)
         fig, axes = plt.subplots(nfam, 1, figsize=(13, 3.2 * nfam), squeeze=False)
         x = np.arange(len(KT_LABELS))
         for r, (label, fam) in enumerate(families.items()):
             ax = axes[r, 0]
-            ref = [fam["ref_pct"][l] for l in KT_LABELS]
-            fut = [fam["fut_pct"][l] for l in KT_LABELS]
+            ref = [fam[stat]["ref_pct"][l] for l in KT_LABELS]
+            fut = [fam[stat]["fut_pct"][l] for l in KT_LABELS]
             ax.bar(x - 0.2, ref, 0.4, label="Reference", color="#4477aa")
             ax.bar(x + 0.2, fut, 0.4, label=f"{self._level:g}°C", color="#cc6677")
             ax.set_xticks(x)
             ax.set_xticklabels(KT_LABELS, fontsize=8)
             ax.set_ylabel("% land area")
-            ax.set_title(f"{label} ensemble", fontsize=10)
+            ax.set_title(f"{label} ensemble ({stat})", fontsize=10)
             ax.legend(fontsize=8)
             ax.grid(True, axis="y", alpha=0.3)
-        fig.suptitle(f"{self.title} — Land-area Fraction by Type", fontsize=13)
+        fig.suptitle(f"{self.title} — Land-area Fraction by Type (ensemble {stat})", fontsize=13)
         fig.tight_layout(rect=[0, 0, 1, 0.98])
         meta = self._build_metadata(
-            title=f"{self.title} — Area Shift", figure_id="kt_area_shift_bar",
+            title=f"{self.title} — Area Shift ({stat})",
+            figure_id=f"kt_area_shift_bar_{stat}",
             models=[m for f in families.values() for m in f["members"]],
-            description="Reference vs warming-level % land area per KT type, per family ensemble mean.",
+            description=f"Reference vs warming-level % land area per KT type, per family ensemble {stat}.",
             period=self.period, plot_type="bar",
         )
         return fig, meta
 
-    def _plot_net_gain_loss(self, results: dict) -> tuple[plt.Figure, dict]:
-        """Net change in % land area per KT type (future − reference), per family."""
+    def _plot_net_gain_loss(self, results) -> tuple[plt.Figure, dict]:
+        """Net change in % land area per type (future − reference), mean & median."""
         families = results["families"]
         fig, ax = plt.subplots(figsize=(13, 5))
         x = np.arange(len(KT_LABELS))
         width = 0.8 / max(len(families), 1)
         for i, (label, fam) in enumerate(families.items()):
-            delta = [fam["fut_pct"][l] - fam["ref_pct"][l] for l in KT_LABELS]
-            ax.bar(x + i * width, delta, width, label=label)
+            mean_d = [fam["mean"]["fut_pct"][l] - fam["mean"]["ref_pct"][l] for l in KT_LABELS]
+            med_d = [fam["median"]["fut_pct"][l] - fam["median"]["ref_pct"][l] for l in KT_LABELS]
+            xb = x + i * width
+            ax.bar(xb, mean_d, width, label=f"{label} (mean)")
+            # median shown as black markers on top of the mean bars
+            ax.plot(xb, med_d, "k_", markersize=6, markeredgewidth=1.4,
+                    label="median" if i == 0 else None)
         ax.axhline(0, color="k", lw=0.6)
         ax.set_xticks(x + 0.4 - width / 2)
         ax.set_xticklabels(KT_LABELS, fontsize=8)
         ax.set_ylabel("Δ % land area (future − reference)")
         ax.set_title(f"{self.title} — Net Gain/Loss per Type at {self._level:g}°C")
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=8, ncol=2)
         ax.grid(True, axis="y", alpha=0.3)
         fig.tight_layout()
         meta = self._build_metadata(
             title=f"{self.title} — Net Gain/Loss", figure_id="kt_net_gain_loss",
             models=[m for f in families.values() for m in f["members"]],
-            description="Net change in % land area per KT type (warming-level − reference), per family.",
+            description=(
+                "Net change in % land area per KT type (warming-level − reference) "
+                "per family; bars = ensemble mean, black markers = ensemble median."
+            ),
             period=self.period, plot_type="bar",
         )
         return fig, meta
 
-    def _plot_transition_matrices(self, results: dict) -> tuple[plt.Figure, dict]:
-        """KT transition matrix (reference → future) per family ensemble mean."""
+    def _plot_transition_matrices(self, results, stat) -> tuple[plt.Figure, dict]:
+        """KT transition matrix (reference → future) per family (mean/median)."""
         families = results["families"]
         nfam = len(families)
         fig, axes = plt.subplots(1, nfam, figsize=(6.2 * nfam, 5.6), squeeze=False)
         for c, (label, fam) in enumerate(families.items()):
             ax = axes[0, c]
-            M = np.array(fam["transition"])
-            Mshow = np.where(M > 0, M, np.nan)
-            im = ax.imshow(Mshow, cmap="viridis", vmin=0)
+            M = np.array(fam[stat]["transition"])
+            im = ax.imshow(np.where(M > 0, M, np.nan), cmap="viridis", vmin=0)
             ax.set_xticks(np.arange(len(KT_LABELS)))
             ax.set_xticklabels(KT_LABELS, fontsize=6, rotation=90)
             ax.set_yticks(np.arange(len(KT_LABELS)))
             ax.set_yticklabels(KT_LABELS, fontsize=6)
             ax.set_xlabel(f"{self._level:g}°C type")
             ax.set_ylabel("Reference type")
-            ax.set_title(f"{label}", fontsize=10)
+            ax.set_title(f"{label} ({stat})", fontsize=10)
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="% land area")
-        fig.suptitle(f"{self.title} — Transition Matrices (ref → {self._level:g}°C)", fontsize=12)
+        fig.suptitle(
+            f"{self.title} — Transition Matrices (ref → {self._level:g}°C, ensemble {stat})",
+            fontsize=12,
+        )
         fig.tight_layout(rect=[0, 0, 1, 0.96])
         meta = self._build_metadata(
-            title=f"{self.title} — Transition Matrix", figure_id="kt_transition_matrix",
+            title=f"{self.title} — Transition Matrix ({stat})",
+            figure_id=f"kt_transition_matrix_{stat}",
             models=[m for f in families.values() for m in f["members"]],
             description=(
-                "Area-weighted KT transition matrix per family ensemble mean: "
-                "rows = reference type, columns = warming-level type, values = "
-                "% of classified land area."
+                f"Area-weighted KT transition matrix per family ensemble {stat}: "
+                "rows = reference type, columns = warming-level type, values = % "
+                "of classified land area."
             ),
             period=self.period, plot_type="heatmap",
         )
