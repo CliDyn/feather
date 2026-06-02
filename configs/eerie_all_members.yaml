@@ -260,6 +260,7 @@ website:
     - evaluation
     - temperature
     - precipitation
+    - climate_classification
     - radiation
     - circulation
     - ocean_surface
@@ -269,6 +270,7 @@ website:
     evaluation: "Global Biases"
     temperature: "Temperature"
     precipitation: "Precipitation"
+    climate_classification: "Climate Classification"
     radiation: "Radiation Budget"
     circulation: "Atmospheric Circulation"
     ocean_surface: "Ocean Surface"
