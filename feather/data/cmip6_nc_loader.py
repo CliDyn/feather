@@ -21,8 +21,10 @@ import numpy as np
 import xarray as xr
 
 from feather.config import FeatherConfig
+from feather.data._cftime import cftime_decode_kwargs
 
 logger = logging.getLogger(__name__)
+_CFTIME = cftime_decode_kwargs()
 
 _DEFAULT_ROOT = "/work/ik1017/CMIP6/data/CMIP6"
 # Bounds/aux variables (often object/cftime dtype) that break dask auto-chunking.
@@ -86,8 +88,8 @@ class CMIP6NCLoader:
                 continue
             logger.info("CMIP6 %s/%s: opening %d file(s)", model, exp, len(files))
             ds = xr.open_mfdataset(
-                files, chunks={}, combine="by_coords",
-                decode_timedelta=False, drop_variables=_BOUNDS_VARS, use_cftime=True,
+                files, chunks={}, combine="by_coords", data_vars="minimal", coords="minimal", compat="override",
+                decode_timedelta=False, drop_variables=_BOUNDS_VARS, **_CFTIME,
             )
             segments.append(ds[variable])
 

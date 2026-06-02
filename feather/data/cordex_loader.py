@@ -26,8 +26,10 @@ from pathlib import Path
 import xarray as xr
 
 from feather.config import FeatherConfig
+from feather.data._cftime import cftime_decode_kwargs
 
 logger = logging.getLogger(__name__)
+_CFTIME = cftime_decode_kwargs()
 
 
 class CORDEXLoader:
@@ -118,8 +120,8 @@ class CORDEXLoader:
                 mc.gcm, mc.rcm, experiment, len(nc_files), freq,
             )
             ds = xr.open_mfdataset(
-                nc_files, chunks="auto", combine="by_coords",
-                decode_timedelta=False, use_cftime=True,
+                nc_files, chunks="auto", combine="by_coords", data_vars="minimal", coords="minimal", compat="override",
+                decode_timedelta=False, **_CFTIME,
             )
             if variable not in ds:
                 raise KeyError(
