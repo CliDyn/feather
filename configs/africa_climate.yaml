@@ -22,6 +22,7 @@ models:
   # ── GCM-driven members (reference = historical 1981–2005 + rcp85 2006–2010) ──
   REMO2015_HadGEM2-ES:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: GERICS
     gcm: MOHC-HadGEM2-ES
     rcm: GERICS-REMO2015
@@ -32,6 +33,7 @@ models:
     color: "#1f77b4"
   REMO2015_MPI-ESM-LR:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: GERICS
     gcm: MPI-M-MPI-ESM-LR
     rcm: GERICS-REMO2015
@@ -42,6 +44,7 @@ models:
     color: "#4f9bd9"
   REMO2015_NorESM1-M:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: GERICS
     gcm: NCC-NorESM1-M
     rcm: GERICS-REMO2015
@@ -53,6 +56,7 @@ models:
 
   CCLM5_HadGEM2-ES:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CLMcom-KIT
     gcm: MOHC-HadGEM2-ES
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -63,6 +67,7 @@ models:
     color: "#2ca02c"
   CCLM5_MPI-ESM-LR:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CLMcom-KIT
     gcm: MPI-M-MPI-ESM-LR
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -73,6 +78,7 @@ models:
     color: "#5fbf5f"
   CCLM5_NorESM1-M:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CLMcom-KIT
     gcm: NCC-NorESM1-M
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -84,6 +90,7 @@ models:
 
   RegCM4_HadGEM2-ES:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: ICTP
     gcm: MOHC-HadGEM2-ES
     rcm: ICTP-RegCM4-7
@@ -94,6 +101,7 @@ models:
     color: "#d62728"
   RegCM4_MPI-ESM-MR:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: ICTP
     gcm: MPI-M-MPI-ESM-MR
     rcm: ICTP-RegCM4-7
@@ -104,6 +112,7 @@ models:
     color: "#e8702a"
   RegCM4_NorESM1-M:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: ICTP
     gcm: NCC-NorESM1-M
     rcm: ICTP-RegCM4-7
@@ -115,6 +124,7 @@ models:
 
   CanRCM4_CanESM2:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CCCma
     gcm: CCCma-CanESM2
     rcm: CCCma-CanRCM4
@@ -127,6 +137,7 @@ models:
   # ── ERAINT-driven evaluation members (1981–2010, perfect boundaries) ──
   REMO2015_ERAINT:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: GERICS
     gcm: ECMWF-ERAINT
     rcm: GERICS-REMO2015
@@ -136,6 +147,7 @@ models:
     color: "#7f7f7f"
   CCLM5_ERAINT:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CLMcom-KIT
     gcm: ECMWF-ERAINT
     rcm: CLMcom-KIT-CCLM5-0-15
@@ -145,6 +157,7 @@ models:
     color: "#9c9c9c"
   RegCM4_ERAINT:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: ICTP
     gcm: ECMWF-ERAINT
     rcm: ICTP-RegCM4-7
@@ -154,6 +167,7 @@ models:
     color: "#bcbcbc"
   CanRCM4_ERAINT:
     data_source_type: cordex
+    ensemble: CORDEX
     institution: CCCma
     gcm: ECMWF-ERAINT
     rcm: CCCma-CanRCM4
@@ -165,6 +179,7 @@ models:
   # ── CMIP5 driving GCMs (1st member; reference = historical + rcp85 stitch) ──
   CMIP5_CanESM2:
     data_source_type: cmip5
+    ensemble: CMIP5
     institution: CCCma
     gcm: CanESM2
     variant: r1i1p1
@@ -173,6 +188,7 @@ models:
     color: "#8c564b"
   CMIP5_HadGEM2-ES:
     data_source_type: cmip5
+    ensemble: CMIP5
     institution: MOHC
     gcm: HadGEM2-ES
     variant: r1i1p1
@@ -181,6 +197,7 @@ models:
     color: "#a0635a"
   CMIP5_MPI-ESM-LR:
     data_source_type: cmip5
+    ensemble: CMIP5
     institution: MPI-M
     gcm: MPI-ESM-LR
     variant: r1i1p1
@@ -189,6 +206,7 @@ models:
     color: "#b5776c"
   CMIP5_MPI-ESM-MR:
     data_source_type: cmip5
+    ensemble: CMIP5
     institution: MPI-M
     gcm: MPI-ESM-MR
     variant: r1i1p1
@@ -197,6 +215,7 @@ models:
     color: "#c98e84"
   CMIP5_NorESM1-M:
     data_source_type: cmip5
+    ensemble: CMIP5
     institution: NCC
     gcm: NorESM1-M
     variant: r1i1p1
@@ -207,6 +226,7 @@ models:
   # ── CMIP6 successors (historical reference; ssp585 added in Phase 2) ──
   CMIP6_CanESM5:
     data_source_type: cmip6_nc
+    ensemble: CMIP6
     institution: CCCma
     gcm: CanESM5
     variant: r1i1p1f1
@@ -216,6 +236,7 @@ models:
     color: "#e377c2"
   CMIP6_UKESM1-0-LL:
     data_source_type: cmip6_nc
+    ensemble: CMIP6
     institution: MOHC
     gcm: UKESM1-0-LL
     variant: r1i1p1f2
@@ -225,6 +246,7 @@ models:
     color: "#ec92cf"
   CMIP6_MPI-ESM1-2-LR:
     data_source_type: cmip6_nc
+    ensemble: CMIP6
     institution: MPI-M
     gcm: MPI-ESM1-2-LR
     variant: r1i1p1f1
@@ -234,6 +256,7 @@ models:
     color: "#f2acdb"
   CMIP6_MPI-ESM1-2-HR:
     data_source_type: cmip6_nc
+    ensemble: CMIP6
     institution: MPI-M
     gcm: MPI-ESM1-2-HR
     variant: r1i1p1f1
@@ -243,6 +266,7 @@ models:
     color: "#f7c6e7"
   CMIP6_NorESM2-MM:
     data_source_type: cmip6_nc
+    ensemble: CMIP6
     institution: NCC
     gcm: NorESM2-MM
     variant: r1i1p1f1

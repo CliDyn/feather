@@ -22,6 +22,7 @@ models:
   # ── IFS-FESOM2-SR ──────────────────────────────────────────────────────
   IFS-FESOM2-SR:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -32,6 +33,7 @@ models:
 
   IFS-FESOM2-SR-r2:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r2i1p1f1
     # Kerchunk parquet store: {data_root}/{variant}/atmos/gr025/... and ocean/gr025/...
@@ -45,6 +47,7 @@ models:
 
   IFS-FESOM2-SR-r3:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -58,6 +61,7 @@ models:
   # ── IFS-NEMO-ER ────────────────────────────────────────────────────────
   IFS-NEMO-ER:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -69,6 +73,7 @@ models:
 
   IFS-NEMO-ER-r2:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1975
     variant: r2i1p1f1
     data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
@@ -81,6 +86,7 @@ models:
 
   IFS-NEMO-ER-r3:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1975
     variant: r3i1p1f1
     data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
@@ -94,6 +100,7 @@ models:
   # ── ICON-ESM-ER ────────────────────────────────────────────────────────
   ICON-ESM-ER:
     institution: MPI-M
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -105,6 +112,7 @@ models:
   # ── HadGEM3-GC5 ───────────────────────────────────────────────────────
   HadGEM3-GC5:
     institution: MOHC
+    ensemble: EERIE
     experiment: eerie-historical
     variant: r1i1p1f1
     grids:

@@ -53,6 +53,7 @@ class ModelConfig:
     driving_gcm: str = ""    # short driving-GCM label (GWL lookup, Phase 2)
     experiments: list = field(default_factory=list)  # experiments to stitch
     grid_dir: str = ""       # CMOR grid label dir for CMIP6 tree (e.g. "gn"/"gr")
+    ensemble: str = ""       # ensemble group label (e.g. CORDEX/CMIP5/CMIP6/EERIE)
 
 
 @dataclass
@@ -281,5 +282,6 @@ def _build_model_configs(
             driving_gcm=cfg.get("driving_gcm", ""),
             experiments=cfg.get("experiments", []),
             grid_dir=cfg.get("grid_dir", ""),
+            ensemble=cfg.get("ensemble", ""),
         )
     return configs
