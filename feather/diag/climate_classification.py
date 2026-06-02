@@ -102,6 +102,7 @@ class KTClimateClassification(DiagnosticBase):
         self._tlat: np.ndarray | None = None
         self._tlon: np.ndarray | None = None
         self._land_mask: xr.DataArray | None = None  # cached once grid is known
+        self._reuse_cache: bool = True  # reuse saved NetCDFs when re-plotting
 
     # ── Paths ─────────────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ class KTClimateClassification(DiagnosticBase):
             logger.info("  All KT figures exist — skipping")
             return saved
 
+        self._reuse_cache = skip_existing
         results = self.compute()
         for fig, meta in self.plot(results):
             saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -181,6 +183,18 @@ class KTClimateClassification(DiagnosticBase):
         - ``ens_mean``/``ens_median`` : DataArray | None — ensemble KT codes
         - ``lat``/``lon``: common grid coordinates
         """
+        # Fast path: reuse the saved classification NetCDFs (e.g. when only
+        # re-plotting after a figure tweak) instead of recomputing from data.
+        if self._reuse_cache:
+            cached = self._load_cached_results()
+            if cached is not None:
+                logger.info(
+                    "  Reusing %d cached classification NetCDF(s) — skipping "
+                    "recomputation (delete %s to force a full recompute)",
+                    len(cached["codes"]), self.nc_dir,
+                )
+                return cached
+
         # Regridded monthly climatology per source: tas in °C, pr in cm/month.
         clims_tas: dict[str, xr.DataArray] = {}
         clims_pr: dict[str, xr.DataArray] = {}
@@ -301,6 +315,51 @@ class KTClimateClassification(DiagnosticBase):
             "sources": list(codes.keys()),
             "ens_mean": ens_mean_code,
             "ens_median": ens_median_code,
+            "lat": self._tlat,
+            "lon": self._tlon,
+        }
+
+    def _load_cached_results(self) -> dict[str, Any] | None:
+        """Reconstruct results from saved ``{source}_kt`` NetCDFs + the CSV.
+
+        Returns None when the cache is absent or incomplete, so the caller
+        falls back to a full recomputation.
+        """
+        csv = self._csv_path()
+        if not csv.exists():
+            return None
+
+        codes: dict[str, xr.DataArray] = {}
+        for src in list(self.config.models) + [_ERA5, _BE_MSWEP, _CMIP6_MMM]:
+            p = self._nc_path(src)
+            if p.exists():
+                codes[src] = xr.open_dataset(p)["kt_code"]
+        if not codes:
+            return None
+
+        df = pd.read_csv(csv, index_col=0)
+        area_pct = {
+            col: {lbl: float(df.loc[lbl, col]) for lbl in KT_LABELS if lbl in df.index}
+            for col in df.columns
+        }
+
+        ens_mean = ens_median = None
+        pm, pmed = self._nc_path(_ENS_MEAN), self._nc_path(_ENS_MEDIAN)
+        if pm.exists() and pmed.exists():
+            ens_mean = xr.open_dataset(pm)["kt_code"]
+            ens_median = xr.open_dataset(pmed)["kt_code"]
+
+        ref = next(iter(codes.values()))
+        self._tlat = np.asarray(ref["lat"].values)
+        self._tlon = np.asarray(ref["lon"].values)
+
+        return {
+            "codes": codes,
+            "area_pct": area_pct,
+            "models": [m for m in self.config.models if m in codes],
+            "sources": list(codes.keys()),
+            "ens_mean": ens_mean,
+            "ens_median": ens_median,
             "lat": self._tlat,
             "lon": self._tlon,
         }
@@ -656,6 +715,14 @@ class KTClimateClassification(DiagnosticBase):
         import cartopy.crs as ccrs
 
         cmap, norm = self._kt_cmap_norm()
+        # Remap longitudes from 0..360 to -180..180 (and reorder columns) so
+        # that pcolormesh on a Robinson axis centred at 0° renders the full
+        # globe — a 0..360 array otherwise drops the eastern hemisphere.
+        lon = np.asarray(lon)
+        lon_plot = np.where(lon > 180.0, lon - 360.0, lon)
+        col_order = np.argsort(lon_plot)
+        lon_plot = lon_plot[col_order]
+
         n = len(panels)
         ncols = min(3, n)
         nrows = math.ceil(n / ncols)
@@ -669,7 +736,7 @@ class KTClimateClassification(DiagnosticBase):
         mesh = None
         for ax, (label, code) in zip(axes, panels):
             mesh = ax.pcolormesh(
-                lon, lat, code.values,
+                lon_plot, lat, code.values[:, col_order],
                 transform=ccrs.PlateCarree(), cmap=cmap, norm=norm,
                 shading="auto",
             )
