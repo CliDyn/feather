@@ -46,6 +46,14 @@ class ModelConfig:
     data_source_type: str = ""
     catalog_key: str = ""
     member: int = 1
+    # Regional / CMIP5 / CMIP6-tree fields
+    gcm: str = ""            # driving GCM directory name (CORDEX) or GCM name
+    rcm: str = ""            # regional model directory name (CORDEX)
+    rcm_version: str = ""    # RCM version dir (e.g. v1/v0/r2); auto-detected if ""
+    driving_gcm: str = ""    # short driving-GCM label (GWL lookup, Phase 2)
+    experiments: list = field(default_factory=list)  # experiments to stitch
+    grid_dir: str = ""       # CMOR grid label dir for CMIP6 tree (e.g. "gn"/"gr")
+    ensemble: str = ""       # ensemble group label (e.g. CORDEX/CMIP5/CMIP6/EERIE)
 
 
 @dataclass
@@ -268,5 +276,12 @@ def _build_model_configs(
             data_source_type=cfg.get("data_source_type", ""),
             catalog_key=cfg.get("catalog_key", ""),
             member=cfg.get("member", 1),
+            gcm=cfg.get("gcm", ""),
+            rcm=cfg.get("rcm", ""),
+            rcm_version=cfg.get("rcm_version", ""),
+            driving_gcm=cfg.get("driving_gcm", ""),
+            experiments=cfg.get("experiments", []),
+            grid_dir=cfg.get("grid_dir", ""),
+            ensemble=cfg.get("ensemble", ""),
         )
     return configs

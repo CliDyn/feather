@@ -68,9 +68,12 @@ _ERA5 = "ERA5"
 _BE_HR = "Berkeley Earth HR"
 _MSWEP = "MSWEP"
 _BE_MSWEP = "BE-HR + MSWEP"
-_ENS_MEAN = "EERIE Ensemble Mean"
-_ENS_MEDIAN = "EERIE Ensemble Median"
 _CMIP6_MMM = "CMIP6 MMM"
+
+# Regional target-grid bounds (lon in -180..180 when min < 0).
+_REGIONS: dict[str, dict] = {
+    "africa": {"lon_bounds": (-26.0, 60.0), "lat_bounds": (-48.0, 44.0)},
+}
 
 
 @register
@@ -98,6 +101,16 @@ class KTClimateClassification(DiagnosticBase):
         self.period = period
         self._res = float(self.config.nereus.get("resolution", 0.25))
         self._ir = float(self.config.nereus.get("influence_radius", 80_000.0))
+        # Region → target-grid bounds.  Global default keeps the historical
+        # 0..360 convention; a named region uses its (possibly negative) bounds.
+        self._region = str(self.config.project.get("region", "")).lower()
+        bounds = _REGIONS.get(self._region)
+        if bounds:
+            self._lon_bounds = tuple(bounds["lon_bounds"])
+            self._lat_bounds = tuple(bounds["lat_bounds"])
+        else:
+            self._lon_bounds = (0.0, 360.0)
+            self._lat_bounds = (-90.0, 90.0)
         # Common target grid (populated on first regrid)
         self._tlat: np.ndarray | None = None
         self._tlon: np.ndarray | None = None
@@ -238,7 +251,7 @@ class KTClimateClassification(DiagnosticBase):
         if self._tlat is None:
             logger.warning("KTClimateClassification: no data classified")
             return {"codes": {}, "area_pct": {}, "models": [], "sources": [],
-                    "ens_mean": None, "ens_median": None, "lat": None, "lon": None}
+                    "ensembles": {}, "ensemble_codes": {}, "lat": None, "lon": None}
 
         self.nc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,14 +261,33 @@ class KTClimateClassification(DiagnosticBase):
         if self.cmip6_enabled:
             cmip6_sum_t, cmip6_sum_p, cmip6_n = self._collect_cmip6_clims()
 
-        # ── Derived climatologies ──────────────────────────────────────
-        if len(model_sources) >= 2:
-            stack_t = xr.concat([clims_tas[m] for m in model_sources], dim="member")
-            stack_p = xr.concat([clims_pr[m] for m in model_sources], dim="member")
-            clims_tas[_ENS_MEAN] = stack_t.mean("member")
-            clims_pr[_ENS_MEAN] = stack_p.mean("member")
-            clims_tas[_ENS_MEDIAN] = stack_t.median("member")
-            clims_pr[_ENS_MEDIAN] = stack_p.median("member")
+        # ── Per-family ensembles (mean/median of member climatologies) ──
+        # Members are grouped by their config `ensemble` label, so a mixed
+        # config yields e.g. CORDEX / CMIP5 / CMIP6 ensembles.
+        groups: dict[str, list[str]] = {}
+        for m in model_sources:
+            mc = self.config.model_configs.get(m)
+            label = mc.ensemble if mc and mc.ensemble else ""
+            if label:
+                groups.setdefault(label, []).append(m)
+
+        ensembles: dict[str, dict] = {}        # label → {"mean": name, "median": name}
+        ensemble_names: list[str] = []
+        for label, members in groups.items():
+            if len(members) < 2:
+                continue
+            stack_t = xr.concat([clims_tas[m] for m in members], dim="member")
+            stack_p = xr.concat([clims_pr[m] for m in members], dim="member")
+            mean_name, median_name = f"{label} Ensemble Mean", f"{label} Ensemble Median"
+            clims_tas[mean_name] = stack_t.mean("member")
+            clims_pr[mean_name] = stack_p.mean("member")
+            clims_tas[median_name] = stack_t.median("member")
+            clims_pr[median_name] = stack_p.median("member")
+            ensembles[label] = {"mean": mean_name, "median": median_name,
+                                "members": members}
+            ensemble_names += [mean_name, median_name]
+
+        # CMIP6 multi-model mean from the zarr CMIP6 loader (global/legacy path)
         if cmip6_n > 0:
             clims_tas[_CMIP6_MMM] = cmip6_sum_t / cmip6_n
             clims_pr[_CMIP6_MMM] = cmip6_sum_p / cmip6_n
@@ -274,14 +306,10 @@ class KTClimateClassification(DiagnosticBase):
             )
 
         # Ensemble KT codes (classified from the ensemble climatology)
-        ens_mean_code = ens_median_code = None
-        if _ENS_MEAN in clims_tas:
-            ens_mean_code = self._classify_from(
-                clims_tas[_ENS_MEAN], clims_pr[_ENS_MEAN],
-            )
-            ens_median_code = self._classify_from(
-                clims_tas[_ENS_MEDIAN], clims_pr[_ENS_MEDIAN],
-            )
+        ensemble_codes: dict[str, xr.DataArray] = {
+            name: self._classify_from(clims_tas[name], clims_pr[name])
+            for name in ensemble_names
+        }
 
         # ── Area percentages ───────────────────────────────────────────
         area_np = compute_latlon_areas(self._tlat, self._tlon)
@@ -292,20 +320,17 @@ class KTClimateClassification(DiagnosticBase):
         area_pct = {
             src: area_percent_by_type(code, area_da) for src, code in codes.items()
         }
-        # Include the EERIE ensemble mean/median in the bar chart and table
-        # (they are shown on the ensemble map, not the per-source maps).
-        if ens_mean_code is not None:
-            area_pct[_ENS_MEAN] = area_percent_by_type(ens_mean_code, area_da)
-            area_pct[_ENS_MEDIAN] = area_percent_by_type(ens_median_code, area_da)
+        # Ensembles appear in the bar chart and table (and the ensemble map).
+        for name, code in ensemble_codes.items():
+            area_pct[name] = area_percent_by_type(code, area_da)
 
         # ── Persistence ────────────────────────────────────────────────
         for src in set(clims_tas) | set(clims_pr):
             self._save_clim_nc(src, clims_tas.get(src), clims_pr.get(src))
         for src, code in codes.items():
             self._save_nc(src, code)
-        if ens_mean_code is not None:
-            self._save_nc(_ENS_MEAN, ens_mean_code)
-            self._save_nc(_ENS_MEDIAN, ens_median_code)
+        for name, code in ensemble_codes.items():
+            self._save_nc(name, code)
         self._write_csv(area_pct)
 
         return {
@@ -313,8 +338,8 @@ class KTClimateClassification(DiagnosticBase):
             "area_pct": area_pct,
             "models": model_sources,
             "sources": list(codes.keys()),
-            "ens_mean": ens_mean_code,
-            "ens_median": ens_median_code,
+            "ensembles": ensembles,            # label → {"mean","median","members"}
+            "ensemble_codes": ensemble_codes,  # name → KT code field
             "lat": self._tlat,
             "lon": self._tlon,
         }
@@ -343,11 +368,35 @@ class KTClimateClassification(DiagnosticBase):
             for col in df.columns
         }
 
-        ens_mean = ens_median = None
-        pm, pmed = self._nc_path(_ENS_MEAN), self._nc_path(_ENS_MEDIAN)
-        if pm.exists() and pmed.exists():
-            ens_mean = xr.open_dataset(pm)["kt_code"]
-            ens_median = xr.open_dataset(pmed)["kt_code"]
+        # Reconstruct per-family ensembles from config groups + saved kt files.
+        groups: dict[str, list[str]] = {}
+        for m in self.config.models:
+            mc = self.config.model_configs.get(m)
+            if mc and mc.ensemble and m in codes:
+                groups.setdefault(mc.ensemble, []).append(m)
+        ensembles: dict[str, dict] = {}
+        ensemble_codes: dict[str, xr.DataArray] = {}
+        for label, members in groups.items():
+            if len(members) < 2:
+                continue
+            mean_name = f"{label} Ensemble Mean"
+            median_name = f"{label} Ensemble Median"
+            pm, pmed = self._nc_path(mean_name), self._nc_path(median_name)
+            if pm.exists() and pmed.exists():
+                ensemble_codes[mean_name] = xr.open_dataset(pm)["kt_code"]
+                ensemble_codes[median_name] = xr.open_dataset(pmed)["kt_code"]
+                ensembles[label] = {"mean": mean_name, "median": median_name,
+                                    "members": members}
+
+        # Force a full recompute when the config expects ensembles the cache
+        # cannot supply (e.g. a stale cache from a previous ensemble layout).
+        expected = {label for label, members in groups.items() if len(members) >= 2}
+        if expected and not expected.issubset(ensembles):
+            logger.info(
+                "  Cached ensembles stale/incomplete (have %s, need %s) — recomputing",
+                sorted(ensembles), sorted(expected),
+            )
+            return None
 
         ref = next(iter(codes.values()))
         self._tlat = np.asarray(ref["lat"].values)
@@ -358,22 +407,41 @@ class KTClimateClassification(DiagnosticBase):
             "area_pct": area_pct,
             "models": [m for m in self.config.models if m in codes],
             "sources": list(codes.keys()),
-            "ens_mean": ens_mean,
-            "ens_median": ens_median,
+            "ensembles": ensembles,
+            "ensemble_codes": ensemble_codes,
             "lat": self._tlat,
             "lon": self._tlon,
         }
 
     # ── Per-source climatology collection ──────────────────────────────
 
-    def _model_clim(self, model: str) -> tuple[xr.DataArray, xr.DataArray]:
+    def _model_clim(
+        self, model: str, period: tuple[str, str] | None = None,
+    ) -> tuple[xr.DataArray, xr.DataArray]:
         """Regridded monthly tas (°C) + pr (cm/month) climatology for a model."""
-        logger.info("  %s: climatology", model)
-        tas = self._load_model_var(model, "tas", period=self.period)
-        pr = self._load_model_var(model, "pr", period=self.period)
-        tmon = self._regrid_monthly(self._clim_tas(tas), self._ir)
-        pmon = self._regrid_monthly(self._clim_pr(pr), self._ir)
+        period = period or self.period
+        logger.info("  %s: climatology %s", model, period)
+        tas = self._load_model_var(model, "tas", period=period)
+        pr = self._load_model_var(model, "pr", period=period)
+        ir = self._model_influence_radius(model)
+        tmon = self._regrid_monthly(self._clim_tas(tas), ir)
+        pmon = self._regrid_monthly(self._clim_pr(pr), ir)
         return tmon, pmon
+
+    def _model_influence_radius(self, model: str) -> float:
+        """Influence radius for regridding a model to the common grid.
+
+        Coarse global models (CMIP5/CMIP6, ~1–2°) need a larger radius than
+        the default (tuned for high-res sources) so a fine target grid is not
+        left with NaN gaps between source points.
+        """
+        try:
+            src = self.config.get_model_data_source_type(model)
+        except Exception:
+            src = ""
+        if src in ("cmip5", "cmip6_nc"):
+            return max(self._ir, 250_000.0)
+        return self._ir
 
     def _collect_cmip6_clims(self):
         """Save each CMIP6 member's climatology; return (sum_tas, sum_pr, n).
@@ -497,16 +565,19 @@ class KTClimateClassification(DiagnosticBase):
 
         lat_name = "lat" if "lat" in clim.coords else "latitude"
         lon_name = "lon" if "lon" in clim.coords else "longitude"
-        lat = np.asarray(clim[lat_name].values)
-        # Normalise source longitudes to 0..360 (matching the target grid's
-        # lon_bounds) and reorder the data columns to match, so that
-        # western-hemisphere points are not dropped during regridding —
-        # otherwise sources on a -180..180 grid leave half the globe NaN.
-        lon = np.mod(np.asarray(clim[lon_name].values), 360.0)
-        order = np.argsort(lon)
-        lon = lon[order]
-        clim = clim.isel({lon_name: order})
-        lon2d, lat2d = np.meshgrid(lon, lat)
+        latv = np.asarray(clim[lat_name].values)
+        lonv = self._to_target_lon_convention(np.asarray(clim[lon_name].values))
+
+        if lonv.ndim == 1:
+            # Regular grid: sort columns by longitude (so the source matches
+            # the target lon convention and no hemisphere is dropped).
+            order = np.argsort(lonv)
+            lonv = lonv[order]
+            clim = clim.isel({lon_name: order})
+            lon2d, lat2d = np.meshgrid(lonv, latv)
+        else:
+            # 2-D (rotated-pole) grid: pass coordinate arrays as-is.
+            lon2d, lat2d = lonv, latv
 
         interp = None
         out = []
@@ -516,7 +587,8 @@ class KTClimateClassification(DiagnosticBase):
                 _, interp = nr.regrid(
                     field, lon=lon2d, lat=lat2d,
                     resolution=self._res, influence_radius=ir,
-                    lon_bounds=(0.0, 360.0), as_xarray=True,
+                    lon_bounds=self._lon_bounds, lat_bounds=self._lat_bounds,
+                    as_xarray=True,
                 )
                 if self._tlat is None:
                     self._tlat = np.asarray(interp.target_lat[:, 0])
@@ -531,6 +603,16 @@ class KTClimateClassification(DiagnosticBase):
                 "lat": self._tlat, "lon": self._tlon,
             },
         )
+
+    def _to_target_lon_convention(self, lon: np.ndarray) -> np.ndarray:
+        """Convert longitudes to the target grid's convention.
+
+        Regional grids use -180..180 (so a negative ``lon_bounds`` like Africa
+        maps the western part correctly); the global grid keeps 0..360.
+        """
+        if self._lon_bounds[0] < 0:
+            return ((lon + 180.0) % 360.0) - 180.0
+        return np.mod(lon, 360.0)
 
     def _apply_land_mask(self, code: xr.DataArray) -> xr.DataArray:
         mask = self._get_land_mask()
@@ -555,8 +637,10 @@ class KTClimateClassification(DiagnosticBase):
                 rename["longitude"] = "lon"
             if rename:
                 mask = mask.rename(rename)
-            if float(mask.lon.min()) < 0:
-                mask = mask.assign_coords(lon=((mask.lon + 360) % 360)).sortby("lon")
+            # Match the target grid's longitude convention before interpolation.
+            mask = mask.assign_coords(
+                lon=self._to_target_lon_convention(np.asarray(mask.lon.values)),
+            ).sortby("lon")
             mask_i = mask.interp(
                 lat=xr.DataArray(self._tlat, dims="lat"),
                 lon=xr.DataArray(self._tlon, dims="lon"),
@@ -682,11 +766,11 @@ class KTClimateClassification(DiagnosticBase):
         return order
 
     def _table_sources(self, results: dict) -> list[str]:
-        """Source order for the bar chart / table: like the maps, plus the
-        EERIE ensemble mean/median inserted ahead of the CMIP6 MMM."""
+        """Source order for the bar chart / table: maps order, then the
+        per-family ensemble means/medians (ahead of the CMIP6 MMM)."""
         order = self._ordered_sources(results)
-        pct = results["area_pct"]
-        extra = [s for s in (_ENS_MEAN, _ENS_MEDIAN) if s in pct]
+        extra = [n for n in results.get("ensemble_codes", {})
+                 if n in results["area_pct"]]
         if not extra:
             return order
         if _CMIP6_MMM in order:
@@ -726,9 +810,19 @@ class KTClimateClassification(DiagnosticBase):
         n = len(panels)
         ncols = min(3, n)
         nrows = math.ceil(n / ncols)
-        proj = ccrs.Robinson(central_longitude=0)
+        # Zoom to the region when one is configured; else global Robinson.
+        regional = bool(self._region)
+        if regional:
+            proj = ccrs.PlateCarree()
+            extent = [self._lon_bounds[0], self._lon_bounds[1],
+                      self._lat_bounds[0], self._lat_bounds[1]]
+            panel_w, panel_h = 4.6, 4.6
+        else:
+            proj = ccrs.Robinson(central_longitude=0)
+            extent = None
+            panel_w, panel_h = 6.5, 3.6
         fig, axes = plt.subplots(
-            nrows, ncols, figsize=(6.5 * ncols, 3.6 * nrows),
+            nrows, ncols, figsize=(panel_w * ncols, panel_h * nrows),
             subplot_kw={"projection": proj},
         )
         axes = np.atleast_1d(axes).ravel()
@@ -741,7 +835,10 @@ class KTClimateClassification(DiagnosticBase):
                 shading="auto",
             )
             ax.coastlines(linewidth=0.4)
-            ax.set_global()
+            if regional:
+                ax.set_extent(extent, crs=ccrs.PlateCarree())
+            else:
+                ax.set_global()
             ax.set_title(label, fontsize=10)
         for ax in axes[n:]:
             ax.axis("off")
@@ -777,22 +874,28 @@ class KTClimateClassification(DiagnosticBase):
         return fig, meta
 
     def _plot_ensemble_maps(self, results: dict) -> tuple[plt.Figure, dict] | None:
-        """Observations vs EERIE ensemble mean/median vs CMIP6 MMM (5 panels)."""
-        if results.get("ens_mean") is None:
+        """Observations + each family's ensemble mean/median (+ CMIP6 MMM)."""
+        ensemble_codes = results.get("ensemble_codes", {})
+        if not ensemble_codes:
             return None
         codes = results["codes"]
         panels: list[tuple[str, xr.DataArray]] = []
         for s in (_ERA5, _BE_MSWEP):
             if s in codes:
                 panels.append((s, codes[s]))
-        panels.append((_ENS_MEAN, results["ens_mean"]))
-        panels.append((_ENS_MEDIAN, results["ens_median"]))
+        # Each family's mean then median, in ensemble order.
+        for label, info in results.get("ensembles", {}).items():
+            for key in ("mean", "median"):
+                name = info[key]
+                if name in ensemble_codes:
+                    panels.append((name, ensemble_codes[name]))
         if _CMIP6_MMM in codes:
             panels.append((_CMIP6_MMM, codes[_CMIP6_MMM]))
 
+        labels = ", ".join(results.get("ensembles", {}).keys())
         fig = self._render_kt_maps(
             panels, results["lon"], results["lat"],
-            f"{self.title} — Observations vs EERIE Ensemble "
+            f"{self.title} — Observations vs Ensembles "
             f"({self.period[0]}–{self.period[1]})",
         )
         meta = self._build_metadata(
@@ -800,11 +903,10 @@ class KTClimateClassification(DiagnosticBase):
             figure_id="kt_classification_ensemble",
             models=results["models"],
             description=(
-                "Köppen–Trewartha classification: ERA5 and Berkeley Earth HR + "
-                "MSWEP observations, the EERIE ensemble mean and median "
-                "(classified from the per-cell mean/median of model tas and pr "
-                "climatologies), and the CMIP6 multi-model mean. Land only, "
-                "common 0.25° grid."
+                "Köppen–Trewartha classification: observations alongside the "
+                f"ensemble mean and median of each model family ({labels}), each "
+                "classified from the per-cell mean/median of the member tas and "
+                "pr climatologies. Land only, common grid."
             ),
             period=self.period,
             plot_type="map",

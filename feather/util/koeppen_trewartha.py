@@ -237,3 +237,39 @@ def area_percent_by_type(
         a = float(area.where(valid & (code == c)).sum())
         out[label] = 100.0 * a / total
     return out
+
+
+def transition_matrix(
+    ref_code: xr.DataArray,
+    future_code: xr.DataArray,
+    area: xr.DataArray,
+) -> np.ndarray:
+    """Area-weighted KT transition matrix (% of classified land area).
+
+    ``M[i, j]`` is the percentage of the (jointly classified) land area that is
+    KT type ``i+1`` in *ref_code* and type ``j+1`` in *future_code*.  Rows are
+    the reference type, columns the future type; the whole matrix sums to 100 %.
+    Cells unclassified in either field are excluded.
+    """
+    valid = (
+        ref_code.notnull() & future_code.notnull()
+        & (ref_code >= 1) & (ref_code <= 14)
+        & (future_code >= 1) & (future_code <= 14)
+    )
+    total = float(area.where(valid).sum())
+    M = np.zeros((14, 14), dtype=float)
+    if total <= 0:
+        return M
+    rc = np.asarray(ref_code.values)
+    fc = np.asarray(future_code.values)
+    av = np.asarray(area.values)
+    vmask = np.asarray(valid.values)
+    for i in range(1, 15):
+        ri = vmask & (rc == i)
+        if not ri.any():
+            continue
+        for j in range(1, 15):
+            cell = ri & (fc == j)
+            if cell.any():
+                M[i - 1, j - 1] = 100.0 * float(np.nansum(np.where(cell, av, 0.0))) / total
+    return M
