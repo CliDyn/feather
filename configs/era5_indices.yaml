@@ -11,7 +11,7 @@ project:
   name: "ERA5 Extreme Indices"
   description: "ERA5 tropical-nights and heatwave indices from derived daily tasmin/tasmax"
   experiment: "era5"
-  period: ["1981", "2023"]
+  period: ["1980", "2023"]
   resolution: "0.25° regular lat/lon"
   comparison_type: "baseline_evaluation"
 
@@ -66,7 +66,7 @@ llm:
 
 website:
   title: "Feather — ERA5 Extreme Indices"
-  subtitle: "ERA5 tropical nights & heatwave indices (1981–2023)"
+  subtitle: "ERA5 tropical nights & heatwave indices (1980–2023)"
   group_order:
     - extremes
   group_labels:

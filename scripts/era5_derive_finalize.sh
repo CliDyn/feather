@@ -12,8 +12,8 @@ OUT=/work/bm1344/AWI/OBS/era5_derived
 MON=$OUT/mon
 TMP=$MON/_tmp
 
-cdo -s -O mergetime "$TMP"/ERA5_tasmin_daymin_mon_*.nc "$MON/ERA5_tasmin_daymin_mon_1981-2023.nc"
-cdo -s -O mergetime "$TMP"/ERA5_tasmax_daymax_mon_*.nc "$MON/ERA5_tasmax_daymax_mon_1981-2023.nc"
+cdo -s -O mergetime "$TMP"/ERA5_tasmin_daymin_mon_*.nc "$MON/ERA5_tasmin_daymin_mon_1980-2023.nc"
+cdo -s -O mergetime "$TMP"/ERA5_tasmax_daymax_mon_*.nc "$MON/ERA5_tasmax_daymax_mon_1980-2023.nc"
 
 echo "Monthly files written:"
-ls -la "$MON"/ERA5_tas*_mon_1981-2023.nc
+ls -la "$MON"/ERA5_tas*_mon_1980-2023.nc

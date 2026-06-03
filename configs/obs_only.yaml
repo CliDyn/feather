@@ -66,8 +66,8 @@ obs_datasets:
   ERA5_TMINMAX:
     path: "/work/bm1344/AWI/OBS/era5_derived/mon"
     variables:
-      tasmin: "ERA5_tasmin_daymin_mon_1981-2023.nc"
-      tasmax: "ERA5_tasmax_daymax_mon_1981-2023.nc"
+      tasmin: "ERA5_tasmin_daymin_mon_1980-2023.nc"
+      tasmax: "ERA5_tasmax_daymax_mon_1980-2023.nc"
 
   # CRU TS v4.09 (0.5°, land-only, per-decade files globbed by variable)
   CRU:

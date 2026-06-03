@@ -19,7 +19,7 @@
 # weights are recomputed for every one of the ~365×2 daily calls).
 #
 # Usage:
-#   sbatch --array=1981-2023 scripts/era5_derive_tasminmax.sh
+#   sbatch --array=1980-2023 scripts/era5_derive_tasminmax.sh
 #   # or single year, interactively on a compute node:
 #   bash scripts/era5_derive_tasminmax.sh 1995
 #

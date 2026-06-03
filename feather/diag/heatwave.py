@@ -236,7 +236,7 @@ class HeatwaveDiag(DiagnosticBase):
 
         # Land mask
         land_mask = self._load_land_mask(
-            np.asarray(da["lat"]), np.asarray(da["lon"])
+            model, np.asarray(da["lat"]), np.asarray(da["lon"])
         )
 
         # Compute 90th-percentile threshold per DOY (lazy → compute once)
@@ -468,10 +468,41 @@ class HeatwaveDiag(DiagnosticBase):
 
     # ── Obs helpers ────────────────────────────────────────────────────
 
-    def _load_land_mask(
-        self, model_lat: np.ndarray, model_lon: np.ndarray
+    def _load_model_land_mask(
+        self, model: str, model_lat: np.ndarray, model_lon: np.ndarray
     ) -> xr.DataArray | None:
-        """Load Berkeley Earth land mask interpolated to the model grid."""
+        """Boolean land mask from the model's own ``sftlf`` (fx, %), or None.
+
+        Land where land area fraction > 50 %.  Returns None so the caller can
+        fall back to the Berkeley mask when the model has no ``sftlf``.
+        """
+        try:
+            sftlf = self.model_loader.load_var(model, "sftlf", table="fx")
+        except (KeyError, FileNotFoundError, OSError, AttributeError,
+                ValueError, TypeError):
+            return None
+        try:
+            sftlf = sftlf.squeeze(drop=True)
+            for d in ("time", "height", "depth"):
+                if d in sftlf.dims:
+                    sftlf = sftlf.isel({d: 0})
+            mask = sftlf.interp(
+                lat=xr.DataArray(model_lat, dims="lat"),
+                lon=xr.DataArray(model_lon, dims="lon"),
+                method="nearest", kwargs={"fill_value": 0.0},
+            )
+            return mask > 50.0
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("  %s: could not use sftlf land mask: %s", model, exc)
+            return None
+
+    def _load_land_mask(
+        self, model: str, model_lat: np.ndarray, model_lon: np.ndarray
+    ) -> xr.DataArray | None:
+        """Boolean land mask (True = land), preferring the model's own sftlf."""
+        model_mask = self._load_model_land_mask(model, model_lat, model_lon)
+        if model_mask is not None:
+            return model_mask
         path = self._be_tmax_path()
         if path is None:
             return None

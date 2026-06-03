@@ -76,23 +76,13 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         group="temperature",
         display_offset=-273.15, display_units="°C",
     ),
-    "tasmax": VarInfo(
-        name="tasmax", long_name="Daily Maximum 2m Temperature", units="K",
-        domain="sfc", cmap="cmo.thermal",
+    "sftlf": VarInfo(
+        name="sftlf", long_name="Land Area Fraction", units="%",
+        domain="sfc", cmap="terrain",
         obs_dataset="", obs_variable="",
         destine_variable="",
-        cmip6_variable="tasmax", cmip6_table="Amon",
-        group="temperature",
-        display_offset=-273.15, display_units="°C",
-    ),
-    "tasmin": VarInfo(
-        name="tasmin", long_name="Daily Minimum 2m Temperature", units="K",
-        domain="sfc", cmap="cmo.thermal",
-        obs_dataset="", obs_variable="",
-        destine_variable="",
-        cmip6_variable="tasmin", cmip6_table="Amon",
-        group="temperature",
-        display_offset=-273.15, display_units="°C",
+        cmip6_variable="sftlf", cmip6_table="fx",
+        group="fixed",
     ),
     "ts": VarInfo(
         name="ts", long_name="Skin Temperature", units="K",
