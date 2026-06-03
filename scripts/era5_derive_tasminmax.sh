@@ -48,7 +48,8 @@ GRID=r1440x721                       # global regular 0.25° lat/lon (poles incl
 
 CMOR_DAY=$OUT/CMOR/ECMWF/ERA5/era5/r1i1p1f1/day
 MON_TMP=$OUT/mon/_tmp
-WDIR="${SCRATCH:-/scratch/$USER}/era5_derive_${YEAR}"
+# Levante scratch layout: /scratch/<first-letter-of-user>/<user>/
+WDIR="${SCRATCH:-/scratch/${USER:0:1}/$USER}/era5_derive_${YEAR}"
 
 mkdir -p "$CMOR_DAY/tasmin/gr/v1" "$CMOR_DAY/tasmax/gr/v1" "$MON_TMP" "$WDIR"
 
