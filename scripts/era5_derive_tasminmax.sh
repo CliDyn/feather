@@ -27,13 +27,14 @@
 # monthly files into ERA5_tasmin_daymin_mon_1981-2023.nc / tasmax.
 # ─────────────────────────────────────────────────────────────────────────────
 #SBATCH --job-name=era5_tnmx
-#SBATCH --partition=compute
+#SBATCH --account=bm1344
+#SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=10:00:00
-#SBATCH --output=logs/era5_derive_%A_%a.out
+#SBATCH --output=/work/bm1344/AWI/OBS/era5_derived/logs/era5_derive_%A_%a.out
 
 set -euo pipefail
 
