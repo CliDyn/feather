@@ -33,6 +33,12 @@ import xarray as xr
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.diag._extremes_obs import (
+    era5_mean_available,
+    load_era5_mean,
+    obs_ref_label,
+    use_era5_obs,
+)
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 
 logger = logging.getLogger(__name__)
@@ -110,7 +116,10 @@ class TropicalNightsDiag(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        has_obs = self._be_tmin_path() is not None
+        has_obs = (
+            era5_mean_available(self.config, "tasmin")
+            or self._be_tmin_path() is not None
+        )
         fig_ids = [
             "tropical_nights_climatology",
             "tropical_nights_timeseries",
@@ -181,12 +190,18 @@ class TropicalNightsDiag(DiagnosticBase):
 
             tn_zonal[model] = clim.mean("lon")
 
-        # Load BE obs mean Tmin for bias Group B
+        # Load obs mean Tmin for bias Group B (ERA5 if configured, else BE)
         obs_mean_tmin = None
         if lat_coord is not None:
-            obs_mean_tmin = self._load_be_mean_tmin(
-                lat_coord.values, lon_coord.values,
-            )
+            if use_era5_obs(self.config):
+                obs_mean_tmin = load_era5_mean(
+                    self.config, "tasmin", self.period,
+                    lat_coord.values, lon_coord.values,
+                )
+            else:
+                obs_mean_tmin = self._load_be_mean_tmin(
+                    lat_coord.values, lon_coord.values,
+                )
 
         return {
             "tn_clim": tn_clim,
@@ -556,6 +571,7 @@ class TropicalNightsDiag(DiagnosticBase):
         models = results["models"]
         obs_k = results["obs_mean_tmin"]         # (lat, lon) in K
         obs_c = obs_k - _K_TO_C                  # display in °C
+        obs_label = obs_ref_label(self.config, "tasmin")
 
         bias_dict = {
             m: results["model_mean_tmin"][m] - obs_k   # K difference = °C difference
@@ -565,8 +581,8 @@ class TropicalNightsDiag(DiagnosticBase):
         fig, _ = plot_combined_bias_map(
             obs_c,
             bias_dict,
-            title=f"{self.title} — Mean Tmin Bias vs Berkeley Earth",
-            obs_title="Berkeley Earth Land TMIN",
+            title=f"{self.title} — Mean Tmin Bias vs {obs_label}",
+            obs_title=obs_label,
             cmap="cmo.thermal",
             bias_cmap="RdBu_r",
             units="°C",
@@ -577,12 +593,14 @@ class TropicalNightsDiag(DiagnosticBase):
             models=models,
             description=(
                 "Bias in climatological mean daily minimum temperature "
-                "(model − Berkeley Earth Land TMIN, °C). "
+                f"(model − {obs_label}, °C). "
                 "Both model and obs are land-only. Model from CMOR daily tasmin; "
-                "obs from Berkeley Earth monthly Land TMIN (anomaly + climatology)."
+                f"obs mean from {obs_label}."
             ),
-            obs_dataset="BERKELEY_EARTH_TMIN",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
+                         else "BERKELEY_EARTH_TMIN"),
+            obs_variable=("tasmin" if use_era5_obs(self.config)
+                          else "temperature"),
             period=self.period,
             plot_type="bias_map",
         )

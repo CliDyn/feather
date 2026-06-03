@@ -58,6 +58,12 @@ import numpy as np
 import xarray as xr
 
 from feather.config import ModelConfig
+from feather.diag._extremes_obs import (
+    era5_approx_exceedance_series,
+    load_era5_mean,
+    obs_ref_label,
+    use_era5_obs,
+)
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map
@@ -264,8 +270,16 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         model_lon: np.ndarray,
         period: tuple[str, str],
     ) -> xr.DataArray | None:
-        """BE Land TMIN period mean interpolated to model grid (K)."""
+        """Obs Tmin period mean interpolated to model grid (K).
+
+        Uses the derived ERA5 monthly tasmin when ERA5 is the configured
+        extremes obs reference, otherwise Berkeley Earth Land TMIN.
+        """
         import pandas as pd
+
+        if use_era5_obs(self.config):
+            return load_era5_mean(
+                self.config, "tasmin", period, model_lat, model_lon)
 
         path = self._be_tmin_path()
         if path is None:
@@ -318,6 +332,11 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         global land mean with a ``year`` coordinate, or None if unavailable.
         """
         import pandas as pd
+
+        if use_era5_obs(self.config):
+            return era5_approx_exceedance_series(
+                self.config, "tasmin",
+                self.hist_load_period[0], self._obs_end_year, 20.0)
 
         path = self._be_tmin_path()
         if path is None:
@@ -834,12 +853,13 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                     color=color, lw=1.5, label=model,
                 )
 
-        # Observed TN (Berkeley Earth approximate)
+        # Observed TN (approximate, from monthly obs reference)
         obs_s = results.get("obs_series")
         if obs_s is not None:
+            obs_ref = obs_ref_label(self.config, "tasmin").split(" Land")[0]
             ax.plot(
                 np.asarray(obs_s["year"]), np.asarray(obs_s),
-                color="k", lw=2, ls="--", label="Berkeley Earth (approx.)",
+                color="k", lw=2, ls="--", label=f"{obs_ref} (approx.)",
                 zorder=10,
             )
 
@@ -892,15 +912,16 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             m: results["model_mean_tmin"][m] - obs_mean_tmin[m]
             for m in models
         }
+        obs_label = obs_ref_label(self.config, "tasmin")
         fig, _ = plot_combined_bias_map(
             obs_c,
             bias_dict,
             title=(
                 f"{self.title}\n"
-                f"Mean Tmin Bias vs Berkeley Earth "
+                f"Mean Tmin Bias vs {obs_label} "
                 f"({self.ref_period[0]}–{self.ref_period[1]})"
             ),
-            obs_title="Berkeley Earth Land TMIN",
+            obs_title=obs_label,
             cmap="cmo.thermal",
             bias_cmap="RdBu_r",
             units="°C",
@@ -911,13 +932,15 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             models=models,
             description=(
                 f"Bias in climatological mean daily minimum temperature "
-                f"(model − Berkeley Earth Land TMIN, °C) for the reference period "
+                f"(model − {obs_label}, °C) for the reference period "
                 f"{self.ref_period[0]}–{self.ref_period[1]}. "
                 "Land-only. Model: CMOR daily tasmin mean over reference period; "
-                "obs: Berkeley Earth monthly Land TMIN (anomaly + climatology)."
+                f"obs mean from {obs_label}."
             ),
-            obs_dataset="BERKELEY_EARTH_TMIN",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
+                         else "BERKELEY_EARTH_TMIN"),
+            obs_variable=("tasmin" if use_era5_obs(self.config)
+                          else "temperature"),
             period=self.ref_period,
             plot_type="bias_map",
         )

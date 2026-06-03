@@ -65,6 +65,11 @@ import numpy as np
 import xarray as xr
 
 from feather.config import ModelConfig
+from feather.diag._extremes_obs import (
+    load_era5_mean,
+    obs_ref_label,
+    use_era5_obs,
+)
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map
@@ -378,8 +383,16 @@ class HeatwaveChangeDiag(DiagnosticBase):
         model_lon: np.ndarray,
         period: tuple[str, str],
     ) -> xr.DataArray | None:
-        """BE Land TMAX period mean interpolated to model grid (K)."""
+        """Obs Tmax period mean interpolated to model grid (K).
+
+        Uses the derived ERA5 monthly tasmax when ERA5 is the configured
+        extremes obs reference, otherwise Berkeley Earth Land TMAX.
+        """
         import pandas as pd
+
+        if use_era5_obs(self.config):
+            return load_era5_mean(
+                self.config, "tasmax", period, model_lat, model_lon)
 
         path = self._be_tmax_path()
         if path is None:
@@ -956,15 +969,16 @@ class HeatwaveChangeDiag(DiagnosticBase):
             m: results["model_mean_tmax"][m] - obs_mean_tmax[m]
             for m in models
         }
+        obs_label = obs_ref_label(self.config, "tasmax")
         fig, _ = plot_combined_bias_map(
             obs_c,
             bias_dict,
             title=(
                 f"{self.title}\n"
-                f"Mean Tmax Bias vs Berkeley Earth "
+                f"Mean Tmax Bias vs {obs_label} "
                 f"({self.ref_period[0]}–{self.ref_period[1]})"
             ),
-            obs_title="Berkeley Earth Land TMAX",
+            obs_title=obs_label,
             cmap="cmo.thermal",
             bias_cmap="RdBu_r",
             units="°C",
@@ -975,13 +989,15 @@ class HeatwaveChangeDiag(DiagnosticBase):
             models=models,
             description=(
                 f"Bias in climatological mean daily maximum temperature "
-                f"(model − Berkeley Earth Land TMAX, °C) for the reference period "
+                f"(model − {obs_label}, °C) for the reference period "
                 f"{self.ref_period[0]}–{self.ref_period[1]}. "
                 "Land-only. Model: CMOR daily tasmax mean; "
-                "obs: Berkeley Earth monthly Land TMAX (anomaly + climatology, °C→K)."
+                f"obs mean from {obs_label}."
             ),
-            obs_dataset="BERKELEY_EARTH_TMAX",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
+                         else "BERKELEY_EARTH_TMAX"),
+            obs_variable=("tasmax" if use_era5_obs(self.config)
+                          else "temperature"),
             period=self.ref_period,
             plot_type="bias_map",
         )

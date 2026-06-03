@@ -1,0 +1,219 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE all-members extreme-temperature indices — tropical nights + heatwave,
+# present-day indices AND climate-change signal — with ERA5 as the observational
+# reference (instead of Berkeley Earth).
+#
+# Serves all four diagnostics from a single config:
+#   tropical_nights / heatwave          → flat `models` + project.period
+#   tropical_nights_change / heatwave_change → project.climate_change block
+#
+# ERA5 plays two roles (project.extremes_obs_reference: ERA5):
+#   * a full participant in the base TN/heatwave diagnostics — indices computed
+#     from the derived ERA5 daily tasmin/tasmax CMOR tree (table=day), masked by
+#     ERA5's own sftlf;
+#   * the monthly-mean obs reference for the Tmin/Tmax bias maps and the
+#     approximate observed-TN series in all four diagnostics.
+#
+# Prerequisites (run scripts/era5_derive_tasminmax.sh + _finalize + _landmask):
+#   daily   ERA5 → /work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/...
+#   monthly ERA5 → /work/bm1344/AWI/OBS/era5_derived/mon/ERA5_tas{min,max}_*_1980-2023.nc
+#   sftlf   ERA5 → /work/bm1344/AWI/OBS/era5_derived/CMOR/.../fx/sftlf/gr/v1/...
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE all-members tropical nights & heatwave indices vs ERA5"
+  experiment: "hist-1950"
+  period: ["1981", "2000"]          # base-diagnostic index window (reference)
+  resolution: "high-resolution (~10 km atm)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    Present-day and SSP2-4.5 climate-change signals in tropical nights and
+    heatwave indices across all EERIE members, evaluated against ERA5-derived
+    daily extremes (tasmin/tasmax) rather than Berkeley Earth.
+  extremes_obs_reference: "ERA5"    # use ERA5 instead of Berkeley Earth
+
+  climate_change:
+    reference_period: ["1981", "2000"]
+    future_period:    ["2031", "2050"]
+    hist_load_period: ["1981", "2014"]
+    ssp_load_period:  ["2015", "2050"]
+    obs_end_year:     "2024"
+    models:
+      IFS-FESOM2-SR:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+      IFS-FESOM2-SR-r2:
+        hist_data_source:   kerchunk_native
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950
+        future_data_source: kerchunk_native
+        future_data_root:   /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/ssp245
+        future_only_to:     "2030"
+      IFS-FESOM2-SR-r3:
+        hist_data_source:   kerchunk_native
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950
+      ICON-ESM-ER:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+      IFS-NEMO-ER-r1:
+        hist_experiment:    hist-1950
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r2:
+        hist_experiment:    hist-1975
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r3:
+        hist_experiment:    hist-1975
+        hist_data_source:   cmor
+        hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+
+# Global default source for the flat-model (base) diagnostics.
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+# Flat models for the base tropical_nights / heatwave diagnostics.
+# ERA5 is added as an observational "model" reading its derived daily CMOR tree.
+# Members lacking daily tasmin/tasmax are skipped gracefully.
+models:
+  ERA5:
+    institution: ECMWF
+    experiment: era5
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5"
+    grids:
+      sfc: latlon
+    color: "#000000"
+
+  IFS-FESOM2-SR:
+    institution: AWI
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#1f77b4"
+
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids:
+      sfc: latlon
+    color: "#5aabdf"
+
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids:
+      sfc: latlon
+    color: "#9fcfe8"
+
+  ICON-ESM-ER:
+    institution: MPI-M
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#2ca02c"
+
+  IFS-NEMO-ER:
+    institution: BSC
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#ff7f0e"
+
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    experiment: hist-1975
+    variant: r2i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    grids:
+      sfc: latlon
+    color: "#e07b00"
+
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    experiment: hist-1975
+    variant: r3i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    grids:
+      sfc: latlon
+    color: "#a85800"
+
+  HadGEM3-GC5:
+    institution: MOHC
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    grids:
+      sfc: latlon
+    color: "#d62728"
+
+obs_root: "/work/bm1344/AWI/OBS"
+obs_datasets:
+  # Derived ERA5 monthly tasmin/tasmax (monthly mean of daily extremes), K.
+  ERA5_TMINMAX:
+    path: "/work/bm1344/AWI/OBS/era5_derived/mon"
+    variables:
+      tasmin: "ERA5_tasmin_daymin_mon_1980-2023.nc"
+      tasmax: "ERA5_tasmax_daymax_mon_1980-2023.nc"
+  # ERA5 land-sea mask (sftlf, %) — used to land-mask the approximate obs series.
+  ERA5_SFTLF:
+    path: "/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/fx/sftlf/gr/v1"
+    variables:
+      sftlf: "sftlf_fx_ERA5_era5_r1i1p1f1_gr.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_indices"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — EERIE All-Members Extreme Indices"
+  subtitle: "Tropical nights & heatwave indices vs ERA5 (1981–2000; SSP2-4.5 to 2050)"
+  group_order:
+    - extremes
+  group_labels:
+    extremes: "Extreme Events"

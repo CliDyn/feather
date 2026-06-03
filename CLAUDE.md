@@ -583,6 +583,13 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - `configs/era5_indices.yaml`: ERA5 as a single CMOR "model" → runs `tropical_nights`/`heatwave` on the derived daily data (Berkeley Land TMIN/TMAX for bias maps)
 - `temp_extremes_obs_comparison` adds **ERA5 as a second secondary** (alongside CRU) when `ERA5_TMINMAX` is in `obs_datasets` (monthly files); figure ids `tasmax_era5_*`/`tasmin_era5_*`. Each secondary is loaded independently so a missing ERA5 file doesn't drop the CRU comparison.
 
+### Configurable extremes obs reference (ERA5 vs Berkeley)
+- `feather/diag/_extremes_obs.py`: when `project.extremes_obs_reference: "ERA5"` and `ERA5_TMINMAX` is in `obs_datasets`, the tropical-nights/heatwave diagnostics (+ their `_change` variants) use the derived ERA5 monthly tasmin/tasmax as the obs reference instead of Berkeley Earth Land TMIN/TMAX
+- `use_era5_obs()`, `obs_ref_label()`, `era5_mean_available()`, `load_era5_mean()` (period-mean K on model grid), `era5_approx_exceedance_series()` (approx obs-TN series from monthly means, land-masked via `ERA5_SFTLF`)
+- ERA5 monthly tasmin/tasmax are absolute K on regular 0.25° — period mean is a plain time average (no anomaly+climatology reconstruction); Berkeley path unchanged (default)
+- `configs/eerie_all_members_indices.yaml`: single combined config for all four diagnostics — flat `models` (all EERIE members + ERA5 as a CMOR "model" reading its derived daily tree) for base TN/heatwave, plus a `climate_change` block for the `_change` diagnostics. ERA5 participates in the base diagnostics (daily indices, masked by its own `sftlf`) AND is the obs reference everywhere. ERA5 is not in `climate_change.models` (no future scenario).
+- 9 dedicated tests in `tests/test_extremes_obs.py`
+
 ### CRU TS / CHIRPS loaders (`ObsLoader`)
 - `load_cru(variable, period)`: globs per-decade `cru_ts4.09.*.{var}.dat.nc`, `open_mfdataset`, drops aux vars (`stn`/`mae`/`maea`); units → canonical (`pre` mm/month→kg/m²/s, `tmp`/`tmn`/`tmx` °C→K, `cld` % unchanged); land-only (ocean NaN); lons → 0..360
 - `load_chirps(period)`: single 0.05° file (60°N–60°S land), `precip` mm/month→kg/m²/s, `-9999`→NaN, dims renamed lat/lon, lons → 0..360
