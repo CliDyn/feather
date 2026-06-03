@@ -382,3 +382,37 @@ class TestTempExtremesDiag:
         ids = {p[0].stem for p in saved}
         assert "tasmax_obs_timeseries" in ids
         assert "tasmax_cru_annual_clim" in ids
+
+    def test_era5_secondary_added(self, obs_config):
+        """When ERA5_TMINMAX is configured, ERA5 appears as a 2nd secondary."""
+        from feather.diag.temp_extremes_obs_comparison import (
+            TempExtremesObsComparisonDiag,
+        )
+        obs_config.obs_datasets["ERA5_TMINMAX"] = {
+            "path": "/tmp", "variables": {"tasmax": "x.nc", "tasmin": "y.nc"}}
+        lons360 = np.sort((_LONS_180 + 360) % 360)
+        loader = MagicMock()
+
+        def _be(key, period=None):
+            n = 60 if (period and period[1] <= "2014") else 96
+            return _latlon_series("1981-01", n, _LATS, lons360, value=290.0, seed=11)
+
+        def _cru(var, period=None):
+            n = 60 if (period and period[1] <= "2014") else 96
+            d = _latlon_series("1981-01", n, _LATS, lons360, value=289.0, seed=12)
+            d.values[:, :, ::3] = np.nan
+            return d
+
+        def _load(ds_key, var, period=None):
+            n = 60 if (period and period[1] <= "2014") else 96
+            return _latlon_series("1981-01", n, _LATS, lons360, value=290.5, seed=13)
+
+        loader.load_berkeley_hr.side_effect = _be
+        loader.load_cru.side_effect = _cru
+        loader.load.side_effect = _load
+        diag = TempExtremesObsComparisonDiag(
+            MagicMock(), loader, obs_config, variables=["tasmax"])
+        saved = diag.run(skip_existing=False)
+        ids = {p[0].stem for p in saved}
+        assert "tasmax_cru_annual_clim" in ids
+        assert "tasmax_era5_annual_clim" in ids

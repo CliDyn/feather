@@ -61,6 +61,14 @@ obs_datasets:
     variables:
       precip: "chirps-v3.0.monthly.nc"
 
+  # ERA5 daily tasmin/tasmax derived from hourly t2m (167), monthly means.
+  # Produced by scripts/era5_derive_tasminmax.sh (+ finalize). Regular 0.25°, K.
+  ERA5_TMINMAX:
+    path: "/work/bm1344/AWI/OBS/era5_derived/mon"
+    variables:
+      tasmin: "ERA5_tasmin_daymin_mon_1981-2023.nc"
+      tasmax: "ERA5_tasmax_daymax_mon_1981-2023.nc"
+
   # CRU TS v4.09 (0.5°, land-only, per-decade files globbed by variable)
   CRU:
     path: "/work/bm1344/AWI/OBS/CRU/TSv409"
