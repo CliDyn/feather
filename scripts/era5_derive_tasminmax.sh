@@ -69,10 +69,14 @@ for f in "$SRC"/E5sf00_1H_${YEAR}-*_167.grb; do
 done
 
 # 3. Concatenate the year into daily CMOR files.
+#    (mergetime is variadic, so it must run on its own — not chained inside
+#     another operator — and the units attribute is set in a separate pass.)
 TASMIN_DAY=$CMOR_DAY/tasmin/gr/v1/tasmin_day_ERA5_era5_r1i1p1f1_gr_${YEAR}.nc
 TASMAX_DAY=$CMOR_DAY/tasmax/gr/v1/tasmax_day_ERA5_era5_r1i1p1f1_gr_${YEAR}.nc
-cdo -s -O -setattribute,tasmin@units=K mergetime "$WDIR"/min_*.nc "$TASMIN_DAY"
-cdo -s -O -setattribute,tasmax@units=K mergetime "$WDIR"/max_*.nc "$TASMAX_DAY"
+cdo -s -O mergetime "$WDIR"/min_*.nc "$WDIR/tasmin_${YEAR}.nc"
+cdo -s -O mergetime "$WDIR"/max_*.nc "$WDIR/tasmax_${YEAR}.nc"
+cdo -s -O setattribute,tasmin@units=K "$WDIR/tasmin_${YEAR}.nc" "$TASMIN_DAY"
+cdo -s -O setattribute,tasmax@units=K "$WDIR/tasmax_${YEAR}.nc" "$TASMAX_DAY"
 
 # 4. Monthly means of the daily extremes (merged across years by finalize step).
 cdo -s -O monmean "$TASMIN_DAY" "$MON_TMP/ERA5_tasmin_daymin_mon_${YEAR}.nc"
