@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Observation-only intercomparison configuration.
+#
+# No model data is loaded.  Runs the four obs-vs-obs comparison diagnostics:
+#   obs_comparison              — tas:  ERA5 vs Berkeley Earth vs CRU TS
+#   precip_obs_comparison       — pr:   ERA5 vs MSWEP vs CHIRPS vs CRU TS
+#   cloud_obs_comparison        — clt:  ERA5 vs CRU TS
+#   temp_extremes_obs_comparison— tasmax/tasmin: Berkeley Earth Land vs CRU TS
+#
+# Common grid for the CHIRPS/CRU comparisons: 0.5° land-masked.
+# Periods: short 1981–2014, long 1981–2023.
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "OBS Intercomparison"
+  description: "Observational dataset intercomparison (ERA5, Berkeley Earth, MSWEP, CHIRPS, CRU TS)"
+  experiment: "obs"
+  period: ["1981", "2014"]
+  resolution: "0.25°–0.5° gridded observations"
+  comparison_type: "baseline_evaluation"
+  comparison_description: "Pairwise comparison of independent observational datasets."
+
+# No models — obs-only run.  A stub model loader is used (no catalogs).
+data_source:
+  type: "destine_catalog"
+
+models: []
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      tcc: "ERA5_total_cloud_cover_mon_full_sfc_1940-2024.nc"
+
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
+
+  # Berkeley Earth high-resolution 0.25° products (anomaly + climatology format)
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
+  BERKELEY_EARTH_LAND_TMAX:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Land_TMAX_Gridded_0p25deg.nc"
+  BERKELEY_EARTH_LAND_TMIN:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Land_TMIN_Gridded_0p25deg.nc"
+
+  # CHIRPS v3.0 monthly precipitation (0.05°, 60°N–60°S, land)
+  CHIRPS:
+    path: "/work/bm1344/AWI/OBS/chirps/v3.0/monthly/global/netcdf"
+    variables:
+      precip: "chirps-v3.0.monthly.nc"
+
+  # CRU TS v4.09 (0.5°, land-only, per-decade files globbed by variable)
+  CRU:
+    path: "/work/bm1344/AWI/OBS/CRU/TSv409"
+    variables:
+      pre: "cru_ts4.09.*.pre.dat.nc"
+      tmp: "cru_ts4.09.*.tmp.dat.nc"
+      tmn: "cru_ts4.09.*.tmn.dat.nc"
+      tmx: "cru_ts4.09.*.tmx.dat.nc"
+      cld: "cru_ts4.09.*.cld.dat.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.5
+  influence_radius: 80000
+  ocean_influence_radius: 20000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/OBS/output_obs_comparison"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — Observational Intercomparison"
+  subtitle: "ERA5 vs Berkeley Earth, MSWEP, CHIRPS, CRU TS (1981–2023)"
+  group_order:
+    - evaluation
+    - temperature
+    - precipitation
+    - clouds
+  group_labels:
+    evaluation: "Temperature (ERA5 vs Berkeley)"
+    temperature: "Temperature"
+    precipitation: "Precipitation"
+    clouds: "Cloud Cover"

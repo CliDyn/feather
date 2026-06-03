@@ -115,6 +115,7 @@ feather/                     # Package root
 | `configs/eerie_psl.yaml` | EERIE HighResMIP + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
+| `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
 | `feather/config.py` | FeatherConfig + ModelConfig dataclasses, dual-format YAML loading |
@@ -557,6 +558,25 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Lon wraparound padding in `_interp_to_era5()` avoids white line at 0°/360° seam
 - Requires `MSWEP` in `obs_datasets` config (already present in `eerie.yaml`)
 - 73 dedicated tests in `tests/test_precip_obs_comparison.py`
+- **Extra secondary datasets (CHIRPS, CRU)**: when configured, `_run_extra_secondaries()` layers additional ERA5-vs-CHIRPS and ERA5-vs-CRU figure sets (figure ids `pr_chirps_*`, `pr_cru_*`) via the shared engine on a **0.5° land-masked** grid over **1981–2014 / 1981–2023**. Skipped silently if the dataset key is absent from `obs_datasets`, so existing MSWEP-only configs/tests are unaffected. CHIRPS comparisons clipped to 60°N–60°S. Primary ERA5/MSWEP clim+diff also exported to NetCDF.
+
+### Observational-comparison engine (`_obs_compare_common.py`)
+- Shared pairwise obs-vs-obs comparison engine used by `obs_comparison` (CRU `tmp` secondary), `precip_obs_comparison` (CHIRPS + CRU `pre` secondaries), `cloud_obs_comparison`, and `temp_extremes_obs_comparison`
+- `CompareSpec` declares display units/factor/offset, colormaps, `land_only`, `relative_bias`, `extent`; `PairwiseObsComparison` does compute → figures → `export_netcdf`
+- Common grid **0.5° land-masked** (`common_grid_05()`); reference (often global ERA5/Berkeley) masked to the land-only secondary's valid cells when `land_only=True`
+- `compute_trend()`: annual uses `annual_mean`→`dim="time"`; seasonal uses `seasonal_annual_mean`→`dim="year"` (mismatching these raises `KeyError: 'year'`)
+- `area_weighted_annual_series()`: cos-lat weighted, NaN-aware (land-only safe); re-indexes year-end time → integer `year`
+- NetCDF written to `{output_dir}/netcdf/{diag}/{var}_{token}_{period}_clim_diff.nc` in canonical units
+
+### CloudObsComparisonDiag + TempExtremesObsComparisonDiag
+- `cloud_obs_comparison` (group `clouds`): ERA5 `tcc`→`clt` (%) vs CRU `cld`; trend/trend-diff/clim figures + land-mean timeseries
+- `temp_extremes_obs_comparison` (group `temperature`): Berkeley Earth **Land** TMAX/TMIN vs CRU `tmx`/`tmn` for `tasmax`/`tasmin` (registry entries added); reference = Berkeley, both land-only 0.25°
+- Berkeley Land TMAX/TMIN share the Global TAVG HR format (decimal-year time, anomaly + 12-month climatology) → loaded by the generalized `ObsLoader.load_berkeley_hr(dataset_key, period)`
+
+### CRU TS / CHIRPS loaders (`ObsLoader`)
+- `load_cru(variable, period)`: globs per-decade `cru_ts4.09.*.{var}.dat.nc`, `open_mfdataset`, drops aux vars (`stn`/`mae`/`maea`); units → canonical (`pre` mm/month→kg/m²/s, `tmp`/`tmn`/`tmx` °C→K, `cld` % unchanged); land-only (ocean NaN); lons → 0..360
+- `load_chirps(period)`: single 0.05° file (60°N–60°S land), `precip` mm/month→kg/m²/s, `-9999`→NaN, dims renamed lat/lon, lons → 0..360
+- 30 dedicated tests in `tests/test_obs_cru_chirps.py` (loaders + engine + both new diagnostics)
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM
 - AV = (sq_err_CMIP6 - sq_err_EERIE) / max(sq_err_CMIP6, sq_err_EERIE), bounded [-1, 1]

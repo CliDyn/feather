@@ -362,6 +362,223 @@ class ObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
+    def load_cru(self, variable: str, period=None) -> xr.DataArray:
+        """Load a CRU TS v4.09 monthly land variable.
+
+        CRU TS is a 0.5° **land-only** gridded dataset (ocean cells are NaN)
+        distributed as per-decade NetCDF files.  This method opens all decade
+        files for the requested variable, concatenates them along time, and
+        returns the field in framework-canonical units:
+
+        ============  =========================  ====================
+        CRU variable  meaning                    returned units
+        ============  =========================  ====================
+        ``pre``       precipitation              kg/m²/s
+        ``tmp``       mean near-surface temp.    K
+        ``tmn``       min near-surface temp.     K
+        ``tmx``       max near-surface temp.     K
+        ``cld``       cloud cover                % (unchanged)
+        ============  =========================  ====================
+
+        Longitudes are shifted from −180..180 to 0..360 to match the
+        framework convention.  Auxiliary variables (``stn``/``mae``/``maea``)
+        are dropped.
+
+        Parameters
+        ----------
+        variable : str
+            One of ``pre``, ``tmp``, ``tmn``, ``tmx``, ``cld``.
+        period : tuple of str, optional
+            (start, end) for time slicing.
+        """
+        ds_cfg = self._config.obs_datasets.get("CRU")
+        if ds_cfg is None:
+            raise KeyError(
+                "CRU not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        cache_key = f"CRU/{variable}"
+        if cache_key not in self._cache:
+            base_path = Path(ds_cfg["path"])
+            variables = ds_cfg.get("variables", {})
+            # Config may give an explicit glob pattern per variable; otherwise
+            # fall back to the standard CRU TS file-naming convention.
+            pattern = variables.get(variable, f"cru_ts4.09.*.{variable}.dat.nc")
+            files = sorted(base_path.glob(pattern))
+            if not files:
+                raise FileNotFoundError(
+                    f"No CRU files matching {pattern!r} in {base_path}"
+                )
+            ds = xr.open_mfdataset(
+                files, combine="by_coords", chunks="auto",
+                data_vars="minimal", coords="minimal", compat="override",
+            )
+            self._cache[cache_key] = ds
+
+        da = self._cache[cache_key][variable]
+
+        # Shift lons −180..180 → 0..360
+        if "lon" in da.coords and float(da.lon.min()) < 0:
+            lon = da.lon.values
+            lon_360 = np.where(lon < 0, lon + 360, lon)
+            sort_idx = np.argsort(lon_360)
+            da = da.isel(lon=sort_idx).assign_coords(lon=lon_360[sort_idx])
+
+        # Unit conversion to framework-canonical units
+        if variable == "pre":
+            seconds_in_month = da.time.dt.days_in_month * 86400
+            da = da / seconds_in_month  # mm/month → kg/m²/s
+        elif variable in ("tmp", "tmn", "tmx"):
+            da = da + 273.15  # °C → K
+        # cld stays in %
+
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
+    def load_chirps(self, period=None) -> xr.DataArray:
+        """Load CHIRPS v3.0 monthly precipitation (converted to kg/m²/s).
+
+        CHIRPS is a 0.05° quasi-global (60°N–60°S) **land-only** satellite +
+        gauge precipitation product stored as mm/month.  The conversion to
+        kg/m²/s is time-varying (months differ in length).  Longitudes are
+        shifted from −180..180 to 0..360.
+
+        Parameters
+        ----------
+        period : tuple of str, optional
+            (start, end) for time slicing.
+        """
+        ds_cfg = self._config.obs_datasets.get("CHIRPS")
+        if ds_cfg is None:
+            raise KeyError(
+                "CHIRPS not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        cache_key = "CHIRPS/precip"
+        if cache_key not in self._cache:
+            base_path = Path(ds_cfg["path"])
+            variables = ds_cfg.get("variables", {})
+            filepath = base_path / variables.get(
+                "precip", "chirps-v3.0.monthly.nc"
+            )
+            self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
+
+        ds = self._cache[cache_key]
+        da = ds["precip"]
+
+        # Rename dims latitude/longitude → lat/lon
+        rename = {}
+        if "latitude" in da.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in da.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            da = da.rename(rename)
+
+        # Mask the −9999 fill value if it survived decoding
+        da = da.where(da > -9000)
+
+        # Convert mm/month → kg/m²/s
+        seconds_in_month = da.time.dt.days_in_month * 86400
+        da = da / seconds_in_month
+
+        # Shift lons −180..180 → 0..360
+        if float(da.lon.min()) < 0:
+            lon = da.lon.values
+            lon_360 = np.where(lon < 0, lon + 360, lon)
+            sort_idx = np.argsort(lon_360)
+            da = da.isel(lon=sort_idx).assign_coords(lon=lon_360[sort_idx])
+
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
+    def load_berkeley_hr(self, dataset_key: str, period=None) -> xr.DataArray:
+        """Load a Berkeley Earth high-resolution (0.25°) gridded field in K.
+
+        Handles the Berkeley Earth gridded format used by both the global
+        TAVG product and the land TMAX/TMIN products.  Files store monthly
+        *anomalies* (°C, re: 1951–1980) plus a 12-month ``climatology`` array;
+        the absolute temperature is reconstructed as
+        ``anomaly + climatology[month_of_year]``.  Time is encoded as decimal
+        years and converted to a proper ``DatetimeIndex``.
+
+        Parameters
+        ----------
+        dataset_key : str
+            obs_datasets key, e.g. ``BERKELEY_EARTH_HR``,
+            ``BERKELEY_EARTH_LAND_TMAX``, ``BERKELEY_EARTH_LAND_TMIN``.
+        period : tuple of str, optional
+            (start, end) for time slicing.
+
+        Returns
+        -------
+        xr.DataArray
+            Absolute temperature in K on a 0.25° grid, dims ``lat``/``lon``,
+            lons in 0..360.
+        """
+        import pandas as pd
+
+        ds_cfg = self._config.obs_datasets.get(dataset_key)
+        if ds_cfg is None:
+            raise KeyError(
+                f"{dataset_key} not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        cache_key = f"{dataset_key}/temperature"
+        if cache_key not in self._cache:
+            base_path = Path(ds_cfg["path"])
+            variables = ds_cfg.get("variables", {})
+            filename = variables.get("temperature")
+            if filename is None:
+                # single-entry datasets: take the only configured file
+                filename = next(iter(variables.values()))
+            self._cache[cache_key] = xr.open_dataset(
+                base_path / filename, chunks="auto",
+            )
+
+        ds_full = self._cache[cache_key]
+
+        # Decimal-year time → DatetimeIndex (e.g. 1981.125 → Feb 1981)
+        dec_years = ds_full["time"].values
+        years = dec_years.astype(int)
+        months = np.floor((dec_years - years) * 12).astype(int) + 1
+        months = np.clip(months, 1, 12)
+        datetimes = pd.to_datetime(
+            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        )
+        ds_full = ds_full.assign_coords(time=datetimes)
+
+        anom = ds_full["temperature"]
+        if period is not None:
+            anom = anom.sel(time=slice(period[0], period[1]))
+        clim = ds_full["climatology"]  # (month_number, lat, lon)
+
+        month_idx = anom.time.dt.month.values - 1
+        clim_matched = clim.values[month_idx]
+        abs_temp = anom + xr.DataArray(
+            clim_matched, dims=anom.dims, coords=anom.coords,
+        )
+
+        rename = {}
+        if "latitude" in abs_temp.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in abs_temp.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            abs_temp = abs_temp.rename(rename)
+
+        if float(abs_temp.lon.min()) < 0:
+            abs_temp = abs_temp.assign_coords(
+                lon=((abs_temp.lon + 360) % 360),
+            ).sortby("lon")
+
+        return abs_temp + 273.15  # °C → K
+
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""
         return list(self._config.obs_datasets.keys())
