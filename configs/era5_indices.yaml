@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ERA5 extreme-temperature indices (tropical nights + heatwave) computed from
+# the derived ERA5 daily tasmin/tasmax (see scripts/era5_derive_tasminmax.sh).
+#
+# ERA5 is configured as a single CMOR "model" pointing at the derived daily
+# tree; the diagnostics load daily tasmin/tasmax via table="day".  Berkeley
+# Earth Land TMIN/TMAX provide the monthly-mean obs bias reference.
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "ERA5 Extreme Indices"
+  description: "ERA5 tropical-nights and heatwave indices from derived daily tasmin/tasmax"
+  experiment: "era5"
+  period: ["1980", "2023"]
+  resolution: "0.25° regular lat/lon"
+  comparison_type: "baseline_evaluation"
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/AWI/OBS/era5_derived/CMOR"
+
+models:
+  ERA5:
+    institution: ECMWF
+    experiment: era5
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#1f77b4"
+
+obs_root: "/work/bm1344/AWI/OBS/berkeleyearth"
+obs_datasets:
+  BERKELEY_EARTH_TMIN:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Land_TMIN_Gridded_0p25deg.nc"
+  BERKELEY_EARTH_TMAX:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Land_TMAX_Gridded_0p25deg.nc"
+
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/OBS/output_era5_indices"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-3-pro-preview"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — ERA5 Extreme Indices"
+  subtitle: "ERA5 tropical nights & heatwave indices (1980–2023)"
+  group_order:
+    - extremes
+  group_labels:
+    extremes: "Extreme Events"

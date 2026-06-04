@@ -82,6 +82,8 @@ class MockCMORLoader:
         self._da = tasmax_da
 
     def load_var(self, model, variable, *, table=None, period=None, time_mean=False):
+        if variable == "sftlf":
+            raise FileNotFoundError("mock model has no sftlf land mask")
         da = self._da
         if period:
             da = da.sel(time=slice(period[0], period[1]))
@@ -419,7 +421,7 @@ class TestBeObsLoading:
 
     def test_land_mask_returns_none_without_obs(self, hw_diag, monkeypatch):
         monkeypatch.setattr(hw_diag, "_be_tmax_path", lambda: None)
-        mask = hw_diag._load_land_mask(np.array([-45.0, 15.0]), np.array([0.0, 90.0]))
+        mask = hw_diag._load_land_mask("model-A", np.array([-45.0, 15.0]), np.array([0.0, 90.0]))
         assert mask is None
 
     def test_be_mean_tmax_returns_none_without_obs(self, hw_diag, monkeypatch):
@@ -430,7 +432,7 @@ class TestBeObsLoading:
     def test_land_mask_loaded_from_be_file(self, hw_diag_with_obs):
         lat = np.array([-45.0, 15.0])
         lon = np.array([0.0, 90.0])
-        mask = hw_diag_with_obs._load_land_mask(lat, lon)
+        mask = hw_diag_with_obs._load_land_mask("model-A", lat, lon)
         assert mask is not None
         assert mask.dtype == bool
 

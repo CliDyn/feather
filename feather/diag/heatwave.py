@@ -46,6 +46,12 @@ import xarray as xr
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.diag._extremes_obs import (
+    era5_mean_available,
+    load_era5_mean,
+    obs_ref_label,
+    use_era5_obs,
+)
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 
 logger = logging.getLogger(__name__)
@@ -122,7 +128,10 @@ class HeatwaveDiag(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        has_obs = self._be_tmax_path() is not None
+        has_obs = (
+            era5_mean_available(self.config, "tasmax")
+            or self._be_tmax_path() is not None
+        )
         fig_ids = [
             f"heatwave_{idx}_{kind}"
             for idx in ("hwn", "hwf", "hwd", "hwm", "hwa")
@@ -196,9 +205,15 @@ class HeatwaveDiag(DiagnosticBase):
 
         obs_mean_tmax = None
         if lat_coord is not None:
-            obs_mean_tmax = self._load_be_mean_tmax(
-                lat_coord.values, lon_coord.values
-            )
+            if use_era5_obs(self.config):
+                obs_mean_tmax = load_era5_mean(
+                    self.config, "tasmax", self.period,
+                    lat_coord.values, lon_coord.values,
+                )
+            else:
+                obs_mean_tmax = self._load_be_mean_tmax(
+                    lat_coord.values, lon_coord.values
+                )
 
         return {
             "hw_clim": hw_clim,
@@ -236,7 +251,7 @@ class HeatwaveDiag(DiagnosticBase):
 
         # Land mask
         land_mask = self._load_land_mask(
-            np.asarray(da["lat"]), np.asarray(da["lon"])
+            model, np.asarray(da["lat"]), np.asarray(da["lon"])
         )
 
         # Compute 90th-percentile threshold per DOY (lazy → compute once)
@@ -468,10 +483,41 @@ class HeatwaveDiag(DiagnosticBase):
 
     # ── Obs helpers ────────────────────────────────────────────────────
 
-    def _load_land_mask(
-        self, model_lat: np.ndarray, model_lon: np.ndarray
+    def _load_model_land_mask(
+        self, model: str, model_lat: np.ndarray, model_lon: np.ndarray
     ) -> xr.DataArray | None:
-        """Load Berkeley Earth land mask interpolated to the model grid."""
+        """Boolean land mask from the model's own ``sftlf`` (fx, %), or None.
+
+        Land where land area fraction > 50 %.  Returns None so the caller can
+        fall back to the Berkeley mask when the model has no ``sftlf``.
+        """
+        try:
+            sftlf = self.model_loader.load_var(model, "sftlf", table="fx")
+        except (KeyError, FileNotFoundError, OSError, AttributeError,
+                ValueError, TypeError):
+            return None
+        try:
+            sftlf = sftlf.squeeze(drop=True)
+            for d in ("time", "height", "depth"):
+                if d in sftlf.dims:
+                    sftlf = sftlf.isel({d: 0})
+            mask = sftlf.interp(
+                lat=xr.DataArray(model_lat, dims="lat"),
+                lon=xr.DataArray(model_lon, dims="lon"),
+                method="nearest", kwargs={"fill_value": 0.0},
+            )
+            return mask > 50.0
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("  %s: could not use sftlf land mask: %s", model, exc)
+            return None
+
+    def _load_land_mask(
+        self, model: str, model_lat: np.ndarray, model_lon: np.ndarray
+    ) -> xr.DataArray | None:
+        """Boolean land mask (True = land), preferring the model's own sftlf."""
+        model_mask = self._load_model_land_mask(model, model_lat, model_lon)
+        if model_mask is not None:
+            return model_mask
         path = self._be_tmax_path()
         if path is None:
             return None
@@ -696,6 +742,7 @@ class HeatwaveDiag(DiagnosticBase):
         models = results["models"]
         obs_k = results["obs_mean_tmax"]
         obs_c = obs_k - _K_TO_C
+        obs_label = obs_ref_label(self.config, "tasmax")
 
         bias_dict = {
             m: results["model_mean_tmax"][m] - obs_k
@@ -705,8 +752,8 @@ class HeatwaveDiag(DiagnosticBase):
         fig, _ = plot_combined_bias_map(
             obs_c,
             bias_dict,
-            title=f"{self.title} — Mean TMAX Bias vs Berkeley Earth",
-            obs_title="Berkeley Earth Land TMAX",
+            title=f"{self.title} — Mean TMAX Bias vs {obs_label}",
+            obs_title=obs_label,
             cmap="cmo.thermal",
             bias_cmap="RdBu_r",
             units="°C",
@@ -717,12 +764,14 @@ class HeatwaveDiag(DiagnosticBase):
             models=models,
             description=(
                 "Bias in climatological mean daily maximum temperature "
-                "(model − Berkeley Earth Land TMAX, °C).  Land-only. "
+                f"(model − {obs_label}, °C).  Land-only. "
                 "Note: observed heatwave indices are not computable from "
-                "monthly Berkeley Earth data; only mean TMAX bias is shown."
+                "monthly obs; only mean TMAX bias is shown."
             ),
-            obs_dataset="BERKELEY_EARTH_TMAX",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
+                         else "BERKELEY_EARTH_TMAX"),
+            obs_variable=("tasmax" if use_era5_obs(self.config)
+                          else "temperature"),
             period=self.period,
             plot_type="bias_map",
         )

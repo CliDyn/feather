@@ -85,6 +85,8 @@ class MockCMORLoader:
 
     def load_var(self, model: str, variable: str, *,
                  table=None, period=None, time_mean=False):
+        if variable == "sftlf":
+            raise FileNotFoundError("mock model has no sftlf land mask")
         da = self._da
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -331,6 +333,7 @@ def test_land_mask_returns_none_when_path_overridden(tn_diag, daily_tasmin, monk
     """_load_land_mask() returns None when _be_tmin_path() returns None."""
     monkeypatch.setattr(tn_diag, "_be_tmin_path", lambda: None)
     mask = tn_diag._load_land_mask(
+        "model-A",
         np.asarray(daily_tasmin["lat"]),
         np.asarray(daily_tasmin["lon"]),
     )
@@ -364,6 +367,7 @@ def test_land_mask_applied_from_mock_file(tn_config, daily_tasmin, tmp_path):
     diag._be_tmin_path = lambda: be_path
 
     mask = diag._load_land_mask(
+        "model-A",
         np.asarray(daily_tasmin["lat"]),
         np.asarray(daily_tasmin["lon"]),
     )
@@ -393,6 +397,35 @@ def test_land_mask_ocean_pixels_nan(tn_config, daily_tasmin, tmp_path):
     # Ocean lats (lat >= 0) should be NaN in mean
     ocean_lat = float(lats[lats >= 0][0])
     assert np.all(np.isnan(tn_masked.sel(lat=ocean_lat, method="nearest").values))
+
+
+def test_model_sftlf_land_mask_preferred(tn_config, daily_tasmin, monkeypatch):
+    """When the model provides sftlf (fx, %), it is used as the land mask."""
+    lats = np.asarray(daily_tasmin["lat"])
+    lons = np.asarray(daily_tasmin["lon"])
+    # sftlf: land (80 %) for lat < 0, ocean (10 %) elsewhere
+    sftlf_vals = np.where(lats[:, None] < 0, 80.0, 10.0) * np.ones((1, len(lons)))
+    sftlf = xr.DataArray(sftlf_vals, dims=("lat", "lon"),
+                         coords={"lat": lats, "lon": lons}, name="sftlf")
+
+    class SftlfLoader(MockCMORLoader):
+        def load_var(self, model, variable, *, table=None, period=None,
+                     time_mean=False):
+            if variable == "sftlf":
+                return sftlf
+            return super().load_var(model, variable, table=table,
+                                    period=period, time_mean=time_mean)
+
+    diag = TropicalNightsDiag(
+        SftlfLoader(daily_tasmin), MockObsLoader(), tn_config,
+        period=("1990", "1992"))
+    # BE path would raise if reached; ensure we don't fall back
+    monkeypatch.setattr(diag, "_be_tmin_path", lambda: None)
+
+    mask = diag._load_land_mask("model-A", lats, lons)
+    assert mask is not None
+    assert bool(mask.sel(lat=float(lats[lats < 0][0]), method="nearest").all())
+    assert not bool(mask.sel(lat=float(lats[lats >= 0][0]), method="nearest").any())
 
 
 # ── Compute tests ─────────────────────────────────────────────────────

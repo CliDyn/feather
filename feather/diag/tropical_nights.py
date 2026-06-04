@@ -33,6 +33,12 @@ import xarray as xr
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.diag._extremes_obs import (
+    era5_mean_available,
+    load_era5_mean,
+    obs_ref_label,
+    use_era5_obs,
+)
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 
 logger = logging.getLogger(__name__)
@@ -110,7 +116,10 @@ class TropicalNightsDiag(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        has_obs = self._be_tmin_path() is not None
+        has_obs = (
+            era5_mean_available(self.config, "tasmin")
+            or self._be_tmin_path() is not None
+        )
         fig_ids = [
             "tropical_nights_climatology",
             "tropical_nights_timeseries",
@@ -181,12 +190,18 @@ class TropicalNightsDiag(DiagnosticBase):
 
             tn_zonal[model] = clim.mean("lon")
 
-        # Load BE obs mean Tmin for bias Group B
+        # Load obs mean Tmin for bias Group B (ERA5 if configured, else BE)
         obs_mean_tmin = None
         if lat_coord is not None:
-            obs_mean_tmin = self._load_be_mean_tmin(
-                lat_coord.values, lon_coord.values,
-            )
+            if use_era5_obs(self.config):
+                obs_mean_tmin = load_era5_mean(
+                    self.config, "tasmin", self.period,
+                    lat_coord.values, lon_coord.values,
+                )
+            else:
+                obs_mean_tmin = self._load_be_mean_tmin(
+                    lat_coord.values, lon_coord.values,
+                )
 
         return {
             "tn_clim": tn_clim,
@@ -226,7 +241,7 @@ class TropicalNightsDiag(DiagnosticBase):
 
         # Land-only masking
         land_mask = self._load_land_mask(
-            np.asarray(da["lat"]), np.asarray(da["lon"]),
+            model, np.asarray(da["lat"]), np.asarray(da["lon"]),
         )
         if land_mask is not None:
             tn_raw = tn_raw.where(land_mask)
@@ -271,16 +286,54 @@ class TropicalNightsDiag(DiagnosticBase):
         }
         return annual
 
-    def _load_land_mask(
+    def _load_model_land_mask(
         self,
+        model: str,
         model_lat: np.ndarray,
         model_lon: np.ndarray,
     ) -> xr.DataArray | None:
-        """Load Berkeley Earth land mask, interpolated to the model grid.
+        """Boolean land mask from the model's own ``sftlf`` (fx, %), or None.
 
-        Returns a boolean DataArray (True = land) on the model lat/lon grid,
-        or None if the obs file is not accessible.
+        Land where land area fraction > 50 %.  Returns None (so the caller can
+        fall back to the Berkeley mask) if the model has no ``sftlf`` field.
         """
+        try:
+            sftlf = self.model_loader.load_var(model, "sftlf", table="fx")
+        except (KeyError, FileNotFoundError, OSError, AttributeError,
+                ValueError, TypeError):
+            return None
+        try:
+            sftlf = sftlf.squeeze(drop=True)
+            for d in ("time", "height", "depth"):
+                if d in sftlf.dims:
+                    sftlf = sftlf.isel({d: 0})
+            mask = sftlf.interp(
+                lat=xr.DataArray(model_lat, dims="lat"),
+                lon=xr.DataArray(model_lon, dims="lon"),
+                method="nearest", kwargs={"fill_value": 0.0},
+            )
+            return mask > 50.0
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("  %s: could not use sftlf land mask: %s", model, exc)
+            return None
+
+    def _load_land_mask(
+        self,
+        model: str,
+        model_lat: np.ndarray,
+        model_lon: np.ndarray,
+    ) -> xr.DataArray | None:
+        """Boolean land mask (True = land) on the model lat/lon grid.
+
+        Prefers the model's own land-sea mask (CMOR ``sftlf``, ``fx`` table,
+        land area fraction in %), e.g. the derived ERA5 mask.  Falls back to
+        the Berkeley Earth ``land_mask`` when ``sftlf`` is unavailable, and to
+        ``None`` if neither can be loaded.
+        """
+        model_mask = self._load_model_land_mask(model, model_lat, model_lon)
+        if model_mask is not None:
+            return model_mask
+
         path = self._be_tmin_path()
         if path is None:
             return None
@@ -518,6 +571,7 @@ class TropicalNightsDiag(DiagnosticBase):
         models = results["models"]
         obs_k = results["obs_mean_tmin"]         # (lat, lon) in K
         obs_c = obs_k - _K_TO_C                  # display in °C
+        obs_label = obs_ref_label(self.config, "tasmin")
 
         bias_dict = {
             m: results["model_mean_tmin"][m] - obs_k   # K difference = °C difference
@@ -527,8 +581,8 @@ class TropicalNightsDiag(DiagnosticBase):
         fig, _ = plot_combined_bias_map(
             obs_c,
             bias_dict,
-            title=f"{self.title} — Mean Tmin Bias vs Berkeley Earth",
-            obs_title="Berkeley Earth Land TMIN",
+            title=f"{self.title} — Mean Tmin Bias vs {obs_label}",
+            obs_title=obs_label,
             cmap="cmo.thermal",
             bias_cmap="RdBu_r",
             units="°C",
@@ -539,12 +593,14 @@ class TropicalNightsDiag(DiagnosticBase):
             models=models,
             description=(
                 "Bias in climatological mean daily minimum temperature "
-                "(model − Berkeley Earth Land TMIN, °C). "
+                f"(model − {obs_label}, °C). "
                 "Both model and obs are land-only. Model from CMOR daily tasmin; "
-                "obs from Berkeley Earth monthly Land TMIN (anomaly + climatology)."
+                f"obs mean from {obs_label}."
             ),
-            obs_dataset="BERKELEY_EARTH_TMIN",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
+                         else "BERKELEY_EARTH_TMIN"),
+            obs_variable=("tasmin" if use_era5_obs(self.config)
+                          else "temperature"),
             period=self.period,
             plot_type="bias_map",
         )

@@ -76,6 +76,14 @@ VARIABLE_REGISTRY: dict[str, VarInfo] = {
         group="temperature",
         display_offset=-273.15, display_units="°C",
     ),
+    "sftlf": VarInfo(
+        name="sftlf", long_name="Land Area Fraction", units="%",
+        domain="sfc", cmap="terrain",
+        obs_dataset="", obs_variable="",
+        destine_variable="",
+        cmip6_variable="sftlf", cmip6_table="fx",
+        group="fixed",
+    ),
     "ts": VarInfo(
         name="ts", long_name="Skin Temperature", units="K",
         domain="sfc", cmap="cmo.thermal",

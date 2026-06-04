@@ -99,28 +99,110 @@ class PrecipObsComparisonDiag(DiagnosticBase):
                 f"pr_obs_{pk}_relative_bias",
             ]
 
-        if skip_existing and all(self._figure_exists(fid) for fid in all_ids):
-            logger.info("Skipping %s — all figures exist", self.name)
-            return [
-                (self.output_dir / f"{fid}.png",
-                 self.output_dir / f"{fid}.json")
-                for fid in all_ids
-            ]
+        if not (skip_existing and all(self._figure_exists(f) for f in all_ids)):
+            try:
+                results = self.compute()
+                figures = self.plot(results)
+                for fig, meta in figures:
+                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                    plt.close(fig)
+                self._export_primary_netcdf(results)
+            except Exception:
+                logger.error("Diagnostic %s failed", self.name, exc_info=True)
+        else:
+            logger.info("Skipping %s primary figures — all exist", self.name)
+            saved += [(self.output_dir / f"{f}.png",
+                       self.output_dir / f"{f}.json") for f in all_ids]
 
-        try:
-            results = self.compute()
-            figures = self.plot(results)
-            for fig, meta in figures:
-                paths = self._save(fig, meta, meta["figure_id"])
-                saved.append(paths)
-                plt.close(fig)
-        except Exception:
-            logger.error("Diagnostic %s failed", self.name, exc_info=True)
+        # Additional secondary datasets (CHIRPS, CRU) via the shared engine
+        saved += self._run_extra_secondaries(skip_existing)
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    # ── Extra secondary datasets (engine-based) ─────────────────────────
+
+    #: Periods for the engine-based comparisons (CHIRPS starts 1981).
+    EXTRA_SHORT = ("1981", "2014")
+    EXTRA_LONG = ("1981", "2023")
+
+    @property
+    def _netcdf_dir(self) -> Path:
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _extra_specs(self):
+        """Return (CompareSpec, secondary-loader) pairs for CHIRPS and CRU."""
+        from feather.diag._obs_compare_common import CompareSpec
+
+        chirps = CompareSpec(
+            var="pr", ref_name="ERA5", sec_name="CHIRPS", sec_token="chirps",
+            units_label="mm/day", display_factor=_PR_MMDAY,
+            abs_cmap="cmo.tarn", diff_cmap="BrBG", trend_cmap="cmo.tarn",
+            abs_nonneg=True, relative_bias=True, land_only=True,
+            sec_color="#8c564b", extent=(-60.0, 60.0),
+        )
+        cru = CompareSpec(
+            var="pr", ref_name="ERA5", sec_name="CRU", sec_token="cru",
+            units_label="mm/day", display_factor=_PR_MMDAY,
+            abs_cmap="cmo.tarn", diff_cmap="BrBG", trend_cmap="cmo.tarn",
+            abs_nonneg=True, relative_bias=True, land_only=True,
+            sec_color="#9467bd",
+        )
+        return [
+            ("CHIRPS", chirps, lambda p: self.obs_loader.load_chirps(p)),
+            ("CRU", cru, lambda p: self.obs_loader.load_cru("pre", p)),
+        ]
+
+    def _run_extra_secondaries(self, skip_existing: bool) -> list[tuple[Path, Path]]:
+        from feather.diag._obs_compare_common import PairwiseObsComparison
+
+        saved: list[tuple[Path, Path]] = []
+        era5_s = era5_l = None  # lazy-loaded once
+        for ds_key, spec, sec_loader in self._extra_specs():
+            if ds_key not in self.config.obs_datasets:
+                continue  # dataset not configured — skip this comparison
+            ids = [f"pr_{spec.sec_token}_{pk}_{k}"
+                   for pk in ["annual", "djf", "jja"]
+                   for k in ["trends", "trend_diffs", "clim", "relative_bias"]]
+            if skip_existing and all(self._figure_exists(f) for f in ids):
+                logger.info("Skipping pr/%s — figures exist", spec.sec_token)
+                saved += [(self.output_dir / f"{f}.png",
+                           self.output_dir / f"{f}.json") for f in ids]
+                continue
+            try:
+                if era5_s is None:
+                    era5_s = self._normalise_lons(self._load_era5_pr(self.EXTRA_SHORT))
+                    era5_l = self._normalise_lons(self._load_era5_pr(self.EXTRA_LONG))
+                engine = PairwiseObsComparison(
+                    self, spec, self.EXTRA_SHORT, self.EXTRA_LONG)
+                results = engine.compute(
+                    era5_s, era5_l,
+                    sec_loader(self.EXTRA_SHORT), sec_loader(self.EXTRA_LONG))
+                for fig, meta in engine.figures(results):
+                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                    plt.close(fig)
+                engine.export_netcdf(results, self._netcdf_dir)
+            except Exception:
+                logger.error("pr/%s comparison failed", spec.sec_token,
+                             exc_info=True)
+        return saved
+
+    def _export_primary_netcdf(self, results) -> None:
+        """Save ERA5/MSWEP climatology + difference fields as NetCDF."""
+        nc_dir = self._netcdf_dir
+        nc_dir.mkdir(parents=True, exist_ok=True)
+        for pk, c in results["clim"].items():
+            ds = xr.Dataset({
+                "era5_clim": c["era5_short"],
+                "mswep_clim": c["mswep_short"],
+                "diff_short": c["diff_short"],
+                "diff_long": c["diff_long"],
+            })
+            ds.attrs.update(variable="pr", reference="ERA5", secondary="MSWEP",
+                            units="kg m-2 s-1", grid="ERA5 0.25deg")
+            ds.to_netcdf(nc_dir / f"pr_mswep_{pk.lower()}_clim_diff.nc")
 
     # ── Computation ────────────────────────────────────────────────────
 

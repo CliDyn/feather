@@ -115,6 +115,7 @@ feather/                     # Package root
 | `configs/eerie_psl.yaml` | EERIE HighResMIP + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
+| `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
 | `feather/config.py` | FeatherConfig + ModelConfig dataclasses, dual-format YAML loading |
@@ -557,6 +558,42 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Lon wraparound padding in `_interp_to_era5()` avoids white line at 0°/360° seam
 - Requires `MSWEP` in `obs_datasets` config (already present in `eerie.yaml`)
 - 73 dedicated tests in `tests/test_precip_obs_comparison.py`
+- **Extra secondary datasets (CHIRPS, CRU)**: when configured, `_run_extra_secondaries()` layers additional ERA5-vs-CHIRPS and ERA5-vs-CRU figure sets (figure ids `pr_chirps_*`, `pr_cru_*`) via the shared engine on a **0.5° land-masked** grid over **1981–2014 / 1981–2023**. Skipped silently if the dataset key is absent from `obs_datasets`, so existing MSWEP-only configs/tests are unaffected. CHIRPS comparisons clipped to 60°N–60°S. Primary ERA5/MSWEP clim+diff also exported to NetCDF.
+
+### Observational-comparison engine (`_obs_compare_common.py`)
+- Shared pairwise obs-vs-obs comparison engine used by `obs_comparison` (CRU `tmp` secondary), `precip_obs_comparison` (CHIRPS + CRU `pre` secondaries), `cloud_obs_comparison`, and `temp_extremes_obs_comparison`
+- `CompareSpec` declares display units/factor/offset, colormaps, `land_only`, `relative_bias`, `extent`; `PairwiseObsComparison` does compute → figures → `export_netcdf`
+- Common grid **0.5° land-masked** (`common_grid_05()`); reference (often global ERA5/Berkeley) masked to the land-only secondary's valid cells when `land_only=True`
+- `compute_trend()`: annual uses `annual_mean`→`dim="time"`; seasonal uses `seasonal_annual_mean`→`dim="year"` (mismatching these raises `KeyError: 'year'`)
+- `area_weighted_annual_series()`: cos-lat weighted, NaN-aware (land-only safe); re-indexes year-end time → integer `year`
+- NetCDF written to `{output_dir}/netcdf/{diag}/{var}_{token}_{period}_clim_diff.nc` in canonical units
+
+### CloudObsComparisonDiag + TempExtremesObsComparisonDiag
+- `cloud_obs_comparison` (group `clouds`): ERA5 `tcc`→`clt` (%) vs CRU `cld`; trend/trend-diff/clim figures + land-mean timeseries
+- `temp_extremes_obs_comparison` (group `temperature`): Berkeley Earth **Land** TMAX/TMIN vs CRU `tmx`/`tmn` for `tasmax`/`tasmin` (registry entries added); reference = Berkeley, both land-only 0.25°
+- Berkeley Land TMAX/TMIN share the Global TAVG HR format (decimal-year time, anomaly + 12-month climatology) → loaded by the generalized `ObsLoader.load_berkeley_hr(dataset_key, period)`
+
+### ERA5 derived daily/monthly tasmin/tasmax
+- Source: ERA5 hourly 2 m temperature (code 167) at `/pool/data/ERA5/E5/sf/an/1H/167/E5sf00_1H_YYYY-MM-DD_167.grb` (24 steps/day, native reduced-Gaussian 1D grid)
+- `scripts/era5_derive_tasminmax.sh` (SLURM array over years): per-day `cdo daymin`/`daymax` of the 24 hourly values → regridded to **regular 0.25° lat/lon** (`r1440x721`, K) using cached bilinear weights (reduced-Gaussian needs `-setgridtype,regular` before `remapbil`). Default period **1980–2023**. `mergetime` must run standalone (not chained inside `-setattribute`); units set in a separate `setattribute` pass.
+- **ERA5 land-sea mask**: `scripts/era5_derive_landmask.sh` derives `sftlf` (CMOR `fx`, land area %) from the invariant ERA5 LSM (code 172, `/pool/data/ERA5/E5/sf/an/IV/172/E5sf00_IV_INVARIANT_172.grb`) via conservative remap → `…/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/fx/sftlf/gr/v1/sftlf_fx_ERA5_era5_r1i1p1f1_gr.nc`. Light single field (login-node OK). Registry gained `sftlf` (group `fixed`).
+- **Land masking in `tropical_nights`/`heatwave`**: `_load_land_mask(model, lat, lon)` now prefers the model's own `sftlf` (fx, land>50%) via `_load_model_land_mask()`, falling back to the Berkeley Earth `land_mask` when the model has no `sftlf` (most EERIE models). So the ERA5 run is masked by ERA5's own LSM.
+- Daily output is a **CMOR tree** so `CMORLoader` reads it via `table="day"`: `/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/day/{tasmin,tasmax}/gr/v1/{var}_day_ERA5_era5_r1i1p1f1_gr_{YYYY}.nc`
+- Monthly means of the daily extremes → `/work/bm1344/AWI/OBS/era5_derived/mon/ERA5_{tasmin_daymin,tasmax_daymax}_mon_1981-2023.nc` (merged by `scripts/era5_derive_finalize.sh`)
+- `configs/era5_indices.yaml`: ERA5 as a single CMOR "model" → runs `tropical_nights`/`heatwave` on the derived daily data (Berkeley Land TMIN/TMAX for bias maps)
+- `temp_extremes_obs_comparison` adds **ERA5 as a second secondary** (alongside CRU) when `ERA5_TMINMAX` is in `obs_datasets` (monthly files); figure ids `tasmax_era5_*`/`tasmin_era5_*`. Each secondary is loaded independently so a missing ERA5 file doesn't drop the CRU comparison.
+
+### Configurable extremes obs reference (ERA5 vs Berkeley)
+- `feather/diag/_extremes_obs.py`: when `project.extremes_obs_reference: "ERA5"` and `ERA5_TMINMAX` is in `obs_datasets`, the tropical-nights/heatwave diagnostics (+ their `_change` variants) use the derived ERA5 monthly tasmin/tasmax as the obs reference instead of Berkeley Earth Land TMIN/TMAX
+- `use_era5_obs()`, `obs_ref_label()`, `era5_mean_available()`, `load_era5_mean()` (period-mean K on model grid), `era5_approx_exceedance_series()` (approx obs-TN series from monthly means, land-masked via `ERA5_SFTLF`)
+- ERA5 monthly tasmin/tasmax are absolute K on regular 0.25° — period mean is a plain time average (no anomaly+climatology reconstruction); Berkeley path unchanged (default)
+- `configs/eerie_all_members_indices.yaml`: single combined config for all four diagnostics — flat `models` (all EERIE members + ERA5 as a CMOR "model" reading its derived daily tree) for base TN/heatwave, plus a `climate_change` block for the `_change` diagnostics. ERA5 participates in the base diagnostics (daily indices, masked by its own `sftlf`) AND is the obs reference everywhere. ERA5 is not in `climate_change.models` (no future scenario).
+- 9 dedicated tests in `tests/test_extremes_obs.py`
+
+### CRU TS / CHIRPS loaders (`ObsLoader`)
+- `load_cru(variable, period)`: globs per-decade `cru_ts4.09.*.{var}.dat.nc`, `open_mfdataset`, drops aux vars (`stn`/`mae`/`maea`); units → canonical (`pre` mm/month→kg/m²/s, `tmp`/`tmn`/`tmx` °C→K, `cld` % unchanged); land-only (ocean NaN); lons → 0..360
+- `load_chirps(period)`: single 0.05° file (60°N–60°S land), `precip` mm/month→kg/m²/s, `-9999`→NaN, dims renamed lat/lon, lons → 0..360
+- 30 dedicated tests in `tests/test_obs_cru_chirps.py` (loaders + engine + both new diagnostics)
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM
 - AV = (sq_err_CMIP6 - sq_err_EERIE) / max(sq_err_CMIP6, sq_err_EERIE), bounded [-1, 1]
