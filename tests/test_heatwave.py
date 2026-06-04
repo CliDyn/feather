@@ -599,3 +599,49 @@ def test_kerchunk_tasmax_maps_to_mx2t24():
     kname, scale = _ATMOS2D_DAILY_MAX["tasmax"]
     assert kname == "mx2t24"
     assert scale == pytest.approx(1.0)
+
+
+# ── Timeseries unit conversion (K → °C for HWM/HWA) ──────────────────────────
+
+def _ts_results(idx, values, years, model="ModelA"):
+    da = xr.DataArray(
+        np.asarray(values, dtype=np.float64),
+        dims=["year"], coords={"year": list(years)},
+    )
+    return {"models": [model], "hw_series": {model: {idx: da}}}
+
+
+@pytest.mark.parametrize("idx", ["hwm", "hwa"])
+def test_timeseries_temperature_indices_converted_to_celsius(tmp_path, idx):
+    """HWM/HWA timeseries subtract 273.15 so the °C-labelled axis is real °C."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from feather.diag.heatwave import HeatwaveDiag, _K_TO_C
+
+    config = _make_config(tmp_path, models=("ModelA",))
+    diag = HeatwaveDiag(None, None, config, period=("1980", "1982"))
+    vals = [300.0, 301.5, 302.0]
+    fig, _ = diag._plot_index_timeseries(
+        _ts_results(idx, vals, [1980, 1981, 1982]), idx
+    )
+    yd = np.asarray(fig.axes[0].lines[0].get_ydata())
+    assert np.allclose(yd, np.asarray(vals) - _K_TO_C)
+    plt.close(fig)
+
+
+@pytest.mark.parametrize("idx", ["hwf", "hwd", "hwn"])
+def test_timeseries_count_indices_not_converted(tmp_path, idx):
+    """Count-based indices (non-°C units) are plotted unchanged."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from feather.diag.heatwave import HeatwaveDiag
+
+    config = _make_config(tmp_path, models=("ModelA",))
+    diag = HeatwaveDiag(None, None, config, period=("1980", "1981"))
+    vals = [10.0, 12.0]
+    fig, _ = diag._plot_index_timeseries(_ts_results(idx, vals, [1980, 1981]), idx)
+    yd = np.asarray(fig.axes[0].lines[0].get_ydata())
+    assert np.allclose(yd, vals)
+    plt.close(fig)

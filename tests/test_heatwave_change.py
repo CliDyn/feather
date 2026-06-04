@@ -812,3 +812,42 @@ def test_registered():
     import feather.diag.heatwave_change  # noqa: F401 — ensure @register fires
     diag_cls = get_diagnostic("heatwave_change")
     assert diag_cls is HeatwaveChangeDiag
+
+
+# ── ERA5 daily obs reference series ───────────────────────────────────────────
+
+
+def test_compute_includes_obs_series_key(tmp_path, hist_da_fix, simple_config):
+    """compute() always returns an 'obs_series' key (None without ERA5 obs)."""
+    results = _make_diag(simple_config, hist_da_fix).compute()
+    assert "obs_series" in results
+
+
+def test_compute_era5_obs_series_none_without_era5(tmp_path, hist_da_fix, simple_config):
+    """No ERA5 obs reference configured → no obs series computed."""
+    diag = _make_diag(simple_config, hist_da_fix)
+    assert diag._compute_era5_obs_series() is None
+
+
+def test_compute_era5_obs_series_returns_indices(tmp_path, hist_da_fix, monkeypatch):
+    """With ERA5 obs configured and daily data available, return per-index series."""
+    config = _make_config(tmp_path)
+    config.project["extremes_obs_reference"] = "ERA5"
+    config.obs_datasets = {
+        "ERA5_TMINMAX": {"path": "x", "variables": {"tasmax": "f.nc"}}
+    }
+    config.model_configs["ERA5"] = ModelConfig(
+        name="ERA5", experiment="era5", variant="r1i1p1f1",
+        grids={"sfc": "latlon"}, color="#000000",
+    )
+    diag = HeatwaveChangeDiag(
+        _MockLoader(hist_da_fix), _MockObsLoader(), config
+    )
+    # Route the ERA5 CMOR loader to the synthetic daily tasmax loader.
+    monkeypatch.setattr(diag, "_make_cmor_loader",
+                        lambda *a, **k: _MockLoader(hist_da_fix))
+    out = diag._compute_era5_obs_series()
+    assert out is not None
+    for idx in _INDICES:
+        assert idx in out
+        assert "year" in out[idx].dims
