@@ -412,6 +412,54 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             logger.warning("  Could not compute BE TN series: %s", exc)
             return None
 
+    def _compute_era5_real_tn_series(self) -> xr.DataArray | None:
+        """Real annual TN land-mean from ERA5 *daily* tasmin.
+
+        Loads the ERA5 derived daily CMOR tree — the same source the base
+        ``tropical_nights`` diagnostic uses for its ERA5 line — over
+        ``hist_load_period[0]``..``obs_end_year``, counts TN days, applies the
+        land mask and returns the area-weighted land-mean series.  This avoids
+        the monthly-mean approximation (``era5_approx_exceedance_series``),
+        which undercounts TN by ~3.5× because it only credits a month when its
+        *monthly-mean* daily-min exceeds the threshold.
+
+        Returns ``None`` when ERA5 is not configured as a flat model or its
+        daily data cannot be loaded (caller falls back to the approximation).
+        """
+        mc = self.config.model_configs.get("ERA5")
+        if mc is None:
+            return None
+        period = (self.hist_load_period[0], self._obs_end_year)
+        nc_path = self.nc_dir / f"ERA5_obs_tn_{period[0]}_{period[1]}.nc"
+        try:
+            loader = self._make_cmor_loader("ERA5", mc.experiment, mc.data_root)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("  Could not build ERA5 daily obs loader: %s", exc)
+            return None
+        tn_annual, _ = self._load_and_save_tn("ERA5", loader, period, nc_path)
+        if tn_annual is None:
+            logger.info(
+                "  ERA5 daily TN unavailable — falling back to monthly approximation"
+            )
+            return None
+        logger.info("  Using real ERA5 daily TN series for obs reference")
+        return self._land_mean_series(tn_annual).compute()
+
+    def _compute_obs_tn_series(self) -> tuple[xr.DataArray | None, bool]:
+        """Observed annual TN land-mean series + whether it is approximate.
+
+        When ERA5 is the obs reference and its daily tasmin tree is available,
+        return the *real* daily TN series (``is_approx=False``) so the dashed
+        obs line is comparable to the model lines.  Otherwise fall back to the
+        monthly-mean approximation (Berkeley Earth, or ERA5 monthly when daily
+        is missing) with ``is_approx=True``.
+        """
+        if use_era5_obs(self.config):
+            real = self._compute_era5_real_tn_series()
+            if real is not None:
+                return real, False
+        return self._compute_be_tn_series(), True
+
     def _land_mean_series(self, tn_annual: xr.DataArray) -> xr.DataArray:
         """Area-weighted land-mean of annual TN count (year,).
 
@@ -646,8 +694,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             )
             if _obs is not None:
                 obs_mean_tmin[_m] = _obs
-        obs_series = self._compute_be_tn_series()
-        obs_series = self._compute_be_tn_series()
+        obs_series, obs_series_approx = self._compute_obs_tn_series()
 
         return {
             "models": models,
@@ -657,6 +704,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             "hist_series": hist_series,
             "ssp_series": ssp_series,
             "obs_series": obs_series,
+            "obs_series_approx": obs_series_approx,
             "model_mean_tmin": model_mean_tmin,
             "obs_mean_tmin": obs_mean_tmin,
             "lat": lat_coord,
@@ -853,13 +901,14 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                     color=color, lw=1.5, label=model,
                 )
 
-        # Observed TN (approximate, from monthly obs reference)
+        # Observed TN: real daily series when available, else monthly approximation
         obs_s = results.get("obs_series")
         if obs_s is not None:
             obs_ref = obs_ref_label(self.config, "tasmin").split(" Land")[0]
+            suffix = " (approx.)" if results.get("obs_series_approx", True) else ""
             ax.plot(
                 np.asarray(obs_s["year"]), np.asarray(obs_s),
-                color="k", lw=2, ls="--", label=f"{obs_ref} (approx.)",
+                color="k", lw=2, ls="--", label=f"{obs_ref}{suffix}",
                 zorder=10,
             )
 
@@ -875,6 +924,17 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         fig.tight_layout()
 
         all_models = results["models"]
+        obs_ref_full = obs_ref_label(self.config, "tasmin").split(" Land")[0]
+        if results.get("obs_series_approx", True):
+            obs_desc = (
+                f"Dashed black line: {obs_ref_full} approximate TN (months with mean "
+                "TMIN > 20 °C weighted by days in month). "
+            )
+        else:
+            obs_desc = (
+                f"Dashed black line: {obs_ref_full} TN from daily minimum temperature "
+                "(days with daily-min > 20 °C), consistent with the base diagnostic. "
+            )
         meta = self._build_metadata(
             title=f"{self.title} — Global Land Mean Time Series",
             figure_id="tropical_nights_change_timeseries",
@@ -885,8 +945,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 f"{self.hist_load_period[1]}) joining SSP2-4.5 from {_HIST_BOUNDARY_YEAR}. "
                 f"Blue shading: reference period ({self.ref_period[0]}–{self.ref_period[1]}); "
                 f"red shading: future period ({self.fut_period[0]}–{self.fut_period[1]}). "
-                "Dashed black line: Berkeley Earth approximate TN (months with mean "
-                "TMIN > 20 °C weighted by days in month). "
+                + obs_desc +
                 "Models without future data show only the historical segment."
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
