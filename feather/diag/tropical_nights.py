@@ -37,6 +37,7 @@ from feather.diag._extremes_obs import (
     era5_mean_available,
     load_era5_mean,
     obs_ref_label,
+    obs_ref_model_name,
     use_era5_obs,
 )
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
@@ -474,7 +475,9 @@ class TropicalNightsDiag(DiagnosticBase):
         figs.append(self._plot_timeseries(results))
         figs.append(self._plot_zonal_mean(results))
 
-        if results.get("obs_mean_tmin") is not None:
+        ref_model = obs_ref_model_name(self.config)
+        bias_models = [m for m in models if m != ref_model]
+        if results.get("obs_mean_tmin") is not None and bias_models:
             figs.append(self._plot_tmin_bias(results))
 
         return figs
@@ -591,7 +594,9 @@ class TropicalNightsDiag(DiagnosticBase):
         each model against Berkeley Earth Land TMIN monthly observations.
         Both are in °C for display; differences are in °C.
         """
-        models = results["models"]
+        # Exclude the obs-reference model (ERA5) — its bias vs itself is ~zero.
+        ref_model = obs_ref_model_name(self.config)
+        models = [m for m in results["models"] if m != ref_model]
         obs_k = results["obs_mean_tmin"]         # (lat, lon) in K
         obs_c = obs_k - _K_TO_C                  # display in °C
         obs_label = obs_ref_label(self.config, "tasmin")

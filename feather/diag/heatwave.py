@@ -50,6 +50,7 @@ from feather.diag._extremes_obs import (
     era5_mean_available,
     load_era5_mean,
     obs_ref_label,
+    obs_ref_model_name,
     use_era5_obs,
 )
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
@@ -654,7 +655,9 @@ class HeatwaveDiag(DiagnosticBase):
             figs.append(self._plot_index_map(results, idx))
             figs.append(self._plot_index_timeseries(results, idx))
 
-        if results.get("obs_mean_tmax") is not None:
+        ref_model = obs_ref_model_name(self.config)
+        bias_models = [m for m in models if m != ref_model]
+        if results.get("obs_mean_tmax") is not None and bias_models:
             figs.append(self._plot_tmax_bias(results))
 
         return figs
@@ -750,7 +753,9 @@ class HeatwaveDiag(DiagnosticBase):
 
     def _plot_tmax_bias(self, results: dict) -> tuple[plt.Figure, dict]:
         """Group C: mean daily TMAX bias map (model − Berkeley Earth Land TMAX, °C)."""
-        models = results["models"]
+        # Exclude the obs-reference model (ERA5) — its bias vs itself is ~zero.
+        ref_model = obs_ref_model_name(self.config)
+        models = [m for m in results["models"] if m != ref_model]
         obs_k = results["obs_mean_tmax"]
         obs_c = obs_k - _K_TO_C
         obs_label = obs_ref_label(self.config, "tasmax")
