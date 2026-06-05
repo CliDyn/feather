@@ -494,6 +494,17 @@ def test_compute_models_list(tmp_path, hist_da, ssp_da, simple_config):
     assert set(results["models"]) == {"model-A", "model-B"}
 
 
+def test_compute_excludes_flat_only_model(tmp_path, hist_da, ssp_da):
+    """A model in flat `models` but not in `climate_change.models` (e.g. the
+    ERA5 obs reference) must not be processed by the change loop — otherwise
+    its hist loader falls back to the default experiment and fails to load."""
+    config = _make_config(tmp_path, models=("model-A", "model-B", "ERA5"))
+    diag = _make_diag(config, hist_da, ssp_da)
+    results = diag.compute()
+    assert "ERA5" not in results["models"]
+    assert set(results["models"]) == {"model-A", "model-B"}
+
+
 def test_compute_ref_clim_shape(tmp_path, hist_da, ssp_da, simple_config):
     diag = _make_diag(simple_config, hist_da, ssp_da)
     results = diag.compute()
@@ -784,6 +795,68 @@ def test_config_cc_periods_respected(tmp_path, simple_config):
     assert diag.fut_period == ("2019", "2023")
     assert diag.hist_load_period == ("1981", "1985")
     assert diag.ssp_load_period == ("2019", "2023")
+
+
+# ── Obs series: real ERA5 daily vs monthly approximation ──────────────────────
+
+
+def _era5_obs_config(tmp_path):
+    config = _make_config(tmp_path)
+    config.project["extremes_obs_reference"] = "ERA5"
+    config.obs_datasets = {
+        "ERA5_TMINMAX": {"path": "x", "variables": {"tasmin": "f.nc"}}
+    }
+    return config
+
+
+def test_compute_obs_tn_series_real_when_era5_daily(tmp_path, monkeypatch):
+    """ERA5 daily TN available → real series, is_approx False."""
+    config = _era5_obs_config(tmp_path)
+    diag = TropicalNightsChangeDiag(
+        _MockLoader(_make_daily_tasmin()), _MockObsLoader(), config
+    )
+    fake = xr.DataArray([90.0, 91.0], dims=["year"], coords={"year": [1981, 1982]})
+    monkeypatch.setattr(diag, "_compute_era5_real_tn_series", lambda: fake)
+    series, is_approx = diag._compute_obs_tn_series()
+    assert is_approx is False
+    assert series is fake
+
+
+def test_compute_obs_tn_series_falls_back_to_approx(tmp_path, monkeypatch):
+    """ERA5 daily unavailable → monthly approximation, is_approx True."""
+    config = _era5_obs_config(tmp_path)
+    diag = TropicalNightsChangeDiag(
+        _MockLoader(_make_daily_tasmin()), _MockObsLoader(), config
+    )
+    monkeypatch.setattr(diag, "_compute_era5_real_tn_series", lambda: None)
+    monkeypatch.setattr(diag, "_compute_be_tn_series", lambda: "APPROX")
+    series, is_approx = diag._compute_obs_tn_series()
+    assert is_approx is True
+    assert series == "APPROX"
+
+
+def test_compute_obs_tn_series_skips_era5_when_not_configured(tmp_path, monkeypatch):
+    """Without ERA5 obs reference, the real-daily path is never attempted."""
+    config = _make_config(tmp_path)  # no extremes_obs_reference / ERA5_TMINMAX
+    diag = TropicalNightsChangeDiag(
+        _MockLoader(_make_daily_tasmin()), _MockObsLoader(), config
+    )
+    called = {}
+    monkeypatch.setattr(
+        diag, "_compute_era5_real_tn_series",
+        lambda: called.setdefault("real", True),
+    )
+    monkeypatch.setattr(diag, "_compute_be_tn_series", lambda: "BE")
+    series, is_approx = diag._compute_obs_tn_series()
+    assert is_approx is True
+    assert series == "BE"
+    assert "real" not in called
+
+
+def test_compute_includes_obs_series_approx_key(tmp_path, hist_da, ssp_da, simple_config):
+    results = _make_diag(simple_config, hist_da, ssp_da).compute()
+    assert "obs_series_approx" in results
+    assert isinstance(results["obs_series_approx"], bool)
 
 
 # ── Registration ──────────────────────────────────────────────────────────────

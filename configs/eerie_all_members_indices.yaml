@@ -59,7 +59,7 @@ project:
         hist_data_source:   cmor
         future_experiment:  highres-future-ssp245
         future_data_source: cmor
-      IFS-NEMO-ER-r1:
+      IFS-NEMO-ER:
         hist_experiment:    hist-1950
         hist_data_source:   cmor
         hist_data_root:     /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
@@ -139,6 +139,7 @@ models:
     institution: BSC
     experiment: hist-1950
     variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
     grids:
       sfc: latlon
     color: "#ff7f0e"

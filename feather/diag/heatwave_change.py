@@ -249,6 +249,7 @@ class HeatwaveChangeDiag(DiagnosticBase):
             cc.get("ssp_load_period", ["2015", "2050"])
         )
         self._cc_models: dict = cc.get("models", {})
+        self._obs_end_year: str = cc.get("obs_end_year", self.hist_load_period[1])
 
     # ── Paths ──────────────────────────────────────────────────────────
 
@@ -440,6 +441,47 @@ class HeatwaveChangeDiag(DiagnosticBase):
     def _land_mean_series(self, hw_annual: xr.DataArray) -> xr.DataArray:
         """Area-weighted land-mean of an annual index DataArray (year,)."""
         return latlon_global_mean(hw_annual)
+
+    def _compute_era5_obs_series(self) -> dict[str, xr.DataArray] | None:
+        """Per-index ERA5 heatwave land-mean series from ERA5 *daily* tasmax.
+
+        When ERA5 is the obs reference and present as a flat model, compute its
+        five heatwave indices over ``hist_load_period[0]``..``obs_end_year``
+        using ERA5's own reference-period T90 (same construction as the model
+        lines), then return area-weighted land-mean series so the change
+        timeseries can show an observed reference line.  Returns ``None`` when
+        ERA5 is not configured or its daily tasmax cannot be loaded.
+        """
+        if not use_era5_obs(self.config):
+            return None
+        mc = self.config.model_configs.get("ERA5")
+        if mc is None:
+            return None
+        period = (self.hist_load_period[0], self._obs_end_year)
+        nc_path = self.nc_dir / f"ERA5_obs_hw_{period[0]}_{period[1]}.nc"
+        try:
+            loader = self._make_cmor_loader("ERA5", mc.experiment, mc.data_root)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("  Could not build ERA5 daily obs loader: %s", exc)
+            return None
+        hw_ds, _, _ = self._load_and_save_hw(
+            "ERA5", loader, period, nc_path, ref_period=self.ref_period,
+        )
+        if hw_ds is None:
+            logger.info("  ERA5 daily heatwave indices unavailable — no obs line")
+            return None
+        land_mask = self._load_land_mask(
+            np.asarray(hw_ds["HWF"]["lat"]), np.asarray(hw_ds["HWF"]["lon"]),
+        )
+        land_mask_np = land_mask.values if land_mask is not None else None
+        out: dict[str, xr.DataArray] = {}
+        for idx in _INDICES:
+            idx_da = hw_ds[idx]
+            if land_mask_np is not None:
+                idx_da = idx_da.where(land_mask_np)
+            out[idx] = self._land_mean_series(idx_da)
+        logger.info("  Using real ERA5 daily heatwave series for obs reference")
+        return out
 
     # ── NC I/O ─────────────────────────────────────────────────────────
 
@@ -650,7 +692,16 @@ class HeatwaveChangeDiag(DiagnosticBase):
         lat_coord: xr.DataArray | None = None
         lon_coord: xr.DataArray | None = None
 
-        for model in self.config.models:
+        # Only process models with a climate-change (hist + future) entry.
+        # Models present in the flat `models` list but not in
+        # `climate_change.models` — e.g. the ERA5 obs reference (handled
+        # separately via _compute_era5_obs_series) or models without a
+        # future scenario — must not be loaded with the default experiment.
+        cc_models = [m for m in self.config.models if m in self._cc_models]
+        if not cc_models:
+            cc_models = list(self.config.models)
+
+        for model in cc_models:
             logger.info("  Processing: %s", model)
 
             # ── Historical ────────────────────────────────────────────
@@ -736,6 +787,8 @@ class HeatwaveChangeDiag(DiagnosticBase):
             if _obs is not None:
                 obs_mean_tmax[_m] = _obs
 
+        obs_series = self._compute_era5_obs_series()
+
         return {
             "models": models,
             "ref_clim": ref_clim,
@@ -743,6 +796,7 @@ class HeatwaveChangeDiag(DiagnosticBase):
             "change": change,
             "hist_series": hist_series,
             "ssp_series": ssp_series,
+            "obs_series": obs_series,
             "model_mean_tmax": model_mean_tmax,
             "obs_mean_tmax": obs_mean_tmax,
             "lat": lat_coord,
@@ -924,6 +978,16 @@ class HeatwaveChangeDiag(DiagnosticBase):
                     color=color, lw=1.5, label=model,
                 )
 
+        # Observed reference: real ERA5 daily heatwave series (when available)
+        obs_dict = results.get("obs_series")
+        obs_s = obs_dict.get(idx) if obs_dict else None
+        if obs_s is not None:
+            obs_ref = obs_ref_label(self.config, "tasmax").split(" Land")[0]
+            ax.plot(
+                np.asarray(obs_s["year"]), np.asarray(obs_s),
+                color="k", lw=2, ls="--", label=obs_ref, zorder=10,
+            )
+
         ax.set_xlabel("Year")
         ax.set_ylabel(meta_idx["ylabel"])
         ax.set_title(
@@ -935,6 +999,15 @@ class HeatwaveChangeDiag(DiagnosticBase):
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
 
+        obs_dict = results.get("obs_series")
+        obs_available = bool(obs_dict and obs_dict.get(idx) is not None)
+        obs_ref_full = obs_ref_label(self.config, "tasmax").split(" Land")[0]
+        obs_desc = (
+            f"Dashed black line: {obs_ref_full} {idx} from daily maximum temperature "
+            f"(same index construction as the models, T90 from "
+            f"{self.ref_period[0]}–{self.ref_period[1]}). "
+            if obs_available else ""
+        )
         fig_id = f"heatwave_change_{idx.lower()}_timeseries"
         meta = self._build_metadata(
             title=f"{self.title} — {meta_idx['title']} Time Series",
@@ -947,11 +1020,12 @@ class HeatwaveChangeDiag(DiagnosticBase):
                 f"{self.hist_load_period[1]}) joined to SSP2-4.5 from {_HIST_BOUNDARY_YEAR}. "
                 f"Blue shading: reference period; red shading: future period. "
                 f"T90 computed from {self.ref_period[0]}–{self.ref_period[1]} and "
-                f"applied to both periods."
+                f"applied to both periods. "
+                + obs_desc
             ),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
-            obs_dataset="BERKELEY_EARTH_TMAX",
-            obs_variable="temperature",
+            obs_dataset=("ERA5_TMINMAX" if obs_available else "BERKELEY_EARTH_TMAX"),
+            obs_variable="tasmax",
             plot_type="timeseries",
         )
         return fig, meta
