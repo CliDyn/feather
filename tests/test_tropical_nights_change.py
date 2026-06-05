@@ -494,6 +494,17 @@ def test_compute_models_list(tmp_path, hist_da, ssp_da, simple_config):
     assert set(results["models"]) == {"model-A", "model-B"}
 
 
+def test_compute_excludes_flat_only_model(tmp_path, hist_da, ssp_da):
+    """A model in flat `models` but not in `climate_change.models` (e.g. the
+    ERA5 obs reference) must not be processed by the change loop — otherwise
+    its hist loader falls back to the default experiment and fails to load."""
+    config = _make_config(tmp_path, models=("model-A", "model-B", "ERA5"))
+    diag = _make_diag(config, hist_da, ssp_da)
+    results = diag.compute()
+    assert "ERA5" not in results["models"]
+    assert set(results["models"]) == {"model-A", "model-B"}
+
+
 def test_compute_ref_clim_shape(tmp_path, hist_da, ssp_da, simple_config):
     diag = _make_diag(simple_config, hist_da, ssp_da)
     results = diag.compute()

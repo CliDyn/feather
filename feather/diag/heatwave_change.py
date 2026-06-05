@@ -692,7 +692,16 @@ class HeatwaveChangeDiag(DiagnosticBase):
         lat_coord: xr.DataArray | None = None
         lon_coord: xr.DataArray | None = None
 
-        for model in self.config.models:
+        # Only process models with a climate-change (hist + future) entry.
+        # Models present in the flat `models` list but not in
+        # `climate_change.models` — e.g. the ERA5 obs reference (handled
+        # separately via _compute_era5_obs_series) or models without a
+        # future scenario — must not be loaded with the default experiment.
+        cc_models = [m for m in self.config.models if m in self._cc_models]
+        if not cc_models:
+            cc_models = list(self.config.models)
+
+        for model in cc_models:
             logger.info("  Processing: %s", model)
 
             # ── Historical ────────────────────────────────────────────
