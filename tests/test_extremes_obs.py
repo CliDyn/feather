@@ -64,6 +64,14 @@ class TestSelection:
         cfg, *_ = _make_config(tmp_path, ref="ERA5")
         assert eo.era5_mean_available(cfg, "tasmin") is True
 
+    def test_obs_ref_model_name(self, tmp_path):
+        # ERA5 reference doubles as a model → excluded from bias panels.
+        cfg, *_ = _make_config(tmp_path, ref="ERA5")
+        assert eo.obs_ref_model_name(cfg) == "ERA5"
+        # Berkeley reference is never a model → nothing to exclude.
+        cfg2, *_ = _make_config(tmp_path, ref="Berkeley")
+        assert eo.obs_ref_model_name(cfg2) is None
+
 
 class TestLoadMean:
     def test_period_mean_kelvin_on_model_grid(self, tmp_path):

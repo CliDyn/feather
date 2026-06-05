@@ -43,6 +43,19 @@ def obs_ref_label(config, var: str) -> str:
     return "Berkeley Earth Land " + ("TMIN" if var == "tasmin" else "TMAX")
 
 
+def obs_ref_model_name(config) -> str | None:
+    """Name of the model that doubles as the obs reference, or ``None``.
+
+    When ERA5 is the configured extremes obs reference it is also added as a
+    flat "model" (reading its derived daily CMOR tree) so it participates in
+    the climatology/time-series figures.  In the mean-Tmin/Tmax **bias** maps
+    that model must be excluded: ``ERA5(model) − ERA5(obs)`` is ~zero
+    everywhere by construction and only adds a misleading blank panel.  Returns
+    ``None`` for the Berkeley reference (which is never itself a model).
+    """
+    return "ERA5" if use_era5_obs(config) else None
+
+
 def era5_mean_available(config, var: str) -> bool:
     """True when an ERA5 monthly file for ``var`` is configured and exists."""
     if not use_era5_obs(config):

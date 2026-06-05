@@ -917,6 +917,20 @@ class HeatwaveChangeDiag(DiagnosticBase):
 
         fig_id = f"heatwave_change_{idx.lower()}_maps"
         all_fut_models = list(results["fut_clim"][idx].keys())
+        stats = {}
+        for model in models:
+            s = {}
+            if model in results["ref_clim"][idx]:
+                s[f"ref_land_mean_{idx.lower()}"] = self._latlon_field_mean(
+                    results["ref_clim"][idx][model])
+            if model in results["fut_clim"][idx]:
+                s[f"future_land_mean_{idx.lower()}"] = self._latlon_field_mean(
+                    results["fut_clim"][idx][model])
+            if model in results["change"][idx]:
+                s[f"change_land_mean_{idx.lower()}"] = self._latlon_field_mean(
+                    results["change"][idx][model])
+            if s:
+                stats[model] = s
         meta = self._build_metadata(
             title=f"{self.title} — {meta_idx['title']} Maps",
             figure_id=fig_id,
@@ -934,6 +948,7 @@ class HeatwaveChangeDiag(DiagnosticBase):
             obs_dataset="",
             obs_variable="",
             plot_type="map",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -1008,6 +1023,19 @@ class HeatwaveChangeDiag(DiagnosticBase):
             f"{self.ref_period[0]}–{self.ref_period[1]}). "
             if obs_available else ""
         )
+        stats = {}
+        for model in results["models"]:
+            h = results["hist_series"][idx].get(model)
+            s = results["ssp_series"][idx].get(model)
+            if h is not None and s is not None:
+                combined = xr.concat([h, s], dim="year")
+            else:
+                combined = h if h is not None else s
+            if combined is not None:
+                stats[model] = self._series_stats(combined)
+        if obs_available:
+            obs_key = obs_ref_label(self.config, "tasmax").split(" Land")[0]
+            stats[obs_key] = self._series_stats(obs_dict[idx])
         fig_id = f"heatwave_change_{idx.lower()}_timeseries"
         meta = self._build_metadata(
             title=f"{self.title} — {meta_idx['title']} Time Series",
@@ -1027,6 +1055,7 @@ class HeatwaveChangeDiag(DiagnosticBase):
             obs_dataset=("ERA5_TMINMAX" if obs_available else "BERKELEY_EARTH_TMAX"),
             obs_variable="tasmax",
             plot_type="timeseries",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -1057,6 +1086,11 @@ class HeatwaveChangeDiag(DiagnosticBase):
             bias_cmap="RdBu_r",
             units="°C",
         )
+        stats = {
+            m: self._latlon_bias_stats(
+                results["model_mean_tmax"][m], obs_mean_tmax[m])
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean Tmax Bias (reference period)",
             figure_id="heatwave_change_tmax_bias",
@@ -1074,5 +1108,6 @@ class HeatwaveChangeDiag(DiagnosticBase):
                           else "temperature"),
             period=self.ref_period,
             plot_type="bias_map",
+            summary_statistics=stats,
         )
         return fig, meta

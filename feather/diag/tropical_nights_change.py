@@ -846,6 +846,20 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         fig.tight_layout()
 
         all_fut_models = list(results.get("fut_clim", {}).keys())
+        stats = {}
+        for model in models:
+            s = {}
+            if model in results.get("ref_clim", {}):
+                s["ref_land_mean_tn_days"] = self._latlon_field_mean(
+                    results["ref_clim"][model])
+            if model in results.get("fut_clim", {}):
+                s["future_land_mean_tn_days"] = self._latlon_field_mean(
+                    results["fut_clim"][model])
+            if model in results.get("change", {}):
+                s["change_land_mean_tn_days"] = self._latlon_field_mean(
+                    results["change"][model])
+            if s:
+                stats[model] = s
         meta = self._build_metadata(
             title=(
                 f"{self.title} — Reference / Future / Change"
@@ -865,6 +879,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             obs_dataset="",
             obs_variable="",
             plot_type="map",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -933,6 +948,20 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         fig.tight_layout()
 
         all_models = results["models"]
+        stats = {}
+        for model in all_models:
+            h = results["hist_series"].get(model)
+            s = results["ssp_series"].get(model)
+            if h is not None and s is not None:
+                combined = xr.concat([h, s], dim="year")
+            else:
+                combined = h if h is not None else s
+            if combined is not None:
+                stats[model] = self._series_stats(combined)
+        obs_s = results.get("obs_series")
+        if obs_s is not None:
+            obs_key = obs_ref_label(self.config, "tasmin").split(" Land")[0]
+            stats[obs_key] = self._series_stats(obs_s)
         obs_ref_full = obs_ref_label(self.config, "tasmin").split(" Land")[0]
         if results.get("obs_series_approx", True):
             obs_desc = (
@@ -961,6 +990,7 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             obs_dataset="BERKELEY_EARTH_TMIN",
             obs_variable="temperature",
             plot_type="timeseries",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -994,6 +1024,11 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             bias_cmap="RdBu_r",
             units="°C",
         )
+        stats = {
+            m: self._latlon_bias_stats(
+                results["model_mean_tmin"][m], obs_mean_tmin[m])
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean Tmin Bias (reference period)",
             figure_id="tropical_nights_change_tmin_bias",
@@ -1011,5 +1046,6 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                           else "temperature"),
             period=self.ref_period,
             plot_type="bias_map",
+            summary_statistics=stats,
         )
         return fig, meta

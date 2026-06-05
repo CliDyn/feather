@@ -202,6 +202,99 @@ class DiagnosticBase(ABC):
         d = self.output_dir
         return (d / f"{figure_id}.png").exists() and (d / f"{figure_id}.json").exists()
 
+    # ── Summary-statistics helpers (lat/lon fields & series) ───────────
+
+    @staticmethod
+    def _latlon_field_mean(field: "xr.DataArray") -> float:
+        """Area-weighted (proper cell areas) mean of a 2-D lat/lon field.
+
+        NaN cells (e.g. ocean on a land-only field) are skipped by
+        ``xr.DataArray.weighted``.  Returns ``nan`` if the field is empty.
+        """
+        import numpy as np
+        import xarray as xr
+
+        from feather.util.spatial import compute_latlon_areas, latlon_global_mean
+
+        areas = compute_latlon_areas(
+            np.asarray(field["lat"]), np.asarray(field["lon"]),
+        )
+        areas_da = xr.DataArray(areas, dims=("lat", "lon"))
+        return float(latlon_global_mean(field, areas_da).values)
+
+    @staticmethod
+    def _latlon_bias_stats(
+        model_field: "xr.DataArray",
+        obs_field: "xr.DataArray",
+    ) -> dict[str, float]:
+        """Area-weighted bias-map statistics for ``model_field`` vs ``obs_field``.
+
+        Mirrors the stats reported by :class:`GlobalBiases`:
+        ``global_mean_bias`` and ``rmse`` (area-weighted, NaN-safe), plus a
+        paired t-test (mean bias ≠ 0) and a variance-ratio F-test, both
+        area-weighted via :func:`spatial_ttest` / :func:`spatial_variance_ratio`.
+        """
+        import numpy as np
+        import xarray as xr
+
+        from feather.util.spatial import (
+            compute_latlon_areas,
+            latlon_global_mean,
+            spatial_ttest,
+            spatial_variance_ratio,
+        )
+
+        areas = compute_latlon_areas(
+            np.asarray(model_field["lat"]), np.asarray(model_field["lon"]),
+        )
+        areas_da = xr.DataArray(areas, dims=("lat", "lon"))
+
+        bias = model_field - obs_field
+        gmean = float(latlon_global_mean(bias, areas_da).values)
+        rmse = float(np.sqrt(latlon_global_mean(bias ** 2, areas_da).values))
+        t_stat, t_pval = spatial_ttest(model_field, obs_field, weights=areas)
+        f_stat, f_pval = spatial_variance_ratio(
+            model_field, obs_field, weights=areas,
+        )
+        return {
+            "global_mean_bias": gmean,
+            "rmse": rmse,
+            "t_test_statistic": t_stat,
+            "t_test_p_value": t_pval,
+            "variance_ratio": f_stat,
+            "variance_ratio_p_value": f_pval,
+        }
+
+    @staticmethod
+    def _series_stats(series: "xr.DataArray") -> dict[str, float]:
+        """Mean, linear trend (per decade) and endpoints of a yearly series.
+
+        ``series`` is a 1-D DataArray indexed by ``year``.  The trend is a
+        least-squares slope in units-per-decade; ``start_value`` / ``end_value``
+        are the first and last finite annual values.
+        """
+        import numpy as np
+
+        years = np.asarray(series["year"], dtype=float)
+        vals = np.asarray(series, dtype=float)
+        finite = np.isfinite(years) & np.isfinite(vals)
+        if finite.sum() < 2:
+            mean = float(np.nanmean(vals)) if np.isfinite(vals).any() else float("nan")
+            return {
+                "mean": mean,
+                "trend_per_decade": float("nan"),
+                "start_value": float("nan"),
+                "end_value": float("nan"),
+            }
+        yf, vf = years[finite], vals[finite]
+        slope = float(np.polyfit(yf, vf, 1)[0])
+        return {
+            "mean": float(np.mean(vf)),
+            "trend_per_decade": slope * 10.0,
+            "start_value": float(vf[0]),
+            "end_value": float(vf[-1]),
+        }
+
     def _load_model_var(
         self,
         model: str,

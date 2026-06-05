@@ -50,6 +50,7 @@ from feather.diag._extremes_obs import (
     era5_mean_available,
     load_era5_mean,
     obs_ref_label,
+    obs_ref_model_name,
     use_era5_obs,
 )
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
@@ -654,7 +655,9 @@ class HeatwaveDiag(DiagnosticBase):
             figs.append(self._plot_index_map(results, idx))
             figs.append(self._plot_index_timeseries(results, idx))
 
-        if results.get("obs_mean_tmax") is not None:
+        ref_model = obs_ref_model_name(self.config)
+        bias_models = [m for m in models if m != ref_model]
+        if results.get("obs_mean_tmax") is not None and bias_models:
             figs.append(self._plot_tmax_bias(results))
 
         return figs
@@ -691,6 +694,10 @@ class HeatwaveDiag(DiagnosticBase):
             vmax=vmax,
             units=meta_info["units"],
         )
+        stats = {
+            m: {f"land_mean_{idx}": self._latlon_field_mean(data_dict[m])}
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — {meta_info['long_name']}",
             figure_id=f"heatwave_{idx}_map",
@@ -702,6 +709,7 @@ class HeatwaveDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="map",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -713,9 +721,11 @@ class HeatwaveDiag(DiagnosticBase):
         # HWM/HWA are absolute tasmax stored in K; convert to °C at plot time
         # (matching the maps), other indices have non-temperature units (k2c=0).
         k2c = _K_TO_C if meta_info["units"] == "°C" else 0.0
+        stats = {}
         for model in models:
             color = self.config.get_model_color(model)
             series = results["hw_series"][model][idx] - k2c
+            stats[model] = self._series_stats(series)
             ax.plot(
                 np.asarray(series["year"]),
                 np.asarray(series),
@@ -737,12 +747,15 @@ class HeatwaveDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="timeseries",
+            summary_statistics=stats,
         )
         return fig, meta
 
     def _plot_tmax_bias(self, results: dict) -> tuple[plt.Figure, dict]:
         """Group C: mean daily TMAX bias map (model − Berkeley Earth Land TMAX, °C)."""
-        models = results["models"]
+        # Exclude the obs-reference model (ERA5) — its bias vs itself is ~zero.
+        ref_model = obs_ref_model_name(self.config)
+        models = [m for m in results["models"] if m != ref_model]
         obs_k = results["obs_mean_tmax"]
         obs_c = obs_k - _K_TO_C
         obs_label = obs_ref_label(self.config, "tasmax")
@@ -761,6 +774,10 @@ class HeatwaveDiag(DiagnosticBase):
             bias_cmap="RdBu_r",
             units="°C",
         )
+        stats = {
+            m: self._latlon_bias_stats(results["model_mean_tmax"][m], obs_k)
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean TMAX Bias",
             figure_id="heatwave_tmax_bias",
@@ -771,6 +788,7 @@ class HeatwaveDiag(DiagnosticBase):
                 "Note: observed heatwave indices are not computable from "
                 "monthly obs; only mean TMAX bias is shown."
             ),
+            summary_statistics=stats,
             obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
                          else "BERKELEY_EARTH_TMAX"),
             obs_variable=("tasmax" if use_era5_obs(self.config)
