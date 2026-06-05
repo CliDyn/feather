@@ -691,6 +691,10 @@ class HeatwaveDiag(DiagnosticBase):
             vmax=vmax,
             units=meta_info["units"],
         )
+        stats = {
+            m: {f"land_mean_{idx}": self._latlon_field_mean(data_dict[m])}
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — {meta_info['long_name']}",
             figure_id=f"heatwave_{idx}_map",
@@ -702,6 +706,7 @@ class HeatwaveDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="map",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -713,9 +718,11 @@ class HeatwaveDiag(DiagnosticBase):
         # HWM/HWA are absolute tasmax stored in K; convert to °C at plot time
         # (matching the maps), other indices have non-temperature units (k2c=0).
         k2c = _K_TO_C if meta_info["units"] == "°C" else 0.0
+        stats = {}
         for model in models:
             color = self.config.get_model_color(model)
             series = results["hw_series"][model][idx] - k2c
+            stats[model] = self._series_stats(series)
             ax.plot(
                 np.asarray(series["year"]),
                 np.asarray(series),
@@ -737,6 +744,7 @@ class HeatwaveDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="timeseries",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -761,6 +769,10 @@ class HeatwaveDiag(DiagnosticBase):
             bias_cmap="RdBu_r",
             units="°C",
         )
+        stats = {
+            m: self._latlon_bias_stats(results["model_mean_tmax"][m], obs_k)
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean TMAX Bias",
             figure_id="heatwave_tmax_bias",
@@ -771,6 +783,7 @@ class HeatwaveDiag(DiagnosticBase):
                 "Note: observed heatwave indices are not computable from "
                 "monthly obs; only mean TMAX bias is shown."
             ),
+            summary_statistics=stats,
             obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
                          else "BERKELEY_EARTH_TMAX"),
             obs_variable=("tasmax" if use_era5_obs(self.config)

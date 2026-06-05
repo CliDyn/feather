@@ -490,6 +490,10 @@ class TropicalNightsDiag(DiagnosticBase):
             vmin=0,
             units="days/year",
         )
+        stats = {
+            m: {"land_mean_tn_days": self._latlon_field_mean(results["tn_clim"][m])}
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean Annual Count",
             figure_id="tropical_nights_climatology",
@@ -500,6 +504,7 @@ class TropicalNightsDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="map",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -520,6 +525,9 @@ class TropicalNightsDiag(DiagnosticBase):
         ax.legend(fontsize=8, ncol=2)
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
+        stats = {
+            m: self._series_stats(results["tn_series"][m]) for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Global Land Mean Time Series",
             figure_id="tropical_nights_timeseries",
@@ -530,6 +538,7 @@ class TropicalNightsDiag(DiagnosticBase):
             ),
             period=self.period,
             plot_type="timeseries",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -551,6 +560,19 @@ class TropicalNightsDiag(DiagnosticBase):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
+        stats = {}
+        for model in models:
+            zonal = results["tn_zonal"][model]
+            zlats = np.asarray(
+                zonal["lat"] if "lat" in zonal.dims else results["lat"]
+            )
+            zvals = np.asarray(zonal, dtype=float)
+            if np.isfinite(zvals).any():
+                imax = int(np.nanargmax(zvals))
+                stats[model] = {
+                    "max_zonal_tn_days": float(zvals[imax]),
+                    "lat_of_max_deg": float(zlats[imax]),
+                }
         meta = self._build_metadata(
             title=f"{self.title} — Zonal Mean",
             figure_id="tropical_nights_zonal_mean",
@@ -558,6 +580,7 @@ class TropicalNightsDiag(DiagnosticBase):
             description="Zonal mean of the mean annual Tropical Nights count by latitude.",
             period=self.period,
             plot_type="zonal_profile",
+            summary_statistics=stats,
         )
         return fig, meta
 
@@ -587,6 +610,10 @@ class TropicalNightsDiag(DiagnosticBase):
             bias_cmap="RdBu_r",
             units="°C",
         )
+        stats = {
+            m: self._latlon_bias_stats(results["model_mean_tmin"][m], obs_k)
+            for m in models
+        }
         meta = self._build_metadata(
             title=f"{self.title} — Mean Tmin Bias",
             figure_id="tropical_nights_tmin_bias",
@@ -597,6 +624,7 @@ class TropicalNightsDiag(DiagnosticBase):
                 "Both model and obs are land-only. Model from CMOR daily tasmin; "
                 f"obs mean from {obs_label}."
             ),
+            summary_statistics=stats,
             obs_dataset=("ERA5_TMINMAX" if use_era5_obs(self.config)
                          else "BERKELEY_EARTH_TMIN"),
             obs_variable=("tasmin" if use_era5_obs(self.config)
