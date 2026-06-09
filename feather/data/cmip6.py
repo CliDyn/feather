@@ -104,30 +104,12 @@ class CMIP6Loader:
         if table is None:
             table = self._infer_table(cmip6_var)
 
-        zarr_path = self._zarr_path(model, variant, table, cmip6_var)
-        if not os.path.exists(zarr_path):
-            logger.debug("Zarr not found: %s", zarr_path)
+        da = self._open_stitched(cmip6_var, model, variant, table)
+        if da is None:
             return None
-
-        logger.info("Loading %s for %s/%s from zarr", cmip6_var, model, variant)
-        try:
-            ds = xr.open_zarr(zarr_path, consolidated=True)
-        except Exception as e:
-            logger.warning("Failed to open zarr %s: %s", zarr_path, e)
-            return None
-
-        if cmip6_var not in ds.data_vars:
-            logger.warning("Variable %s not in %s", cmip6_var, zarr_path)
-            return None
-
-        da = ds[cmip6_var]
 
         # Normalize time coordinate
         if "time" in da.dims:
-            da = self._normalize_time(da)
-            if da is None:
-                return None
-
             # Period filtering
             if period is not None:
                 start, end = period
@@ -518,12 +500,77 @@ class CMIP6Loader:
 
     def _zarr_path(
         self, model: str, variant: str, table: str, var: str,
+        experiment: str = "historical",
     ) -> str:
         """Build path to a per-variable zarr store.
 
-        Format: {zarr_dir}/{Model}_historical_{variant}_{table}_{var}.zarr
+        Format: {zarr_dir}/{Model}_{experiment}_{variant}_{table}_{var}.zarr
         """
-        return f"{self._zarr_dir}/{model}_historical_{variant}_{table}_{var}.zarr"
+        return (
+            f"{self._zarr_dir}/{model}_{experiment}_{variant}_{table}_{var}.zarr"
+        )
+
+    def _get_experiments(self) -> list[str]:
+        """Ordered list of CMIP6 experiments to stitch along time.
+
+        Set via ``cmip6.experiments`` (e.g. ``["historical", "ssp370"]``).
+        Defaults to ``["historical"]`` for backward compatibility.
+        """
+        exps = self._cfg.get("experiments")
+        if exps:
+            return [str(e) for e in exps]
+        return ["historical"]
+
+    def _open_stitched(
+        self, cmip6_var: str, model: str, variant: str, table: str,
+    ) -> xr.DataArray | None:
+        """Open a variable across all configured experiments, stitched in time.
+
+        Each experiment (e.g. historical, ssp370) is a separate zarr store
+        for the same ``variant``. Missing experiments are skipped (a model
+        with no ssp370 for the configured variant simply ends at the
+        historical period). Surviving segments with a ``time`` dimension are
+        time-normalized, concatenated, sorted and de-duplicated. Returns the
+        raw (un-sliced) DataArray, or ``None`` if nothing is available.
+        """
+        segments: list[xr.DataArray] = []
+        for experiment in self._get_experiments():
+            zarr_path = self._zarr_path(
+                model, variant, table, cmip6_var, experiment=experiment,
+            )
+            if not os.path.exists(zarr_path):
+                logger.debug("Zarr not found: %s", zarr_path)
+                continue
+            try:
+                ds = xr.open_zarr(zarr_path, consolidated=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to open zarr %s: %s", zarr_path, e)
+                continue
+            if cmip6_var not in ds.data_vars:
+                logger.warning("Variable %s not in %s", cmip6_var, zarr_path)
+                continue
+            da = ds[cmip6_var]
+            if "time" in da.dims:
+                da = self._normalize_time(da)
+                if da is None:
+                    continue
+            segments.append(da)
+
+        if not segments:
+            return None
+        if len(segments) == 1:
+            return segments[0]
+
+        # Static (time-less) fields: take the first available segment.
+        if "time" not in segments[0].dims:
+            return segments[0]
+
+        combined = xr.concat(segments, dim="time")
+        combined = combined.sortby("time")
+        _, keep = np.unique(combined["time"].values, return_index=True)
+        if keep.size != combined.sizes["time"]:
+            combined = combined.isel(time=np.sort(keep))
+        return combined
 
     def _area_zarr_path(
         self, model: str, variant: str, table: str,

@@ -2008,12 +2008,19 @@ class AddedValueDiag(DiagnosticBase):
                 f"green = CMIP6 mean vs {self._project_name} mean, white = degradation."
             )
         else:
-            suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM (EERIE only)"
+            suptitle_suffix = (
+                f"{self._project_name} models vs CMIP6 MMM "
+                f"({self._project_name} only)"
+            )
             figure_id = self._bars_models_eerie_id(period_key)
-            title = f"Added Value Summary — {period_label} (EERIE models only)"
+            title = (
+                f"Added Value Summary — {period_label} "
+                f"({self._project_name} models only)"
+            )
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
-                f"fractions ({period_label}), EERIE models only (CMIP6 mean bar excluded). "
+                f"fractions ({period_label}), {self._project_name} models only "
+                f"(CMIP6 mean bar excluded). "
                 f"Individual model colors from config; light purple = ensemble mean, "
                 f"purple = ensemble median, white = degradation."
             )

@@ -2,7 +2,15 @@ project:
   name: "DestinE"
   description: "Destination Earth Added Value: DestinE ensemble vs CMIP6 MMM"
   experiment: "baseline_hist"
-  period: ["1990", "2014"]
+  # Stitched along time: historical baseline + ssp3-7.0 projection.
+  # No single DestinE experiment covers 1990-2025, so segments are
+  # concatenated (baseline_hist -> 2014, projections_ssp3-7.0 2015+).
+  experiments: ["baseline_hist", "projections_ssp3-7.0"]
+  period: ["1990", "2025"]
+  # Time-series figures extend to each model's full projection end
+  # (IFS-FESOM/IFS-NEMO -> 2049, ICON -> 2044); obs/CMIP6 overlaid where
+  # available. All other diagnostics use the analysis period above.
+  timeseries_period: ["1990", "2050"]
   resolution: "high-resolution (~5 km)"
   comparison_type: "multi_model"
   comparison_description: >-
@@ -107,6 +115,10 @@ obs_datasets:
 cmip6:
   enabled: true
   catalog_path: "/home/a/a270088/PYTHON/DestinE/cmip6/cmip6_zarr_catalog.yaml"
+  # Stitched historical + ssp370 to match the DestinE 1990-2025 window
+  # (matches projections_ssp3-7.0). Models lacking ssp370 for the
+  # configured variant fall back to historical-only (end at 2014).
+  experiments: ["historical", "ssp370"]
   regrid_resolution: 0.25
   influence_radius: 80000
   ensemble_mode: "one_per_model"
@@ -157,7 +169,7 @@ nereus:
   ocean_influence_radius: 20000
   method: "linear"
 
-output_dir: "./output_destine_added_value"
+output_dir: "/work/bm1344/AWI/DestinE/output_destine_1990_2025"
 
 llm:
   figure_analysis:
@@ -178,7 +190,7 @@ report:
 
 website:
   title: "Feather — DestinE Added Value"
-  subtitle: "DestinE High-Resolution Ensemble Added Value vs CMIP6 (1990-2014)"
+  subtitle: "DestinE High-Resolution Ensemble Added Value vs CMIP6 (1990-2025)"
   group_order:
     - evaluation
     - temperature

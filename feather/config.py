@@ -124,6 +124,33 @@ class FeatherConfig:
         """
         return self.project.get("experiment", "baseline_hist")
 
+    def get_experiments(self) -> list[str]:
+        """Return the ordered list of experiments to stitch along time.
+
+        When ``project.experiments`` is set (e.g.
+        ``["baseline_hist", "projections_ssp3-7.0"]``), DestinE diagnostics
+        concatenate those catalog entries along the time axis before
+        slicing to the analysis period. Falls back to a single-element
+        list containing :meth:`get_experiment` for legacy configs.
+        """
+        exps = self.project.get("experiments")
+        if exps:
+            return [str(e) for e in exps]
+        return [self.get_experiment()]
+
+    def get_timeseries_period(self) -> tuple[str, str]:
+        """Return the period used by the timeseries diagnostic.
+
+        Allows the time-series figures to extend beyond the main analysis
+        period (e.g. to show each model's full projection continuation)
+        via ``project.timeseries_period``. Falls back to
+        :meth:`get_period`.
+        """
+        period = self.project.get("timeseries_period")
+        if period and len(period) == 2:
+            return (str(period[0]), str(period[1]))
+        return self.get_period()
+
     def get_comparison_type(self) -> str:
         """Return the comparison type for LLM prompt framing.
 

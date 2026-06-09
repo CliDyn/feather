@@ -1508,6 +1508,7 @@ class TestGlobalBiasesEnsemble:
     ):
         """Ensemble figure summary_statistics includes ens. mean and median entries."""
         import matplotlib.pyplot as plt
+        multi_model_config.project["name"] = "EERIE"
         diag = GlobalBiases(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
@@ -1530,6 +1531,7 @@ class TestGlobalBiasesEnsemble:
     ):
         """Ensemble panel labels contain the member count and mathtext bold."""
         import matplotlib.pyplot as plt
+        multi_model_config.project["name"] = "EERIE"
         diag = GlobalBiases(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
