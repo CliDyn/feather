@@ -88,7 +88,7 @@ cmip6:
   ensemble_mode: "one_per_model"
   models:
     CanESM5:
-      variant: "r1i1p1f1"
+      variant: "r1i1p2f1"
     MPI-ESM1-2-LR:
       variant: "r1i1p1f1"
     GISS-E2-1-G:
