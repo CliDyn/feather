@@ -114,6 +114,7 @@ feather/                     # Package root
 | `configs/eerie.yaml` | EERIE HighResMIP configuration (structured dict format) |
 | `configs/eerie_psl.yaml` | EERIE HighResMIP + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
+| `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
@@ -182,6 +183,8 @@ models:
 | `get_model_color(model)` | hex color string | palette cycle |
 | `get_period()` | `(start, end)` tuple | `("1990", "2014")` |
 | `get_experiment()` | experiment string | `"baseline_hist"` |
+| `get_experiments()` | ordered list of experiments to stitch along time | `[get_experiment()]` |
+| `get_timeseries_period()` | `(start, end)` for the timeseries diagnostic | `get_period()` |
 | `get_data_source_type()` | `"cmor"`, `"netcdf_healpix"`, `"grib"`, or `"destine_catalog"` | `"destine_catalog"` |
 | `get_model_data_source_type(model)` | per-model backend (falls back to global) | global type |
 | `is_multi_source()` | `True` when models use different backends | `False` |
@@ -662,6 +665,15 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Prompts are composed from reusable blocks: shared figure-type descriptions + type-specific focus sections
 - `build_figure_analysis_system()`, `build_synthesis_system()` in `llm/prompts.py`
 - `build_curation_system()`, `build_section_system()` in `export/prompts.py`
+
+### Experiment stitching (DestinE + CMIP6)
+- No single DestinE experiment spans 1990–2025: `baseline_hist` ends 2014, `projections_ssp3-7.0` runs 2015→2049 (IFS-FESOM/IFS-NEMO) or 2015→2044 (ICON). The framework concatenates them **along the time axis**.
+- Enabled via `project.experiments: ["baseline_hist", "projections_ssp3-7.0"]` (ordered list). `FeatherConfig.get_experiments()` returns it (falls back to `[get_experiment()]` for single-experiment/legacy configs, so existing configs are unaffected).
+- `DiagnosticBase._load_destine_stitched()` builds a `make_key` per experiment, loads each segment, `xr.concat(dim="time")`, sorts, and **de-duplicates** overlapping months (first experiment in the list wins). Missing segments (a model that did not run an experiment) are skipped via `except (KeyError, FileNotFoundError)`; raises `KeyError` only if **all** are absent. `_load_model_coords()` uses the first available experiment (coords are time-invariant).
+- Period slicing happens **after** concatenation, so a single stitched series serves both the 1990–2025 analysis window and the full-range timeseries.
+- **CMIP6 is stitched symmetrically**: `cmip6.experiments: ["historical", "ssp370"]` → `CMIP6Loader._open_stitched()` concatenates per `(model, variant)`, falling back to historical-only when a model lacks `ssp370` for its configured variant. `_zarr_path()` takes an `experiment` arg (default `"historical"`, so legacy behavior is unchanged).
+- **Extended timeseries**: `project.timeseries_period` (e.g. `["1990", "2050"]`) lets the `timeseries` diagnostic plot each model to its native end while all other diagnostics use `project.period`. `run.py` passes `config.get_timeseries_period()` only to the `timeseries` diagnostic; obs/CMIP6 truncate to their own availability.
+- Gotcha: ssp370 variant labels can differ from historical (e.g. CanESM5 ssp370 is `r1i1p2f1`, not `r1i1p1f1`); the configured variant must exist for **both** experiments or the model drops back to historical-only.
 
 ### Per-grid interpolator cache
 - When models have different grid sizes (e.g., nside=1024 vs nside=128, or different lat/lon resolutions), each grid needs its own nereus interpolator
