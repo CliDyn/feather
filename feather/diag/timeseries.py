@@ -65,6 +65,7 @@ class TimeseriesDiag(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self._project_name = self.config.project.get("name", "Ensemble")
 
     # ── Orchestration (per-variable incremental) ─────────────────────
 
@@ -314,7 +315,7 @@ class TimeseriesDiag(DiagnosticBase):
             ens_med_annual = annual_mean(vr["ens_median"])
             time_vals = _to_plot_time(ens_med_annual.time.values)
             ax.plot(time_vals, ens_med_annual.values + _off,
-                    label=f"EERIE ensemble median ({n_eerie})",
+                    label=f"{self._project_name} ensemble median ({n_eerie})",
                     color=ENS_COLOR, linewidth=2.5, linestyle="--")
 
         # Ensemble mean annual (solid)
@@ -322,7 +323,7 @@ class TimeseriesDiag(DiagnosticBase):
             ens_mean_annual = annual_mean(vr["ens_mean"])
             time_vals = _to_plot_time(ens_mean_annual.time.values)
             ax.plot(time_vals, ens_mean_annual.values + _off,
-                    label=f"EERIE ensemble mean ({n_eerie})",
+                    label=f"{self._project_name} ensemble mean ({n_eerie})",
                     color=ENS_COLOR, linewidth=2.5)
 
         # Obs annual

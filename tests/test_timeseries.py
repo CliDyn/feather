@@ -561,7 +561,8 @@ class TestTimeseriesEnsemble:
 
     def test_plot_ensemble_lines_in_legend(self, mock_multi_model_loader,
                                             mock_obs_loader, multi_model_config):
-        """Plot legend includes 'EERIE ensemble mean' and 'EERIE ensemble median'."""
+        """Plot legend includes '<project> ensemble mean' and median."""
+        multi_model_config.project["name"] = "EERIE"
         diag = TimeseriesDiag(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
@@ -599,6 +600,7 @@ class TestTimeseriesEnsemble:
         from feather.plot.styles import ENS_COLOR
         import matplotlib.colors as mcolors
 
+        multi_model_config.project["name"] = "EERIE"
         diag = TimeseriesDiag(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
@@ -622,6 +624,7 @@ class TestTimeseriesEnsemble:
     def test_ensemble_median_is_dashed(self, mock_multi_model_loader,
                                         mock_obs_loader, multi_model_config):
         """Ensemble median line uses dashed linestyle."""
+        multi_model_config.project["name"] = "EERIE"
         diag = TimeseriesDiag(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
@@ -641,6 +644,7 @@ class TestTimeseriesEnsemble:
     def test_ensemble_mean_is_solid(self, mock_multi_model_loader,
                                      mock_obs_loader, multi_model_config):
         """Ensemble mean line uses solid linestyle."""
+        multi_model_config.project["name"] = "EERIE"
         diag = TimeseriesDiag(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],
@@ -662,6 +666,7 @@ class TestTimeseriesEnsemble:
         self, mock_multi_model_loader, mock_obs_loader, multi_model_config,
     ):
         """Ensemble legend labels include the member count in parentheses."""
+        multi_model_config.project["name"] = "EERIE"
         diag = TimeseriesDiag(
             mock_multi_model_loader, mock_obs_loader, multi_model_config,
             variables=["tas"],

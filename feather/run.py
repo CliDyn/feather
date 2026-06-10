@@ -178,6 +178,10 @@ def _run_diagnostics(
             "experiment": experiment,
             "period": period,
         }
+        # The time-series diagnostic may extend beyond the analysis period
+        # (e.g. to show each model's full projection continuation).
+        if name == "timeseries":
+            kwargs["period"] = config.get_timeseries_period()
         if cmip6_individual:
             import inspect
             sig = inspect.signature(cls.__init__)

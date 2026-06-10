@@ -76,6 +76,7 @@ class GlobalBiases(DiagnosticBase):
         self.period = period
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
+        self._project_name = self.config.project.get("name", "Ensemble")
 
     # -- Orchestration (per-variable incremental) ----------------------------
 
@@ -1296,8 +1297,8 @@ class GlobalBiases(DiagnosticBase):
                 n = edata["n_members"]
 
                 # Panel labels include member count in mathtext bold
-                lbl_median = rf"EERIE ens. median $\mathbf{{({n})}}$"
-                lbl_mean   = rf"EERIE ens. mean $\mathbf{{({n})}}$"
+                lbl_median = rf"{self._project_name} ens. median $\mathbf{{({n})}}$"
+                lbl_mean   = rf"{self._project_name} ens. mean $\mathbf{{({n})}}$"
 
                 # Build the bias panel dict in display units
                 ens_bias_dict = {

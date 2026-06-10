@@ -345,16 +345,72 @@ class DiagnosticBase(ABC):
         # DestinE path: build catalog key, look up DestinE variable name
         vinfo = get_var(variable)
         destine_var = vinfo.destine_variable or variable
-        exp = experiment or self.config.get_experiment()
         mc = self.config.model_configs.get(model)
         member = mc.member if mc else 1
-        key = DataLoader.make_key(exp, model, vinfo.domain, member=member)
-        da = self.model_loader.load_var(key, destine_var)
+
+        # Experiments to stitch along time. An explicit ``experiment`` arg
+        # forces a single entry; otherwise use the configured list (which
+        # may concatenate e.g. baseline_hist + projections_ssp3-7.0).
+        experiments = [experiment] if experiment else self.config.get_experiments()
+
+        da = self._load_destine_stitched(
+            model, destine_var, vinfo.domain, member, experiments,
+        )
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
         if time_mean and "time" in da.dims:
             da = da.mean("time")
         return da
+
+    def _load_destine_stitched(
+        self,
+        model: str,
+        destine_var: str,
+        domain: str,
+        member: int,
+        experiments: list[str],
+    ) -> "xr.DataArray":
+        """Load a DestinE variable, concatenating across experiments in time.
+
+        Each experiment maps to a separate catalog entry. Entries that are
+        absent for this model (e.g. a projection a model did not run) are
+        skipped. The surviving segments are concatenated along ``time``,
+        sorted, and de-duplicated (overlapping months keep the first
+        experiment in ``experiments`` order). A single experiment is loaded
+        directly without concatenation.
+
+        Raises ``KeyError`` if none of the experiments are available.
+        """
+        import numpy as np
+        import xarray as xr
+
+        segments: list[xr.DataArray] = []
+        for exp in experiments:
+            key = DataLoader.make_key(exp, model, domain, member=member)
+            try:
+                segments.append(self.model_loader.load_var(key, destine_var))
+            except (KeyError, FileNotFoundError):
+                logger.debug(
+                    "Experiment %s unavailable for %s/%s — skipping segment",
+                    exp, model, destine_var,
+                )
+
+        if not segments:
+            raise KeyError(
+                f"No data for {model!r}/{destine_var!r} in experiments "
+                f"{experiments}"
+            )
+        if len(segments) == 1:
+            return segments[0]
+
+        combined = xr.concat(segments, dim="time")
+        if "time" in combined.dims:
+            combined = combined.sortby("time")
+            # Drop duplicate timestamps from overlapping experiments
+            _, keep = np.unique(combined["time"].values, return_index=True)
+            if keep.size != combined.sizes["time"]:
+                combined = combined.isel(time=np.sort(keep))
+        return combined
 
     def _load_model_coords(
         self, model: str, variable: str, *, experiment: str = "",
@@ -383,13 +439,24 @@ class DiagnosticBase(ABC):
             da = self.model_loader.load_var(model, variable)
             return np.asarray(da["longitude"]), np.asarray(da["latitude"])
 
-        # DestinE: coords are in the Dataset
+        # DestinE: coords are in the Dataset and are time-invariant, so use
+        # the first experiment available for this model.
         vinfo = get_var(variable)
-        exp = experiment or self.config.get_experiment()
+        experiments = [experiment] if experiment else self.config.get_experiments()
         mc = self.config.model_configs.get(model)
         member = mc.member if mc else 1
-        key = DataLoader.make_key(exp, model, vinfo.domain, member=member)
-        ds = self.model_loader.load(key)
+        ds = None
+        for exp in experiments:
+            key = DataLoader.make_key(exp, model, vinfo.domain, member=member)
+            try:
+                ds = self.model_loader.load(key)
+                break
+            except (KeyError, FileNotFoundError):
+                continue
+        if ds is None:
+            raise KeyError(
+                f"No coordinates for {model!r} in experiments {experiments}"
+            )
         return np.asarray(ds["longitude"]), np.asarray(ds["latitude"])
 
     def _model_global_mean(

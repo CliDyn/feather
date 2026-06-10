@@ -87,6 +87,9 @@ feather --config configs/eerie_climchange_hw.yaml \
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
+# DestinE Added Value 1990–2025 (hist + ssp3-7.0 stitched; timeseries to 2049/2044)
+feather --config configs/destine_added_value.yaml -v
+
 # Multi-resolution IFS-FESOM comparison (mixed data sources)
 feather --config configs/ifs_fesom_combined.yaml -v
 ```
@@ -267,7 +270,7 @@ All diagnostics support:
 
 ## Configuration
 
-Feather uses YAML configuration files. Thirteen configs are provided:
+Feather uses YAML configuration files. Fourteen configs are provided:
 
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
@@ -283,6 +286,7 @@ Feather uses YAML configuration files. Thirteen configs are provided:
 | `configs/destine_ifs_nemo.yaml` | IFS-NEMO only | intake catalogs | `single_model` |
 | `configs/destine_icon.yaml` | ICON only | intake catalogs | `single_model` |
 | `configs/terradt.yaml` | TerraDT (3 models) | intake catalogs | `baseline_evaluation` |
+| `configs/destine_added_value.yaml` | DestinE (3 models), 1990–2025 | intake catalogs (hist + ssp3-7.0 stitched) | `multi_model` |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-res | mixed (catalog + GRIB) | `resolution_sensitivity` |
 
 ### Config format
@@ -368,6 +372,31 @@ models:
 - `variable_aliases` — CMOR var → on-disk name mapping (e.g., `thetao: thetao-con`)
 - `scale_factors` — per-variable multiplier (e.g., `clt: 100` for fraction → %)
 - `absolute_salinity: true` — enable SA→SP salinity conversion (NEMO-based models)
+
+### Experiment stitching (extended time periods)
+
+Some evaluation windows are not covered by a single experiment. For DestinE, the historical `baseline_hist` run ends in 2014 while the `projections_ssp3-7.0` run continues to 2049 (IFS-FESOM / IFS-NEMO) or 2044 (ICON). To analyse e.g. **1990–2025**, list the experiments to concatenate along the time axis:
+
+```yaml
+project:
+  period: ["1990", "2025"]
+  # Stitched along time: historical baseline + ssp3-7.0 projection.
+  experiments: ["baseline_hist", "projections_ssp3-7.0"]
+  # Optional: let the timeseries diagnostic extend to each model's native end
+  # (IFS-FESOM/IFS-NEMO → 2049, ICON → 2044) while every other diagnostic
+  # uses `period` above. Defaults to `period` when omitted.
+  timeseries_period: ["1990", "2050"]
+
+cmip6:
+  # Stitch CMIP6 symmetrically so added-value / bias diagnostics cover the
+  # same window. Models lacking ssp370 for their variant fall back to
+  # historical-only (end at 2014).
+  experiments: ["historical", "ssp370"]
+```
+
+Segments are concatenated, sorted, and de-duplicated on overlapping months (the first experiment in the list wins). Models that did not run a listed experiment are skipped gracefully. Period slicing happens after concatenation, so a single stitched series serves both the analysis window and the extended timeseries. Omitting `experiments` preserves the legacy single-experiment behaviour, so existing configs are unaffected. See `configs/destine_added_value.yaml` for a complete example.
+
+> **Note:** an ssp370 variant label may differ from its historical counterpart (e.g. CanESM5 ssp370 is `r1i1p2f1`, not `r1i1p1f1`); the configured variant must exist for both experiments, or the model reverts to historical-only.
 
 ### Comparison types
 
