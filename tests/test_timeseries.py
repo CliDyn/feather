@@ -538,6 +538,27 @@ class TestTimeseriesEnsemble:
         np.testing.assert_allclose(mean.values, 291.0)
         np.testing.assert_allclose(median.values, 291.0)
 
+    def test_compute_ensemble_stats_mismatched_scalar_coords(self):
+        """Members with mismatched scalar coords (e.g. ``height`` on tas for
+        only some models) still concat — coords are dropped before stacking."""
+        import numpy as np
+        import xarray as xr
+
+        time = xr.date_range("1990-01", periods=12, freq="MS")
+        ts1 = xr.DataArray(np.ones(12) * 290.0, dims=["time"],
+                            coords={"time": time, "height": 2.0})
+        ts2 = xr.DataArray(np.ones(12) * 292.0, dims=["time"],
+                            coords={"time": time})
+
+        mean, median = TimeseriesDiag._compute_ensemble_stats(
+            {"m1": ts1, "m2": ts2}
+        )
+
+        assert mean is not None
+        assert median is not None
+        np.testing.assert_allclose(mean.values, 291.0)
+        np.testing.assert_allclose(median.values, 291.0)
+
     def test_compute_ensemble_stats_single_returns_none(self):
         """Static method returns (None, None) for a single-model dict."""
         import numpy as np
