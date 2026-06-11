@@ -6,7 +6,7 @@ Feather is a lightweight climate model evaluation framework supporting multiple 
 
 Currently supported model sets:
 - **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
-- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 (~10 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree)
+- **EERIE Ensemble**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 (~10-20 km atm, ~5-10 km ocean, 0.25° lat/lon output, CMOR directory tree). HadGEM3-GC5 is coarser (~20 km atm, ~8 km ocean) and follows the CMIP6 protocol (simulations from 1850), unlike the HighResMIP hist-1950 runs of the other models — hence "Ensemble" rather than "HighResMIP".
 - **Custom NetCDF/HEALPix**: Per-year NetCDF files on HEALPix grid (e.g. IFS-FESOM T319)
 - **GRIB**: IFS-FESOM TCO399/TCO319 (~25-35 km, regular lat/lon, GRIB files)
 - **TerraDT**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix, per-model ensemble members)
@@ -111,8 +111,8 @@ feather/                     # Package root
 | File | Purpose |
 |------|---------|
 | `configs/default.yaml` | DestinE configuration (legacy list format) |
-| `configs/eerie.yaml` | EERIE HighResMIP configuration (structured dict format) |
-| `configs/eerie_psl.yaml` | EERIE HighResMIP + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
+| `configs/eerie.yaml` | EERIE Ensemble configuration (structured dict format) |
+| `configs/eerie_psl.yaml` | EERIE Ensemble + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
@@ -149,10 +149,10 @@ The `models` key determines the config format:
 ```yaml
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP evaluation"
+  description: "EERIE Ensemble evaluation"
   experiment: "hist-1950"
   period: ["1980", "2014"]
-  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"  # used in LLM prompts
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"  # used in LLM prompts
   comparison_type: "multi_model"      # multi_model | resolution_sensitivity | single_model | baseline_evaluation
   comparison_description: ""          # optional free-text for LLM prompt framing
 

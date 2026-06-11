@@ -1,6 +1,6 @@
 """Load model data from a standard CMOR directory tree.
 
-Supports directory structures like EERIE HighResMIP::
+Supports directory structures like EERIE Ensemble::
 
     {root}/{institution}/{model}/{experiment}/{variant}/{table}/{variable}/gr/v*/
 

@@ -1,6 +1,6 @@
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP Heatwave climate change signal (SSP2-4.5)"
+  description: "EERIE Ensemble Heatwave climate change signal (SSP2-4.5)"
   experiment: "hist-1950"
   period: ["1981", "2000"]
   resolution: "high-resolution (~10 km atm)"
@@ -150,7 +150,7 @@ llm:
 
 website:
   title: "Feather — EERIE Heatwave Climate Change"
-  subtitle: "EERIE HighResMIP SSP2-4.5 Heatwave Signal (ref 1981–2000 vs future 2031–2050)"
+  subtitle: "EERIE Ensemble SSP2-4.5 Heatwave Signal (ref 1981–2000 vs future 2031–2050)"
   group_order:
     - extremes
   group_labels:

@@ -1,6 +1,6 @@
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP hist-1950 evaluation — IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (no HadGEM3)"
+  description: "EERIE Ensemble hist-1950 evaluation — IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (no HadGEM3)"
   experiment: "hist-1950"
   period: ["1980", "2014"]
   resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
@@ -172,7 +172,7 @@ report:
 
 website:
   title: "Feather — EERIE 3-Model Evaluation"
-  subtitle: "EERIE HighResMIP hist-1950 Simulations vs Observations (1980-2014)"
+  subtitle: "EERIE Ensemble hist-1950 Simulations vs Observations (1980-2014)"
   group_order:
     - evaluation
     - temperature

@@ -9,8 +9,8 @@ Feather compares high-resolution climate models against observations (ERA5, CERE
 | Model set | Models | Resolution | Grid | Data backend |
 |-----------|--------|-----------|------|-------------|
 | **DestinE** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
-| **EERIE HighResMIP** | IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 | ~10 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR directory tree |
-| **EERIE multi-member** | IFS-FESOM2-SR (r1–r3), IFS-NEMO-ER (r1–r3), ICON-ESM-ER, HadGEM3-GC5 | ~10 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR + kerchunk parquet |
+| **EERIE Ensemble** | IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 | ~10-20 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR directory tree |
+| **EERIE multi-member** | IFS-FESOM2-SR (r1–r3), IFS-NEMO-ER (r1–r3), ICON-ESM-ER, HadGEM3-GC5 | ~10-20 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR + kerchunk parquet |
 | **IFS-FESOM T319** | IFS-FESOM (T319) | ~60 km | HEALPix | per-year NetCDF |
 | **DestinE GRIB** | IFS-FESOM TCO399/TCO319 | ~25-35 km | lat/lon | GRIB files |
 | **TerraDT** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
@@ -65,7 +65,7 @@ diagnostics  →  analyze  →  report  →  website
 # DestinE (default config)
 feather --config configs/default.yaml -v
 
-# EERIE HighResMIP (4 models)
+# EERIE Ensemble (4 models)
 feather --config configs/eerie.yaml -v
 
 # EERIE — 3 IFS-NEMO-ER members + IFS-FESOM2-SR + ICON-ESM-ER + HadGEM3-GC5
@@ -275,7 +275,7 @@ Feather uses YAML configuration files. Fourteen configs are provided:
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
 | `configs/default.yaml` | DestinE (3 models) | intake catalogs | `multi_model` |
-| `configs/eerie.yaml` | EERIE HighResMIP (4 models) | CMOR directory tree | `multi_model` |
+| `configs/eerie.yaml` | EERIE Ensemble (4 models) | CMOR directory tree | `multi_model` |
 | `configs/eerie_ifsnemo_members.yaml` | EERIE — 3 IFS-NEMO-ER + 3 other models | CMOR (hist-1950 + hist-1975) | `multi_model` |
 | `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
 | `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
@@ -302,10 +302,10 @@ The `models` key determines the config format:
 ```yaml
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP evaluation"
+  description: "EERIE Ensemble evaluation"
   experiment: "hist-1950"
   period: ["1980", "2014"]
-  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"         # multi_model | resolution_sensitivity | single_model | baseline_evaluation
   comparison_description: ""             # optional free-text for LLM prompt framing
 

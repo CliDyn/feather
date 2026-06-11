@@ -25,7 +25,7 @@ project:
   description: "EERIE all-members tropical nights & heatwave indices vs ERA5"
   experiment: "hist-1950"
   period: ["1981", "2000"]          # base-diagnostic index window (reference)
-  resolution: "high-resolution (~10 km atm)"
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"
   comparison_description: >-
     Present-day and SSP2-4.5 climate-change signals in tropical nights and

@@ -11,7 +11,7 @@ This document provides everything needed to implement a new diagnostic for the F
 Feather evaluates high-resolution coupled climate models against observations (ERA5, CERES, EN4, etc.). It supports multiple model sets:
 
 - **DestinE**: IFS-FESOM, IFS-NEMO, ICON (~5 km, HEALPix grids, intake catalogs)
-- **EERIE HighResMIP**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm / ~5-10 km ocean, 0.25° lat/lon, CMOR directory tree)
+- **EERIE Ensemble**: IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER (~10 km atm / ~5-10 km ocean, 0.25° lat/lon, CMOR directory tree)
 
 The framework is **grid-agnostic**: diagnostics automatically dispatch between HEALPix and regular lat/lon grids based on per-model configuration. Optionally, it includes CMIP6 multi-model mean (MMM) as a conventional-resolution (~100 km) baseline for context.
 
