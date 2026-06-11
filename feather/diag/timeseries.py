@@ -195,6 +195,12 @@ class TimeseriesDiag(DiagnosticBase):
         if len(series) < 2:
             return None, None
 
+        # Drop non-dimension scalar coords (e.g. ``height`` on tas, ``depth``
+        # on ocean vars) that some models carry and others don't — otherwise
+        # xr.concat with the default coords="different" raises when the coord
+        # is not present in every member.
+        series = [s.reset_coords(drop=True) for s in series]
+
         aligned = xr.align(*series, join="inner")
         stacked = xr.concat(list(aligned), dim="member")
         return stacked.mean("member"), stacked.median("member")
