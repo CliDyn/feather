@@ -267,12 +267,12 @@ class TestSystemPrompts:
     def test_figure_system_custom_models(self):
         system = build_figure_analysis_system(
             models=["IFS-FESOM2-SR", "IFS-NEMO-ER", "ICON-ESM-ER"],
-            project_name="EERIE HighResMIP",
+            project_name="EERIE Ensemble",
         )
         assert "IFS-FESOM2-SR" in system
         assert "IFS-NEMO-ER" in system
         assert "ICON-ESM-ER" in system
-        assert "EERIE HighResMIP" in system
+        assert "EERIE Ensemble" in system
         assert "Destination Earth" not in system
 
     def test_figure_system_custom_resolution(self):

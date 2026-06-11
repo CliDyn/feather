@@ -362,7 +362,7 @@ def build_figure_analysis_system(
     models : list of str or None
         Model names to mention. Defaults to DestinE models.
     project_name : str or None
-        Project/initiative name (e.g. ``"EERIE HighResMIP"``).
+        Project/initiative name (e.g. ``"EERIE Ensemble"``).
         Defaults to ``"Destination Earth (DestinE)"``.
     resolution : str or None
         Resolution description (e.g. ``"high-resolution"``).

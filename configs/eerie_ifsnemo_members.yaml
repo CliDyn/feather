@@ -1,9 +1,9 @@
 project:
   name: "EERIE"
-  description: "EERIE HighResMIP evaluation including 3 IFS-NEMO-ER ensemble members"
+  description: "EERIE Ensemble evaluation including 3 IFS-NEMO-ER ensemble members"
   experiment: "hist-1950"
   period: ["1980", "2014"]
-  resolution: "high-resolution (~10 km atm, ~5-10 km ocean)"
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"
   comparison_description: >-
     This evaluation includes three ensemble members of IFS-NEMO-ER (r1i1p1f1
@@ -223,7 +223,7 @@ report:
 
 website:
   title: "Feather — EERIE Model Evaluation (IFS-NEMO Ensemble)"
-  subtitle: "EERIE HighResMIP hist-1950/hist-1975 Simulations vs Observations (1980-2014)"
+  subtitle: "EERIE Ensemble hist-1950/hist-1975 Simulations vs Observations (1980-2014)"
   group_order:
     - evaluation
     - temperature
