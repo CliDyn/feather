@@ -134,7 +134,7 @@ class TimeseriesDiag(DiagnosticBase):
 
             ts = self._model_global_mean(model_data, model).compute()
             model_ts[model] = ts
-            logger.info("    Global mean: %.2f %s", float(ts.mean()), var_info.units)
+            logger.info("    Global mean: %.4g %s", float(ts.mean()), var_info.units)
 
         if not model_ts:
             logger.warning("  No model data for %s — skipping variable", var)
@@ -143,7 +143,7 @@ class TimeseriesDiag(DiagnosticBase):
         logger.info("  Loading observations for %s", var)
         obs_data = self._load_obs_var(var, self.period)
         obs_ts = latlon_global_mean(obs_data)
-        logger.info("    Obs global mean: %.2f %s", float(obs_ts.mean()), var_info.units)
+        logger.info("    Obs global mean: %.4g %s", float(obs_ts.mean()), var_info.units)
 
         cmip6_ts = None
         cmip6_info = {}
