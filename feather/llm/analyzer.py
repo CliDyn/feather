@@ -201,6 +201,7 @@ class FigureAnalyzer:
                 comparison_description=self._comparison_description,
             ),
             contents=[image_part, user_prompt],
+            response_schema=FigureAnalysis,
         )
 
         analysis_data = self._parse_json_response(response_text)
@@ -235,6 +236,7 @@ class FigureAnalyzer:
                 comparison_description=self._comparison_description,
             ),
             contents=[user_prompt],
+            response_schema=DiagnosticSynthesis,
         )
 
         synthesis_data = self._parse_json_response(response_text)
@@ -271,11 +273,20 @@ class FigureAnalyzer:
         self,
         system_instruction: str,
         contents: list,
+        response_schema: Any = None,
     ) -> str:
-        """Call Gemini via Vertex AI Express with retry on transient errors."""
+        """Call Gemini via Vertex AI Express with retry on transient errors.
+
+        When ``response_schema`` is provided, the model is run in structured
+        JSON mode so the response is guaranteed to be schema-conformant JSON
+        (avoids unparseable free-form text with unescaped quotes/newlines).
+        """
         config_kwargs: dict[str, Any] = {
             "system_instruction": system_instruction,
+            "response_mime_type": "application/json",
         }
+        if response_schema is not None:
+            config_kwargs["response_schema"] = response_schema
         if self.thinking_budget > 0:
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=self.thinking_budget,
@@ -307,8 +318,12 @@ class FigureAnalyzer:
 
     @staticmethod
     def _parse_json_response(text: str) -> dict:
-        """Parse a JSON response, stripping markdown fencing and fixing
-        invalid LaTeX escape sequences."""
+        """Parse a JSON response, tolerating common LLM deviations.
+
+        Handles markdown fencing, invalid LaTeX escape sequences, literal
+        control characters inside strings (``strict=False``), and leading or
+        trailing prose around the JSON object.
+        """
         cleaned = text.strip()
 
         # Strip ```json ... ``` wrapper
@@ -316,9 +331,10 @@ class FigureAnalyzer:
             lines = cleaned.split("\n")
             cleaned = "\n".join(lines[1:-1]).strip()
 
-        # Try parsing as-is first
+        # strict=False permits literal control characters (e.g. unescaped
+        # newlines/tabs) inside string values, which Gemini occasionally emits.
         try:
-            return json.loads(cleaned)
+            return json.loads(cleaned, strict=False)
         except json.JSONDecodeError:
             pass
 
@@ -336,7 +352,16 @@ class FigureAnalyzer:
             cleaned,
         )
 
-        return json.loads(cleaned)
+        try:
+            return json.loads(cleaned, strict=False)
+        except json.JSONDecodeError:
+            # Last resort: extract the outermost {...} object and retry,
+            # discarding any leading/trailing prose the model added.
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(cleaned[start:end + 1], strict=False)
+            raise
 
     def _analysis_path(self, diagnostic_name: str, figure_stem: str) -> Path:
         """Path for a figure-level analysis JSON."""
