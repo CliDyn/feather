@@ -453,14 +453,14 @@ class TestFigureAnalyzerInit:
     def test_init_with_api_key(self, mock_genai, tmp_path):
         cfg = _minimal_config(tmp_path)
         analyzer = FigureAnalyzer(cfg, api_key="test-key")
-        mock_genai.Client.assert_called_once_with(vertexai=True, api_key="test-key")
+        mock_genai.Client.assert_called_once_with(api_key="test-key")
         assert analyzer.model_name == "gemini-2.5-flash"
 
     def test_init_from_env(self, mock_genai, tmp_path, monkeypatch):
         monkeypatch.setenv("VERTEX_API_KEY", "env-key")
         cfg = _minimal_config(tmp_path)
         analyzer = FigureAnalyzer(cfg)
-        mock_genai.Client.assert_called_once_with(vertexai=True, api_key="env-key")
+        mock_genai.Client.assert_called_once_with(api_key="env-key")
 
     def test_init_no_key_raises(self, mock_genai, tmp_path, monkeypatch):
         monkeypatch.delenv("VERTEX_API_KEY", raising=False)
@@ -468,10 +468,11 @@ class TestFigureAnalyzerInit:
         with pytest.raises(RuntimeError, match="API key not found"):
             FigureAnalyzer(cfg)
 
-    def test_init_default_config(self, mock_genai, tmp_path):
+    def test_init_default_config(self, mock_genai, tmp_path, monkeypatch):
+        monkeypatch.delenv("VERTEX_API_KEY", raising=False)
         cfg = _minimal_config(tmp_path)
         cfg.llm = {}
-        # No api_key_env in config, falls back to VERTEX_API_KEY
+        # No api_key_env in config, falls back to VERTEX_API_KEY (unset).
         with pytest.raises(RuntimeError):
             FigureAnalyzer(cfg)
 
