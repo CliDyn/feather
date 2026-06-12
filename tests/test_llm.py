@@ -136,11 +136,27 @@ class TestFigureAnalysis:
         assert analysis.confidence == "high"
         assert len(analysis.key_findings) == 3
 
-    def test_invalid_confidence(self):
+    def test_confidence_compound_coerced(self):
+        """Compound labels coerce to the first recognised level."""
         data = _valid_analysis_dict()
-        data["confidence"] = "very_high"
-        with pytest.raises(Exception):
-            FigureAnalysis(**data)
+        data["confidence"] = "medium-high"
+        assert FigureAnalysis(**data).confidence == "medium"
+
+    def test_confidence_embellished_coerced(self):
+        """Embellished labels coerce to the nearest canonical level."""
+        data = _valid_analysis_dict()
+        data["confidence"] = "Very High"
+        assert FigureAnalysis(**data).confidence == "high"
+
+    def test_confidence_synonym_coerced(self):
+        data = _valid_analysis_dict()
+        data["confidence"] = "moderate"
+        assert FigureAnalysis(**data).confidence == "medium"
+
+    def test_confidence_unrecognised_defaults_medium(self):
+        data = _valid_analysis_dict()
+        data["confidence"] = "???"
+        assert FigureAnalysis(**data).confidence == "medium"
 
     def test_min_findings(self):
         data = _valid_analysis_dict()
@@ -415,6 +431,19 @@ class TestParseJsonResponse:
         text = '{"summary": "Flux in \\units of W/m2"}'
         result = FigureAnalyzer._parse_json_response(text)
         assert "\\units" in result["summary"]
+
+    def test_literal_control_character(self):
+        """Unescaped literal newline inside a string is tolerated."""
+        text = '{"summary": "line one\nline two"}'
+        result = FigureAnalyzer._parse_json_response(text)
+        assert "line one" in result["summary"]
+        assert "line two" in result["summary"]
+
+    def test_prose_wrapped_object(self):
+        """Leading/trailing prose around the JSON object is stripped."""
+        text = 'Here is the analysis:\n{"summary": "ok"}\nHope that helps!'
+        result = FigureAnalyzer._parse_json_response(text)
+        assert result["summary"] == "ok"
 
 
 # ── Analyzer tests ───────────────────────────────────────────────────

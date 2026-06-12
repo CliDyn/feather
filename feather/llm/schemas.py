@@ -4,7 +4,9 @@ These models define the expected shape of Gemini's analysis responses,
 enabling validation and consistent downstream consumption (website, reports).
 """
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class FigureAnalysis(BaseModel):
@@ -44,6 +46,29 @@ class FigureAnalysis(BaseModel):
         description="Overall confidence: high / medium / low.",
         pattern=r"^(high|medium|low)$",
     )
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, v: object) -> str:
+        """Coerce LLM confidence labels to one of high/medium/low.
+
+        The model occasionally returns compound or embellished labels such
+        as ``"medium-high"``, ``"very high"`` or ``"moderate"``. Map them to
+        the nearest canonical level (taking the first recognised token, so
+        ``"medium-high"`` → ``medium``) instead of failing validation.
+        """
+        if not isinstance(v, str):
+            return v
+        s = v.strip().lower()
+        if s in {"high", "medium", "low"}:
+            return s
+        synonyms = {"moderate": "medium", "mid": "medium"}
+        for token in re.split(r"[^a-z]+", s):
+            if token in {"high", "medium", "low"}:
+                return token
+            if token in synonyms:
+                return synonyms[token]
+        return "medium"
 
 
 class DiagnosticSynthesis(BaseModel):
