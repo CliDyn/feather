@@ -207,7 +207,7 @@ output_dir: "/work/bm1344/AWI/EERIE/output_eerie_ifsnemo_members"
 llm:
   figure_analysis:
     provider: "vertex"
-    model: "gemini-3-pro-preview"
+    model: "gemini-2.5-flash"
     api_key_env: "VERTEX_API_KEY"
     thinking_budget: 8192
     max_retries: 3
