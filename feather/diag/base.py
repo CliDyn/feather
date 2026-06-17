@@ -66,10 +66,15 @@ class DiagnosticBase(ABC):
         *,
         cmip6_loader: Any = None,
         benchmarks: list | None = None,
+        save_netcdf: bool = False,
     ):
         self.model_loader = model_loader
         self.obs_loader = obs_loader
         self.config = config
+        # When True, diagnostics also write their per-source fields (obs,
+        # evaluated models, benchmark MMMs) to NetCDF under
+        # ``{output}/netcdf/{name}/`` via ``_maybe_export_netcdf``.
+        self.save_netcdf = save_netcdf
         # ``benchmarks`` is the ordered list of benchmark loaders (CMIP6,
         # HighResMIP, …).  ``cmip6_loader`` is the primary (first) benchmark,
         # kept for diagnostics not yet generalised to multiple benchmarks.
@@ -102,6 +107,36 @@ class DiagnosticBase(ABC):
             self.config.cmip6.get("enabled", False)
             or self._benchmarks_explicit
         )
+
+    # ── NetCDF export ─────────────────────────────────────────────────
+
+    @property
+    def _netcdf_dir(self) -> Path:
+        """Directory for this diagnostic's per-source NetCDF files."""
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _maybe_export_netcdf(self, results, token: str) -> None:
+        """Write *results*' per-source fields to NetCDF when requested.
+
+        No-op unless ``self.save_netcdf`` is True. *token* names the file
+        (typically a variable or mode); the analysis period is appended.
+        Existing files are skipped. Failures are logged, never raised — the
+        export must never break the diagnostic.
+        """
+        if not getattr(self, "save_netcdf", False):
+            return
+        from feather.diag import netcdf_export
+
+        period = getattr(self, "period", None) or self.config.get_period()
+        try:
+            netcdf_export.export_generic_netcdf(
+                self._netcdf_dir, token, results, period, skip_existing=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "NetCDF export failed for %s/%s", self.name, token,
+                exc_info=True,
+            )
 
     # ── Abstract interface ────────────────────────────────────────────
 

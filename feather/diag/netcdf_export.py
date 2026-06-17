@@ -82,6 +82,129 @@ def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
     return fields
 
 
+#: Result-dict keys that hold metadata / non-source objects rather than
+#: per-source fields — skipped by the generic collector.
+_GENERIC_SKIP_KEYS = {
+    "var_info", "colorbar_ranges", "colorbar_range", "stats", "statistics",
+    "meta", "metadata",
+}
+
+
+def _is_exportable(da) -> bool:
+    """True for a DataArray with at least one dimension (skip scalars)."""
+    return isinstance(da, xr.DataArray) and da.ndim >= 1
+
+
+def collect_dataarrays(
+    obj, prefix: str, out: dict, *, depth: int = 0, max_depth: int = 6,
+) -> None:
+    """Recursively gather DataArrays from a nested result structure.
+
+    Walks dicts/lists/tuples, building dotted-then-sanitised names from the
+    key path (e.g. ``models_IFS_FESOM2_SR_annual_regrid``). Datasets are
+    expanded into their data variables. Metadata keys (``var_info``,
+    ``*_info``, …) and scalar/0-d arrays are skipped.
+    """
+    if depth > max_depth:
+        return
+    if isinstance(obj, xr.DataArray):
+        if _is_exportable(obj):
+            out[prefix or sanitize_name(str(obj.name) or "data")] = obj
+        return
+    if isinstance(obj, xr.Dataset):
+        for v in obj.data_vars:
+            name = f"{prefix}_{sanitize_name(str(v))}" if prefix else sanitize_name(str(v))
+            if _is_exportable(obj[v]):
+                out[name] = obj[v]
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            key = sanitize_name(str(k))
+            if key in _GENERIC_SKIP_KEYS or key.endswith("_info"):
+                continue
+            collect_dataarrays(
+                v, f"{prefix}_{key}" if prefix else key, out,
+                depth=depth + 1, max_depth=max_depth,
+            )
+    elif isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            collect_dataarrays(
+                v, f"{prefix}_{i}" if prefix else str(i), out,
+                depth=depth + 1, max_depth=max_depth,
+            )
+
+
+def export_generic_netcdf(
+    netcdf_dir: Path,
+    token: str,
+    results,
+    period: tuple[str, str] | None,
+    *,
+    skip_existing: bool = True,
+    extra_attrs: dict | None = None,
+) -> list[Path]:
+    """Write every per-source DataArray in *results* to a single NetCDF.
+
+    Filename is ``{token}_{start}-{end}.nc`` (or ``{token}.nc`` when *period*
+    is None). Fields are merged into one Dataset; any field whose dims clash
+    with an already-added field (different grid/length) gets its dims renamed
+    uniquely so no data is dropped. Existing files are skipped when
+    *skip_existing*.
+    """
+    netcdf_dir = Path(netcdf_dir)
+    token = sanitize_name(token)
+    if period is not None:
+        fname = f"{token}_{period[0]}-{period[1]}.nc"
+    else:
+        fname = f"{token}.nc"
+    path = netcdf_dir / fname
+    if skip_existing and path.exists():
+        return [path]
+
+    fields: dict = {}
+    collect_dataarrays(results, "", fields)
+    if not fields:
+        return []
+
+    ds = xr.Dataset()
+    for name, da in fields.items():
+        key = name
+        # Strip name to avoid the DataArray's own .name shadowing the key.
+        da = da.rename(key)
+        try:
+            ds = ds.assign({key: da})
+            continue
+        except Exception:  # noqa: BLE001 — dim/coord clash with prior field
+            pass
+        # Isolate this field's dims so incompatible grids/lengths coexist.
+        try:
+            renamed = {d: f"{key}__{d}" for d in da.dims}
+            iso = da.rename(renamed).reset_coords(drop=True)
+            ds = ds.assign({key: iso})
+        except Exception:  # noqa: BLE001
+            logger.warning("  NetCDF: could not add field %s — skipping", key)
+
+    if len(ds.data_vars) == 0:
+        return []
+
+    netcdf_dir.mkdir(parents=True, exist_ok=True)
+    ds.attrs.update(
+        token=token,
+        period=f"{period[0]}-{period[1]}" if period else "",
+        period_start=str(period[0]) if period else "",
+        period_end=str(period[1]) if period else "",
+        description=(
+            "Per-source diagnostic fields (obs, evaluated models, and "
+            "benchmark MMMs: CMIP6, HighResMIP) on their analysis grids."
+        ),
+    )
+    if extra_attrs:
+        ds.attrs.update(extra_attrs)
+    ds.to_netcdf(path)
+    logger.info("  Wrote NetCDF: %s (%d fields)", path.name, len(ds.data_vars))
+    return [path]
+
+
 def export_biasmap_netcdf(
     netcdf_dir: Path,
     var: str,

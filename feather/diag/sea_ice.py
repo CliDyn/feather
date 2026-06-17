@@ -65,9 +65,9 @@ class SeaIceDiag(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
@@ -93,6 +93,11 @@ class SeaIceDiag(DiagnosticBase):
             benchmarks=benchmarks or None,
         )
 
+        self._maybe_export_netcdf(
+            {"model": model_ts, "obs": obs_ts, "benchmarks": benchmarks,
+             "cmip6": cmip6_ts, "cmip6_individual": cmip6_indiv},
+            "sea_ice_timeseries",
+        )
         # Group A: Time series (3 figures)
         for metric in _METRICS:
             fid = f"sea_ice_{metric}_timeseries"

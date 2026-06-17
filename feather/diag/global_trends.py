@@ -60,9 +60,9 @@ class GlobalTrends(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -104,6 +104,7 @@ class GlobalTrends(DiagnosticBase):
                 if var_result is None:
                     continue
 
+                self._maybe_export_netcdf(var_result, var)
                 figures = self._plot_variable(var, var_result)
                 for fig, meta in figures:
                     paths = self._save(fig, meta, meta["figure_id"])

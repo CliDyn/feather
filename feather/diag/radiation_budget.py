@@ -170,9 +170,9 @@ class RadiationBudget(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
@@ -261,6 +261,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_a = self._compute_budget()
+            self._maybe_export_netcdf(results_a, "budget")
             figs_a = self._plot_budget(results_a)
             for fig, meta in figs_a:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -275,6 +276,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_b = self._compute_gregory()
+            self._maybe_export_netcdf(results_b, "gregory")
             figs_b = self._plot_gregory(results_b)
             for fig, meta in figs_b:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -289,6 +291,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_c = self._compute_imbalance_timeseries()
+            self._maybe_export_netcdf(results_c, "imbalance")
             figs_c = self._plot_imbalance_timeseries(results_c)
             for fig, meta in figs_c:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -305,6 +308,7 @@ class RadiationBudget(DiagnosticBase):
                 continue
             results_d = self._compute_bias_map(dq_key, dq_info)
             if results_d is not None:
+                self._maybe_export_netcdf(results_d, f"{dq_key}_bias")
                 figs_d = self._plot_bias_map(dq_key, dq_info, results_d)
                 for fig, meta in figs_d:
                     saved.append(self._save(fig, meta, meta["figure_id"]))

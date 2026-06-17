@@ -90,7 +90,10 @@ def main(argv: list[str] | None = None):
              "CMIP6/HighResMIP MMM) under {output}/netcdf/{diag}/; filenames "
              "include the analysis period. Skips files already present. "
              "Supported by global_biases, temperature_berkeley, "
-             "precipitation_mswep.",
+             "precipitation_mswep, global_trends, climate_variability, "
+             "ocean_sst, ocean_en4, radiation_budget, sea_ice, timeseries, "
+             "seasonal_cycle, and teleconnections. (The obs-comparison and "
+             "extremes/classification diagnostics write NetCDF unconditionally.)",
     )
     parser.add_argument(
         "--no-llm",

@@ -200,9 +200,9 @@ class TeleconnectionDiag(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
                  experiment=None, period=None,
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
         self.experiment = experiment or config.get_experiment()
         self.period = period or config.get_period()
         self.cmip6_individual = cmip6_individual
@@ -247,6 +247,7 @@ class TeleconnectionDiag(DiagnosticBase):
                         "  Mode %s: no data — skipped (%.1fs)", mode_name, dt,
                     )
                     continue
+                self._maybe_export_netcdf(mode_result, mode_name)
                 logger.info(
                     "  Mode %s computed in %.1fs — plotting...",
                     mode_name, dt,

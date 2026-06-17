@@ -98,9 +98,9 @@ class OceanEN4(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -393,6 +393,7 @@ class OceanEN4(DiagnosticBase):
             results = self._compute_bias_maps(
                 "thetao", model_3d, model_coords, en4_data,
             )
+            self._maybe_export_netcdf(results, "en4_thetao_bias")
             for fig, meta in self._plot_bias_maps("thetao", results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -401,6 +402,7 @@ class OceanEN4(DiagnosticBase):
             results = self._compute_bias_maps(
                 "so", model_3d, model_coords, en4_data,
             )
+            self._maybe_export_netcdf(results, "en4_so_bias")
             for fig, meta in self._plot_bias_maps("so", results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -416,6 +418,7 @@ class OceanEN4(DiagnosticBase):
                 var, model_3d, model_depths, model_thickness,
                 en4_data, en4_ds_cache, model_coords=model_coords,
             )
+            self._maybe_export_netcdf(hov_data, f"en4_{var}_hovmoller")
 
             if a1_need:
                 for fig, meta in self._plot_hovmoller_anom1(var, hov_data):
@@ -433,6 +436,7 @@ class OceanEN4(DiagnosticBase):
                 var, model_3d, model_depths, model_thickness,
                 en4_data, en4_ds_cache, model_coords=model_coords,
             )
+            self._maybe_export_netcdf(ts_data, f"en4_{var}_depth_ts")
             for fig, meta in self._plot_depth_timeseries(var, ts_data):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
