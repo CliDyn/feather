@@ -61,11 +61,11 @@ class ClimateVariability(DiagnosticBase):
     group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment=None, period=None,
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment or config.get_experiment()
@@ -279,25 +279,37 @@ class ClimateVariability(DiagnosticBase):
             )
             return None
 
-        # CMIP6 (optional)
+        # Benchmark STDs (CMIP6, HighResMIP, …) — one MMM per benchmark.
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
+        benchmark_data: dict[str, dict] = {}
+        benchmark_info: dict[str, dict] = {}
         if self.cmip6_enabled and target_lats is not None:
-            if self.cmip6_individual:
-                cmip6_individual_data = self._compute_cmip6_individual_std(
-                    var, target_lats, target_lons,
-                    obs_std_common, common_area,
-                )
-                cmip6_data, cmip6_info = self._mmm_from_individual_std(
-                    cmip6_individual_data,
-                    obs_std_common, common_area,
-                )
-            else:
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm_std(
-                    var, target_lats, target_lons,
-                    obs_std_common, common_area,
-                )
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                if i == 0 and self.cmip6_individual:
+                    cmip6_individual_data = self._compute_cmip6_individual_std(
+                        var, target_lats, target_lons,
+                        obs_std_common, common_area,
+                    )
+                    b_data, b_info = self._mmm_from_individual_std(
+                        cmip6_individual_data,
+                        obs_std_common, common_area,
+                    )
+                else:
+                    b_data, b_info = self._compute_cmip6_mmm_std(
+                        var, target_lats, target_lons,
+                        obs_std_common, common_area, loader=bench,
+                    )
+                if b_data:
+                    benchmark_data[label] = b_data
+                    benchmark_info[label] = b_info
+
+            if benchmark_data:
+                primary_label = next(iter(benchmark_data))
+                cmip6_data = benchmark_data[primary_label]
+                cmip6_info = benchmark_info[primary_label]
 
         # Compute colorbar ranges
         obs_gmean = float(
@@ -307,6 +319,7 @@ class ClimateVariability(DiagnosticBase):
             model_results, obs_std_common,
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
+            benchmark_data=benchmark_data,
         )
 
         return {
@@ -320,13 +333,16 @@ class ClimateVariability(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "benchmark_data": benchmark_data,
+            "benchmark_info": benchmark_info,
         }
 
     # -- CMIP6 helpers ------------------------------------------------------
 
     def _compute_cmip6_mmm_std(self, var, target_lats, target_lons,
-                                obs_std_common, common_area):
-        """Compute CMIP6 multi-model mean STD."""
+                                obs_std_common, common_area, loader=None):
+        """Compute benchmark multi-model mean STD (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
         cmip6_data = {}
         cmip6_info = {}
         influence_radius = self.config.nereus.get(
@@ -335,15 +351,16 @@ class ClimateVariability(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Computing CMIP6 MMM STD for %s...", var)
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Computing %s MMM STD for %s...",
+                    getattr(loader, "label", "CMIP6"), var)
+        member_pairs = loader.get_member_pairs()
 
         std_fields = []
         models_used = []
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 var, model, variant=variant,
                 period=self.period, time_mean=False,
             )
@@ -545,10 +562,12 @@ class ClimateVariability(DiagnosticBase):
         obs_std_common: xr.DataArray,
         cmip6_data: dict | None = None,
         cmip6_individual_data: dict | None = None,
+        benchmark_data: dict | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges for STD and diff panels."""
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
+        benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
             parts = []
@@ -564,6 +583,8 @@ class ClimateVariability(DiagnosticBase):
             std_arrays.append(cmip6_data["std_regrid"])
         for member_data in cmip6_individual_data.values():
             std_arrays.append(member_data["std_regrid"])
+        for b_data in benchmark_data.values():
+            std_arrays.append(b_data["std_regrid"])
 
         std_vals = _finite_vals(std_arrays)
         std_vmin = float(np.percentile(std_vals, 2))
@@ -575,6 +596,8 @@ class ClimateVariability(DiagnosticBase):
             diff_arrays.append(cmip6_data["std_diff"])
         for member_data in cmip6_individual_data.values():
             diff_arrays.append(member_data["std_diff"])
+        for b_data in benchmark_data.values():
+            diff_arrays.append(b_data["std_diff"])
 
         diff_vals = _finite_vals(diff_arrays)
         bias_vmax = float(np.percentile(np.abs(diff_vals), 98)) or 1.0
@@ -595,9 +618,9 @@ class ClimateVariability(DiagnosticBase):
         var_info = vr["var_info"]
         obs_std = vr["obs_std"]
         cb = vr["colorbar_ranges"]
-        cmip6_data = vr.get("cmip6_data", {})
         cmip6_info = vr.get("cmip6_info", {})
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
+        benchmark_data = vr.get("benchmark_data", {})
 
         all_models = list(vr["models"].keys())
 
@@ -605,9 +628,9 @@ class ClimateVariability(DiagnosticBase):
         std_data_dict = {var_info.obs_dataset: obs_std}
         for model, mdata in vr["models"].items():
             std_data_dict[model] = mdata["std_regrid"]
-        if cmip6_data:
-            std_data_dict["CMIP6 MMM"] = cmip6_data["std_regrid"]
-            all_models.append("CMIP6 MMM")
+        for b_label, b_data in benchmark_data.items():
+            std_data_dict[b_label] = b_data["std_regrid"]
+            all_models.append(b_label)
         for label, cdata in cmip6_individual_data.items():
             std_data_dict[label] = cdata["std_regrid"]
             all_models.append(label)
@@ -629,11 +652,11 @@ class ClimateVariability(DiagnosticBase):
                 "diff_gmean": mdata["diff_gmean"],
                 "rmse": mdata["rmse"],
             }
-        if cmip6_data:
-            summary_stats["CMIP6 MMM"] = {
-                "std_gmean": cmip6_data["std_gmean"],
-                "diff_gmean": cmip6_data["diff_gmean"],
-                "rmse": cmip6_data["rmse"],
+        for b_label, b_data in benchmark_data.items():
+            summary_stats[b_label] = {
+                "std_gmean": b_data["std_gmean"],
+                "diff_gmean": b_data["diff_gmean"],
+                "rmse": b_data["rmse"],
             }
 
         meta1 = self._build_metadata(
@@ -656,8 +679,8 @@ class ClimateVariability(DiagnosticBase):
         bias_dict = {}
         for model, mdata in vr["models"].items():
             bias_dict[model] = mdata["std_diff"]
-        if cmip6_data:
-            bias_dict["CMIP6 MMM"] = cmip6_data["std_diff"]
+        for b_label, b_data in benchmark_data.items():
+            bias_dict[b_label] = b_data["std_diff"]
         for label, cdata in cmip6_individual_data.items():
             bias_dict[label] = cdata["std_diff"]
 
