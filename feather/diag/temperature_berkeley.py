@@ -23,7 +23,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.lines import plot_taylor_diagram
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
-from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import (
     compute_latlon_areas,
     latlon_global_mean,
@@ -59,11 +59,11 @@ class TemperatureBerkeley(DiagnosticBase):
     group = "temperature"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -483,31 +483,45 @@ class TemperatureBerkeley(DiagnosticBase):
                 "seasonal_biases": seasonal_biases,
             }
 
-        # CMIP6 bias (optional)
+        # Benchmark biases (CMIP6, HighResMIP, …) — one MMM per benchmark.
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
+        benchmark_data: dict[str, dict] = {}
+        benchmark_info: dict[str, dict] = {}
         if self.cmip6_enabled and target_lats is not None:
-            if self.cmip6_individual:
-                cmip6_individual_data = self._compute_cmip6_individual(
-                    target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
-                cmip6_data, cmip6_info = self._mmm_from_individual(
-                    cmip6_individual_data,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
-            else:
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm(
-                    target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                if i == 0 and self.cmip6_individual:
+                    cmip6_individual_data = self._compute_cmip6_individual(
+                        target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                    )
+                    b_data, b_info = self._mmm_from_individual(
+                        cmip6_individual_data,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                    )
+                else:
+                    b_data, b_info = self._compute_cmip6_mmm(
+                        target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                        loader=bench,
+                    )
+                if b_data:
+                    benchmark_data[label] = b_data
+                    benchmark_info[label] = b_info
+
+            if benchmark_data:
+                primary_label = next(iter(benchmark_data))
+                cmip6_data = benchmark_data[primary_label]
+                cmip6_info = benchmark_info[primary_label]
 
         # Shared colorbar ranges
         colorbar_ranges = self._compute_colorbar_ranges(
             model_results, obs_clim_common, obs_seasonal_common,
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
+            benchmark_data=benchmark_data,
         )
 
         return {
@@ -520,6 +534,8 @@ class TemperatureBerkeley(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "benchmark_data": benchmark_data,
+            "benchmark_info": benchmark_info,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -527,9 +543,9 @@ class TemperatureBerkeley(DiagnosticBase):
         figures = []
         obs_clim = results["obs"]["clim"]
         cb = results["colorbar_ranges"]
-        cmip6_data = results.get("cmip6_data", {})
         cmip6_info = results.get("cmip6_info", {})
         cmip6_individual_data = results.get("cmip6_individual_data", {})
+        benchmark_data = results.get("benchmark_data", {})
 
         periods = [("annual", "Annual Mean")]
         for season in ["DJF", "MAM", "JJA", "SON"]:
@@ -552,11 +568,11 @@ class TemperatureBerkeley(DiagnosticBase):
                 bias_dict[model] = bias_field
                 all_models.append(model)
 
-            # CMIP6 MMM
-            if period_key in cmip6_data:
-                c_data = cmip6_data[period_key]
-                bias_dict["CMIP6 MMM"] = c_data["bias"]
-                all_models.append("CMIP6 MMM")
+            # Benchmark MMMs (CMIP6, HighResMIP, …)
+            for b_label, b_data in benchmark_data.items():
+                if period_key in b_data:
+                    bias_dict[b_label] = b_data[period_key]["bias"]
+                    all_models.append(b_label)
 
             # CMIP6 individual
             if period_key in cmip6_individual_data:
@@ -624,23 +640,17 @@ class TemperatureBerkeley(DiagnosticBase):
         berkeley = shared["berkeley"]
         obs_ts = latlon_global_mean(berkeley)
 
-        # CMIP6
-        cmip6_ts, cmip6_info = self._cmip6_global_mean_timeseries(
-            "tas", period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        cmip6_individual_ts: dict[str, Any] = {}
-        if cmip6_ts is not None and self.cmip6_individual:
-            cmip6_individual_ts = dict(
-                cmip6_info.get("individual_series", {}),
-            )
+        # Benchmark global-mean series (CMIP6, HighResMIP, …)
+        benchmarks_ts = self._benchmark_timeseries("tas")
+        primary = benchmarks_ts[0] if benchmarks_ts else None
 
         return {
             "models": model_ts,
             "obs": obs_ts,
-            "cmip6_ts": cmip6_ts,
-            "cmip6_info": cmip6_info,
-            "cmip6_individual_ts": cmip6_individual_ts,
+            "benchmarks_ts": benchmarks_ts,
+            "cmip6_ts": primary["ts"] if primary else None,
+            "cmip6_info": primary["info"] if primary else {},
+            "cmip6_individual_ts": primary["individual"] if primary else {},
         }
 
     def _plot_timeseries(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -650,21 +660,22 @@ class TemperatureBerkeley(DiagnosticBase):
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = list(self.config.models)
 
-        cmip6_indiv = results.get("cmip6_individual_ts", {})
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
+        benchmarks = results.get("benchmarks_ts", [])
+        for bench in benchmarks:
+            all_models.append(bench["label"])
+            all_models.extend(bench["individual"].keys())
 
         # Monthly pass (background)
-        for _mname, ts in cmip6_indiv.items():
-            time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values - _K_TO_C,
-                    color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
-
-        if results.get("cmip6_ts") is not None:
-            cmip6_ts = results["cmip6_ts"]
-            time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values - _K_TO_C,
-                    color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+        for bench in benchmarks:
+            b_color = bench["color"]
+            for ts in bench["individual"].values():
+                time_vals = _to_plot_time(ts.time.values)
+                ax.plot(time_vals, ts.values - _K_TO_C,
+                        color=b_color, alpha=0.2, linewidth=0.5)
+            b_ts = bench["ts"]
+            time_vals = _to_plot_time(b_ts.time.values)
+            ax.plot(time_vals, b_ts.values - _K_TO_C,
+                    color=b_color, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         for model, ts in results["models"].items():
@@ -679,19 +690,21 @@ class TemperatureBerkeley(DiagnosticBase):
                 color=OBS_COLOR, alpha=0.3, linewidth=0.7)
 
         # Annual pass (foreground)
-        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ts_annual = annual_mean(ts)
-            time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values - _K_TO_C,
-                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                    label=label)
-
-        if results.get("cmip6_ts") is not None:
-            cmip6_annual = annual_mean(results["cmip6_ts"])
-            time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values - _K_TO_C,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+        for bench in benchmarks:
+            b_color = bench["color"]
+            b_label = bench["label"]
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            for i, ts in enumerate(bench["individual"].values()):
+                label = f"{members_name} members" if i == 0 else "_nolegend_"
+                ts_annual = annual_mean(ts)
+                time_vals = _to_plot_time(ts_annual.time.values)
+                ax.plot(time_vals, ts_annual.values - _K_TO_C,
+                        color=b_color, alpha=0.35, linewidth=0.8,
+                        label=label)
+            b_annual = annual_mean(bench["ts"])
+            time_vals = _to_plot_time(b_annual.time.values)
+            ax.plot(time_vals, b_annual.values - _K_TO_C,
+                    label=b_label, color=b_color,
                     linewidth=2.0, linestyle="--")
 
         for model, ts in results["models"].items():
@@ -744,27 +757,28 @@ class TemperatureBerkeley(DiagnosticBase):
         obs_ts = latlon_global_mean(berkeley)
         obs_monthly = monthly_climatology(obs_ts, self.period)
 
-        # CMIP6
-        cmip6_monthly = None
-        cmip6_info = {}
-        cmip6_individual_monthly: dict[str, Any] = {}
-        cmip6_ts, info = self._cmip6_global_mean_timeseries(
-            "tas", period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        if cmip6_ts is not None:
-            cmip6_monthly = monthly_climatology(cmip6_ts)
-            cmip6_info = info
-            if self.cmip6_individual and "individual_series" in info:
-                for mname, mts in info["individual_series"].items():
-                    cmip6_individual_monthly[mname] = monthly_climatology(mts)
+        # Benchmark monthly climatologies (CMIP6, HighResMIP, …)
+        benchmarks_monthly = []
+        for bench in self._benchmark_timeseries("tas"):
+            benchmarks_monthly.append({
+                "label": bench["label"],
+                "color": bench["color"],
+                "monthly": monthly_climatology(bench["ts"]),
+                "info": bench["info"],
+                "individual": {
+                    mname: monthly_climatology(mts)
+                    for mname, mts in bench["individual"].items()
+                },
+            })
+        primary = benchmarks_monthly[0] if benchmarks_monthly else None
 
         return {
             "models": model_monthly_clim,
             "obs": obs_monthly,
-            "cmip6_monthly": cmip6_monthly,
-            "cmip6_info": cmip6_info,
-            "cmip6_individual_monthly": cmip6_individual_monthly,
+            "benchmarks_monthly": benchmarks_monthly,
+            "cmip6_monthly": primary["monthly"] if primary else None,
+            "cmip6_info": primary["info"] if primary else {},
+            "cmip6_individual_monthly": primary["individual"] if primary else {},
         }
 
     def _plot_seasonal_cycle(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -776,21 +790,20 @@ class TemperatureBerkeley(DiagnosticBase):
         months = np.arange(1, 13)
         all_models = list(self.config.models)
 
-        # Layer 1: CMIP6 individual
-        cmip6_indiv = results.get("cmip6_individual_monthly", {})
-        for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ax.plot(months, monthly.values - _K_TO_C,
-                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                    label=label)
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
-
-        # Layer 2: CMIP6 MMM
-        if results.get("cmip6_monthly") is not None:
-            ax.plot(months, results["cmip6_monthly"].values - _K_TO_C,
-                    marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+        # Layers 1-2: Per-benchmark individual members + MMM
+        for bench in results.get("benchmarks_monthly", []):
+            b_color = bench["color"]
+            b_label = bench["label"]
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            for i, monthly in enumerate(bench["individual"].values()):
+                label = f"{members_name} members" if i == 0 else "_nolegend_"
+                ax.plot(months, monthly.values - _K_TO_C,
+                        color=b_color, alpha=0.35, linewidth=0.8, label=label)
+            all_models.extend(bench["individual"].keys())
+            ax.plot(months, bench["monthly"].values - _K_TO_C,
+                    marker="d", label=b_label, color=b_color,
                     linewidth=1.5, linestyle="--")
+            all_models.append(b_label)
 
         # Layer 3: Model lines
         for model, monthly in results["models"].items():
@@ -852,34 +865,40 @@ class TemperatureBerkeley(DiagnosticBase):
         obs_clim = climatology(berkeley, self.period)
         obs_zonal = obs_clim.mean("lon")
 
-        # CMIP6
-        cmip6_zonal = None
-        cmip6_info = {}
+        # Per-benchmark zonal means (CMIP6, HighResMIP, …)
+        from feather.plot.styles import benchmark_color
+        benchmarks_zonal = []
         if self.cmip6_enabled:
-            cmip6_ts, info = self._cmip6_global_mean_timeseries(
-                "tas", period=self.period,
-            )
-            if cmip6_ts is not None:
-                cmip6_info = info
-            cmip6_zonal = self._compute_cmip6_zonal_mean()
+            for i, bench in enumerate(self.benchmarks):
+                zm = self._compute_cmip6_zonal_mean(loader=bench)
+                if zm is None:
+                    continue
+                benchmarks_zonal.append({
+                    "label": getattr(bench, "label", "CMIP6 MMM"),
+                    "color": getattr(bench, "color", None) or benchmark_color(i),
+                    "zonal": zm,
+                })
+        primary = benchmarks_zonal[0] if benchmarks_zonal else None
 
         return {
             "models": model_zonal,
             "obs": obs_zonal,
-            "cmip6_zonal": cmip6_zonal,
-            "cmip6_info": cmip6_info,
+            "benchmarks_zonal": benchmarks_zonal,
+            "cmip6_zonal": primary["zonal"] if primary else None,
+            "cmip6_info": {},
         }
 
-    def _compute_cmip6_zonal_mean(self):
-        """Compute CMIP6 MMM zonal mean temperature."""
-        if not self.cmip6_enabled:
+    def _compute_cmip6_zonal_mean(self, loader=None):
+        """Compute benchmark MMM zonal mean temperature (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None
 
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        member_pairs = loader.get_member_pairs()
         zonal_fields = []
 
         for model, variant in member_pairs:
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "tas", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -901,13 +920,13 @@ class TemperatureBerkeley(DiagnosticBase):
         fig, ax = plt.subplots(figsize=(6, 8))
         all_models = []
 
-        # CMIP6 MMM
-        if results.get("cmip6_zonal") is not None:
-            zm = results["cmip6_zonal"]
+        # Benchmark MMMs (CMIP6, HighResMIP, …)
+        for bench in results.get("benchmarks_zonal", []):
+            zm = bench["zonal"]
             ax.plot(zm.values - _K_TO_C, zm.lat.values,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+                    label=bench["label"], color=bench["color"],
                     linewidth=1.5, linestyle="--")
-            all_models.append("CMIP6 MMM")
+            all_models.append(bench["label"])
 
         # Models
         for model, zm in results["models"].items():
@@ -1033,13 +1052,29 @@ class TemperatureBerkeley(DiagnosticBase):
             coords={"lat": target_lats, "lon": target_lons},
         )
 
-        # CMIP6 trends (already on common grid)
-        cmip6_trend_common = None
+        # Benchmark trends on the common grid (CMIP6, HighResMIP, …)
+        from feather.plot.styles import benchmark_color
+        benchmark_trends: dict[str, Any] = {}
+        benchmark_trend_colors: dict[str, Any] = {}
         cmip6_info = {}
         if self.cmip6_enabled:
-            cmip6_trend_common, cmip6_info = self._compute_cmip6_trends(
-                target_lats, target_lons, resolution, influence_radius,
-            )
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                trend, info = self._compute_cmip6_trends(
+                    target_lats, target_lons, resolution, influence_radius,
+                    loader=bench,
+                )
+                if trend is not None:
+                    benchmark_trends[label] = trend
+                    benchmark_trend_colors[label] = (
+                        getattr(bench, "color", None) or benchmark_color(i)
+                    )
+                    if not cmip6_info:
+                        cmip6_info = info
+
+        primary_trend = (
+            next(iter(benchmark_trends.values())) if benchmark_trends else None
+        )
 
         return {
             "model_trends": model_trends_common,
@@ -1047,25 +1082,28 @@ class TemperatureBerkeley(DiagnosticBase):
             "model_coords": model_coords,
             "obs_trend": obs_trend_common,
             "obs_trend_native": obs_trend_native,
-            "cmip6_trend": cmip6_trend_common,
+            "benchmark_trends": benchmark_trends,
+            "benchmark_trend_colors": benchmark_trend_colors,
+            "cmip6_trend": primary_trend,
             "cmip6_info": cmip6_info,
         }
 
     def _compute_cmip6_trends(self, target_lats, target_lons,
-                              resolution, influence_radius):
-        """Compute CMIP6 MMM trend on the common grid."""
-        if not self.cmip6_enabled:
+                              resolution, influence_radius, loader=None):
+        """Compute benchmark MMM trend on the common grid (per-benchmark)."""
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None, {}
 
         from feather.diag.global_biases import GlobalBiases
 
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        member_pairs = loader.get_member_pairs()
         trend_fields = []
         models_used = []
         interp_cache: dict = {}
 
         for model, variant in member_pairs:
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "tas", model, variant=variant,
                 period=self.period, time_mean=False,
             )
@@ -1095,17 +1133,16 @@ class TemperatureBerkeley(DiagnosticBase):
         obs_trend = results["obs_trend"]
         all_models = list(model_trends.keys())
 
-        cmip6_trend = results.get("cmip6_trend")
-        if cmip6_trend is not None:
-            all_models.append("CMIP6 MMM")
+        benchmark_trends = results.get("benchmark_trends", {})
 
         # Global trend map (combined: obs + model-obs diffs on common grid)
         bias_dict = {}
         for model, trend in model_trends.items():
             bias_dict[model] = trend - obs_trend
 
-        if cmip6_trend is not None:
-            bias_dict["CMIP6 MMM"] = cmip6_trend - obs_trend
+        for b_label, b_trend in benchmark_trends.items():
+            bias_dict[b_label] = b_trend - obs_trend
+            all_models.append(b_label)
 
         # Symmetric colorbar for obs trend panel (centered on zero)
         obs_vals = np.asarray(obs_trend).ravel()
@@ -1175,9 +1212,8 @@ class TemperatureBerkeley(DiagnosticBase):
         panels = {"Berkeley Earth": obs_trend}
         for model, trend in model_trends.items():
             panels[model] = trend
-        cmip6_trend = results.get("cmip6_trend")
-        if cmip6_trend is not None:
-            panels["CMIP6 MMM"] = cmip6_trend
+        for b_label, b_trend in results.get("benchmark_trends", {}).items():
+            panels[b_label] = b_trend
 
         n_panels = len(panels)
         ncols = min(n_panels, 3)
@@ -1493,10 +1529,11 @@ class TemperatureBerkeley(DiagnosticBase):
 
     def _compute_cmip6_mmm(self, target_lats, target_lons,
                             obs_clim_common, obs_seasonal_common,
-                            common_area):
-        """Compute CMIP6 MMM temperature biases."""
+                            common_area, loader=None):
+        """Compute benchmark MMM temperature biases (per-benchmark loader)."""
         from feather.diag.global_biases import GlobalBiases
 
+        loader = loader or self.cmip6_loader
         cmip6_data = {}
         cmip6_info = {}
         influence_radius = self.config.nereus.get(
@@ -1505,15 +1542,16 @@ class TemperatureBerkeley(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, Any] = {}
 
-        logger.info("  Computing CMIP6 MMM for tas...")
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Computing %s MMM for tas...",
+                    getattr(loader, "label", "CMIP6"))
+        member_pairs = loader.get_member_pairs()
 
         annual_fields = []
         seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
         models_used = []
 
         for model, variant in member_pairs:
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "tas", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -1528,7 +1566,7 @@ class TemperatureBerkeley(DiagnosticBase):
             models_used.append(f"{model}/{variant}")
 
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     "tas", model, variant=variant,
                     period=self.period, season=season,
                 )
@@ -1695,12 +1733,13 @@ class TemperatureBerkeley(DiagnosticBase):
     @staticmethod
     def _compute_colorbar_ranges(
         model_results, obs_clim_common, obs_seasonal_common,
-        cmip6_data=None, cmip6_individual_data=None,
+        cmip6_data=None, cmip6_individual_data=None, benchmark_data=None,
     ):
         """Compute shared colorbar ranges across all models per period."""
         ranges: dict[str, dict] = {}
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
+        benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
             parts = []
@@ -1727,6 +1766,10 @@ class TemperatureBerkeley(DiagnosticBase):
         if "annual" in cmip6_individual_data:
             for member_data in cmip6_individual_data["annual"].values():
                 bias_arrays.append(member_data["bias"])
+        for b_data in benchmark_data.values():
+            if "annual" in b_data:
+                field_arrays.append(b_data["annual"]["regrid"])
+                bias_arrays.append(b_data["annual"]["bias"])
         vmin, vmax = _percentile_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -1755,6 +1798,10 @@ class TemperatureBerkeley(DiagnosticBase):
             if season in cmip6_individual_data:
                 for member_data in cmip6_individual_data[season].values():
                     s_biases.append(member_data["bias"])
+            for b_data in benchmark_data.values():
+                if season in b_data:
+                    s_fields.append(b_data[season]["regrid"])
+                    s_biases.append(b_data[season]["bias"])
             vmin, vmax = _percentile_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
