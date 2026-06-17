@@ -77,6 +77,13 @@ def main(argv: list[str] | None = None):
         help="Plot individual CMIP6 model biases (plus MMM) instead of MMM only",
     )
     parser.add_argument(
+        "--benchmarks",
+        nargs="+",
+        default=None,
+        help="Only use these benchmark ensembles by name (e.g. CMIP6 "
+             "HighResMIP); default: all enabled in the config",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Generate website without LLM analysis (figures only)",
@@ -124,6 +131,7 @@ def main(argv: list[str] | None = None):
 
     args.diagnostics = _split_csv(args.diagnostics)
     args.variables = _split_csv(args.variables)
+    args.benchmarks = _split_csv(args.benchmarks)
     args.steps = [s for item in args.steps for s in item.split(",")]
 
     cfg = FeatherConfig.from_yaml(args.config)
@@ -154,6 +162,7 @@ def main(argv: list[str] | None = None):
         skip_existing=not args.no_skip_existing,
         compile_pdf=args.compile_pdf,
         cmip6_individual=args.cmip6_individual,
+        benchmarks=args.benchmarks,
         no_llm=args.no_llm,
     )
 

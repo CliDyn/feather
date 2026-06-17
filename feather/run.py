@@ -26,6 +26,7 @@ def run_pipeline(
     skip_existing: bool = True,
     compile_pdf: bool = False,
     cmip6_individual: bool = False,
+    benchmarks: list[str] | None = None,
     no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
@@ -89,6 +90,7 @@ def run_pipeline(
             experiment=experiment,
             period=period,
             cmip6_individual=cmip6_individual,
+            benchmarks=benchmarks,
             skip_existing=skip_existing,
         )
 
@@ -132,6 +134,7 @@ def _run_diagnostics(
     experiment: str = "baseline_hist",
     period: tuple[str, str] = ("1990", "2014"),
     cmip6_individual: bool = False,
+    benchmarks: list[str] | None = None,
     skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
@@ -169,6 +172,25 @@ def _run_diagnostics(
     # been generalised still render the primary benchmark's MMM.
     benchmark_loaders = []
     benchmark_cfgs = config.get_benchmarks()
+    if benchmark_cfgs and benchmarks:
+        # Restrict to the user-selected benchmark names (case-insensitive,
+        # matched against the benchmark ``name`` or ``label``).
+        wanted = {b.lower() for b in benchmarks}
+        selected = [
+            bc for bc in benchmark_cfgs
+            if str(bc.get("name", "")).lower() in wanted
+            or str(bc.get("label", "")).lower() in wanted
+        ]
+        missing = wanted - {
+            str(bc.get("name", "")).lower() for bc in benchmark_cfgs
+        } - {str(bc.get("label", "")).lower() for bc in benchmark_cfgs}
+        if missing:
+            logger.warning(
+                "Requested benchmark(s) not found in config: %s (available: %s)",
+                sorted(missing),
+                [bc.get("name") for bc in benchmark_cfgs],
+            )
+        benchmark_cfgs = selected
     if benchmark_cfgs:
         from feather.data.cmip6 import CMIP6Loader
         for bcfg in benchmark_cfgs:
