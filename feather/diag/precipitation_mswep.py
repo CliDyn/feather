@@ -21,7 +21,7 @@ from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
-from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import (
     compute_latlon_areas,
     latlon_global_mean,
@@ -60,11 +60,11 @@ class PrecipitationMSWEP(DiagnosticBase):
     group = "precipitation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -458,31 +458,45 @@ class PrecipitationMSWEP(DiagnosticBase):
                 "seasonal_biases": seasonal_biases,
             }
 
-        # CMIP6 bias (optional)
+        # Benchmark biases (CMIP6, HighResMIP, …) — one MMM per benchmark.
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
+        benchmark_data: dict[str, dict] = {}
+        benchmark_info: dict[str, dict] = {}
         if self.cmip6_enabled and target_lats is not None:
-            if self.cmip6_individual:
-                cmip6_individual_data = self._compute_cmip6_individual(
-                    target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
-                cmip6_data, cmip6_info = self._mmm_from_individual(
-                    cmip6_individual_data,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
-            else:
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm(
-                    target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common, common_area,
-                )
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                if i == 0 and self.cmip6_individual:
+                    cmip6_individual_data = self._compute_cmip6_individual(
+                        target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                    )
+                    b_data, b_info = self._mmm_from_individual(
+                        cmip6_individual_data,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                    )
+                else:
+                    b_data, b_info = self._compute_cmip6_mmm(
+                        target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common, common_area,
+                        loader=bench,
+                    )
+                if b_data:
+                    benchmark_data[label] = b_data
+                    benchmark_info[label] = b_info
+
+            if benchmark_data:
+                primary_label = next(iter(benchmark_data))
+                cmip6_data = benchmark_data[primary_label]
+                cmip6_info = benchmark_info[primary_label]
 
         # Shared colorbar ranges
         colorbar_ranges = self._compute_colorbar_ranges(
             model_results, obs_clim_common, obs_seasonal_common,
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
+            benchmark_data=benchmark_data,
         )
 
         return {
@@ -497,6 +511,8 @@ class PrecipitationMSWEP(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "benchmark_data": benchmark_data,
+            "benchmark_info": benchmark_info,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -505,9 +521,9 @@ class PrecipitationMSWEP(DiagnosticBase):
         var_info = results["var_info"]
         obs_clim = results["obs"]["clim"]
         cb = results["colorbar_ranges"]
-        cmip6_data = results.get("cmip6_data", {})
         cmip6_info = results.get("cmip6_info", {})
         cmip6_individual_data = results.get("cmip6_individual_data", {})
+        benchmark_data = results.get("benchmark_data", {})
 
         periods = [("annual", "Annual Mean")]
         for season in ["DJF", "MAM", "JJA", "SON"]:
@@ -537,12 +553,14 @@ class PrecipitationMSWEP(DiagnosticBase):
                 bias_dict[model] = bias_field
                 all_models.append(model)
 
-            # CMIP6 MMM
-            if period_key in cmip6_data:
-                c_data = cmip6_data[period_key]
-                bias_dict["CMIP6 MMM"] = c_data["bias"]
-                all_models.append("CMIP6 MMM")
-                summary_stats["CMIP6 MMM"] = {
+            # Benchmark MMMs (CMIP6, HighResMIP, …)
+            for b_label, b_data in benchmark_data.items():
+                if period_key not in b_data:
+                    continue
+                c_data = b_data[period_key]
+                bias_dict[b_label] = c_data["bias"]
+                all_models.append(b_label)
+                summary_stats[b_label] = {
                     "global_mean_bias": c_data["bias_gmean"] * _PR_TO_MMDAY,
                     "rmse": (c_data["rmse"] * _PR_TO_MMDAY
                              if c_data.get("rmse") is not None else None),
@@ -619,18 +637,19 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         obs_clim = bias_results["obs"]["clim"]
         obs_seasonal_clim = bias_results["obs"]["seasonal_clim"]
-        cmip6_data = bias_results.get("cmip6_data", {})
         cmip6_individual_data = bias_results.get("cmip6_individual_data", {})
+        benchmark_data = bias_results.get("benchmark_data", {})
 
         # ── Annual ──────────────────────────────────────────────────────
         obs_masked = obs_clim.where(obs_clim > _REL_BIAS_THRESHOLD)
         rel_bias_annual: dict[str, Any] = {}
         for model, mdata in bias_results["models"].items():
             rel_bias_annual[model] = (mdata["annual_bias"] / obs_masked) * 100
-        if "annual" in cmip6_data:
-            rel_bias_annual["CMIP6 MMM"] = (
-                cmip6_data["annual"]["bias"] / obs_masked
-            ) * 100
+        for b_label, b_data in benchmark_data.items():
+            if "annual" in b_data:
+                rel_bias_annual[b_label] = (
+                    b_data["annual"]["bias"] / obs_masked
+                ) * 100
         if "annual" in cmip6_individual_data:
             for label, c_data in cmip6_individual_data["annual"].items():
                 rel_bias_annual[label] = (c_data["bias"] / obs_masked) * 100
@@ -648,10 +667,11 @@ class PrecipitationMSWEP(DiagnosticBase):
                     rel_s[model] = (
                         mdata["seasonal_biases"][season] / obs_s_masked
                     ) * 100
-            if season in cmip6_data:
-                rel_s["CMIP6 MMM"] = (
-                    cmip6_data[season]["bias"] / obs_s_masked
-                ) * 100
+            for b_label, b_data in benchmark_data.items():
+                if season in b_data:
+                    rel_s[b_label] = (
+                        b_data[season]["bias"] / obs_s_masked
+                    ) * 100
             if season in cmip6_individual_data:
                 for label, c_data in cmip6_individual_data[season].items():
                     rel_s[label] = (c_data["bias"] / obs_s_masked) * 100
@@ -723,25 +743,17 @@ class PrecipitationMSWEP(DiagnosticBase):
         mswep = shared["mswep"]
         obs_ts = latlon_global_mean(mswep)
 
-        # CMIP6
-        cmip6_ts = None
-        cmip6_info = {}
-        cmip6_individual_ts: dict[str, Any] = {}
-        cmip6_ts, info = self._cmip6_global_mean_timeseries(
-            "pr", period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        if cmip6_ts is not None:
-            cmip6_info = info
-            if self.cmip6_individual and "individual_series" in info:
-                cmip6_individual_ts = dict(info["individual_series"])
+        # Benchmark global-mean series (CMIP6, HighResMIP, …)
+        benchmarks_ts = self._benchmark_timeseries("pr")
+        primary = benchmarks_ts[0] if benchmarks_ts else None
 
         return {
             "models": model_ts,
             "obs": obs_ts,
-            "cmip6_ts": cmip6_ts,
-            "cmip6_info": cmip6_info,
-            "cmip6_individual_ts": cmip6_individual_ts,
+            "benchmarks_ts": benchmarks_ts,
+            "cmip6_ts": primary["ts"] if primary else None,
+            "cmip6_info": primary["info"] if primary else {},
+            "cmip6_individual_ts": primary["individual"] if primary else {},
         }
 
     def _plot_timeseries(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -751,21 +763,22 @@ class PrecipitationMSWEP(DiagnosticBase):
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = list(self.config.models)
 
-        cmip6_indiv = results.get("cmip6_individual_ts", {})
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
+        benchmarks = results.get("benchmarks_ts", [])
+        for bench in benchmarks:
+            all_models.append(bench["label"])
+            all_models.extend(bench["individual"].keys())
 
         # Monthly pass (background)
-        for _mname, ts in cmip6_indiv.items():
-            time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values * _PR_TO_MMDAY,
-                    color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
-
-        if results.get("cmip6_ts") is not None:
-            cmip6_ts = results["cmip6_ts"]
-            time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values * _PR_TO_MMDAY,
-                    color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+        for bench in benchmarks:
+            b_color = bench["color"]
+            for ts in bench["individual"].values():
+                time_vals = _to_plot_time(ts.time.values)
+                ax.plot(time_vals, ts.values * _PR_TO_MMDAY,
+                        color=b_color, alpha=0.2, linewidth=0.5)
+            b_ts = bench["ts"]
+            time_vals = _to_plot_time(b_ts.time.values)
+            ax.plot(time_vals, b_ts.values * _PR_TO_MMDAY,
+                    color=b_color, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         for model, ts in results["models"].items():
@@ -780,19 +793,21 @@ class PrecipitationMSWEP(DiagnosticBase):
                 color=OBS_COLOR, alpha=0.3, linewidth=0.7)
 
         # Annual pass (foreground)
-        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ts_annual = annual_mean(ts)
-            time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values * _PR_TO_MMDAY,
-                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                    label=label)
-
-        if results.get("cmip6_ts") is not None:
-            cmip6_annual = annual_mean(results["cmip6_ts"])
-            time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values * _PR_TO_MMDAY,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+        for bench in benchmarks:
+            b_color = bench["color"]
+            b_label = bench["label"]
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            for i, ts in enumerate(bench["individual"].values()):
+                label = f"{members_name} members" if i == 0 else "_nolegend_"
+                ts_annual = annual_mean(ts)
+                time_vals = _to_plot_time(ts_annual.time.values)
+                ax.plot(time_vals, ts_annual.values * _PR_TO_MMDAY,
+                        color=b_color, alpha=0.35, linewidth=0.8,
+                        label=label)
+            b_annual = annual_mean(bench["ts"])
+            time_vals = _to_plot_time(b_annual.time.values)
+            ax.plot(time_vals, b_annual.values * _PR_TO_MMDAY,
+                    label=b_label, color=b_color,
                     linewidth=2.0, linestyle="--")
 
         for model, ts in results["models"].items():
@@ -845,27 +860,28 @@ class PrecipitationMSWEP(DiagnosticBase):
         obs_ts = latlon_global_mean(mswep)
         obs_monthly = monthly_climatology(obs_ts, self.period)
 
-        # CMIP6
-        cmip6_monthly = None
-        cmip6_info = {}
-        cmip6_individual_monthly: dict[str, Any] = {}
-        cmip6_ts, info = self._cmip6_global_mean_timeseries(
-            "pr", period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        if cmip6_ts is not None:
-            cmip6_monthly = monthly_climatology(cmip6_ts)
-            cmip6_info = info
-            if self.cmip6_individual and "individual_series" in info:
-                for mname, mts in info["individual_series"].items():
-                    cmip6_individual_monthly[mname] = monthly_climatology(mts)
+        # Benchmark monthly climatologies (CMIP6, HighResMIP, …)
+        benchmarks_monthly = []
+        for bench in self._benchmark_timeseries("pr"):
+            benchmarks_monthly.append({
+                "label": bench["label"],
+                "color": bench["color"],
+                "monthly": monthly_climatology(bench["ts"]),
+                "info": bench["info"],
+                "individual": {
+                    mname: monthly_climatology(mts)
+                    for mname, mts in bench["individual"].items()
+                },
+            })
+        primary = benchmarks_monthly[0] if benchmarks_monthly else None
 
         return {
             "models": model_monthly_clim,
             "obs": obs_monthly,
-            "cmip6_monthly": cmip6_monthly,
-            "cmip6_info": cmip6_info,
-            "cmip6_individual_monthly": cmip6_individual_monthly,
+            "benchmarks_monthly": benchmarks_monthly,
+            "cmip6_monthly": primary["monthly"] if primary else None,
+            "cmip6_info": primary["info"] if primary else {},
+            "cmip6_individual_monthly": primary["individual"] if primary else {},
         }
 
     def _plot_seasonal_cycle(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -877,21 +893,20 @@ class PrecipitationMSWEP(DiagnosticBase):
         months = np.arange(1, 13)
         all_models = list(self.config.models)
 
-        # Layer 1: CMIP6 individual
-        cmip6_indiv = results.get("cmip6_individual_monthly", {})
-        for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
-            ax.plot(months, monthly.values * _PR_TO_MMDAY,
-                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                    label=label)
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
-
-        # Layer 2: CMIP6 MMM
-        if results.get("cmip6_monthly") is not None:
-            ax.plot(months, results["cmip6_monthly"].values * _PR_TO_MMDAY,
-                    marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+        # Layers 1-2: Per-benchmark individual members + MMM
+        for bench in results.get("benchmarks_monthly", []):
+            b_color = bench["color"]
+            b_label = bench["label"]
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            for i, monthly in enumerate(bench["individual"].values()):
+                label = f"{members_name} members" if i == 0 else "_nolegend_"
+                ax.plot(months, monthly.values * _PR_TO_MMDAY,
+                        color=b_color, alpha=0.35, linewidth=0.8, label=label)
+            all_models.extend(bench["individual"].keys())
+            ax.plot(months, bench["monthly"].values * _PR_TO_MMDAY,
+                    marker="d", label=b_label, color=b_color,
                     linewidth=1.5, linestyle="--")
+            all_models.append(b_label)
 
         # Layer 3: Model lines
         for model, monthly in results["models"].items():
@@ -953,37 +968,40 @@ class PrecipitationMSWEP(DiagnosticBase):
         obs_clim = climatology(mswep, self.period)
         obs_zonal = obs_clim.mean("lon")
 
-        # CMIP6
-        cmip6_zonal = None
-        cmip6_info = {}
+        # Per-benchmark zonal means (CMIP6, HighResMIP, …)
+        from feather.plot.styles import benchmark_color
+        benchmarks_zonal = []
         if self.cmip6_enabled:
-            cmip6_ts, info = self._cmip6_global_mean_timeseries(
-                "pr", period=self.period,
-            )
-            if cmip6_ts is not None:
-                cmip6_info = info
-            # For zonal mean, we need spatial data not global mean
-            # Compute CMIP6 MMM zonal mean from climatologies
-            cmip6_zonal = self._compute_cmip6_zonal_mean()
+            for i, bench in enumerate(self.benchmarks):
+                zm = self._compute_cmip6_zonal_mean(loader=bench)
+                if zm is None:
+                    continue
+                benchmarks_zonal.append({
+                    "label": getattr(bench, "label", "CMIP6 MMM"),
+                    "color": getattr(bench, "color", None) or benchmark_color(i),
+                    "zonal": zm,
+                })
+        primary = benchmarks_zonal[0] if benchmarks_zonal else None
 
         return {
             "models": model_zonal,
             "obs": obs_zonal,
-            "cmip6_zonal": cmip6_zonal,
-            "cmip6_info": cmip6_info,
+            "benchmarks_zonal": benchmarks_zonal,
+            "cmip6_zonal": primary["zonal"] if primary else None,
+            "cmip6_info": {},
         }
 
-    def _compute_cmip6_zonal_mean(self):
-        """Compute CMIP6 MMM zonal mean precipitation."""
-        if not self.cmip6_enabled:
+    def _compute_cmip6_zonal_mean(self, loader=None):
+        """Compute benchmark MMM zonal mean precipitation (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None
 
-        var_info = get_var("pr")
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        member_pairs = loader.get_member_pairs()
         zonal_fields = []
 
         for model, variant in member_pairs:
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "pr", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -1006,13 +1024,13 @@ class PrecipitationMSWEP(DiagnosticBase):
         fig, ax = plt.subplots(figsize=(6, 8))
         all_models = []
 
-        # CMIP6 MMM
-        if results.get("cmip6_zonal") is not None:
-            zm = results["cmip6_zonal"]
+        # Benchmark MMMs (CMIP6, HighResMIP, …)
+        for bench in results.get("benchmarks_zonal", []):
+            zm = bench["zonal"]
             ax.plot(zm.values * _PR_TO_MMDAY, zm.lat.values,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+                    label=bench["label"], color=bench["color"],
                     linewidth=1.5, linestyle="--")
-            all_models.append("CMIP6 MMM")
+            all_models.append(bench["label"])
 
         # Models
         for model, zm in results["models"].items():
@@ -1089,12 +1107,13 @@ class PrecipitationMSWEP(DiagnosticBase):
                 clim.values.ravel(), area, bins,
             )
 
-        # CMIP6 MMM PDF (if available)
+        # Benchmark MMM PDFs (CMIP6, HighResMIP, …)
         cmip6_info = {}
         if self.cmip6_enabled:
-            cmip6_pdf = self._compute_cmip6_intensity_pdf(bins)
-            if cmip6_pdf is not None:
-                pdfs["CMIP6 MMM"] = cmip6_pdf
+            for bench in self.benchmarks:
+                b_pdf = self._compute_cmip6_intensity_pdf(bins, loader=bench)
+                if b_pdf is not None:
+                    pdfs[getattr(bench, "label", "CMIP6 MMM")] = b_pdf
 
         return {
             "pdfs": pdfs,
@@ -1103,22 +1122,23 @@ class PrecipitationMSWEP(DiagnosticBase):
             "cmip6_info": cmip6_info,
         }
 
-    def _compute_cmip6_intensity_pdf(self, bins: np.ndarray):
-        """Compute CMIP6 MMM intensity PDF."""
-        if not self.cmip6_enabled:
+    def _compute_cmip6_intensity_pdf(self, bins: np.ndarray, loader=None):
+        """Compute benchmark MMM intensity PDF (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None
 
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        member_pairs = loader.get_member_pairs()
         all_vals = []
         all_areas = []
 
         for model, variant in member_pairs:
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "pr", model, variant=variant, period=self.period,
             )
             if da is None:
                 continue
-            area = self.cmip6_loader.load_area(model)
+            area = loader.load_area(model)
             if area is None:
                 continue
             all_vals.append(da.values.ravel())
@@ -1151,12 +1171,17 @@ class PrecipitationMSWEP(DiagnosticBase):
         bin_centres_mmday = results["bin_centres"] * _PR_TO_MMDAY
         all_models = []
 
-        # CMIP6 MMM
-        if "CMIP6 MMM" in results["pdfs"]:
-            ax.plot(bin_centres_mmday, results["pdfs"]["CMIP6 MMM"],
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+        # Benchmark MMMs (CMIP6, HighResMIP, …)
+        from feather.plot.styles import benchmark_color
+        for i, bench in enumerate(self.benchmarks):
+            b_label = getattr(bench, "label", "CMIP6 MMM")
+            if b_label not in results["pdfs"]:
+                continue
+            b_color = getattr(bench, "color", None) or benchmark_color(i)
+            ax.plot(bin_centres_mmday, results["pdfs"][b_label],
+                    label=b_label, color=b_color,
                     linewidth=1.5, linestyle="--")
-            all_models.append("CMIP6 MMM")
+            all_models.append(b_label)
 
         # Models
         for model in self.config.models:
@@ -1203,10 +1228,11 @@ class PrecipitationMSWEP(DiagnosticBase):
 
     def _compute_cmip6_mmm(self, target_lats, target_lons,
                             obs_clim_common, obs_seasonal_common,
-                            common_area):
-        """Compute CMIP6 MMM precipitation biases."""
+                            common_area, loader=None):
+        """Compute benchmark MMM precipitation biases (per-benchmark loader)."""
         from feather.diag.global_biases import GlobalBiases
 
+        loader = loader or self.cmip6_loader
         cmip6_data = {}
         cmip6_info = {}
         influence_radius = self.config.nereus.get(
@@ -1215,8 +1241,9 @@ class PrecipitationMSWEP(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Computing CMIP6 MMM for pr...")
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Computing %s MMM for pr...",
+                    getattr(loader, "label", "CMIP6"))
+        member_pairs = loader.get_member_pairs()
 
         annual_fields = []
         seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
@@ -1224,7 +1251,7 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "pr", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -1239,7 +1266,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             models_used.append(label)
 
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     "pr", model, variant=variant,
                     period=self.period, season=season,
                 )
@@ -1420,12 +1447,13 @@ class PrecipitationMSWEP(DiagnosticBase):
     @staticmethod
     def _compute_colorbar_ranges(
         model_results, obs_clim_common, obs_seasonal_common,
-        cmip6_data=None, cmip6_individual_data=None,
+        cmip6_data=None, cmip6_individual_data=None, benchmark_data=None,
     ):
         """Compute shared colorbar ranges across all models per period."""
         ranges: dict[str, dict] = {}
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
+        benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
             parts = []
@@ -1452,6 +1480,10 @@ class PrecipitationMSWEP(DiagnosticBase):
         if "annual" in cmip6_individual_data:
             for member_data in cmip6_individual_data["annual"].values():
                 bias_arrays.append(member_data["bias"])
+        for b_data in benchmark_data.values():
+            if "annual" in b_data:
+                field_arrays.append(b_data["annual"]["regrid"])
+                bias_arrays.append(b_data["annual"]["bias"])
         vmin, vmax = _percentile_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -1480,6 +1512,10 @@ class PrecipitationMSWEP(DiagnosticBase):
             if season in cmip6_individual_data:
                 for member_data in cmip6_individual_data[season].values():
                     s_biases.append(member_data["bias"])
+            for b_data in benchmark_data.values():
+                if season in b_data:
+                    s_fields.append(b_data[season]["regrid"])
+                    s_biases.append(b_data[season]["bias"])
             vmin, vmax = _percentile_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,

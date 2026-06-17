@@ -609,6 +609,53 @@ class DiagnosticBase(ABC):
                      len(models_used), len(mmm_ts.time))
         return mmm_ts, info
 
+    def _benchmark_timeseries(
+        self,
+        var: str,
+        period: tuple[str, str] | None = None,
+        return_individual: bool | None = None,
+    ) -> list[dict]:
+        """Per-benchmark global-mean MMM time series (CMIP6, HighResMIP, …).
+
+        Loops the configured benchmark loaders and computes each one's
+        ensemble-mean global-mean series via
+        :meth:`_cmip6_global_mean_timeseries`.
+
+        Returns
+        -------
+        list[dict]
+            One entry per benchmark with data: ``label``, ``color``,
+            ``ts`` (MMM series), ``info`` and ``individual`` (member series
+            when ``return_individual``).  Empty if no benchmark has data.
+        """
+        from feather.plot.styles import benchmark_color
+
+        if return_individual is None:
+            return_individual = getattr(self, "cmip6_individual", False)
+        if period is None:
+            period = getattr(self, "period", None)
+
+        out: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            ts, info = self._cmip6_global_mean_timeseries(
+                var, period=period,
+                return_individual=return_individual, loader=bench,
+            )
+            if ts is None:
+                continue
+            out.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "ts": ts,
+                "info": info,
+                "individual": (
+                    dict(info["individual_series"])
+                    if return_individual and "individual_series" in info
+                    else {}
+                ),
+            })
+        return out
+
     @staticmethod
     def _align_area(da, area):
         """Convert area weights to numpy aligned with da's spatial grid.
