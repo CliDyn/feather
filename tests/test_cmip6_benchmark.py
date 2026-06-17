@@ -2,7 +2,39 @@
 
 from pathlib import Path
 
+import numpy as np
+import xarray as xr
+
 from feather.data.cmip6 import CMIP6Loader
+
+
+def test_is_griddable_rectilinear():
+    da = xr.DataArray(
+        np.zeros((2, 3, 4)), dims=("time", "lat", "lon"),
+    )
+    assert CMIP6Loader._is_griddable(da)
+
+
+def test_is_griddable_curvilinear_2d_coords():
+    da = xr.DataArray(
+        np.zeros((2, 3, 4)), dims=("time", "j", "i"),
+        coords={
+            "nav_lat": (("j", "i"), np.zeros((3, 4))),
+            "nav_lon": (("j", "i"), np.zeros((3, 4))),
+        },
+    )
+    assert CMIP6Loader._is_griddable(da)
+
+
+def test_is_griddable_rejects_unstructured():
+    # Single non-time spatial dim 'i' with no 2-D lat/lon → unstructured.
+    da = xr.DataArray(np.zeros((2, 5)), dims=("time", "i"))
+    assert not CMIP6Loader._is_griddable(da)
+
+
+def test_is_griddable_accepts_named_lat_dim():
+    da = xr.DataArray(np.zeros((2, 5)), dims=("time", "lat"))
+    assert CMIP6Loader._is_griddable(da)
 
 
 def _mk_store(zdir: Path, name: str) -> None:

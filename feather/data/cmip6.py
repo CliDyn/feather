@@ -160,7 +160,41 @@ class CMIP6Loader:
             if cmip6_var == "siconc":
                 da = self._normalise_siconc(da)
 
+        # Drop members on unstructured/reduced grids (a single non-time
+        # spatial dimension that is not lat/lon, e.g. ICON's ``ncells``/``i``).
+        # The global-mean and regrid machinery expect rectilinear or
+        # curvilinear (2-D) lat/lon, so these cannot be used for the MMM.
+        if not self._is_griddable(da):
+            logger.warning(
+                "Skipping %s/%s — unstructured grid (dims %s) not supported",
+                model, cmip6_var, tuple(da.dims),
+            )
+            return None
+
         return da.compute()
+
+    @staticmethod
+    def _is_griddable(da: xr.DataArray) -> bool:
+        """True when *da* has lat/lon dims/coords usable for regridding.
+
+        Accepts rectilinear (1-D lat & lon dims) and curvilinear (2-D
+        lat/lon coordinates).  Rejects fields whose only spatial dimension
+        is a non-lat/lon index (unstructured / reduced Gaussian grids).
+        """
+        lat_names = {"lat", "latitude", "nav_lat", "y"}
+        lon_names = {"lon", "longitude", "nav_lon", "x"}
+        spatial_dims = [d for d in da.dims if d != "time"]
+        if len(spatial_dims) >= 2:
+            return True
+        # Single (or zero) spatial dim: only OK if it is itself lat/lon, or a
+        # 2-D lat/lon coordinate is present.
+        if any(str(d).lower() in lat_names | lon_names for d in spatial_dims):
+            return True
+        has_lat = any(str(c).lower() in lat_names and da[c].ndim >= 2
+                      for c in da.coords)
+        has_lon = any(str(c).lower() in lon_names and da[c].ndim >= 2
+                      for c in da.coords)
+        return has_lat and has_lon
 
     def load_var_for_model_var(
         self,
@@ -392,10 +426,8 @@ class CMIP6Loader:
             self._area_cache[cache_key] = None
             return None
 
-        try:
-            ds = xr.open_zarr(zarr_path, consolidated=True)
-        except Exception as e:
-            logger.warning("Failed to open area zarr %s: %s", zarr_path, e)
+        ds = self._open_zarr_robust(zarr_path)
+        if ds is None:
             self._area_cache[cache_key] = None
             return None
 
@@ -579,6 +611,23 @@ class CMIP6Loader:
             f"{self._zarr_dir}/{model}_{experiment}_{variant}_{table}_{var}.zarr"
         )
 
+    @staticmethod
+    def _open_zarr_robust(zarr_path: str) -> xr.Dataset | None:
+        """Open a zarr store, tolerating missing consolidated metadata.
+
+        Tries ``consolidated=True`` first (fast path), then falls back to
+        ``consolidated=False`` for stores written without consolidated
+        metadata (common with zarr v3).  Returns ``None`` on failure.
+        """
+        for consolidated in (True, False):
+            try:
+                return xr.open_zarr(zarr_path, consolidated=consolidated)
+            except Exception:  # noqa: BLE001
+                continue
+        logger.warning("Failed to open zarr %s (consolidated and plain)",
+                       zarr_path)
+        return None
+
     def _get_experiments(self) -> list[str]:
         """Ordered list of CMIP6 experiments to stitch along time.
 
@@ -613,10 +662,8 @@ class CMIP6Loader:
             if not os.path.exists(zarr_path):
                 logger.debug("Zarr not found: %s", zarr_path)
                 continue
-            try:
-                ds = xr.open_zarr(zarr_path, consolidated=True)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to open zarr %s: %s", zarr_path, e)
+            ds = self._open_zarr_robust(zarr_path)
+            if ds is None:
                 continue
             if cmip6_var not in ds.data_vars:
                 logger.warning("Variable %s not in %s", cmip6_var, zarr_path)

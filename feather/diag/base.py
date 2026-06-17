@@ -591,7 +591,16 @@ class DiagnosticBase(ABC):
             # with da's own coordinates — avoids misalignment when
             # areacella has different dim names or coordinate values.
             area = self._align_area(da, area)
-            ts = latlon_global_mean(da, area=area)
+            try:
+                ts = latlon_global_mean(da, area=area)
+            except (ValueError, KeyError) as e:
+                # Skip models on grids we cannot reduce to lat/lon
+                # (e.g. unstructured ICON grids with dims like (time, i)).
+                logger.warning(
+                    "    Skipping %s for %s — cannot compute global mean: %s",
+                    model, var, e,
+                )
+                continue
             member_series.append(ts)
             models_used.append(model)
 
