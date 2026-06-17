@@ -217,6 +217,31 @@ class TestTimeseriesCMIP6:
         assert results["tas"]["cmip6_ts"] is None
         assert results["tas"]["cmip6_info"] == {}
 
+    def test_two_benchmarks_two_mmm_series(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, synth_cmip6,
+    ):
+        """Two benchmark loaders yield two MMM series; primary aliased."""
+        b1 = MockCMIP6Loader(synth_cmip6)
+        b1.label, b1.color = "CMIP6 MMM", "#7f7f7f"
+        b2 = MockCMIP6Loader(synth_cmip6)
+        b2.label, b2.color = "HighResMIP MMM", "#9467bd"
+
+        diag = TimeseriesDiag(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            benchmarks=[b1, b2], variables=["tas"],
+        )
+        results = diag.compute()
+        benches = results["tas"]["benchmarks_ts"]
+        assert [b["label"] for b in benches] == ["CMIP6 MMM", "HighResMIP MMM"]
+        assert [b["color"] for b in benches] == ["#7f7f7f", "#9467bd"]
+        # Back-compat alias points at the primary benchmark
+        assert results["tas"]["cmip6_ts"] is benches[0]["ts"]
+        # Plotting both benchmarks must not raise
+        figs = diag._plot_single("tas", results["tas"])
+        assert len(figs) >= 1
+        plt.close("all")
+
     def test_cmip6_enabled_has_timeseries(
         self, mock_model_loader, mock_obs_loader,
         cmip6_config, mock_cmip6_loader,

@@ -13,7 +13,10 @@ import numpy as np
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, OBS_COLOR
+from feather.plot.styles import (
+    OBS_COLOR,
+    benchmark_color as _benchmark_color,
+)
 from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import monthly_climatology
 
@@ -54,11 +57,11 @@ class SeasonalCycleDiag(DiagnosticBase):
     group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -143,27 +146,41 @@ class SeasonalCycleDiag(DiagnosticBase):
         obs_ts = latlon_global_mean(obs_data)
         obs_monthly = monthly_climatology(obs_ts, self.period)
 
-        cmip6_monthly = None
-        cmip6_info = {}
-        cmip6_individual_monthly: dict[str, Any] = {}
-        cmip6_ts, info = self._cmip6_global_mean_timeseries(
-            var, period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        if cmip6_ts is not None:
-            cmip6_monthly = monthly_climatology(cmip6_ts)
-            cmip6_info = info
+        # Per-benchmark monthly climatologies (CMIP6, HighResMIP, …).
+        benchmarks_monthly: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            b_ts, b_info = self._cmip6_global_mean_timeseries(
+                var, period=self.period,
+                return_individual=self.cmip6_individual,
+                loader=bench,
+            )
+            if b_ts is None:
+                continue
+            individual = {}
+            if self.cmip6_individual and "individual_series" in b_info:
+                individual = {
+                    mname: monthly_climatology(mts)
+                    for mname, mts in b_info["individual_series"].items()
+                }
+            benchmarks_monthly.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or _benchmark_color(i),
+                "monthly": monthly_climatology(b_ts),
+                "info": b_info,
+                "individual": individual,
+            })
 
-            if self.cmip6_individual and "individual_series" in info:
-                for mname, mts in info["individual_series"].items():
-                    cmip6_individual_monthly[mname] = (
-                        monthly_climatology(mts)
-                    )
+        # Back-compat: expose the primary benchmark under cmip6_* keys.
+        primary = benchmarks_monthly[0] if benchmarks_monthly else None
+        cmip6_monthly = primary["monthly"] if primary else None
+        cmip6_info = primary["info"] if primary else {}
+        cmip6_individual_monthly = primary["individual"] if primary else {}
 
         return {
             "models": model_monthly,
             "obs": obs_monthly,
             "var_info": var_info,
+            "benchmarks_monthly": benchmarks_monthly,
             "cmip6_monthly": cmip6_monthly,
             "cmip6_info": cmip6_info,
             "cmip6_individual_monthly": cmip6_individual_monthly,
@@ -214,25 +231,24 @@ class SeasonalCycleDiag(DiagnosticBase):
         months = np.arange(1, 13)
         all_models = list(self.config.models)
 
-        # Layer 1: Individual CMIP6 model lines (background)
-        cmip6_indiv = vr.get("cmip6_individual_monthly", {})
-        for i, (mname, monthly) in enumerate(cmip6_indiv.items()):
-            label = "CMIP6 members" if i == 0 else "_nolegend_"
+        # Layers 1-2: Per-benchmark individual members + MMM (CMIP6, HighResMIP…)
+        for bench in vr.get("benchmarks_monthly", []):
+            b_color = bench["color"]
+            b_label = bench["label"]
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            for i, monthly in enumerate(bench["individual"].values()):
+                label = f"{members_name} members" if i == 0 else "_nolegend_"
+                ax.plot(
+                    months, monthly.values + _off,
+                    color=b_color, alpha=0.35, linewidth=0.8, label=label,
+                )
+            all_models.extend(bench["individual"].keys())
             ax.plot(
-                months, monthly.values + _off,
-                color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                label=label,
-            )
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
-
-        # Layer 2: CMIP6 MMM line (middle)
-        if vr.get("cmip6_monthly") is not None:
-            ax.plot(
-                months, vr["cmip6_monthly"].values + _off,
-                marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
+                months, bench["monthly"].values + _off,
+                marker="d", label=b_label, color=b_color,
                 linewidth=1.5, linestyle="--",
             )
+            all_models.append(b_label)
 
         # Layer 3: DestinE model lines (foreground)
         for model, monthly in vr["models"].items():

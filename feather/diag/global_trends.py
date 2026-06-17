@@ -58,11 +58,11 @@ class GlobalTrends(DiagnosticBase):
     group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -323,28 +323,36 @@ class GlobalTrends(DiagnosticBase):
             )
             return None
 
-        # CMIP6 trends (optional)
+        # Benchmark trends (CMIP6, HighResMIP, …) — one MMM per benchmark.
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
+        benchmark_data: dict[str, dict] = {}
+        benchmark_info: dict[str, dict] = {}
         if self.cmip6_enabled and target_lats is not None:
-            if self.cmip6_individual:
-                cmip6_individual_data = self._compute_cmip6_individual_trends(
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                if i == 0 and self.cmip6_individual:
+                    cmip6_individual_data = (
+                        self._compute_cmip6_individual_trends(
+                            var, target_lats, target_lons,
+                            obs_trend_common, obs_seasonal_trends_common,
+                            common_area,
+                        )
+                    )
+                b_data, b_info = self._compute_cmip6_mmm_trends(
                     var, target_lats, target_lons,
                     obs_trend_common, obs_seasonal_trends_common,
-                    common_area,
+                    common_area, loader=bench,
                 )
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm_trends(
-                    var, target_lats, target_lons,
-                    obs_trend_common, obs_seasonal_trends_common,
-                    common_area,
-                )
-            else:
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm_trends(
-                    var, target_lats, target_lons,
-                    obs_trend_common, obs_seasonal_trends_common,
-                    common_area,
-                )
+                if b_data:
+                    benchmark_data[label] = b_data
+                    benchmark_info[label] = b_info
+
+            if benchmark_data:
+                primary_label = next(iter(benchmark_data))
+                cmip6_data = benchmark_data[primary_label]
+                cmip6_info = benchmark_info[primary_label]
 
         # Compute shared colorbar ranges across all models per period
         logger.info("  Computing shared colorbar ranges")
@@ -352,6 +360,7 @@ class GlobalTrends(DiagnosticBase):
             model_results, obs_trend_common, obs_seasonal_trends_common,
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
+            benchmark_data=benchmark_data,
         )
 
         return {
@@ -370,6 +379,8 @@ class GlobalTrends(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "benchmark_data": benchmark_data,
+            "benchmark_info": benchmark_info,
         }
 
     # -- CMIP6 computation helpers ------------------------------------------
@@ -377,16 +388,18 @@ class GlobalTrends(DiagnosticBase):
     def _compute_cmip6_mmm_trends(
         self, var, target_lats, target_lons,
         obs_trend_common, obs_seasonal_trends_common,
-        common_area,
+        common_area, loader=None,
     ):
-        """Compute CMIP6 multi-model mean trends.
+        """Compute benchmark multi-model mean trends.
 
         Loads per-model time series (time_mean=False), computes
         annual_mean → linear_trend → regrid for each, then averages
-        across models to get the MMM trend.
+        across models to get the MMM trend.  *loader* defaults to the
+        primary benchmark; pass another (e.g. HighResMIP) for its MMM.
 
         Returns (cmip6_data, cmip6_info).
         """
+        loader = loader or self.cmip6_loader
         cmip6_data = {}
         cmip6_info = {}
         influence_radius = self.config.nereus.get(
@@ -395,8 +408,9 @@ class GlobalTrends(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Computing CMIP6 MMM trends for %s...", var)
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Computing %s MMM trends for %s...",
+                    getattr(loader, "label", "CMIP6"), var)
+        member_pairs = loader.get_member_pairs()
 
         # -- Annual trends per model --
         annual_trends = []
@@ -405,7 +419,7 @@ class GlobalTrends(DiagnosticBase):
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 var, model, variant=variant,
                 period=self.period, time_mean=False,
             )
@@ -652,6 +666,7 @@ class GlobalTrends(DiagnosticBase):
         obs_seasonal_trends_common: dict[str, xr.DataArray],
         cmip6_data: dict[str, dict] | None = None,
         cmip6_individual_data: dict[str, dict] | None = None,
+        benchmark_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
 
@@ -669,6 +684,7 @@ class GlobalTrends(DiagnosticBase):
         ranges: dict[str, dict] = {}
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
+        benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
             parts = []
@@ -700,6 +716,10 @@ class GlobalTrends(DiagnosticBase):
         if "annual" in cmip6_individual_data:
             for member_data in cmip6_individual_data["annual"].values():
                 diff_arrays.append(member_data["trend_diff"])
+        for b_data in benchmark_data.values():
+            if "annual" in b_data:
+                field_arrays.append(b_data["annual"]["regrid"])
+                diff_arrays.append(b_data["annual"]["trend_diff"])
         vmin, vmax = _symmetric_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -728,6 +748,10 @@ class GlobalTrends(DiagnosticBase):
             if season in cmip6_individual_data:
                 for member_data in cmip6_individual_data[season].values():
                     s_diffs.append(member_data["trend_diff"])
+            for b_data in benchmark_data.values():
+                if season in b_data:
+                    s_fields.append(b_data[season]["regrid"])
+                    s_diffs.append(b_data[season]["trend_diff"])
             vmin, vmax = _symmetric_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
@@ -759,9 +783,9 @@ class GlobalTrends(DiagnosticBase):
         var_info = vr["var_info"]
         obs_trend = vr["obs"]["trend"]
         cb = vr["colorbar_ranges"]
-        cmip6_data = vr.get("cmip6_data", {})
         cmip6_info = vr.get("cmip6_info", {})
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
+        benchmark_data = vr.get("benchmark_data", {})
 
         periods = [("annual", "Annual")]
         for season in ["DJF", "MAM", "JJA", "SON"]:
@@ -793,12 +817,14 @@ class GlobalTrends(DiagnosticBase):
                 trend_diff_dict[model] = diff_field
                 all_models.append(model)
 
-            # Add CMIP6 MMM if available
-            if period_key in cmip6_data:
-                c_data = cmip6_data[period_key]
-                trend_diff_dict["CMIP6 MMM"] = c_data["trend_diff"]
-                all_models.append("CMIP6 MMM")
-                summary_stats["CMIP6 MMM"] = {
+            # Add each benchmark MMM (CMIP6, HighResMIP, …) if available
+            for b_label, b_data in benchmark_data.items():
+                if period_key not in b_data:
+                    continue
+                c_data = b_data[period_key]
+                trend_diff_dict[b_label] = c_data["trend_diff"]
+                all_models.append(b_label)
+                summary_stats[b_label] = {
                     "global_mean_trend_diff": c_data["trend_diff_gmean"],
                     "trend_rmse": c_data.get("rmse"),
                 }

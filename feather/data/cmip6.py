@@ -29,25 +29,50 @@ logger = logging.getLogger(__name__)
 class CMIP6Loader:
     """Load CMIP6 data and compute multi-model mean on a common grid."""
 
-    def __init__(self, config):
-        """Initialize from a FeatherConfig.
+    def __init__(self, config, cmip6_cfg: dict | None = None):
+        """Initialize from a FeatherConfig (or an explicit benchmark config).
 
         Parameters
         ----------
         config : FeatherConfig
-            Must have a ``cmip6`` dict with ``catalog_path``, ``models``, etc.
+            Pipeline config (used for fallbacks).
+        cmip6_cfg : dict, optional
+            Benchmark/CMIP6 config block.  Defaults to ``config.cmip6``.
+            May carry ``zarr_dir`` (explicit cache dir), ``experiment``,
+            ``models`` (a dict, or the string ``"auto"`` to discover models
+            from the zarr cache), ``label`` and ``color``.
         """
-        self._cfg = config.cmip6
+        self._cfg = cmip6_cfg if cmip6_cfg is not None else config.cmip6
         self._zarr_dir = self._resolve_zarr_dir()
         self._area_cache: dict[str, xr.DataArray] = {}
         self._interp_cache: dict[str, nr.RegridInterpolator] = {}
+        self._auto_models: dict | None = None
 
     # ── Properties ────────────────────────────────────────────────────
 
     @property
+    def label(self) -> str:
+        """Display label for this benchmark (e.g. ``'CMIP6 MMM'``)."""
+        return self._cfg.get("label", "CMIP6 MMM")
+
+    @property
+    def color(self):
+        """Plot color for this benchmark (or None to use the default)."""
+        return self._cfg.get("color")
+
+    @property
     def models(self) -> dict:
-        """Configured CMIP6 models dict."""
-        return self._cfg.get("models", {})
+        """Configured models dict.
+
+        When ``models: auto`` is set, models are discovered from the zarr
+        cache (one variant per model) and cached for the loader's lifetime.
+        """
+        configured = self._cfg.get("models", {})
+        if configured == "auto":
+            if self._auto_models is None:
+                self._auto_models = self._discover_models_from_zarr()
+            return self._auto_models
+        return configured if isinstance(configured, dict) else {}
 
     @property
     def zarr_dir(self) -> str:
@@ -475,7 +500,15 @@ class CMIP6Loader:
     # ── Private helpers ───────────────────────────────────────────────
 
     def _resolve_zarr_dir(self) -> str:
-        """Derive zarr directory from catalog_path."""
+        """Derive zarr directory.
+
+        Prefers an explicit ``zarr_dir`` (benchmark cache), then falls back
+        to deriving it from ``catalog_path``.
+        """
+        explicit = self._cfg.get("zarr_dir", "")
+        if explicit:
+            return str(explicit)
+
         catalog_path = self._cfg.get("catalog_path", "")
         if not catalog_path:
             return ""
@@ -498,6 +531,42 @@ class CMIP6Loader:
         # Fallback: sibling "zarr" directory
         return str(Path(catalog_path).parent / "zarr")
 
+    def _discover_models_from_zarr(self) -> dict:
+        """Discover ``{model: {"variant": variant}}`` from the zarr cache.
+
+        Scans ``{zarr_dir}/{model}_{experiment}_{variant}_{table}_{var}.zarr``
+        for the first configured experiment, taking one variant per model
+        (the lowest, matching the converter's member preference).  CMIP6
+        ``source_id`` / ``experiment_id`` never contain underscores, so the
+        filename splits unambiguously on ``_``.
+        """
+        import re
+        from pathlib import Path
+
+        if not self._zarr_dir or not os.path.isdir(self._zarr_dir):
+            logger.warning("Zarr dir not found for auto-discovery: %s",
+                           self._zarr_dir)
+            return {}
+
+        experiment = self._get_experiments()[0]
+        pattern = re.compile(
+            rf"^(?P<model>.+?)_{re.escape(experiment)}_"
+            r"(?P<variant>[^_]+)_(?P<table>[^_]+)_(?P<var>.+)\.zarr$"
+        )
+        found: dict[str, set[str]] = {}
+        for entry in sorted(Path(self._zarr_dir).glob(f"*_{experiment}_*.zarr")):
+            m = pattern.match(entry.name)
+            if not m:
+                continue
+            found.setdefault(m.group("model"), set()).add(m.group("variant"))
+
+        models = {}
+        for model, variants in sorted(found.items()):
+            models[model] = {"variant": sorted(variants)[0]}
+        logger.info("Auto-discovered %d benchmark models for %s from %s",
+                    len(models), experiment, self._zarr_dir)
+        return models
+
     def _zarr_path(
         self, model: str, variant: str, table: str, var: str,
         experiment: str = "historical",
@@ -519,6 +588,9 @@ class CMIP6Loader:
         exps = self._cfg.get("experiments")
         if exps:
             return [str(e) for e in exps]
+        single = self._cfg.get("experiment")
+        if single:
+            return [str(single)]
         return ["historical"]
 
     def _open_stitched(
@@ -578,10 +650,13 @@ class CMIP6Loader:
         """Build path to an area-weight zarr store.
 
         Atmosphere tables → areacella (fx), ocean tables → areacello (Ofx).
+        The experiment token matches the first configured experiment so
+        benchmarks other than ``historical`` (e.g. ``hist-1950``) resolve.
         """
+        exp = self._get_experiments()[0]
         if table in ("Omon", "SImon", "Ofx"):
-            return f"{self._zarr_dir}/{model}_historical_{variant}_Ofx_areacello.zarr"
-        return f"{self._zarr_dir}/{model}_historical_{variant}_fx_areacella.zarr"
+            return f"{self._zarr_dir}/{model}_{exp}_{variant}_Ofx_areacello.zarr"
+        return f"{self._zarr_dir}/{model}_{exp}_{variant}_fx_areacella.zarr"
 
     @staticmethod
     def _get_variants(model_cfg: dict) -> list[str]:

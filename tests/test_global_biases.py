@@ -583,6 +583,33 @@ class TestGlobalBiasesCMIP6:
         assert "bias" in cmip6_data["annual"]
         assert "bias_gmean" in cmip6_data["annual"]
 
+    def test_two_benchmarks_two_bias_panels(
+        self, mock_model_loader, mock_obs_loader,
+        cmip6_config, synth_cmip6,
+    ):
+        """Two benchmark loaders produce two MMM bias panels."""
+        import matplotlib.pyplot as plt
+
+        b1 = MockCMIP6Loader(synth_cmip6)
+        b1.label, b1.color = "CMIP6 MMM", "#7f7f7f"
+        b2 = MockCMIP6Loader(synth_cmip6)
+        b2.label, b2.color = "HighResMIP MMM", "#9467bd"
+
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, cmip6_config,
+            benchmarks=[b1, b2], variables=["tas"],
+        )
+        results = diag.compute()
+        bd = results["tas"]["benchmark_data"]
+        assert set(bd) == {"CMIP6 MMM", "HighResMIP MMM"}
+        assert "annual" in bd["HighResMIP MMM"]
+        # Primary aliased for back-compat
+        assert results["tas"]["cmip6_data"] is bd["CMIP6 MMM"]
+        # Plot assembles both benchmark panels without error
+        figs = diag._plot_variable("tas", results["tas"])
+        assert len(figs) >= 1
+        plt.close("all")
+
     def test_cmip6_bias_is_small(
         self, mock_model_loader, mock_obs_loader,
         cmip6_config, mock_cmip6_loader,

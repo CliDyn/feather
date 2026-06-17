@@ -65,10 +65,23 @@ class DiagnosticBase(ABC):
         config: FeatherConfig,
         *,
         cmip6_loader: Any = None,
+        benchmarks: list | None = None,
     ):
         self.model_loader = model_loader
         self.obs_loader = obs_loader
         self.config = config
+        # ``benchmarks`` is the ordered list of benchmark loaders (CMIP6,
+        # HighResMIP, …).  ``cmip6_loader`` is the primary (first) benchmark,
+        # kept for diagnostics not yet generalised to multiple benchmarks.
+        self._benchmarks_explicit = benchmarks is not None
+        if benchmarks is not None:
+            self.benchmarks = list(benchmarks)
+        elif cmip6_loader is not None:
+            self.benchmarks = [cmip6_loader]
+        else:
+            self.benchmarks = []
+        if cmip6_loader is None and self.benchmarks:
+            cmip6_loader = self.benchmarks[0]
         self.cmip6_loader = cmip6_loader
 
     # ── Properties ────────────────────────────────────────────────────
@@ -80,10 +93,14 @@ class DiagnosticBase(ABC):
 
     @property
     def cmip6_enabled(self) -> bool:
-        """True when CMIP6 data is available and enabled in config."""
-        return (
-            self.cmip6_loader is not None
-            and self.config.cmip6.get("enabled", False)
+        """True when a (primary) benchmark loader is available and enabled.
+
+        Honours both the legacy ``cmip6.enabled`` flag and the new
+        ``benchmarks:`` list (presence of a benchmark loader).
+        """
+        return self.cmip6_loader is not None and (
+            self.config.cmip6.get("enabled", False)
+            or self._benchmarks_explicit
         )
 
     # ── Abstract interface ────────────────────────────────────────────
@@ -512,6 +529,7 @@ class DiagnosticBase(ABC):
         var: str,
         period: tuple[str, str] | None = None,
         return_individual: bool = False,
+        loader: Any = None,
     ) -> tuple[Any, dict[str, Any]]:
         """Compute CMIP6 ensemble-mean global-mean monthly time series.
 
@@ -542,21 +560,22 @@ class DiagnosticBase(ABC):
         from feather.data.variables import get_var
         from feather.util.spatial import latlon_global_mean
 
-        if not self.cmip6_enabled:
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None, {}
 
         vinfo = get_var(var)
         if not vinfo.cmip6_variable:
             return None, {}
 
-        logger.info("  Computing CMIP6 global-mean time series for %s (%s)",
+        logger.info("  Computing benchmark global-mean time series for %s (%s)",
                      var, vinfo.cmip6_variable)
 
         member_series = []
         models_used = []
 
-        for model in self.cmip6_loader.models:
-            da = self.cmip6_loader.load_var(
+        for model in loader.models:
+            da = loader.load_var(
                 vinfo.cmip6_variable, model,
                 table=vinfo.cmip6_table or None,
                 period=period,
@@ -565,7 +584,7 @@ class DiagnosticBase(ABC):
             if da is None:
                 continue
 
-            area = self.cmip6_loader.load_area(
+            area = loader.load_area(
                 model, table=vinfo.cmip6_table or "Amon",
             )
             # Convert areacella to numpy so latlon_global_mean wraps it

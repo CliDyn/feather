@@ -65,11 +65,11 @@ class GlobalBiases(DiagnosticBase):
     group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -369,30 +369,42 @@ class GlobalBiases(DiagnosticBase):
             )
             return None
 
-        # CMIP6 bias (optional)
+        # Benchmark biases (CMIP6, HighResMIP, …) — one MMM per benchmark.
         cmip6_data = {}
         cmip6_info = {}
         cmip6_individual_data: dict[str, dict] = {}
+        benchmark_data: dict[str, dict] = {}    # {label: per-period MMM data}
+        benchmark_info: dict[str, dict] = {}
         if self.cmip6_enabled and target_lats is not None:
-            if self.cmip6_individual:
-                # Individual CMIP6 models + MMM from same regridded fields
-                cmip6_individual_data = self._compute_cmip6_individual(
-                    var, target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common,
-                    common_area,
-                )
-                cmip6_data, cmip6_info = self._mmm_from_individual(
-                    cmip6_individual_data,
-                    obs_clim_common, obs_seasonal_common,
-                    common_area,
-                )
-            else:
-                # MMM mode (default)
-                cmip6_data, cmip6_info = self._compute_cmip6_mmm(
-                    var, target_lats, target_lons,
-                    obs_clim_common, obs_seasonal_common,
-                    common_area,
-                )
+            for i, bench in enumerate(self.benchmarks):
+                label = getattr(bench, "label", "CMIP6 MMM")
+                if i == 0 and self.cmip6_individual:
+                    # Primary benchmark: individual models + MMM from them.
+                    cmip6_individual_data = self._compute_cmip6_individual(
+                        var, target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common,
+                        common_area,
+                    )
+                    b_data, b_info = self._mmm_from_individual(
+                        cmip6_individual_data,
+                        obs_clim_common, obs_seasonal_common,
+                        common_area,
+                    )
+                else:
+                    b_data, b_info = self._compute_cmip6_mmm(
+                        var, target_lats, target_lons,
+                        obs_clim_common, obs_seasonal_common,
+                        common_area, loader=bench,
+                    )
+                if b_data:
+                    benchmark_data[label] = b_data
+                    benchmark_info[label] = b_info
+
+            # Back-compat: expose the primary benchmark under cmip6_* keys.
+            if benchmark_data:
+                primary_label = next(iter(benchmark_data))
+                cmip6_data = benchmark_data[primary_label]
+                cmip6_info = benchmark_info[primary_label]
 
         # EERIE ensemble mean/median bias maps (when ≥2 models available)
         ens_data: dict[str, dict] = {}
@@ -409,6 +421,7 @@ class GlobalBiases(DiagnosticBase):
             cmip6_data=cmip6_data,
             cmip6_individual_data=cmip6_individual_data,
             ens_data=ens_data,
+            benchmark_data=benchmark_data,
         )
 
         return {
@@ -423,6 +436,8 @@ class GlobalBiases(DiagnosticBase):
             "cmip6_data": cmip6_data,
             "cmip6_info": cmip6_info,
             "cmip6_individual_data": cmip6_individual_data,
+            "benchmark_data": benchmark_data,
+            "benchmark_info": benchmark_info,
             "ens_data": ens_data,
         }
 
@@ -536,13 +551,16 @@ class GlobalBiases(DiagnosticBase):
 
     def _compute_cmip6_mmm(self, var, target_lats, target_lons,
                            obs_clim_common, obs_seasonal_common,
-                           common_area):
-        """Compute CMIP6 multi-model mean biases.
+                           common_area, loader=None):
+        """Compute benchmark multi-model mean biases.
 
         Loads per-model climatologies, regrids each individually (so
         that the configured interpolation method is applied per model),
-        then averages the regridded fields to form the MMM.
+        then averages the regridded fields to form the MMM.  *loader*
+        defaults to the primary benchmark; pass another benchmark loader
+        (e.g. HighResMIP) to compute its MMM.
         """
+        loader = loader or self.cmip6_loader
         cmip6_data = {}
         cmip6_info = {}
         influence_radius = self.config.nereus.get(
@@ -551,8 +569,9 @@ class GlobalBiases(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Computing CMIP6 MMM for %s...", var)
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Computing %s MMM for %s...",
+                    getattr(loader, "label", "CMIP6"), var)
+        member_pairs = loader.get_member_pairs()
 
         annual_fields = []
         seasonal_fields: dict[str, list] = {"DJF": [], "MAM": [], "JJA": [], "SON": []}
@@ -560,7 +579,7 @@ class GlobalBiases(DiagnosticBase):
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 var, model, variant=variant, period=self.period,
             )
             if da is None:
@@ -576,7 +595,7 @@ class GlobalBiases(DiagnosticBase):
             models_used.append(label)
 
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     var, model, variant=variant,
                     period=self.period, season=season,
                 )
@@ -970,6 +989,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data: dict[str, dict] | None = None,
         cmip6_individual_data: dict[str, dict] | None = None,
         ens_data: dict[str, dict] | None = None,
+        benchmark_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
 
@@ -988,6 +1008,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
         ens_data = ens_data or {}
+        benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
             """Extract all finite values from a list of arrays."""
@@ -1017,6 +1038,10 @@ class GlobalBiases(DiagnosticBase):
         if "annual" in cmip6_individual_data:
             for member_data in cmip6_individual_data["annual"].values():
                 bias_arrays.append(member_data["bias"])
+        for b_data in benchmark_data.values():
+            if "annual" in b_data:
+                field_arrays.append(b_data["annual"]["regrid"])
+                bias_arrays.append(b_data["annual"]["bias"])
         if "annual" in ens_data:
             bias_arrays.append(ens_data["annual"]["mean_bias"])
             bias_arrays.append(ens_data["annual"]["median_bias"])
@@ -1048,6 +1073,10 @@ class GlobalBiases(DiagnosticBase):
             if season in cmip6_individual_data:
                 for member_data in cmip6_individual_data[season].values():
                     s_biases.append(member_data["bias"])
+            for b_data in benchmark_data.values():
+                if season in b_data:
+                    s_fields.append(b_data[season]["regrid"])
+                    s_biases.append(b_data[season]["bias"])
             if season in ens_data:
                 s_biases.append(ens_data[season]["mean_bias"])
                 s_biases.append(ens_data[season]["median_bias"])
@@ -1090,9 +1119,10 @@ class GlobalBiases(DiagnosticBase):
         var_info = vr["var_info"]
         obs_clim = vr["obs"]["clim"]
         cb = vr["colorbar_ranges"]
-        cmip6_data = vr.get("cmip6_data", {})
         cmip6_info = vr.get("cmip6_info", {})
         cmip6_individual_data = vr.get("cmip6_individual_data", {})
+        benchmark_data = vr.get("benchmark_data", {})
+        benchmark_info = vr.get("benchmark_info", {})
         ens_data = vr.get("ens_data", {})
 
         is_pr = (var == "pr")
@@ -1139,12 +1169,14 @@ class GlobalBiases(DiagnosticBase):
                 bias_dict[model] = bias_field
                 all_models.append(model)
 
-            # Add CMIP6 MMM if available
-            if period_key in cmip6_data:
-                c_data = cmip6_data[period_key]
-                bias_dict["CMIP6 MMM"] = c_data["bias"]
-                all_models.append("CMIP6 MMM")
-                summary_stats["CMIP6 MMM"] = {
+            # Add each benchmark MMM (CMIP6, HighResMIP, …) if available
+            for b_label, b_data in benchmark_data.items():
+                if period_key not in b_data:
+                    continue
+                c_data = b_data[period_key]
+                bias_dict[b_label] = c_data["bias"]
+                all_models.append(b_label)
+                summary_stats[b_label] = {
                     "global_mean_bias": c_data["bias_gmean"] * unit_scale,
                     "rmse": (c_data["rmse"] * unit_scale
                              if c_data.get("rmse") is not None else None),
@@ -1305,11 +1337,15 @@ class GlobalBiases(DiagnosticBase):
                     lbl_median: edata["median_bias"] * unit_scale,
                     lbl_mean:   edata["mean_bias"] * unit_scale,
                 }
-                if period_key in cmip6_data:
-                    m = cmip6_info.get("n_members", 0)
-                    lbl_cmip6 = rf"CMIP6 MMM $\mathbf{{({m})}}$"
-                    ens_bias_dict[lbl_cmip6] = (
-                        cmip6_data[period_key]["bias"] * unit_scale
+                bench_panel_labels = {}
+                for b_label, b_data in benchmark_data.items():
+                    if period_key not in b_data:
+                        continue
+                    m = benchmark_info.get(b_label, {}).get("n_members", 0)
+                    panel_lbl = rf"{b_label} $\mathbf{{({m})}}$"
+                    bench_panel_labels[b_label] = panel_lbl
+                    ens_bias_dict[panel_lbl] = (
+                        b_data[period_key]["bias"] * unit_scale
                     )
 
                 ens_summary_stats = {
@@ -1324,13 +1360,14 @@ class GlobalBiases(DiagnosticBase):
                         "n_members": n,
                     },
                 }
-                if period_key in cmip6_data:
-                    c_data = cmip6_data[period_key]
-                    ens_summary_stats[lbl_cmip6] = {
+                for b_label, panel_lbl in bench_panel_labels.items():
+                    c_data = benchmark_data[b_label][period_key]
+                    ens_summary_stats[panel_lbl] = {
                         "global_mean_bias": c_data["bias_gmean"] * unit_scale,
                         "rmse": (c_data["rmse"] * unit_scale
                                  if c_data.get("rmse") is not None else None),
-                        "n_members": cmip6_info.get("n_members", 0),
+                        "n_members": benchmark_info.get(
+                            b_label, {}).get("n_members", 0),
                     }
 
                 fig_ens, _ = plot_combined_bias_map(

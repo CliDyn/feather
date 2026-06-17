@@ -164,29 +164,40 @@ def _run_diagnostics(
     model_loader = _create_model_loader(config)
     obs_loader = ObsLoader(config)
 
-    cmip6_loader = None
-    if config.cmip6.get("enabled", False):
+    # Build benchmark loaders (CMIP6, HighResMIP, …).  The first benchmark
+    # doubles as the legacy ``cmip6_loader`` so diagnostics that have not yet
+    # been generalised still render the primary benchmark's MMM.
+    benchmark_loaders = []
+    benchmark_cfgs = config.get_benchmarks()
+    if benchmark_cfgs:
         from feather.data.cmip6 import CMIP6Loader
-        cmip6_loader = CMIP6Loader(config)
+        for bcfg in benchmark_cfgs:
+            benchmark_loaders.append(CMIP6Loader(config, cmip6_cfg=bcfg))
+        logger.info("Benchmarks enabled: %s",
+                    [b.label for b in benchmark_loaders])
+    cmip6_loader = benchmark_loaders[0] if benchmark_loaders else None
 
     total_figures = 0
     for name in names:
         cls = get_diagnostic(name)
+        import inspect
+        sig = inspect.signature(cls.__init__)
         # Build constructor kwargs — intersect user variables with diagnostic's
         kwargs: dict[str, Any] = {
             "cmip6_loader": cmip6_loader,
             "experiment": experiment,
             "period": period,
         }
+        # Pass the full benchmark list only to diagnostics that accept it
+        # (those generalised for multiple benchmarks).
+        if benchmark_loaders and "benchmarks" in sig.parameters:
+            kwargs["benchmarks"] = benchmark_loaders
         # The time-series diagnostic may extend beyond the analysis period
         # (e.g. to show each model's full projection continuation).
         if name == "timeseries":
             kwargs["period"] = config.get_timeseries_period()
-        if cmip6_individual:
-            import inspect
-            sig = inspect.signature(cls.__init__)
-            if "cmip6_individual" in sig.parameters:
-                kwargs["cmip6_individual"] = True
+        if cmip6_individual and "cmip6_individual" in sig.parameters:
+            kwargs["cmip6_individual"] = True
         if variables:
             supported = set(cls.variables)
             overlap = [v for v in variables if v in supported]
