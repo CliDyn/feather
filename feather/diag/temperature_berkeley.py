@@ -61,13 +61,14 @@ class TemperatureBerkeley(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
         self.period = period
+        self.save_netcdf = save_netcdf
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
@@ -97,6 +98,7 @@ class TemperatureBerkeley(DiagnosticBase):
             self._figure_exists(fid) for fid in trend_ids
         )
         need_f = not skip_existing or not self._figure_exists("tas_taylor")
+        nc_needed = self.save_netcdf and not self._netcdf_exists("tas")
 
         # Collect existing paths
         if not need_a:
@@ -124,7 +126,8 @@ class TemperatureBerkeley(DiagnosticBase):
             logger.info("Skipping Taylor diagram -- figure exists")
             saved.append((out / "tas_taylor.png", out / "tas_taylor.json"))
 
-        if not any([need_a, need_b, need_c, need_d, need_e, need_f]):
+        if not any([need_a, need_b, need_c, need_d, need_e, need_f,
+                    nc_needed]):
             logger.info("Diagnostic %s complete -- all figures exist", self.name)
             return saved
 
@@ -137,12 +140,15 @@ class TemperatureBerkeley(DiagnosticBase):
             )
             return saved
 
-        # Group A: Bias maps
-        if need_a:
+        # Group A: Bias maps (+ optional NetCDF export)
+        if need_a or nc_needed:
             try:
                 results = self._compute_bias_maps(shared)
-                for fig, meta in self._plot_bias_maps(results):
-                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                if need_a:
+                    for fig, meta in self._plot_bias_maps(results):
+                        saved.append(self._save(fig, meta, meta["figure_id"]))
+                if self.save_netcdf:
+                    self._export_netcdf("tas", results)
             except Exception:
                 logger.warning("Group A (bias maps) failed", exc_info=True)
 
@@ -620,6 +626,8 @@ class TemperatureBerkeley(DiagnosticBase):
                 plot_type="combined_bias_map",
                 period=self.period,
                 cmip6_info=cmip6_info or None,
+                benchmark_info=self._benchmark_meta_from_info(
+                    results.get("benchmark_info")) or None,
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
@@ -739,6 +747,8 @@ class TemperatureBerkeley(DiagnosticBase):
             plot_type="timeseries",
             period=self.period,
             cmip6_info=results.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                results.get("benchmarks_ts")) or None,
         )
         return [(fig, meta)]
 
@@ -837,6 +847,8 @@ class TemperatureBerkeley(DiagnosticBase):
             plot_type="seasonal_cycle",
             period=self.period,
             cmip6_info=results.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                results.get("benchmarks_monthly")) or None,
         )
         return [(fig, meta)]
 
@@ -1811,6 +1823,32 @@ class TemperatureBerkeley(DiagnosticBase):
         return ranges
 
     # ── Statistics helpers ───────────────────────────────────────────
+
+    # ── NetCDF export ────────────────────────────────────────────────
+
+    @property
+    def _netcdf_dir(self):
+        from pathlib import Path
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _export_netcdf(self, var: str, results: dict) -> None:
+        from feather.data.variables import get_var
+        from feather.diag import netcdf_export
+        try:
+            units = get_var(var).units
+        except Exception:  # noqa: BLE001
+            units = "K"
+        netcdf_export.export_biasmap_netcdf(
+            self._netcdf_dir, var, results, self.period,
+            units=units, skip_existing=True,
+        )
 
     @staticmethod
     def _pattern_correlation(model_field, obs_field, area):

@@ -103,3 +103,53 @@ def test_zarr_path_experiment_token(tmp_path):
     p = loader._zarr_path("ECMWF-IFS-HR", "r1i1p1f1", "Amon", "tas",
                           experiment="hist-1950")
     assert p.endswith("ECMWF-IFS-HR_hist-1950_r1i1p1f1_Amon_tas.zarr")
+
+
+def test_mmm_handles_mixed_scalar_coords_and_lengths(minimal_config):
+    """MMM tolerates members with/without a scalar coord and unequal length."""
+    import numpy as np
+    import xarray as xr
+    from feather.diag.base import DiagnosticBase
+
+    class _Diag(DiagnosticBase):
+        name = "t"
+        variables = ["tas"]
+        def compute(self):
+            return {}
+        def plot(self, results):
+            return []
+
+    def _series(years, with_height):
+        t = xr.cftime_range("1980-01-01", periods=len(years), freq="YS")
+        da = xr.DataArray(
+            np.ones((len(years), 4, 8)) * 287.0,
+            dims=("time", "lat", "lon"),
+            coords={"time": t,
+                    "lat": np.linspace(-80, 80, 4),
+                    "lon": np.linspace(0, 315, 8)},
+        )
+        if with_height:
+            da = da.assign_coords(height=2.0)
+        return da
+
+    class _Loader:
+        label = "HighResMIP MMM"
+        color = "#9467bd"
+        models = {"A": {}, "B": {}}
+        def load_var(self, var, model, *, table=None, period=None,
+                     season=None, time_mean=False):
+            # A: full 1980-2014 with height; B: shorter 2001-2014 no height
+            if model == "A":
+                return _series(range(1980, 2015), with_height=True)
+            return _series(range(2001, 2015), with_height=False)
+        def load_area(self, model, table="Amon"):
+            return None
+
+    minimal_config.cmip6 = {"enabled": True}
+    diag = _Diag(None, None, minimal_config, benchmarks=[_Loader()])
+    ts, info = diag._cmip6_global_mean_timeseries("tas", loader=_Loader())
+    assert ts is not None
+    # Spans the union (1980-2014), not just the overlap
+    assert ts.time.dt.year.min().item() == 1980
+    assert ts.time.dt.year.max().item() == 2014
+    assert info["n_members"] == 2

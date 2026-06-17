@@ -67,9 +67,10 @@ class GlobalBiases(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
+        self.save_netcdf = save_netcdf
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -115,9 +116,10 @@ class GlobalBiases(DiagnosticBase):
                     f"{var}_{p}_ens_bias_combined"
                     for p in ["annual", "djf", "mam", "jja", "son"]
                 ]
-            if skip_existing and all(
-                self._figure_exists(fid) for fid in figure_ids
-            ):
+            figs_exist = all(self._figure_exists(fid) for fid in figure_ids)
+            nc_needed = self.save_netcdf and not self._netcdf_exists(var)
+
+            if skip_existing and figs_exist and not nc_needed:
                 logger.info(
                     "Skipping %s — all figures exist", var,
                 )
@@ -133,10 +135,15 @@ class GlobalBiases(DiagnosticBase):
                 if var_result is None:
                     continue
 
-                figures = self._plot_variable(var, var_result)
-                for fig, meta in figures:
-                    paths = self._save(fig, meta, meta["figure_id"])
-                    saved.append(paths)
+                # Save figures only when they were not already present.
+                if not (skip_existing and figs_exist):
+                    figures = self._plot_variable(var, var_result)
+                    for fig, meta in figures:
+                        paths = self._save(fig, meta, meta["figure_id"])
+                        saved.append(paths)
+
+                if self.save_netcdf:
+                    self._export_netcdf(var, var_result)
             except Exception:
                 logger.warning(
                     "Variable %s failed — skipping", var, exc_info=True,
@@ -146,6 +153,29 @@ class GlobalBiases(DiagnosticBase):
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    # -- NetCDF export -------------------------------------------------------
+
+    @property
+    def _netcdf_dir(self):
+        from pathlib import Path
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _export_netcdf(self, var: str, var_result: dict) -> None:
+        from feather.diag import netcdf_export
+        var_info = var_result.get("var_info")
+        units = getattr(var_info, "units", "") if var_info else ""
+        netcdf_export.export_biasmap_netcdf(
+            self._netcdf_dir, var, var_result, self.period,
+            units=units, skip_existing=True,
+        )
 
     # -- Computation --------------------------------------------------------
 
@@ -1251,6 +1281,8 @@ class GlobalBiases(DiagnosticBase):
                     plot_type="combined_map",
                     period=self.period,
                     cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        benchmark_info) or None,
                     summary_statistics=rel_stats,
                 )
                 figures.append((fig_rel, meta_rel))
@@ -1319,6 +1351,8 @@ class GlobalBiases(DiagnosticBase):
                 plot_type="combined_bias_map",
                 period=self.period,
                 cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        benchmark_info) or None,
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
@@ -1399,6 +1433,8 @@ class GlobalBiases(DiagnosticBase):
                     plot_type="combined_bias_map",
                     period=self.period,
                     cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        benchmark_info) or None,
                     summary_statistics=ens_summary_stats,
                 )
                 figures.append((fig_ens, meta_ens))

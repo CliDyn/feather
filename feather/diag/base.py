@@ -182,6 +182,7 @@ class DiagnosticBase(ABC):
         summary_statistics: dict[str, Any] | None = None,
         variables: list[str] | None = None,
         cmip6_info: dict[str, Any] | None = None,
+        benchmark_info: dict[str, Any] | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Convenience wrapper around :func:`build_metadata`."""
@@ -200,8 +201,44 @@ class DiagnosticBase(ABC):
             spatial_extent=spatial_extent,
             summary_statistics=summary_statistics,
             cmip6_info=cmip6_info,
+            benchmark_info=benchmark_info,
             extra=extra,
         )
+
+    @staticmethod
+    def _benchmark_meta_from_info(
+        benchmark_info: dict | None,
+    ) -> dict | None:
+        """Normalize a ``{label: info}`` dict to per-benchmark member info.
+
+        Returns ``{label: {n_members, models_used}}`` for the JSON sidecar,
+        or ``None`` when no benchmark info is available.
+        """
+        if not benchmark_info:
+            return None
+        out = {}
+        for label, info in benchmark_info.items():
+            if not info:
+                continue
+            out[label] = {
+                "n_members": info.get("n_members"),
+                "models_used": info.get("models_used"),
+            }
+        return out or None
+
+    @staticmethod
+    def _benchmark_meta_from_list(benchmarks: list | None) -> dict | None:
+        """Per-benchmark member info from a list of ``{label, info}`` entries."""
+        if not benchmarks:
+            return None
+        out = {}
+        for b in benchmarks:
+            info = b.get("info") or {}
+            out[b["label"]] = {
+                "n_members": info.get("n_members"),
+                "models_used": info.get("models_used"),
+            }
+        return out or None
 
     def _save(
         self,
@@ -601,16 +638,22 @@ class DiagnosticBase(ABC):
                     model, var, e,
                 )
                 continue
-            member_series.append(ts)
+            # Drop non-dimension scalar coords (e.g. ``height`` on tas) that
+            # some models carry and others don't — otherwise the cross-member
+            # concat below raises on mismatched coords.
+            member_series.append(ts.reset_coords(drop=True))
             models_used.append(model)
 
         if not member_series:
             logger.info("    No CMIP6 models available for %s", var)
             return None, {}
 
-        # Align to common time axis, then ensemble mean
-        aligned = xr.align(*member_series, join="inner")
-        mmm_ts = sum(aligned) / len(aligned)
+        # Align on the union of time steps (outer join) and average over the
+        # members available at each step.  An inner join would truncate the
+        # whole MMM to the shortest member's record (e.g. a HighResMIP member
+        # that starts mid-period), which is not what we want.
+        aligned = xr.align(*member_series, join="outer")
+        mmm_ts = xr.concat(aligned, dim="member").mean("member", skipna=True)
         info = {"n_members": len(models_used), "models_used": models_used}
         if return_individual:
             info["individual_series"] = dict(zip(models_used, aligned))

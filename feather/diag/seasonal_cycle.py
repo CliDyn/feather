@@ -286,5 +286,7 @@ class SeasonalCycleDiag(DiagnosticBase):
             plot_type="seasonal_cycle",
             period=self.period,
             cmip6_info=vr.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                vr.get("benchmarks_monthly")) or None,
         )
         return [(fig, meta)]

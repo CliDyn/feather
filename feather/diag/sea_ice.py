@@ -858,6 +858,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 
@@ -954,6 +955,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 
@@ -1078,6 +1080,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 

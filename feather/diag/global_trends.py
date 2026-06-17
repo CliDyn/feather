@@ -894,6 +894,8 @@ class GlobalTrends(DiagnosticBase):
                 plot_type="combined_trend_map",
                 period=self.period,
                 cmip6_info=cmip6_info or None,
+                benchmark_info=self._benchmark_meta_from_info(
+                    vr.get("benchmark_info")) or None,
                 summary_statistics=summary_stats,
                 extra={"units": trend_units},
             )

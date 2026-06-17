@@ -27,6 +27,7 @@ def run_pipeline(
     compile_pdf: bool = False,
     cmip6_individual: bool = False,
     benchmarks: list[str] | None = None,
+    save_netcdf: bool = False,
     no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
@@ -91,6 +92,7 @@ def run_pipeline(
             period=period,
             cmip6_individual=cmip6_individual,
             benchmarks=benchmarks,
+            save_netcdf=save_netcdf,
             skip_existing=skip_existing,
         )
 
@@ -135,6 +137,7 @@ def _run_diagnostics(
     period: tuple[str, str] = ("1990", "2014"),
     cmip6_individual: bool = False,
     benchmarks: list[str] | None = None,
+    save_netcdf: bool = False,
     skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
@@ -214,6 +217,9 @@ def _run_diagnostics(
         # (those generalised for multiple benchmarks).
         if benchmark_loaders and "benchmarks" in sig.parameters:
             kwargs["benchmarks"] = benchmark_loaders
+        # NetCDF export, only for diagnostics that support it.
+        if save_netcdf and "save_netcdf" in sig.parameters:
+            kwargs["save_netcdf"] = True
         # The time-series diagnostic may extend beyond the analysis period
         # (e.g. to show each model's full projection continuation).
         if name == "timeseries":

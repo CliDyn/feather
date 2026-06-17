@@ -671,6 +671,8 @@ class ClimateVariability(DiagnosticBase):
             plot_type="combined_map",
             period=self.period,
             cmip6_info=cmip6_info or None,
+            benchmark_info=self._benchmark_meta_from_info(
+                vr.get("benchmark_info")) or None,
             summary_statistics=summary_stats,
         )
         figures.append((fig1, meta1))
@@ -709,6 +711,8 @@ class ClimateVariability(DiagnosticBase):
             plot_type="combined_bias_map",
             period=self.period,
             cmip6_info=cmip6_info or None,
+            benchmark_info=self._benchmark_meta_from_info(
+                vr.get("benchmark_info")) or None,
             summary_statistics=summary_stats,
         )
         figures.append((fig2, meta2))

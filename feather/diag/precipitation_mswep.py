@@ -62,7 +62,7 @@ class PrecipitationMSWEP(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
@@ -70,6 +70,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        self.save_netcdf = save_netcdf
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-group incremental) ─────────────────────────
@@ -113,6 +114,7 @@ class PrecipitationMSWEP(DiagnosticBase):
         need_f = not skip_existing or not self._figure_exists(
             "pr_intensity_distribution"
         )
+        nc_needed = self.save_netcdf and not self._netcdf_exists("pr")
 
         # Collect existing paths
         if not need_a:
@@ -150,7 +152,8 @@ class PrecipitationMSWEP(DiagnosticBase):
                 out / "pr_intensity_distribution.json",
             ))
 
-        if not any([need_a, need_b, need_c, need_d, need_e, need_f]):
+        if not any([need_a, need_b, need_c, need_d, need_e, need_f,
+                    nc_needed]):
             logger.info(
                 "Diagnostic %s complete -- all figures exist", self.name,
             )
@@ -166,12 +169,15 @@ class PrecipitationMSWEP(DiagnosticBase):
             )
             return saved
 
-        # Group A: Absolute bias maps
-        if need_a:
+        # Group A: Absolute bias maps (+ optional NetCDF export)
+        if need_a or nc_needed:
             try:
                 results = self._compute_bias_maps(shared)
-                for fig, meta in self._plot_bias_maps(results):
-                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                if need_a:
+                    for fig, meta in self._plot_bias_maps(results):
+                        saved.append(self._save(fig, meta, meta["figure_id"]))
+                if self.save_netcdf:
+                    self._export_netcdf("pr", results)
             except Exception:
                 logger.warning(
                     "Group A (bias maps) failed", exc_info=True,
@@ -622,6 +628,8 @@ class PrecipitationMSWEP(DiagnosticBase):
                 plot_type="combined_bias_map",
                 period=self.period,
                 cmip6_info=cmip6_info or None,
+                benchmark_info=self._benchmark_meta_from_info(
+                    results.get("benchmark_info")) or None,
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
@@ -842,6 +850,8 @@ class PrecipitationMSWEP(DiagnosticBase):
             plot_type="timeseries",
             period=self.period,
             cmip6_info=results.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                results.get("benchmarks_ts")) or None,
         )
         return [(fig, meta)]
 
@@ -940,6 +950,8 @@ class PrecipitationMSWEP(DiagnosticBase):
             plot_type="seasonal_cycle",
             period=self.period,
             cmip6_info=results.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                results.get("benchmarks_monthly")) or None,
         )
         return [(fig, meta)]
 
@@ -1225,6 +1237,29 @@ class PrecipitationMSWEP(DiagnosticBase):
         return [(fig, meta)]
 
     # ── CMIP6 helpers ────────────────────────────────────────────────
+
+    # ── NetCDF export ────────────────────────────────────────────────
+
+    @property
+    def _netcdf_dir(self):
+        from pathlib import Path
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _export_netcdf(self, var: str, results: dict) -> None:
+        from feather.diag import netcdf_export
+        # Stored fields are canonical (kg m-2 s-1); export as mm/day to match
+        # the figures.
+        netcdf_export.export_biasmap_netcdf(
+            self._netcdf_dir, var, results, self.period,
+            units="mm/day", scale=_PR_TO_MMDAY, skip_existing=True,
+        )
 
     def _compute_cmip6_mmm(self, target_lats, target_lons,
                             obs_clim_common, obs_seasonal_common,

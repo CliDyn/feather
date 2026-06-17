@@ -379,6 +379,8 @@ class TimeseriesDiag(DiagnosticBase):
             plot_type="timeseries",
             period=self.period,
             cmip6_info=vr.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                vr.get("benchmarks_ts")) or None,
         )
         return [(fig, meta)]
 

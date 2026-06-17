@@ -84,6 +84,15 @@ def main(argv: list[str] | None = None):
              "HighResMIP); default: all enabled in the config",
     )
     parser.add_argument(
+        "--save-netcdf",
+        action="store_true",
+        help="Also write per-source diagnostic NetCDF files (obs, models, "
+             "CMIP6/HighResMIP MMM) under {output}/netcdf/{diag}/; filenames "
+             "include the analysis period. Skips files already present. "
+             "Supported by global_biases, temperature_berkeley, "
+             "precipitation_mswep.",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Generate website without LLM analysis (figures only)",
@@ -163,6 +172,7 @@ def main(argv: list[str] | None = None):
         compile_pdf=args.compile_pdf,
         cmip6_individual=args.cmip6_individual,
         benchmarks=args.benchmarks,
+        save_netcdf=args.save_netcdf,
         no_llm=args.no_llm,
     )
 
