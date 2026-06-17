@@ -134,6 +134,11 @@ feather --output ./my_output -v
 # Re-run everything (ignore cached results)
 feather --no-skip-existing -v
 
+# Also write per-source diagnostic fields to NetCDF (obs, each model,
+# CMIP6/HighResMIP MMM). Filenames include the analysis period and
+# already-present files are skipped, so it is safe to re-run.
+feather --save-netcdf --diagnostics global_biases temperature_berkeley -v
+
 # Custom time period
 feather --period 1990 2014 -v
 
@@ -143,6 +148,21 @@ feather --steps report --compile-pdf -v
 # Also works as a module
 python -m feather --config configs/eerie.yaml -v
 ```
+
+### NetCDF export (`--save-netcdf`)
+
+With `--save-netcdf`, diagnostics also write the per-source fields underlying
+their figures — the observations, each evaluated model, and each benchmark MMM
+(CMIP6, HighResMIP) — to NetCDF under `{output_dir}/netcdf/{diagnostic}/`. Each
+filename carries the analysis period (e.g. `tas_annual_1980-2014.nc`), and files
+already present are skipped, so the flag is incremental and safe to re-run.
+
+Supported by `global_biases`, `temperature_berkeley`, `precipitation_mswep`,
+`global_trends`, `climate_variability`, `ocean_sst`, `ocean_en4`,
+`radiation_budget`, `sea_ice`, `timeseries`, `seasonal_cycle`, and
+`teleconnections`. The obs-comparison and extremes/classification diagnostics
+write NetCDF as part of their normal operation. A new diagnostic can opt in by
+following the template in `NEW_DIAGNOSTIC_SPEC.md`.
 
 ## Python API
 
