@@ -1169,6 +1169,7 @@ class TemperatureBerkeley(DiagnosticBase):
             bias_cmap="RdBu_r",
             vmin=-obs_vmax, vmax=obs_vmax,
             units="°C/decade",
+            bias_title_prefix="Trend Diff",
             method=self._regrid_method,
         )
 
@@ -1180,7 +1181,7 @@ class TemperatureBerkeley(DiagnosticBase):
             description=(
                 "Linear trends in 2m temperature (°C/decade) over the "
                 "analysis period. Obs panel shows Berkeley Earth trends; "
-                "bias panels show model-obs trend differences."
+                "trend-difference panels show model-obs trend differences."
             ),
             obs_dataset="Berkeley Earth",
             obs_variable="2m temperature",

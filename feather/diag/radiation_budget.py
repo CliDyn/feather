@@ -108,6 +108,10 @@ _CMOR_NET_DERIVATIONS = {
     "rlscs": (("rldscs", "rluscs"), lambda a, b: a - b),
 }
 
+# Net radiation quantities the budget depends on, probed per model at the
+# start of a run so that missing-component skips are reported explicitly.
+_RADIATION_PROBE = ["rst", "rlt", "rss", "rls", "rstcs", "rltcs"]
+
 # CMIP6 component formulas for derived radiation quantities.
 # Each entry maps a derived-quantity key (matching _DERIVED_QUANTITIES)
 # to the CMIP6 component variables and a formula to combine them.
@@ -244,6 +248,7 @@ class RadiationBudget(DiagnosticBase):
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Execute per-figure-group: compute → plot → save."""
         logger.info("Running diagnostic: %s", self.name)
+        self._log_radiation_availability()
         saved: list[tuple[Path, Path]] = []
 
         # Group A: Budget bar chart
@@ -308,6 +313,48 @@ class RadiationBudget(DiagnosticBase):
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    def _log_radiation_availability(self) -> None:
+        """Log a per-model summary of available/missing radiation quantities.
+
+        Probes each model for the net radiation quantities the budget needs
+        (``rst``, ``rlt``, ``rss``, ``rls`` and the clear-sky TOA pair used
+        for cloud radiative effect).  Each quantity is resolved exactly as
+        the compute passes do — a direct load (DestinE net fields) falling
+        back to CMOR component derivation — so the summary reflects what the
+        diagnostic can actually produce.  Loads are lazy (metadata only) and
+        cached by the underlying loader, so this adds no extra heavy IO.
+
+        Models with no available quantities are excluded from the budget
+        entirely; partial models appear with reduced panels.  This makes the
+        otherwise-silent skips obvious in the logs.
+        """
+        logger.info("Radiation quantity availability per model:")
+        for model in self.config.models:
+            available: list[str] = []
+            missing: list[str] = []
+            for var in _RADIATION_PROBE:
+                try:
+                    self._load_model_radiation_var(model, var)
+                    available.append(var)
+                except (KeyError, FileNotFoundError):
+                    missing.append(var)
+
+            if not available:
+                logger.warning(
+                    "  %s: NO radiation quantities available — excluded "
+                    "from radiation budget (missing: %s)",
+                    model, ", ".join(missing),
+                )
+            elif missing:
+                logger.warning(
+                    "  %s: partial — available: %s; MISSING: %s",
+                    model, ", ".join(available), ", ".join(missing),
+                )
+            else:
+                logger.info(
+                    "  %s: all radiation quantities available", model,
+                )
 
     # ── Abstract interface (thin wrappers for backward compat) ────────
 

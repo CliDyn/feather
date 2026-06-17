@@ -1323,6 +1323,11 @@ class GlobalBiases(DiagnosticBase):
                 disp_bias_cmap = "RdBu_r"
                 disp_units = var_info.display_units or var_info.units
 
+            # Cloud cover: reverse the bias colormap so that blue = more
+            # cloud (positive bias) and red = less cloud (negative bias).
+            if var == "clt":
+                disp_bias_cmap = "RdBu"
+
             # ── Absolute bias figure ─────────────────────────────────────────
             fig, axes = plot_combined_bias_map(
                 obs_plot, bias_plot,
