@@ -29,25 +29,50 @@ logger = logging.getLogger(__name__)
 class CMIP6Loader:
     """Load CMIP6 data and compute multi-model mean on a common grid."""
 
-    def __init__(self, config):
-        """Initialize from a FeatherConfig.
+    def __init__(self, config, cmip6_cfg: dict | None = None):
+        """Initialize from a FeatherConfig (or an explicit benchmark config).
 
         Parameters
         ----------
         config : FeatherConfig
-            Must have a ``cmip6`` dict with ``catalog_path``, ``models``, etc.
+            Pipeline config (used for fallbacks).
+        cmip6_cfg : dict, optional
+            Benchmark/CMIP6 config block.  Defaults to ``config.cmip6``.
+            May carry ``zarr_dir`` (explicit cache dir), ``experiment``,
+            ``models`` (a dict, or the string ``"auto"`` to discover models
+            from the zarr cache), ``label`` and ``color``.
         """
-        self._cfg = config.cmip6
+        self._cfg = cmip6_cfg if cmip6_cfg is not None else config.cmip6
         self._zarr_dir = self._resolve_zarr_dir()
         self._area_cache: dict[str, xr.DataArray] = {}
         self._interp_cache: dict[str, nr.RegridInterpolator] = {}
+        self._auto_models: dict | None = None
 
     # ── Properties ────────────────────────────────────────────────────
 
     @property
+    def label(self) -> str:
+        """Display label for this benchmark (e.g. ``'CMIP6 MMM'``)."""
+        return self._cfg.get("label", "CMIP6 MMM")
+
+    @property
+    def color(self):
+        """Plot color for this benchmark (or None to use the default)."""
+        return self._cfg.get("color")
+
+    @property
     def models(self) -> dict:
-        """Configured CMIP6 models dict."""
-        return self._cfg.get("models", {})
+        """Configured models dict.
+
+        When ``models: auto`` is set, models are discovered from the zarr
+        cache (one variant per model) and cached for the loader's lifetime.
+        """
+        configured = self._cfg.get("models", {})
+        if configured == "auto":
+            if self._auto_models is None:
+                self._auto_models = self._discover_models_from_zarr()
+            return self._auto_models
+        return configured if isinstance(configured, dict) else {}
 
     @property
     def zarr_dir(self) -> str:
@@ -135,7 +160,41 @@ class CMIP6Loader:
             if cmip6_var == "siconc":
                 da = self._normalise_siconc(da)
 
+        # Drop members on unstructured/reduced grids (a single non-time
+        # spatial dimension that is not lat/lon, e.g. ICON's ``ncells``/``i``).
+        # The global-mean and regrid machinery expect rectilinear or
+        # curvilinear (2-D) lat/lon, so these cannot be used for the MMM.
+        if not self._is_griddable(da):
+            logger.warning(
+                "Skipping %s/%s — unstructured grid (dims %s) not supported",
+                model, cmip6_var, tuple(da.dims),
+            )
+            return None
+
         return da.compute()
+
+    @staticmethod
+    def _is_griddable(da: xr.DataArray) -> bool:
+        """True when *da* has lat/lon dims/coords usable for regridding.
+
+        Accepts rectilinear (1-D lat & lon dims) and curvilinear (2-D
+        lat/lon coordinates).  Rejects fields whose only spatial dimension
+        is a non-lat/lon index (unstructured / reduced Gaussian grids).
+        """
+        lat_names = {"lat", "latitude", "nav_lat", "y"}
+        lon_names = {"lon", "longitude", "nav_lon", "x"}
+        spatial_dims = [d for d in da.dims if d != "time"]
+        if len(spatial_dims) >= 2:
+            return True
+        # Single (or zero) spatial dim: only OK if it is itself lat/lon, or a
+        # 2-D lat/lon coordinate is present.
+        if any(str(d).lower() in lat_names | lon_names for d in spatial_dims):
+            return True
+        has_lat = any(str(c).lower() in lat_names and da[c].ndim >= 2
+                      for c in da.coords)
+        has_lon = any(str(c).lower() in lon_names and da[c].ndim >= 2
+                      for c in da.coords)
+        return has_lat and has_lon
 
     def load_var_for_model_var(
         self,
@@ -367,10 +426,8 @@ class CMIP6Loader:
             self._area_cache[cache_key] = None
             return None
 
-        try:
-            ds = xr.open_zarr(zarr_path, consolidated=True)
-        except Exception as e:
-            logger.warning("Failed to open area zarr %s: %s", zarr_path, e)
+        ds = self._open_zarr_robust(zarr_path)
+        if ds is None:
             self._area_cache[cache_key] = None
             return None
 
@@ -475,7 +532,15 @@ class CMIP6Loader:
     # ── Private helpers ───────────────────────────────────────────────
 
     def _resolve_zarr_dir(self) -> str:
-        """Derive zarr directory from catalog_path."""
+        """Derive zarr directory.
+
+        Prefers an explicit ``zarr_dir`` (benchmark cache), then falls back
+        to deriving it from ``catalog_path``.
+        """
+        explicit = self._cfg.get("zarr_dir", "")
+        if explicit:
+            return str(explicit)
+
         catalog_path = self._cfg.get("catalog_path", "")
         if not catalog_path:
             return ""
@@ -498,6 +563,42 @@ class CMIP6Loader:
         # Fallback: sibling "zarr" directory
         return str(Path(catalog_path).parent / "zarr")
 
+    def _discover_models_from_zarr(self) -> dict:
+        """Discover ``{model: {"variant": variant}}`` from the zarr cache.
+
+        Scans ``{zarr_dir}/{model}_{experiment}_{variant}_{table}_{var}.zarr``
+        for the first configured experiment, taking one variant per model
+        (the lowest, matching the converter's member preference).  CMIP6
+        ``source_id`` / ``experiment_id`` never contain underscores, so the
+        filename splits unambiguously on ``_``.
+        """
+        import re
+        from pathlib import Path
+
+        if not self._zarr_dir or not os.path.isdir(self._zarr_dir):
+            logger.warning("Zarr dir not found for auto-discovery: %s",
+                           self._zarr_dir)
+            return {}
+
+        experiment = self._get_experiments()[0]
+        pattern = re.compile(
+            rf"^(?P<model>.+?)_{re.escape(experiment)}_"
+            r"(?P<variant>[^_]+)_(?P<table>[^_]+)_(?P<var>.+)\.zarr$"
+        )
+        found: dict[str, set[str]] = {}
+        for entry in sorted(Path(self._zarr_dir).glob(f"*_{experiment}_*.zarr")):
+            m = pattern.match(entry.name)
+            if not m:
+                continue
+            found.setdefault(m.group("model"), set()).add(m.group("variant"))
+
+        models = {}
+        for model, variants in sorted(found.items()):
+            models[model] = {"variant": sorted(variants)[0]}
+        logger.info("Auto-discovered %d benchmark models for %s from %s",
+                    len(models), experiment, self._zarr_dir)
+        return models
+
     def _zarr_path(
         self, model: str, variant: str, table: str, var: str,
         experiment: str = "historical",
@@ -510,6 +611,23 @@ class CMIP6Loader:
             f"{self._zarr_dir}/{model}_{experiment}_{variant}_{table}_{var}.zarr"
         )
 
+    @staticmethod
+    def _open_zarr_robust(zarr_path: str) -> xr.Dataset | None:
+        """Open a zarr store, tolerating missing consolidated metadata.
+
+        Tries ``consolidated=True`` first (fast path), then falls back to
+        ``consolidated=False`` for stores written without consolidated
+        metadata (common with zarr v3).  Returns ``None`` on failure.
+        """
+        for consolidated in (True, False):
+            try:
+                return xr.open_zarr(zarr_path, consolidated=consolidated)
+            except Exception:  # noqa: BLE001
+                continue
+        logger.warning("Failed to open zarr %s (consolidated and plain)",
+                       zarr_path)
+        return None
+
     def _get_experiments(self) -> list[str]:
         """Ordered list of CMIP6 experiments to stitch along time.
 
@@ -519,6 +637,9 @@ class CMIP6Loader:
         exps = self._cfg.get("experiments")
         if exps:
             return [str(e) for e in exps]
+        single = self._cfg.get("experiment")
+        if single:
+            return [str(single)]
         return ["historical"]
 
     def _open_stitched(
@@ -541,10 +662,8 @@ class CMIP6Loader:
             if not os.path.exists(zarr_path):
                 logger.debug("Zarr not found: %s", zarr_path)
                 continue
-            try:
-                ds = xr.open_zarr(zarr_path, consolidated=True)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to open zarr %s: %s", zarr_path, e)
+            ds = self._open_zarr_robust(zarr_path)
+            if ds is None:
                 continue
             if cmip6_var not in ds.data_vars:
                 logger.warning("Variable %s not in %s", cmip6_var, zarr_path)
@@ -578,10 +697,13 @@ class CMIP6Loader:
         """Build path to an area-weight zarr store.
 
         Atmosphere tables → areacella (fx), ocean tables → areacello (Ofx).
+        The experiment token matches the first configured experiment so
+        benchmarks other than ``historical`` (e.g. ``hist-1950``) resolve.
         """
+        exp = self._get_experiments()[0]
         if table in ("Omon", "SImon", "Ofx"):
-            return f"{self._zarr_dir}/{model}_historical_{variant}_Ofx_areacello.zarr"
-        return f"{self._zarr_dir}/{model}_historical_{variant}_fx_areacella.zarr"
+            return f"{self._zarr_dir}/{model}_{exp}_{variant}_Ofx_areacello.zarr"
+        return f"{self._zarr_dir}/{model}_{exp}_{variant}_fx_areacella.zarr"
 
     @staticmethod
     def _get_variants(model_cfg: dict) -> list[str]:

@@ -63,11 +63,11 @@ class SeaIceDiag(DiagnosticBase):
     group = "sea_ice"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
@@ -82,16 +82,22 @@ class SeaIceDiag(DiagnosticBase):
         # Pre-compute model time series (shared across groups A, B, C)
         model_ts = self._compute_model_timeseries()
         obs_ts = self._compute_obs_timeseries()
-        cmip6_ts, cmip6_info, cmip6_indiv = (
-            self._compute_cmip6_timeseries()
+        cmip6_ts, cmip6_info, cmip6_indiv, benchmarks = (
+            self._compute_benchmark_timeseries()
         )
 
         cmip6_kw = dict(
             cmip6_ts=cmip6_ts or None,
             cmip6_individual_ts=cmip6_indiv or None,
             cmip6_info=cmip6_info or None,
+            benchmarks=benchmarks or None,
         )
 
+        self._maybe_export_netcdf(
+            {"model": model_ts, "obs": obs_ts, "benchmarks": benchmarks,
+             "cmip6": cmip6_ts, "cmip6_individual": cmip6_indiv},
+            "sea_ice_timeseries",
+        )
         # Group A: Time series (3 figures)
         for metric in _METRICS:
             fid = f"sea_ice_{metric}_timeseries"
@@ -199,10 +205,42 @@ class SeaIceDiag(DiagnosticBase):
 
     # ── Abstract interface (thin wrappers for backward compat) ────────
 
+    def _compute_benchmark_timeseries(self):
+        """Compute primary + per-benchmark sea-ice MMM time series.
+
+        Returns ``(primary_ts, primary_info, primary_indiv, benchmarks)``
+        where *benchmarks* is a list of ``{label, color, ts}`` (one MMM per
+        configured benchmark loader).  The primary tuple is kept for
+        back-compat and for individual-member overlay.
+        """
+        from feather.plot.styles import benchmark_color
+
+        benchmarks = []
+        for i, bench in enumerate(self.benchmarks):
+            mmm_ts, info, _ = self._compute_cmip6_timeseries(loader=bench)
+            if not mmm_ts:
+                continue
+            benchmarks.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "ts": mmm_ts,
+                "info": info,
+            })
+
+        # Primary benchmark individual members (only when requested).
+        primary_ts = benchmarks[0]["ts"] if benchmarks else {}
+        primary_info = benchmarks[0]["info"] if benchmarks else {}
+        primary_indiv = {}
+        if self.cmip6_individual and self.benchmarks:
+            _, _, primary_indiv = self._compute_cmip6_timeseries(
+                loader=self.benchmarks[0],
+            )
+        return primary_ts, primary_info, primary_indiv, benchmarks
+
     def compute(self) -> dict[str, Any]:
         """Compute all sea ice results."""
-        cmip6_ts, cmip6_info, cmip6_indiv = (
-            self._compute_cmip6_timeseries()
+        cmip6_ts, cmip6_info, cmip6_indiv, benchmarks = (
+            self._compute_benchmark_timeseries()
         )
         return {
             "model_ts": self._compute_model_timeseries(),
@@ -210,6 +248,7 @@ class SeaIceDiag(DiagnosticBase):
             "cmip6_ts": cmip6_ts,
             "cmip6_info": cmip6_info,
             "cmip6_individual_ts": cmip6_indiv,
+            "benchmarks": benchmarks,
         }
 
     def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
@@ -221,6 +260,7 @@ class SeaIceDiag(DiagnosticBase):
             cmip6_ts=results.get("cmip6_ts") or None,
             cmip6_individual_ts=results.get("cmip6_individual_ts") or None,
             cmip6_info=results.get("cmip6_info") or None,
+            benchmarks=results.get("benchmarks") or None,
         )
         for metric in _METRICS:
             figures.extend(self._plot_timeseries(
@@ -449,9 +489,12 @@ class SeaIceDiag(DiagnosticBase):
     # ── Computation: CMIP6 time series ────────────────────────────────
 
     def _compute_cmip6_timeseries(
-        self,
+        self, loader=None,
     ) -> tuple[dict, dict, dict]:
-        """Compute CMIP6 ice area/extent/volume per model, then MMM.
+        """Compute benchmark ice area/extent/volume per model, then MMM.
+
+        *loader* defaults to the primary benchmark; pass another benchmark
+        loader (e.g. HighResMIP) to compute its MMM.
 
         Returns
         -------
@@ -463,15 +506,17 @@ class SeaIceDiag(DiagnosticBase):
         """
         import nereus as nr
 
-        if not self.cmip6_enabled:
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return {}, {}, {}
 
-        logger.info("Computing CMIP6 sea ice time series")
+        logger.info("Computing %s sea ice time series",
+                    getattr(loader, "label", "CMIP6"))
 
         all_model_ts: dict[str, dict] = {}
         models_used: list[str] = []
 
-        for model in self.cmip6_loader.models:
+        for model in loader.models:
             if model in _CMIP6_SEA_ICE_EXCLUDE:
                 logger.warning(
                     "  EXCLUDING %s from sea ice computations — known "
@@ -482,7 +527,7 @@ class SeaIceDiag(DiagnosticBase):
 
             logger.info("  Loading CMIP6 sea ice for %s", model)
 
-            siconc = self.cmip6_loader.load_var(
+            siconc = loader.load_var(
                 "siconc", model, table="SImon", time_mean=False,
                 period=self.period,
             )
@@ -550,7 +595,7 @@ class SeaIceDiag(DiagnosticBase):
             # Use 1e12 m² (1M km²) as generous upper bound — anything
             # above is a fill value (e.g. 9.97e36 for float32 netCDF fill).
             _MAX_CELL_AREA = 1e12  # m²
-            area = self.cmip6_loader.load_area(model, table="SImon")
+            area = loader.load_area(model, table="SImon")
             if area is not None:
                 area_flat = np.nan_to_num(
                     np.asarray(area).ravel(), nan=0.0,
@@ -593,7 +638,7 @@ class SeaIceDiag(DiagnosticBase):
                 ).compute()
 
             # Volume (requires sithick)
-            sithick = self.cmip6_loader.load_var(
+            sithick = loader.load_var(
                 "sithick", model, table="SImon", time_mean=False,
                 period=self.period,
             )
@@ -693,6 +738,7 @@ class SeaIceDiag(DiagnosticBase):
     def _plot_timeseries(
         self, metric: str, model_ts: dict, obs_ts: dict,
         cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
+        benchmarks=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot NH/SH time series for a given metric."""
         info = _METRICS[metric]
@@ -701,9 +747,15 @@ class SeaIceDiag(DiagnosticBase):
         fig, (ax_nh, ax_sh) = plt.subplots(1, 2, figsize=(14, 5))
         all_models = []
         cmip6_individual_ts = cmip6_individual_ts or {}
+        benchmarks = benchmarks or []
+        # Back-compat: a lone cmip6_ts (no benchmarks list) → one MMM.
+        if not benchmarks and cmip6_ts:
+            benchmarks = [{"label": "CMIP6 MMM", "color": CMIP6_COLOR,
+                           "ts": cmip6_ts}]
 
         if cmip6_individual_ts:
             all_models.extend(cmip6_individual_ts.keys())
+        all_models.extend(b["label"] for b in benchmarks)
 
         for ax, hemi, hemi_label in [
             (ax_nh, "nh", "Northern Hemisphere"),
@@ -721,13 +773,14 @@ class SeaIceDiag(DiagnosticBase):
                     ax.plot(time_vals, ts.values * scale,
                             color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
 
-            # CMIP6 MMM monthly
-            if cmip6_ts and key in cmip6_ts:
-                ts = cmip6_ts[key]
-                time_vals = _to_plot_time(ts.time.values)
-                ax.plot(time_vals, ts.values * scale,
-                        color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
-                        linestyle="--")
+            # Benchmark MMM monthly (CMIP6, HighResMIP, …)
+            for bench in benchmarks:
+                if key in bench["ts"]:
+                    ts = bench["ts"][key]
+                    time_vals = _to_plot_time(ts.time.values)
+                    ax.plot(time_vals, ts.values * scale,
+                            color=bench["color"], alpha=0.3, linewidth=0.7,
+                            linestyle="--")
 
             # Model monthly (background)
             for model, mdata in model_ts.items():
@@ -759,13 +812,16 @@ class SeaIceDiag(DiagnosticBase):
                             color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                             label=label)
 
-            # CMIP6 MMM annual
-            if cmip6_ts and key in cmip6_ts:
-                ts_annual = annual_mean(cmip6_ts[key])
-                time_vals = _to_plot_time(ts_annual.time.values)
-                ax.plot(time_vals, ts_annual.values * scale,
-                        label="CMIP6 MMM", color=CMIP6_COLOR,
-                        linewidth=2.0, linestyle="--")
+            # Benchmark MMM annual (CMIP6, HighResMIP, …)
+            for bench in benchmarks:
+                if key in bench["ts"]:
+                    ts_annual = annual_mean(bench["ts"][key])
+                    time_vals = _to_plot_time(ts_annual.time.values)
+                    # Legend label only on the first axis to avoid duplicates
+                    lbl = bench["label"] if hemi == "nh" else "_nolegend_"
+                    ax.plot(time_vals, ts_annual.values * scale,
+                            label=lbl, color=bench["color"],
+                            linewidth=2.0, linestyle="--")
 
             # Model annual (foreground)
             for model, mdata in model_ts.items():
@@ -807,6 +863,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 
@@ -815,6 +872,7 @@ class SeaIceDiag(DiagnosticBase):
     def _plot_seasonal_cycle(
         self, metric: str, model_ts: dict, obs_ts: dict,
         cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
+        benchmarks=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot NH/SH seasonal cycle for a given metric."""
         info = _METRICS[metric]
@@ -827,9 +885,15 @@ class SeaIceDiag(DiagnosticBase):
         fig, (ax_nh, ax_sh) = plt.subplots(1, 2, figsize=(14, 5))
         all_models = []
         cmip6_individual_ts = cmip6_individual_ts or {}
+        benchmarks = benchmarks or []
+        # Back-compat: a lone cmip6_ts (no benchmarks list) → one MMM.
+        if not benchmarks and cmip6_ts:
+            benchmarks = [{"label": "CMIP6 MMM", "color": CMIP6_COLOR,
+                           "ts": cmip6_ts}]
 
         if cmip6_individual_ts:
             all_models.extend(cmip6_individual_ts.keys())
+        all_models.extend(b["label"] for b in benchmarks)
 
         for ax, hemi, hemi_label in [
             (ax_nh, "nh", "Northern Hemisphere"),
@@ -848,12 +912,14 @@ class SeaIceDiag(DiagnosticBase):
                             color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                             label=label)
 
-            # CMIP6 MMM
-            if cmip6_ts and key in cmip6_ts:
-                clim = cmip6_ts[key].groupby("time.month").mean("time")
-                ax.plot(months, clim.values * scale,
-                        marker="d", label="CMIP6 MMM", color=CMIP6_COLOR,
-                        linewidth=1.5, linestyle="--")
+            # Benchmark MMMs (CMIP6, HighResMIP, …)
+            for bench in benchmarks:
+                if key in bench["ts"]:
+                    clim = bench["ts"][key].groupby("time.month").mean("time")
+                    lbl = bench["label"] if hemi == "nh" else "_nolegend_"
+                    ax.plot(months, clim.values * scale,
+                            marker="d", label=lbl, color=bench["color"],
+                            linewidth=1.5, linestyle="--")
 
             # Models
             for model, mdata in model_ts.items():
@@ -894,6 +960,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 
@@ -902,6 +969,7 @@ class SeaIceDiag(DiagnosticBase):
     def _plot_extremes(
         self, metric: str, model_ts: dict, obs_ts: dict,
         cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
+        benchmarks=None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Plot 2×2 extreme month trends for a given metric."""
         info = _METRICS[metric]
@@ -911,9 +979,15 @@ class SeaIceDiag(DiagnosticBase):
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         all_models = []
         cmip6_individual_ts = cmip6_individual_ts or {}
+        benchmarks = benchmarks or []
+        # Back-compat: a lone cmip6_ts (no benchmarks list) → one MMM.
+        if not benchmarks and cmip6_ts:
+            benchmarks = [{"label": "CMIP6 MMM", "color": CMIP6_COLOR,
+                           "ts": cmip6_ts}]
 
         if cmip6_individual_ts:
             all_models.extend(cmip6_individual_ts.keys())
+        all_models.extend(b["label"] for b in benchmarks)
 
         panels = [
             (axes[0, 0], "nh", "max", _MINMAX_MONTHS["nh"]),
@@ -948,17 +1022,21 @@ class SeaIceDiag(DiagnosticBase):
                             label=label,
                         )
 
-            # CMIP6 MMM
-            if cmip6_ts and key in cmip6_ts:
-                ts = cmip6_ts[key]
-                monthly = ts.where(
-                    ts["time.month"] == month, drop=True,
-                )
+            # Benchmark MMMs (CMIP6, HighResMIP, …)
+            for bench in benchmarks:
+                if key not in bench["ts"]:
+                    continue
+                ts = bench["ts"][key]
+                monthly = ts.where(ts["time.month"] == month, drop=True)
                 if len(monthly) > 0:
                     time_vals = _to_plot_time(monthly.time.values)
+                    # Label once (first panel) to avoid legend duplicates
+                    lbl = (bench["label"]
+                           if (hemi == "nh" and extreme == "max")
+                           else "_nolegend_")
                     ax.plot(
                         time_vals, monthly.values * scale,
-                        label="CMIP6 MMM", color=CMIP6_COLOR,
+                        label=lbl, color=bench["color"],
                         linewidth=1.5, linestyle="--",
                     )
 
@@ -1007,6 +1085,7 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
             cmip6_info=cmip6_info,
+            benchmark_info=self._benchmark_meta_from_list(benchmarks) or None,
         )
         return [(fig, meta)]
 

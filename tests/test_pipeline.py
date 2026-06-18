@@ -225,4 +225,9 @@ class TestRunPipeline:
             from feather.run import _run_diagnostics
             _run_diagnostics(cfg)
 
-            mock_cmip6.assert_called_once_with(cfg)
+            # CMIP6Loader is now constructed per-benchmark: the legacy
+            # cmip6 block is wrapped into one benchmark config dict.
+            mock_cmip6.assert_called_once()
+            args, kwargs = mock_cmip6.call_args
+            assert args[0] is cfg
+            assert kwargs["cmip6_cfg"]["label"] == "CMIP6 MMM"

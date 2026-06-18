@@ -1,0 +1,293 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE all-members evaluation with TWO benchmark ensembles:
+#   * CMIP6 historical  — all models on disk, one member each (full DKRZ pool)
+#   * HighResMIP hist-1950 — all models on disk, one member each
+#
+# Both benchmarks are read from a per-variable zarr cache built once with
+# scripts/convert_pool_cmip6.py (see commands below).  Models are auto-
+# discovered from the cache (`models: auto`).  Each benchmark is rendered as
+# its own multi-model-mean (MMM) line/panel.
+#
+# Build the cache first (compute node — heavy I/O):
+#   python scripts/convert_pool_cmip6.py --activity CMIP \
+#       --experiment historical --period 1980 2014 \
+#       --out /scratch/a/a270292/EERIE/cmip6_pool_zarr/cmip6_historical -v
+#   python scripts/convert_pool_cmip6.py --activity HighResMIP \
+#       --experiment hist-1950 --period 1980 2014 \
+#       --out /scratch/a/a270292/EERIE/cmip6_pool_zarr/highresmip_hist-1950 -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE Ensemble evaluation vs CMIP6 + HighResMIP benchmarks"
+  experiment: "hist-1950"
+  period: ["1980", "2014"]
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    EERIE ensemble (3 members IFS-FESOM2-SR, 3 members IFS-NEMO-ER, ICON-ESM-ER,
+    HadGEM3-GC5) evaluated against two benchmark ensembles: the full CMIP6
+    historical multi-model mean and the HighResMIP hist-1950 multi-model mean,
+    each computed from one member per model.
+
+# Global default source for the majority of models (CMOR).
+# IFS-FESOM2-SR r2/r3 override this per-model with data_source_type: kerchunk_parquet.
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:
+  # ── IFS-FESOM2-SR ──────────────────────────────────────────────────────
+  IFS-FESOM2-SR:
+    institution: AWI
+    ensemble: EERIE
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#1f77b4"
+
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    ensemble: EERIE
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#5aabdf"
+
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    ensemble: EERIE
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#9fcfe8"
+
+  # ── IFS-NEMO-ER ────────────────────────────────────────────────────────
+  IFS-NEMO-ER:
+    institution: BSC
+    ensemble: EERIE
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#ff7f0e"
+    absolute_salinity: true
+
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    ensemble: EERIE
+    experiment: hist-1975
+    variant: r2i1p1f1
+    data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#e07b00"
+    absolute_salinity: true
+
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    ensemble: EERIE
+    experiment: hist-1975
+    variant: r3i1p1f1
+    data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#a85800"
+    absolute_salinity: true
+
+  # ── ICON-ESM-ER ────────────────────────────────────────────────────────
+  ICON-ESM-ER:
+    institution: MPI-M
+    ensemble: EERIE
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#2ca02c"
+
+  # ── HadGEM3-GC5 ───────────────────────────────────────────────────────
+  HadGEM3-GC5:
+    institution: MOHC
+    ensemble: EERIE
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+      o2d: latlon
+      o3d: latlon
+    color: "#d62728"
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    variable_aliases:
+      thetao: "thetao-con"
+      so: "so-abs"
+      tos: "toscon"
+      sos: "sosabs"
+    scale_factors:
+      clt: 100
+    absolute_salinity: true
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets:
+  ERA5:
+    path: "{obs_root}/ERA5/mon"
+    variables:
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
+      sst: "ERA5_sea_surface_temperature_mon_full_sfc_1940-2024.nc"
+      msl: "ERA5_mean_sea_level_pressure_mon_full_sfc_1940-2024.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      tcc: "ERA5_total_cloud_cover_mon_full_sfc_1940-2024.nc"
+      sshf: "ERA5_surface_sensible_heat_flux_mon_full_sfc_1940-2024.nc"
+      slhf: "ERA5_surface_latent_heat_flux_mon_full_sfc_1940-2024.nc"
+      ssr: "ERA5_surface_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      str: "ERA5_surface_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      ssrc: "ERA5_surface_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      strc: "ERA5_surface_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tsr: "ERA5_top_net_solar_radiation_mon_full_sfc_1940-2024.nc"
+      ttr: "ERA5_top_net_thermal_radiation_mon_full_sfc_1940-2024.nc"
+      tsrc: "ERA5_top_net_solar_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      ttrc: "ERA5_top_net_thermal_radiation_clear_sky_mon_full_sfc_1940-2024.nc"
+      tisr: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      ssrd: "ERA5_surface_solar_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      strd: "ERA5_surface_thermal_radiation_downwards_mon_full_sfc_1940-2024.nc"
+      e: "ERA5_evaporation_mon_full_sfc_1940-2024.nc"
+      tclw: "ERA5_total_column_cloud_liquid_water_mon_full_sfc_1940-2024.nc"
+      tciw: "ERA5_total_column_cloud_ice_water_mon_full_sfc_1940-2024.nc"
+      u10: "ERA5_10m_u_component_of_wind_mon_full_sfc_1940-2024.nc"
+      v10: "ERA5_10m_v_component_of_wind_mon_full_sfc_1940-2024.nc"
+      siconc_era5: "ERA5_sea_ice_cover_mon_full_sfc_1940-2024.nc"
+  CERES_EBAF:
+    path: "{obs_root}/CERES/EBAF_v4.2.1"
+    variables:
+      toa: "CERES_EBAF-TOA_Edition4.2.1_MONTHLY_200003-202506.nc"
+      surface: "CERES_EBAF_Edition4.2.1_MONTHLY_200003-202506.nc"
+  EN4:
+    path: "{obs_root}/EN4/v4.2.2"
+    variables:
+      thetao: "thetao-EN4-1950-2024.nc"
+      so: "so-EN4-1950-2024.nc"
+  ESA_CCI:
+    path: "/work/ab0995/a270088/DestinE/OBS/ESA-CCI_temp"
+    variables:
+      analysed_sst: "ESA-CCI-L4_v3.0.1_monthly_1990_2014_sst.nc"
+      timemean: "ESA-CCI-L4_v3.0.1_timemean_1990_2014_sst.nc"
+      ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
+  OSI_SAF:
+    path: "{obs_root}/OSI-SAF/OSI-AQUA"
+    variables:
+      nh: "monthly/ice_conc_nh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+      sh: "monthly/ice_conc_sh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+  PSC:
+    path: "{obs_root}/PSC"
+    variables:
+      piomas: "PIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x120_curvgrid.nc"
+      giomas: "GIOMAS/sithick_r1i1p1_mon_197901-202412_GCCS360x276_curvgrid.nc"
+  MSWEP:
+    path: "{obs_root}/MSWEP/v2.8"
+    variables:
+      pr: "zarr/mswep280.past-nrt.monthly.zarr"
+  BERKELEY_EARTH:
+    path: "{obs_root}/BERKELEY-EARTH/aqua-filled"
+    variables:
+      2t: "Berkeley-Earth_aqua-filled_1x1_1979-2024.nc"
+  BERKELEY_EARTH_HR:
+    path: "/work/bm1344/AWI/OBS/berkeleyearth"
+    variables:
+      temperature: "Global_TAVG_Gridded_0p25deg.nc"
+
+# Two benchmark ensembles read from the pre-built per-variable zarr cache.
+# Models are auto-discovered from each cache directory (one member per model).
+benchmarks:
+  - name: "CMIP6"
+    label: "CMIP6 MMM"
+    zarr_dir: "/scratch/a/a270292/EERIE/cmip6_pool_zarr/cmip6_historical"
+    experiment: historical
+    models: auto
+    color: "#7f7f7f"
+    regrid_resolution: 0.25
+    influence_radius: 80000
+    ensemble_mode: one_per_model
+  - name: "HighResMIP"
+    label: "HighResMIP MMM"
+    zarr_dir: "/scratch/a/a270292/EERIE/cmip6_pool_zarr/highresmip_hist-1950"
+    experiment: hist-1950
+    models: auto
+    color: "#9467bd"
+    regrid_resolution: 0.25
+    influence_radius: 80000
+    ensemble_mode: one_per_model
+
+dask:
+  n_workers: 4
+  memory_limit: "8GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  ocean_influence_radius: 20000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_cmip6_highresmip"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-2.5-flash"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — EERIE Model Evaluation (CMIP6 + HighResMIP benchmarks)"
+  subtitle: "EERIE Ensemble vs CMIP6 historical + HighResMIP hist-1950 MMM (1980-2014)"
+  group_order:
+    - evaluation
+    - temperature
+    - precipitation
+    - climate_classification
+    - radiation
+    - circulation
+    - ocean_surface
+    - sea_ice
+    - ocean_3d
+  group_labels:
+    evaluation: "Global Biases"
+    temperature: "Temperature"
+    precipitation: "Precipitation"
+    climate_classification: "Climate Classification"
+    radiation: "Radiation Budget"
+    circulation: "Atmospheric Circulation"
+    ocean_surface: "Ocean Surface"
+    sea_ice: "Sea Ice"
+    ocean_3d: "Ocean 3D"

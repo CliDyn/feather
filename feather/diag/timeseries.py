@@ -14,7 +14,11 @@ import pandas as pd
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import CMIP6_COLOR, ENS_COLOR, OBS_COLOR
+from feather.plot.styles import (
+    ENS_COLOR,
+    OBS_COLOR,
+    benchmark_color as _benchmark_color,
+)
 from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import annual_mean
 
@@ -55,11 +59,11 @@ class TimeseriesDiag(DiagnosticBase):
     group = "evaluation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -97,6 +101,7 @@ class TimeseriesDiag(DiagnosticBase):
                 results = self._compute_single(var)
                 if results is None:
                     continue
+                self._maybe_export_netcdf(results, var)
                 figures = self._plot_single(var, results)
                 for fig, meta in figures:
                     paths = self._save(fig, meta, meta["figure_id"])
@@ -145,17 +150,33 @@ class TimeseriesDiag(DiagnosticBase):
         obs_ts = latlon_global_mean(obs_data)
         logger.info("    Obs global mean: %.4g %s", float(obs_ts.mean()), var_info.units)
 
-        cmip6_ts = None
-        cmip6_info = {}
-        cmip6_individual_ts: dict[str, Any] = {}
-        cmip6_ts, info = self._cmip6_global_mean_timeseries(
-            var, period=self.period,
-            return_individual=self.cmip6_individual,
-        )
-        if cmip6_ts is not None:
-            cmip6_info = info
-            if self.cmip6_individual and "individual_series" in info:
-                cmip6_individual_ts = dict(info["individual_series"])
+        # Per-benchmark global-mean MMM time series (CMIP6, HighResMIP, …).
+        benchmarks_ts: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            b_ts, b_info = self._cmip6_global_mean_timeseries(
+                var, period=self.period,
+                return_individual=self.cmip6_individual,
+                loader=bench,
+            )
+            if b_ts is None:
+                continue
+            benchmarks_ts.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or _benchmark_color(i),
+                "ts": b_ts,
+                "info": b_info,
+                "individual": (
+                    dict(b_info["individual_series"])
+                    if self.cmip6_individual and "individual_series" in b_info
+                    else {}
+                ),
+            })
+
+        # Back-compat: expose the primary benchmark under the cmip6_* keys.
+        primary = benchmarks_ts[0] if benchmarks_ts else None
+        cmip6_ts = primary["ts"] if primary else None
+        cmip6_info = primary["info"] if primary else {}
+        cmip6_individual_ts = primary["individual"] if primary else {}
 
         ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
 
@@ -163,6 +184,7 @@ class TimeseriesDiag(DiagnosticBase):
             "models": model_ts,
             "obs": obs_ts,
             "var_info": var_info,
+            "benchmarks_ts": benchmarks_ts,
             "cmip6_ts": cmip6_ts,
             "cmip6_info": cmip6_info,
             "cmip6_individual_ts": cmip6_individual_ts,
@@ -250,24 +272,24 @@ class TimeseriesDiag(DiagnosticBase):
 
         fig, ax = plt.subplots(figsize=(12, 5))
 
-        cmip6_indiv = vr.get("cmip6_individual_ts", {})
-        if cmip6_indiv:
-            all_models.extend(cmip6_indiv.keys())
+        benchmarks = vr.get("benchmarks_ts", [])
+        for bench in benchmarks:
+            all_models.append(bench["label"])
+            all_models.extend(bench["individual"].keys())
 
         # --- Monthly pass (background, washed-out) ---
 
-        # CMIP6 individual monthly
-        for _mname, ts in cmip6_indiv.items():
-            time_vals = _to_plot_time(ts.time.values)
-            ax.plot(time_vals, ts.values + _off,
-                    color=CMIP6_COLOR, alpha=0.2, linewidth=0.5)
-
-        # CMIP6 MMM monthly
-        if vr.get("cmip6_ts") is not None:
-            cmip6_ts = vr["cmip6_ts"]
-            time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values + _off,
-                    color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+        # Benchmark individual + MMM monthly (CMIP6, HighResMIP, \u2026)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            for ts in bench["individual"].values():
+                time_vals = _to_plot_time(ts.time.values)
+                ax.plot(time_vals, ts.values + _off,
+                        color=b_color, alpha=0.2, linewidth=0.5)
+            b_ts = bench["ts"]
+            time_vals = _to_plot_time(b_ts.time.values)
+            ax.plot(time_vals, b_ts.values + _off,
+                    color=b_color, alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         # DestinE model monthly
@@ -287,25 +309,27 @@ class TimeseriesDiag(DiagnosticBase):
 
         # Pre-compute member counts for legend labels
         n_eerie = len(vr["models"])
-        n_cmip6_mmm = vr.get("cmip6_info", {}).get("n_members", 0)
-        n_cmip6_indiv = len(cmip6_indiv)
 
-        # CMIP6 individual annual
-        for i, (mname, ts) in enumerate(cmip6_indiv.items()):
-            label = (f"CMIP6 members ({n_cmip6_indiv})"
-                     if i == 0 else "_nolegend_")
-            ts_annual = annual_mean(ts)
-            time_vals = _to_plot_time(ts_annual.time.values)
-            ax.plot(time_vals, ts_annual.values + _off,
-                    color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
-                    label=label)
-
-        # CMIP6 MMM annual
-        if vr.get("cmip6_ts") is not None:
-            cmip6_annual = annual_mean(vr["cmip6_ts"])
-            time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values + _off,
-                    label=f"CMIP6 MMM ({n_cmip6_mmm})", color=CMIP6_COLOR,
+        # Benchmark individual + MMM annual (CMIP6, HighResMIP, …)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            b_label = bench["label"]
+            # strip a trailing " MMM" for the members legend label
+            members_name = b_label[:-4] if b_label.endswith(" MMM") else b_label
+            n_indiv = len(bench["individual"])
+            for i, ts in enumerate(bench["individual"].values()):
+                label = (f"{members_name} members ({n_indiv})"
+                         if i == 0 else "_nolegend_")
+                ts_annual = annual_mean(ts)
+                time_vals = _to_plot_time(ts_annual.time.values)
+                ax.plot(time_vals, ts_annual.values + _off,
+                        color=b_color, alpha=0.35, linewidth=0.8,
+                        label=label)
+            n_mmm = bench["info"].get("n_members", 0)
+            b_annual = annual_mean(bench["ts"])
+            time_vals = _to_plot_time(b_annual.time.values)
+            ax.plot(time_vals, b_annual.values + _off,
+                    label=f"{b_label} ({n_mmm})", color=b_color,
                     linewidth=2.0, linestyle="--")
 
         # DestinE model annual
@@ -356,6 +380,8 @@ class TimeseriesDiag(DiagnosticBase):
             plot_type="timeseries",
             period=self.period,
             cmip6_info=vr.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                vr.get("benchmarks_ts")) or None,
         )
         return [(fig, meta)]
 

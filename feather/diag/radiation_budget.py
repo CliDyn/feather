@@ -168,11 +168,11 @@ class RadiationBudget(DiagnosticBase):
     group = "radiation"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None,
+                 cmip6_loader=None, benchmarks=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks, save_netcdf=save_netcdf)
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
@@ -261,6 +261,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_a = self._compute_budget()
+            self._maybe_export_netcdf(results_a, "budget")
             figs_a = self._plot_budget(results_a)
             for fig, meta in figs_a:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -275,6 +276,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_b = self._compute_gregory()
+            self._maybe_export_netcdf(results_b, "gregory")
             figs_b = self._plot_gregory(results_b)
             for fig, meta in figs_b:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -289,6 +291,7 @@ class RadiationBudget(DiagnosticBase):
             ))
         else:
             results_c = self._compute_imbalance_timeseries()
+            self._maybe_export_netcdf(results_c, "imbalance")
             figs_c = self._plot_imbalance_timeseries(results_c)
             for fig, meta in figs_c:
                 saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -305,6 +308,7 @@ class RadiationBudget(DiagnosticBase):
                 continue
             results_d = self._compute_bias_map(dq_key, dq_info)
             if results_d is not None:
+                self._maybe_export_netcdf(results_d, f"{dq_key}_bias")
                 figs_d = self._plot_bias_map(dq_key, dq_info, results_d)
                 for fig, meta in figs_d:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
@@ -412,13 +416,21 @@ class RadiationBudget(DiagnosticBase):
         # Observations (CERES)
         obs_budget = self._compute_ceres_budget()
 
-        # CMIP6 MMM
-        cmip6_budget = self._compute_cmip6_budget()
+        # Benchmark MMMs (CMIP6, HighResMIP, …)
+        benchmark_budgets: dict[str, dict[str, float]] = {}
+        for bench in self.benchmarks:
+            b = self._compute_cmip6_budget(loader=bench)
+            if b:
+                benchmark_budgets[getattr(bench, "label", "CMIP6 MMM")] = b
+        primary = (
+            next(iter(benchmark_budgets.values())) if benchmark_budgets else {}
+        )
 
         return {
             "models": model_budgets,
             "obs": obs_budget,
-            "cmip6": cmip6_budget,
+            "cmip6": primary,
+            "benchmarks": benchmark_budgets,
         }
 
     def _model_global_mean_clim(self, model: str, var: str) -> float | None:
@@ -478,9 +490,10 @@ class RadiationBudget(DiagnosticBase):
             logger.warning("CERES budget computation failed: %s", e)
         return budget
 
-    def _compute_cmip6_budget(self) -> dict[str, float]:
-        """Compute CMIP6 MMM budget from individual flux components."""
-        if not self.cmip6_enabled:
+    def _compute_cmip6_budget(self, loader=None) -> dict[str, float]:
+        """Compute benchmark MMM budget from individual flux components."""
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return {}
 
         budget: dict[str, float] = {}
@@ -493,7 +506,7 @@ class RadiationBudget(DiagnosticBase):
         }
 
         for cmip6_var in cmip6_map:
-            mmm, _ = self.cmip6_loader.load_multi_model_mean(
+            mmm, _ = loader.load_multi_model_mean(
                 cmip6_var, period=self.period,
             )
             if mmm is not None:
@@ -533,16 +546,16 @@ class RadiationBudget(DiagnosticBase):
                     comp_vals[model] = mbud[comp]
             if comp in results.get("obs", {}):
                 comp_vals["CERES"] = results["obs"][comp]
-            if comp in results.get("cmip6", {}):
-                comp_vals["CMIP6 MMM"] = results["cmip6"][comp]
+            for b_label, b_budget in results.get("benchmarks", {}).items():
+                if comp in b_budget:
+                    comp_vals[b_label] = b_budget[comp]
             if comp_vals:
                 budget_data[comp] = comp_vals
 
         all_models = list(results["models"].keys())
         if results.get("obs"):
             all_models.append("CERES")
-        if results.get("cmip6"):
-            all_models.append("CMIP6 MMM")
+        all_models.extend(results.get("benchmarks", {}).keys())
 
         # Two-panel figure: full budget (left) + TOA Net zoom (right)
         fig, (ax_main, ax_zoom) = plt.subplots(
@@ -716,33 +729,48 @@ class RadiationBudget(DiagnosticBase):
         if mmm_data is not None:
             result["mmm"] = mmm_data
 
+        # Per-benchmark MMM (CMIP6, HighResMIP, …) for extra regression lines
+        from feather.plot.styles import benchmark_color
+        benchmarks = []
+        for i, bench in enumerate(self.benchmarks):
+            b_mmm = self._compute_gregory_cmip6_mmm(loader=bench)
+            if b_mmm is None:
+                continue
+            benchmarks.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "mmm": b_mmm,
+            })
+        result["benchmarks"] = benchmarks
+
         return result
 
-    def _compute_gregory_cmip6_mmm(self) -> dict[str, Any] | None:
-        """Compute CMIP6 MMM for Gregory plot."""
+    def _compute_gregory_cmip6_mmm(self, loader=None) -> dict[str, Any] | None:
+        """Compute benchmark MMM for Gregory plot (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
         t2m_mmm, _ = self._cmip6_global_mean_timeseries(
-            "tas", period=self.period,
+            "tas", period=self.period, loader=loader,
         )
         if t2m_mmm is None:
             return None
 
         # Compute net TOA MMM from individual components
         member_toa = []
-        for model in self.cmip6_loader.models:
-            rsdt = self.cmip6_loader.load_var(
+        for model in loader.models:
+            rsdt = loader.load_var(
                 "rsdt", model, table="Amon",
                 period=self.period, time_mean=False,
             )
-            rsut = self.cmip6_loader.load_var(
+            rsut = loader.load_var(
                 "rsut", model, table="Amon",
                 period=self.period, time_mean=False,
             )
-            rlut = self.cmip6_loader.load_var(
+            rlut = loader.load_var(
                 "rlut", model, table="Amon",
                 period=self.period, time_mean=False,
             )
             if all(v is not None for v in [rsdt, rsut, rlut]):
-                area = self.cmip6_loader.load_area(model)
+                area = loader.load_area(model)
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
@@ -787,20 +815,21 @@ class RadiationBudget(DiagnosticBase):
                 })
             all_models.extend(cmip6_data["individual"].keys())
 
-        # CMIP6 MMM (middle layer)
-        if cmip6_data.get("mmm"):
-            mmm = cmip6_data["mmm"]
+        # Benchmark MMMs (middle layer) — CMIP6, HighResMIP, …
+        for bench in cmip6_data.get("benchmarks", []):
+            mmm = bench["mmm"]
             scatter_data.append({
-                "label": "CMIP6 MMM",
+                "label": bench["label"],
                 "t2m_monthly": mmm["t2m_monthly"].values,
                 "toa_monthly": mmm["toa_monthly"].values,
                 "t2m_annual": mmm.get("t2m_annual", mmm["t2m_monthly"]).values,
                 "toa_annual": mmm.get("toa_annual", mmm["toa_monthly"]).values,
-                "color": CMIP6_COLOR,
+                "color": bench["color"],
                 "alpha": 0.3,
                 "linestyle": "--",
                 "show_regression": True,
             })
+            all_models.append(bench["label"])
 
         # DestinE models (foreground)
         for model, mdata in results["models"].items():
@@ -882,39 +911,53 @@ class RadiationBudget(DiagnosticBase):
         except (KeyError, FileNotFoundError, AttributeError) as e:
             logger.warning("CERES imbalance time series failed: %s", e)
 
-        # CMIP6 MMM
-        cmip6_ts = None
-        cmip6_info = {}
+        # Benchmark MMMs (CMIP6, HighResMIP, …)
+        from feather.plot.styles import benchmark_color
+        benchmarks = []
         if self.cmip6_enabled:
-            cmip6_ts, cmip6_info = self._compute_cmip6_net_toa_timeseries()
+            for i, bench in enumerate(self.benchmarks):
+                b_ts, b_info = self._compute_cmip6_net_toa_timeseries(
+                    loader=bench,
+                )
+                if b_ts is None:
+                    continue
+                benchmarks.append({
+                    "label": getattr(bench, "label", "CMIP6 MMM"),
+                    "color": getattr(bench, "color", None) or benchmark_color(i),
+                    "ts": b_ts,
+                    "info": b_info,
+                })
+        primary = benchmarks[0] if benchmarks else None
 
         return {
             "models": model_ts,
             "obs": obs_ts,
-            "cmip6_ts": cmip6_ts,
-            "cmip6_info": cmip6_info,
+            "benchmarks": benchmarks,
+            "cmip6_ts": primary["ts"] if primary else None,
+            "cmip6_info": primary["info"] if primary else {},
         }
 
-    def _compute_cmip6_net_toa_timeseries(self):
-        """Compute CMIP6 MMM net TOA time series."""
+    def _compute_cmip6_net_toa_timeseries(self, loader=None):
+        """Compute benchmark MMM net TOA time series (per-benchmark loader)."""
+        loader = loader or self.cmip6_loader
         member_toa = []
         models_used = []
 
-        for model in self.cmip6_loader.models:
-            rsdt = self.cmip6_loader.load_var(
+        for model in loader.models:
+            rsdt = loader.load_var(
                 "rsdt", model, table="Amon",
                 period=self.period, time_mean=False,
             )
-            rsut = self.cmip6_loader.load_var(
+            rsut = loader.load_var(
                 "rsut", model, table="Amon",
                 period=self.period, time_mean=False,
             )
-            rlut = self.cmip6_loader.load_var(
+            rlut = loader.load_var(
                 "rlut", model, table="Amon",
                 period=self.period, time_mean=False,
             )
             if all(v is not None for v in [rsdt, rsut, rlut]):
-                area = self.cmip6_loader.load_area(model)
+                area = loader.load_area(model)
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
@@ -953,12 +996,11 @@ class RadiationBudget(DiagnosticBase):
 
         # --- Layer 1: monthly (background, washed-out) ---
 
-        # CMIP6 MMM monthly
-        if results.get("cmip6_ts") is not None:
-            cmip6_ts = results["cmip6_ts"]
-            time_vals = _to_plot_time(cmip6_ts.time.values)
-            ax.plot(time_vals, cmip6_ts.values,
-                    color=CMIP6_COLOR, alpha=0.3, linewidth=0.7,
+        # Benchmark MMM monthly (CMIP6, HighResMIP, …)
+        for bench in results.get("benchmarks", []):
+            time_vals = _to_plot_time(bench["ts"].time.values)
+            ax.plot(time_vals, bench["ts"].values,
+                    color=bench["color"], alpha=0.3, linewidth=0.7,
                     linestyle="--")
 
         # DestinE model monthly
@@ -977,12 +1019,12 @@ class RadiationBudget(DiagnosticBase):
 
         # --- Layer 2: annual means (foreground, thick) ---
 
-        # CMIP6 MMM annual
-        if results.get("cmip6_ts") is not None:
-            cmip6_annual = annual_mean(results["cmip6_ts"])
-            time_vals = _to_plot_time(cmip6_annual.time.values)
-            ax.plot(time_vals, cmip6_annual.values,
-                    label="CMIP6 MMM", color=CMIP6_COLOR,
+        # Benchmark MMM annual (CMIP6, HighResMIP, …)
+        for bench in results.get("benchmarks", []):
+            b_annual = annual_mean(bench["ts"])
+            time_vals = _to_plot_time(b_annual.time.values)
+            ax.plot(time_vals, b_annual.values,
+                    label=bench["label"], color=bench["color"],
                     linewidth=2.0, linestyle="--")
 
         # DestinE model annual
@@ -1017,8 +1059,7 @@ class RadiationBudget(DiagnosticBase):
 
         if results.get("obs") is not None:
             all_models.append("CERES")
-        if results.get("cmip6_ts") is not None:
-            all_models.append("CMIP6 MMM")
+        all_models.extend(b["label"] for b in results.get("benchmarks", []))
 
         meta = self._build_metadata(
             title="Radiation Imbalance Time Series",
@@ -1144,19 +1185,22 @@ class RadiationBudget(DiagnosticBase):
         if not model_results:
             return None
 
-        # CMIP6 MMM bias (optional)
+        # Benchmark MMM biases (CMIP6, HighResMIP, …)
         cmip6_bias_data = {}
         if self.cmip6_enabled and target_lats is not None:
             cmip6_ir = self.config.nereus.get("influence_radius", 80_000.0)
-            cmip6_mmm = self._compute_cmip6_mmm_regridded(
-                dq_key, target_lats, target_lons, obs_res, cmip6_ir,
-            )
-            if cmip6_mmm is not None:
-                cmip6_bias = cmip6_mmm - obs_clim_common
-                cmip6_bias_data["CMIP6 MMM"] = {
-                    "bias": cmip6_bias,
+            for bench in self.benchmarks:
+                b_mmm = self._compute_cmip6_mmm_regridded(
+                    dq_key, target_lats, target_lons, obs_res, cmip6_ir,
+                    loader=bench,
+                )
+                if b_mmm is None:
+                    continue
+                b_bias = b_mmm - obs_clim_common
+                cmip6_bias_data[getattr(bench, "label", "CMIP6 MMM")] = {
+                    "bias": b_bias,
                     "bias_gmean": float(
-                        latlon_global_mean(cmip6_bias, area=common_area).values
+                        latlon_global_mean(b_bias, area=common_area).values
                     ),
                 }
 
@@ -1240,7 +1284,7 @@ class RadiationBudget(DiagnosticBase):
 
     def _compute_cmip6_mmm_regridded(
         self, dq_key: str, target_lats, target_lons, obs_res,
-        cmip6_influence_radius,
+        cmip6_influence_radius, loader=None,
     ) -> xr.DataArray | None:
         """Compute CMIP6 MMM of a derived quantity, regridded to target grid.
 
@@ -1255,11 +1299,12 @@ class RadiationBudget(DiagnosticBase):
         if dq_key not in _CMIP6_DERIVED:
             return None
 
+        loader = loader or self.cmip6_loader
         derived_info = _CMIP6_DERIVED[dq_key]
         component_vars = derived_info["vars"]
         formula = derived_info["formula"]
 
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        member_pairs = loader.get_member_pairs()
         cmip6_interp_cache: dict[tuple, "nr.RegridInterpolator"] = {}
         regridded_fields = []
 
@@ -1269,7 +1314,7 @@ class RadiationBudget(DiagnosticBase):
             all_ok = True
 
             for cvar in component_vars:
-                da = self.cmip6_loader.load_var(
+                da = loader.load_var(
                     cvar, model, variant=variant,
                     period=self.period, time_mean=True,
                 )

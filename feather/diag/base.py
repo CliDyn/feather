@@ -65,10 +65,28 @@ class DiagnosticBase(ABC):
         config: FeatherConfig,
         *,
         cmip6_loader: Any = None,
+        benchmarks: list | None = None,
+        save_netcdf: bool = False,
     ):
         self.model_loader = model_loader
         self.obs_loader = obs_loader
         self.config = config
+        # When True, diagnostics also write their per-source fields (obs,
+        # evaluated models, benchmark MMMs) to NetCDF under
+        # ``{output}/netcdf/{name}/`` via ``_maybe_export_netcdf``.
+        self.save_netcdf = save_netcdf
+        # ``benchmarks`` is the ordered list of benchmark loaders (CMIP6,
+        # HighResMIP, …).  ``cmip6_loader`` is the primary (first) benchmark,
+        # kept for diagnostics not yet generalised to multiple benchmarks.
+        self._benchmarks_explicit = benchmarks is not None
+        if benchmarks is not None:
+            self.benchmarks = list(benchmarks)
+        elif cmip6_loader is not None:
+            self.benchmarks = [cmip6_loader]
+        else:
+            self.benchmarks = []
+        if cmip6_loader is None and self.benchmarks:
+            cmip6_loader = self.benchmarks[0]
         self.cmip6_loader = cmip6_loader
 
     # ── Properties ────────────────────────────────────────────────────
@@ -80,11 +98,45 @@ class DiagnosticBase(ABC):
 
     @property
     def cmip6_enabled(self) -> bool:
-        """True when CMIP6 data is available and enabled in config."""
-        return (
-            self.cmip6_loader is not None
-            and self.config.cmip6.get("enabled", False)
+        """True when a (primary) benchmark loader is available and enabled.
+
+        Honours both the legacy ``cmip6.enabled`` flag and the new
+        ``benchmarks:`` list (presence of a benchmark loader).
+        """
+        return self.cmip6_loader is not None and (
+            self.config.cmip6.get("enabled", False)
+            or self._benchmarks_explicit
         )
+
+    # ── NetCDF export ─────────────────────────────────────────────────
+
+    @property
+    def _netcdf_dir(self) -> Path:
+        """Directory for this diagnostic's per-source NetCDF files."""
+        return Path(self.config.output_dir) / "netcdf" / self.name
+
+    def _maybe_export_netcdf(self, results, token: str) -> None:
+        """Write *results*' per-source fields to NetCDF when requested.
+
+        No-op unless ``self.save_netcdf`` is True. *token* names the file
+        (typically a variable or mode); the analysis period is appended.
+        Existing files are skipped. Failures are logged, never raised — the
+        export must never break the diagnostic.
+        """
+        if not getattr(self, "save_netcdf", False):
+            return
+        from feather.diag import netcdf_export
+
+        period = getattr(self, "period", None) or self.config.get_period()
+        try:
+            netcdf_export.export_generic_netcdf(
+                self._netcdf_dir, token, results, period, skip_existing=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "NetCDF export failed for %s/%s", self.name, token,
+                exc_info=True,
+            )
 
     # ── Abstract interface ────────────────────────────────────────────
 
@@ -165,6 +217,7 @@ class DiagnosticBase(ABC):
         summary_statistics: dict[str, Any] | None = None,
         variables: list[str] | None = None,
         cmip6_info: dict[str, Any] | None = None,
+        benchmark_info: dict[str, Any] | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Convenience wrapper around :func:`build_metadata`."""
@@ -183,8 +236,44 @@ class DiagnosticBase(ABC):
             spatial_extent=spatial_extent,
             summary_statistics=summary_statistics,
             cmip6_info=cmip6_info,
+            benchmark_info=benchmark_info,
             extra=extra,
         )
+
+    @staticmethod
+    def _benchmark_meta_from_info(
+        benchmark_info: dict | None,
+    ) -> dict | None:
+        """Normalize a ``{label: info}`` dict to per-benchmark member info.
+
+        Returns ``{label: {n_members, models_used}}`` for the JSON sidecar,
+        or ``None`` when no benchmark info is available.
+        """
+        if not benchmark_info:
+            return None
+        out = {}
+        for label, info in benchmark_info.items():
+            if not info:
+                continue
+            out[label] = {
+                "n_members": info.get("n_members"),
+                "models_used": info.get("models_used"),
+            }
+        return out or None
+
+    @staticmethod
+    def _benchmark_meta_from_list(benchmarks: list | None) -> dict | None:
+        """Per-benchmark member info from a list of ``{label, info}`` entries."""
+        if not benchmarks:
+            return None
+        out = {}
+        for b in benchmarks:
+            info = b.get("info") or {}
+            out[b["label"]] = {
+                "n_members": info.get("n_members"),
+                "models_used": info.get("models_used"),
+            }
+        return out or None
 
     def _save(
         self,
@@ -512,6 +601,7 @@ class DiagnosticBase(ABC):
         var: str,
         period: tuple[str, str] | None = None,
         return_individual: bool = False,
+        loader: Any = None,
     ) -> tuple[Any, dict[str, Any]]:
         """Compute CMIP6 ensemble-mean global-mean monthly time series.
 
@@ -542,21 +632,22 @@ class DiagnosticBase(ABC):
         from feather.data.variables import get_var
         from feather.util.spatial import latlon_global_mean
 
-        if not self.cmip6_enabled:
+        loader = loader or self.cmip6_loader
+        if loader is None or not self.cmip6_enabled:
             return None, {}
 
         vinfo = get_var(var)
         if not vinfo.cmip6_variable:
             return None, {}
 
-        logger.info("  Computing CMIP6 global-mean time series for %s (%s)",
+        logger.info("  Computing benchmark global-mean time series for %s (%s)",
                      var, vinfo.cmip6_variable)
 
         member_series = []
         models_used = []
 
-        for model in self.cmip6_loader.models:
-            da = self.cmip6_loader.load_var(
+        for model in loader.models:
+            da = loader.load_var(
                 vinfo.cmip6_variable, model,
                 table=vinfo.cmip6_table or None,
                 period=period,
@@ -565,30 +656,92 @@ class DiagnosticBase(ABC):
             if da is None:
                 continue
 
-            area = self.cmip6_loader.load_area(
+            area = loader.load_area(
                 model, table=vinfo.cmip6_table or "Amon",
             )
             # Convert areacella to numpy so latlon_global_mean wraps it
             # with da's own coordinates — avoids misalignment when
             # areacella has different dim names or coordinate values.
             area = self._align_area(da, area)
-            ts = latlon_global_mean(da, area=area)
-            member_series.append(ts)
+            try:
+                ts = latlon_global_mean(da, area=area)
+            except (ValueError, KeyError) as e:
+                # Skip models on grids we cannot reduce to lat/lon
+                # (e.g. unstructured ICON grids with dims like (time, i)).
+                logger.warning(
+                    "    Skipping %s for %s — cannot compute global mean: %s",
+                    model, var, e,
+                )
+                continue
+            # Drop non-dimension scalar coords (e.g. ``height`` on tas) that
+            # some models carry and others don't — otherwise the cross-member
+            # concat below raises on mismatched coords.
+            member_series.append(ts.reset_coords(drop=True))
             models_used.append(model)
 
         if not member_series:
             logger.info("    No CMIP6 models available for %s", var)
             return None, {}
 
-        # Align to common time axis, then ensemble mean
-        aligned = xr.align(*member_series, join="inner")
-        mmm_ts = sum(aligned) / len(aligned)
+        # Align on the union of time steps (outer join) and average over the
+        # members available at each step.  An inner join would truncate the
+        # whole MMM to the shortest member's record (e.g. a HighResMIP member
+        # that starts mid-period), which is not what we want.
+        aligned = xr.align(*member_series, join="outer")
+        mmm_ts = xr.concat(aligned, dim="member").mean("member", skipna=True)
         info = {"n_members": len(models_used), "models_used": models_used}
         if return_individual:
             info["individual_series"] = dict(zip(models_used, aligned))
         logger.info("    CMIP6 MMM time series: %d models, %d timesteps",
                      len(models_used), len(mmm_ts.time))
         return mmm_ts, info
+
+    def _benchmark_timeseries(
+        self,
+        var: str,
+        period: tuple[str, str] | None = None,
+        return_individual: bool | None = None,
+    ) -> list[dict]:
+        """Per-benchmark global-mean MMM time series (CMIP6, HighResMIP, …).
+
+        Loops the configured benchmark loaders and computes each one's
+        ensemble-mean global-mean series via
+        :meth:`_cmip6_global_mean_timeseries`.
+
+        Returns
+        -------
+        list[dict]
+            One entry per benchmark with data: ``label``, ``color``,
+            ``ts`` (MMM series), ``info`` and ``individual`` (member series
+            when ``return_individual``).  Empty if no benchmark has data.
+        """
+        from feather.plot.styles import benchmark_color
+
+        if return_individual is None:
+            return_individual = getattr(self, "cmip6_individual", False)
+        if period is None:
+            period = getattr(self, "period", None)
+
+        out: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            ts, info = self._cmip6_global_mean_timeseries(
+                var, period=period,
+                return_individual=return_individual, loader=bench,
+            )
+            if ts is None:
+                continue
+            out.append({
+                "label": getattr(bench, "label", "CMIP6 MMM"),
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "ts": ts,
+                "info": info,
+                "individual": (
+                    dict(info["individual_series"])
+                    if return_individual and "individual_series" in info
+                    else {}
+                ),
+            })
+        return out
 
     @staticmethod
     def _align_area(da, area):

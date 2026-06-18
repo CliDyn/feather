@@ -78,7 +78,46 @@ class FeatherConfig:
     model_configs: dict[str, ModelConfig] = field(default_factory=dict)
     data_source: dict = field(default_factory=dict)
 
+    # Benchmark ensembles (e.g. CMIP6, HighResMIP) — list of config dicts.
+    benchmarks: list = field(default_factory=list)
+
     # ── Helper methods ─────────────────────────────────────────────────
+
+    def get_benchmarks(self) -> list[dict]:
+        """Return the ordered list of enabled benchmark config dicts.
+
+        Sources, in priority order:
+
+        1. A top-level ``benchmarks:`` list (new multi-benchmark format).
+           Each entry is a dict (``name``/``label``/``zarr_dir``/
+           ``experiment``/``models``/``color``); entries with
+           ``enabled: false`` are dropped.
+        2. Legacy fallback: a single ``cmip6:`` block with
+           ``enabled: true`` is wrapped into one benchmark labelled
+           ``"CMIP6 MMM"`` so existing configs keep working unchanged.
+
+        Returns an empty list when no benchmark is configured/enabled.
+        """
+        if self.benchmarks:
+            out = []
+            for b in self.benchmarks:
+                if not isinstance(b, dict):
+                    continue
+                if not b.get("enabled", True):
+                    continue
+                entry = dict(b)
+                entry.setdefault("label", entry.get("name", "Benchmark") + " MMM"
+                                 if entry.get("name") else "Benchmark MMM")
+                out.append(entry)
+            return out
+
+        if self.cmip6.get("enabled", False):
+            entry = dict(self.cmip6)
+            entry.setdefault("label", "CMIP6 MMM")
+            entry.setdefault("name", "CMIP6")
+            return [entry]
+
+        return []
 
     def get_grid_type(self, model: str, domain: str = "sfc") -> str:
         """Return grid type for a model/domain pair.
@@ -252,6 +291,7 @@ class FeatherConfig:
             project=project,
             model_configs=model_configs,
             data_source=data_source,
+            benchmarks=raw.get("benchmarks", []),
         )
 
 

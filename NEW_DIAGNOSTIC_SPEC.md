@@ -86,15 +86,19 @@ class MyDiagnostic(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, variables=None,
                  experiment=None, period=None,
-                 cmip6_individual=False):
+                 cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment or config.get_experiment()
         self.period = period or config.get_period()
         self.cmip6_individual = cmip6_individual
 ```
+
+> **`save_netcdf`** is forwarded to the base class, which stores `self.save_netcdf`
+> and provides the `_maybe_export_netcdf()` helper used in `run()` (see §6.3).
+> Just thread it through to `super().__init__()` — no extra storage needed.
 
 **Required class attributes:**
 
@@ -113,6 +117,7 @@ class MyDiagnostic(DiagnosticBase):
 | `cmip6_loader` | Keyword-only. Passed by pipeline. `None` when CMIP6 disabled. |
 | `variables` | Optional override to restrict variables. Pipeline passes this when user uses `--variables`. |
 | `cmip6_individual` | When `True`, plot individual CMIP6 models + MMM. Pipeline passes this via `inspect.signature()` check. |
+| `save_netcdf` | When `True`, also write per-source fields to NetCDF (see §6.3). Forward to `super().__init__()`. Pipeline passes this via `inspect.signature()` check when the user runs with `--save-netcdf`. |
 
 ### 2.2 Implement the `run()` Method (Per-Variable Incremental)
 
@@ -135,6 +140,7 @@ def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
             continue
 
         result = self._compute_single(var)
+        self._maybe_export_netcdf(result, var)   # NetCDF export (no-op unless --save-netcdf)
         figures = self._plot_single(var, result)
         for fig, meta in figures:
             paths = self._save(fig, meta, meta["figure_id"])
@@ -143,6 +149,10 @@ def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
     logger.info("Diagnostic %s complete — %d figure(s)", self.name, len(saved))
     return saved
 ```
+
+The single `_maybe_export_netcdf(result, token)` call is the entire opt-in:
+it is a no-op unless the user passed `--save-netcdf`, and it writes the
+per-source fields found in `result` to NetCDF (see §6.3 for the contract).
 
 **Alternative: per-figure-group incremental** (used by `RadiationBudget`):
 ```python
@@ -155,6 +165,7 @@ def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         saved.append((self.output_dir / f"{fid}.png", self.output_dir / f"{fid}.json"))
     else:
         results = self._compute_bars()
+        self._maybe_export_netcdf(results, "bars")   # one file per group, token = group name
         for fig, meta in self._plot_bars(results):
             saved.append(self._save(fig, meta, meta["figure_id"]))
 
@@ -163,6 +174,10 @@ def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
 
     return saved
 ```
+
+For per-group diagnostics, call `_maybe_export_netcdf(results, token)` once per
+group with a distinct `token` (e.g. `"bars"`, `"gregory"`, `"bias_map"`) so each
+group lands in its own NetCDF file.
 
 ### 2.3 Implement `compute()` and `plot()` (Backward Compatibility)
 
@@ -791,7 +806,52 @@ png_path, json_path = self._save(fig, meta, meta["figure_id"])
 # The base saves to: {output_dir}/figures/{diagnostic_name}/{figure_id}.{png|json}
 ```
 
-### 6.3 Skip-Existing Check
+### 6.3 NetCDF Export (`--save-netcdf`)
+
+When the user passes `--save-netcdf`, a diagnostic also writes the **per-source
+fields** underlying its figures — the observations, each evaluated model, and
+each benchmark MMM (CMIP6, HighResMIP) — to NetCDF under
+`{output_dir}/netcdf/{diagnostic_name}/`. This is opt-in per diagnostic and adds
+**two lines of code**:
+
+1. Thread `save_netcdf` through the constructor to `super().__init__()` (see §2.1).
+2. Call `self._maybe_export_netcdf(result, token)` in `run()` once you have a
+   result object (per variable, per mode, or per figure-group — see §2.2).
+
+```python
+# In run(), right after computing a result:
+self._maybe_export_netcdf(result, var)        # token names the file
+```
+
+**Contract of the base helper** (`DiagnosticBase._maybe_export_netcdf`):
+
+- No-op unless `self.save_netcdf` is `True` — safe to leave in unconditionally.
+- Filename is `{token}_{start}-{end}.nc`, e.g. `tas_annual_1980-2014.nc` — the
+  analysis period (`self.period`, falling back to `config.get_period()`) is
+  always embedded.
+- Existing files are skipped, so the flag is incremental and re-runnable.
+- Failures are logged, never raised — export must never break the diagnostic.
+
+**What gets written.** The helper recursively walks the `result` object and
+collects every `xarray.DataArray` (≥1 dim), naming each from its key path, e.g.
+`obs_clim`, `models_IFS_FESOM2_SR_annual_bias`, `benchmark_data_CMIP6_annual_regrid`,
+`benchmark_data_HighResMIP_annual_bias`. Metadata keys (`var_info`, `*_info`,
+`colorbar_ranges`, …) and scalars are skipped. Fields on incompatible grids are
+isolated so nothing is dropped. No special result structure is required — if your
+`result` dict holds the obs/model/benchmark DataArrays anywhere in its tree, they
+are exported.
+
+> **Bias-map diagnostics** (obs `clim` + per-model `annual_regrid`/`annual_bias`
+> + `benchmark_data`) may instead call the structured exporter
+> `feather.diag.netcdf_export.export_biasmap_netcdf()`, which writes one tidy file
+> **per period** (annual + each season) on the shared common grid. See
+> `global_biases.py`, `temperature_berkeley.py`, `precipitation_mswep.py`.
+
+The shared helpers live in `feather/diag/netcdf_export.py`:
+`export_generic_netcdf()` (generic walker) and `export_biasmap_netcdf()`
+(structured bias-map form).
+
+### 6.4 Skip-Existing Check
 
 ```python
 if self._figure_exists(figure_id):
@@ -799,7 +859,7 @@ if self._figure_exists(figure_id):
     ...
 ```
 
-### 6.4 Figure ID Conventions
+### 6.5 Figure ID Conventions
 
 Existing patterns (follow these for consistency):
 - `{var}_{period}_bias_combined` (global_biases)
@@ -809,7 +869,7 @@ Existing patterns (follow these for consistency):
 - `{derived_key}_annual_bias` (radiation_budget bias maps)
 - `{var}_std_combined`, `{var}_std_diff_combined` (climate_variability)
 
-### 6.5 Plot Types Used in Metadata
+### 6.6 Plot Types Used in Metadata
 
 - `"bias_map"` — 3-panel model/obs/bias
 - `"combined_bias_map"` — multi-panel obs + N bias panels

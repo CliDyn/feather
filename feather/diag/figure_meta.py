@@ -86,6 +86,7 @@ def build_metadata(
     spatial_extent: str = "global",
     summary_statistics: dict[str, Any] | None = None,
     cmip6_info: dict[str, Any] | None = None,
+    benchmark_info: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a standard metadata dict for the JSON sidecar.
@@ -172,6 +173,11 @@ def build_metadata(
         "cmip6_info": cmip6_info,
         "summary_statistics": summary_statistics or {},
     }
+
+    # Per-benchmark member info (CMIP6, HighResMIP, …) when present, so the
+    # JSON records exactly which benchmark models were used.
+    if benchmark_info:
+        meta["benchmark_info"] = benchmark_info
 
     if extra:
         meta.update(extra)
