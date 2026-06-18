@@ -91,6 +91,7 @@ class CMIP6Loader:
         period: tuple[str, str] | None = None,
         season: str | None = None,
         time_mean: bool = True,
+        require_full_coverage: bool = False,
     ) -> xr.DataArray | None:
         """Load a single CMIP6 variable for one model+variant.
 
@@ -111,12 +112,20 @@ class CMIP6Loader:
         time_mean : bool
             If True (default), return time-mean 2D field. If False, return
             the full time series after period/season filtering.
+        require_full_coverage : bool
+            If True and *period* is given, return ``None`` unless the model's
+            time series spans the entire requested period (first year at or
+            before ``period[0]`` and last year at or after ``period[1]``).
+            Used by the multi-model mean so partial-coverage models do not
+            bias the ensemble. Default False (individual loads keep whatever
+            overlap exists).
 
         Returns
         -------
         xr.DataArray or None
             Time-mean 2D field (or full time series if ``time_mean=False``),
-            or None if data not found.
+            or None if data not found (or coverage incomplete when
+            ``require_full_coverage=True``).
         """
         if variant is None:
             model_cfg = self.models.get(model, {})
@@ -131,6 +140,20 @@ class CMIP6Loader:
 
         da = self._open_stitched(cmip6_var, model, variant, table)
         if da is None:
+            return None
+
+        # Reject partial-coverage members before slicing (e.g. a model whose
+        # data starts in 2001 cannot enter a 1980–2014 ensemble mean).
+        if (
+            require_full_coverage
+            and period is not None
+            and "time" in da.dims
+            and not self._covers_period(da, period)
+        ):
+            logger.info(
+                "Skipping %s/%s — does not cover full period %s–%s",
+                model, cmip6_var, period[0], period[1],
+            )
             return None
 
         # Normalize time coordinate
@@ -172,6 +195,30 @@ class CMIP6Loader:
             return None
 
         return da.compute()
+
+    @staticmethod
+    def _covers_period(da: xr.DataArray, period: tuple[str, str]) -> bool:
+        """True when *da*'s time axis spans the whole requested *period*.
+
+        Compares calendar years only: the first available year must be at or
+        before ``period[0]`` and the last at or after ``period[1]``. Works for
+        both ``cftime`` objects (non-standard calendars) and ``datetime64``.
+        Returns True when there is nothing to check (no time dim / empty).
+        """
+        if "time" not in da.dims or da.sizes.get("time", 0) == 0:
+            return True
+
+        def _year(t) -> int:
+            if hasattr(t, "year"):
+                return int(t.year)
+            return int(str(t)[:4])
+
+        times = da["time"].values
+        first_year = _year(np.min(times))
+        last_year = _year(np.max(times))
+        start_year = int(str(period[0])[:4])
+        end_year = int(str(period[1])[:4])
+        return first_year <= start_year and last_year >= end_year
 
     @staticmethod
     def _is_griddable(da: xr.DataArray) -> bool:
@@ -278,6 +325,9 @@ class CMIP6Loader:
 
         resolution = self._cfg.get("regrid_resolution", 1.0)
         influence_radius = self._cfg.get("influence_radius", 80_000.0)
+        # Only average models that cover the full analysis period (default on;
+        # opt out with ``require_full_coverage: false`` in the benchmark config).
+        require_full_coverage = self._cfg.get("require_full_coverage", True)
 
         regridded_fields = []
         models_used = []
@@ -290,6 +340,7 @@ class CMIP6Loader:
                 cmip6_var, model,
                 variant=variant, table=table,
                 period=period, season=season,
+                require_full_coverage=require_full_coverage,
             )
             if da is None:
                 models_skipped.append(member_label)
