@@ -438,6 +438,64 @@ All configs share:
 - **Report generation:** OpenAI (`OPENAI_API_KEY`)
 - **nereus:** Interpolation settings (`method`, `resolution`, `influence_radius`)
 
+### Benchmark ensembles (CMIP6 & HighResMIP)
+
+Feather can overlay two reference **benchmark ensembles** as multi-model means
+(MMM): **CMIP6 historical** and **HighResMIP `hist-1950`**. Each is built once from
+the DKRZ pool into a per-variable zarr cache (`scripts/convert_pool_cmip6.py`, SLURM
+wrapper `scripts/convert_pool_cmip6.sh`) and configured with `models: auto`, so
+ensemble membership is **discovered at runtime from the cache** — see
+`configs/eerie_all_members_cmip6_highresmip.yaml`.
+
+**Selection rule.** A model contributes to a benchmark MMM for a variable only when
+its converted store:
+1. is **non-empty** (the conversion actually wrote the field);
+2. is on a **regriddable grid** — rectilinear, curvilinear (2-D lat/lon), or
+   unstructured with 1-D lat/lon cell-centre coords (e.g. ICON's triangular grid,
+   regridded as scattered points like HEALPix); and
+3. **covers the full analysis period** 1980–2014 (`require_full_coverage`, default
+   on; opt out with `require_full_coverage: false` in the benchmark config block).
+
+Membership grows automatically as more stores are converted. The lists below reflect
+the current cache for atmospheric `tas`; per-variable membership varies with which
+stores converted.
+
+**CMIP6 historical — 55 of 63 candidate models included:**
+
+> ACCESS-CM2, ACCESS-ESM1-5, AWI-CM-1-1-MR, AWI-ESM-1-1-LR, BCC-CSM2-MR, BCC-ESM1,
+> CAMS-CSM1-0, CESM2, CESM2-FV2, CESM2-WACCM, CESM2-WACCM-FV2, CIESM, CMCC-CM2-HR4,
+> CMCC-CM2-SR5, CMCC-ESM2, CNRM-CM6-1, CNRM-ESM2-1, CanESM5, CanESM5-CanOE, E3SM-1-0,
+> E3SM-1-1, E3SM-1-1-ECA, EC-Earth3, EC-Earth3-AerChem, EC-Earth3-CC, EC-Earth3-Veg,
+> EC-Earth3-Veg-LR, FGOALS-f3-L, FGOALS-g3, FIO-ESM-2-0, GFDL-CM4, GFDL-ESM4,
+> GISS-E2-1-G, GISS-E2-1-G-CC, GISS-E2-1-H, HadGEM3-GC31-LL, ICON-ESM-LR, IITM-ESM,
+> INM-CM4-8, INM-CM5-0, IPSL-CM5A2-INCA, KACE-1-0-G, KIOST-ESM, MCM-UA-1-0,
+> MIROC-ES2L, MIROC6, MPI-ESM1-2-HR, MRI-ESM2-0, NESM3, NorCPM1, NorESM2-LM,
+> NorESM2-MM, SAM0-UNICON, TaiESM1, UKESM1-0-LL
+
+*Excluded (8) — pending (re)conversion:* AWI-ESM-1-REcoM, CAS-ESM2-0, CNRM-CM6-1-HR,
+HadGEM3-GC31-MM, IPSL-CM6A-LR, IPSL-CM6A-LR-INCA, MPI-ESM-1-2-HAM, MPI-ESM1-2-LR —
+currently missing a usable `tas` store (empty or not yet converted). They rejoin the
+ensemble automatically once their stores are rebuilt.
+
+**HighResMIP `hist-1950` — 16 of 22 candidate models included:**
+
+> CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1, CNRM-CM6-1-HR,
+> EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR, ECMWF-IFS-LR, ECMWF-IFS-MR,
+> HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL, HadGEM3-GC31-MM,
+> MPI-ESM1-2-HR, MPI-ESM1-2-XR
+
+*Excluded (6):*
+- **BCC-CSM2-HR** — `tas` currently only covers 2001–2014, so it fails the
+  full-period rule (joins if earlier years are converted).
+- **AWI-CM-1-1-HR**, **AWI-CM-1-1-LR**, **CESM1-CAM5-SE-HR**, **GFDL-CM4C192**,
+  **INM-CM5-H** — no usable `tas` store yet (empty / not yet converted); rejoin once
+  rebuilt.
+
+> **Re-converting only the missing stores:** the converter's `skip_existing` treats
+> an empty store as "done", so delete the empties first — the verification sweep
+> writes their paths to `…/cmip6_empty_stores.txt` and
+> `…/highresmip_empty_stores.txt` — or pass `--no-skip`.
+
 ## Data backends
 
 Feather supports six data loading backends:
