@@ -62,7 +62,8 @@ class PrecipitationMSWEP(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False, save_netcdf=False):
+                 cmip6_individual=False, save_netcdf=False,
+                 individual_netcdf_only=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
@@ -70,7 +71,9 @@ class PrecipitationMSWEP(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
-        self.save_netcdf = save_netcdf
+        # individual_netcdf_only implies NetCDF export (it is a data-only mode).
+        self.individual_netcdf_only = individual_netcdf_only
+        self.save_netcdf = save_netcdf or individual_netcdf_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-group incremental) ─────────────────────────
@@ -114,43 +117,49 @@ class PrecipitationMSWEP(DiagnosticBase):
         need_f = not skip_existing or not self._figure_exists(
             "pr_intensity_distribution"
         )
-        nc_needed = self.save_netcdf and not self._netcdf_exists("pr")
+        nc_needed = self.save_netcdf and not self._netcdf_complete("pr")
 
-        # Collect existing paths
-        if not need_a:
-            logger.info("Skipping bias maps -- figures exist")
-            saved.extend([
-                (out / f"{fid}.png", out / f"{fid}.json")
-                for fid in bias_ids
-            ])
-        if not need_b:
-            logger.info("Skipping relative bias -- figures exist")
-            saved.extend([
-                (out / f"{fid}.png", out / f"{fid}.json")
-                for fid in rel_bias_ids
-            ])
-        if not need_c:
-            logger.info("Skipping timeseries -- figure exists")
-            saved.append((
-                out / "pr_timeseries.png", out / "pr_timeseries.json",
-            ))
-        if not need_d:
-            logger.info("Skipping seasonal cycle -- figure exists")
-            saved.append((
-                out / "pr_seasonal_cycle.png",
-                out / "pr_seasonal_cycle.json",
-            ))
-        if not need_e:
-            logger.info("Skipping zonal mean -- figure exists")
-            saved.append((
-                out / "pr_zonal_mean.png", out / "pr_zonal_mean.json",
-            ))
-        if not need_f:
-            logger.info("Skipping intensity PDF -- figure exists")
-            saved.append((
-                out / "pr_intensity_distribution.png",
-                out / "pr_intensity_distribution.json",
-            ))
+        # NetCDF-only mode never plots: suppress every figure group, keep only
+        # the Group A computation that feeds the individual-member export.
+        if self.individual_netcdf_only:
+            need_a = need_b = need_c = need_d = need_e = need_f = False
+
+        # Collect existing paths (skipped entirely in NetCDF-only mode)
+        if not self.individual_netcdf_only:
+            if not need_a:
+                logger.info("Skipping bias maps -- figures exist")
+                saved.extend([
+                    (out / f"{fid}.png", out / f"{fid}.json")
+                    for fid in bias_ids
+                ])
+            if not need_b:
+                logger.info("Skipping relative bias -- figures exist")
+                saved.extend([
+                    (out / f"{fid}.png", out / f"{fid}.json")
+                    for fid in rel_bias_ids
+                ])
+            if not need_c:
+                logger.info("Skipping timeseries -- figure exists")
+                saved.append((
+                    out / "pr_timeseries.png", out / "pr_timeseries.json",
+                ))
+            if not need_d:
+                logger.info("Skipping seasonal cycle -- figure exists")
+                saved.append((
+                    out / "pr_seasonal_cycle.png",
+                    out / "pr_seasonal_cycle.json",
+                ))
+            if not need_e:
+                logger.info("Skipping zonal mean -- figure exists")
+                saved.append((
+                    out / "pr_zonal_mean.png", out / "pr_zonal_mean.json",
+                ))
+            if not need_f:
+                logger.info("Skipping intensity PDF -- figure exists")
+                saved.append((
+                    out / "pr_intensity_distribution.png",
+                    out / "pr_intensity_distribution.json",
+                ))
 
         if not any([need_a, need_b, need_c, need_d, need_e, need_f,
                     nc_needed]):
@@ -470,18 +479,32 @@ class PrecipitationMSWEP(DiagnosticBase):
         cmip6_individual_data: dict[str, dict] = {}
         benchmark_data: dict[str, dict] = {}
         benchmark_info: dict[str, dict] = {}
+        # {label: per-period individual-member data} — for NetCDF export.
+        benchmark_individual_data: dict[str, dict] = {}
+        # Plot individual panels for the primary benchmark; export them (for
+        # every benchmark) when saving NetCDF.
+        plot_individual = self.cmip6_individual and not self.individual_netcdf_only
         if self.cmip6_enabled and target_lats is not None:
             for i, bench in enumerate(self.benchmarks):
                 label = getattr(bench, "label", "CMIP6 MMM")
-                if i == 0 and self.cmip6_individual:
-                    cmip6_individual_data = self._compute_cmip6_individual(
+                primary = (i == 0)
+                want_individual = (
+                    (primary and (plot_individual or self._export_individual))
+                    or (not primary and self._export_individual)
+                )
+                if want_individual:
+                    ind = self._compute_cmip6_individual(
                         target_lats, target_lons,
                         obs_clim_common, obs_seasonal_common, common_area,
+                        loader=bench,
                     )
+                    benchmark_individual_data[label] = ind
                     b_data, b_info = self._mmm_from_individual(
-                        cmip6_individual_data,
+                        ind,
                         obs_clim_common, obs_seasonal_common, common_area,
                     )
+                    if primary and plot_individual:
+                        cmip6_individual_data = ind
                 else:
                     b_data, b_info = self._compute_cmip6_mmm(
                         target_lats, target_lons,
@@ -519,6 +542,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             "cmip6_individual_data": cmip6_individual_data,
             "benchmark_data": benchmark_data,
             "benchmark_info": benchmark_info,
+            "benchmark_individual_data": benchmark_individual_data,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -1245,12 +1269,34 @@ class PrecipitationMSWEP(DiagnosticBase):
         from pathlib import Path
         return Path(self.config.output_dir) / "netcdf" / self.name
 
+    @property
+    def _export_individual(self) -> bool:
+        """Whether individual benchmark members should be exported to NetCDF."""
+        return self.save_netcdf and (
+            self.cmip6_individual or self.individual_netcdf_only
+        )
+
     def _netcdf_exists(self, var: str) -> bool:
         from feather.diag import netcdf_export
         paths = netcdf_export.biasmap_netcdf_paths(
             self._netcdf_dir, var, self.period,
         )
         return all(p.exists() for p in paths)
+
+    def _individual_netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_individual_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _netcdf_complete(self, var: str) -> bool:
+        """True when every requested NetCDF product is already on disk."""
+        if not self._netcdf_exists(var):
+            return False
+        if self._export_individual and not self._individual_netcdf_exists(var):
+            return False
+        return True
 
     def _export_netcdf(self, var: str, results: dict) -> None:
         from feather.diag import netcdf_export
@@ -1260,6 +1306,11 @@ class PrecipitationMSWEP(DiagnosticBase):
             self._netcdf_dir, var, results, self.period,
             units="mm/day", scale=_PR_TO_MMDAY, skip_existing=True,
         )
+        if self._export_individual:
+            netcdf_export.export_biasmap_individual_netcdf(
+                self._netcdf_dir, var, results, self.period,
+                units="mm/day", scale=_PR_TO_MMDAY, skip_existing=True,
+            )
 
     def _compute_cmip6_mmm(self, target_lats, target_lons,
                             obs_clim_common, obs_seasonal_common,
@@ -1359,10 +1410,15 @@ class PrecipitationMSWEP(DiagnosticBase):
 
     def _compute_cmip6_individual(self, target_lats, target_lons,
                                    obs_clim_common, obs_seasonal_common,
-                                   common_area):
-        """Compute individual CMIP6 model precipitation biases."""
+                                   common_area, loader=None):
+        """Compute individual benchmark-member precipitation biases.
+
+        *loader* defaults to the primary benchmark; pass another benchmark
+        loader (e.g. HighResMIP) to compute its members.
+        """
         from feather.diag.global_biases import GlobalBiases
 
+        loader = loader or self.cmip6_loader
         cmip6_individual_data: dict[str, dict] = {}
         influence_radius = self.config.nereus.get(
             "influence_radius", 80_000.0,
@@ -1370,12 +1426,13 @@ class PrecipitationMSWEP(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Loading individual CMIP6 models for pr...")
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Loading individual %s models for pr...",
+                    getattr(loader, "label", "CMIP6"))
+        member_pairs = loader.get_member_pairs()
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "pr", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -1398,7 +1455,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             }
 
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     "pr", model, variant=variant,
                     period=self.period, season=season,
                 )
