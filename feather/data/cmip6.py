@@ -224,24 +224,42 @@ class CMIP6Loader:
     def _is_griddable(da: xr.DataArray) -> bool:
         """True when *da* has lat/lon dims/coords usable for regridding.
 
-        Accepts rectilinear (1-D lat & lon dims) and curvilinear (2-D
-        lat/lon coordinates).  Rejects fields whose only spatial dimension
-        is a non-lat/lon index (unstructured / reduced Gaussian grids).
+        Accepts:
+        - rectilinear (≥2 spatial dims, or a single lat/lon-named dim);
+        - curvilinear (2-D lat/lon coordinates, e.g. ORCA ``nav_lat``);
+        - unstructured grids carrying 1-D lat/lon cell-centre coordinates on
+          their single spatial dim (e.g. ICON's triangular ``i``/``ncells``).
+          ``nereus.regrid`` treats these as scattered points, exactly like the
+          HEALPix data the rest of feather already regrids.
+
+        Rejects fields whose only spatial dimension is a bare index with no
+        lat/lon coordinates (reduced Gaussian / truly unstructured-without-coords).
         """
         lat_names = {"lat", "latitude", "nav_lat", "y"}
         lon_names = {"lon", "longitude", "nav_lon", "x"}
         spatial_dims = [d for d in da.dims if d != "time"]
         if len(spatial_dims) >= 2:
             return True
-        # Single (or zero) spatial dim: only OK if it is itself lat/lon, or a
-        # 2-D lat/lon coordinate is present.
+        # Single (or zero) spatial dim: OK if it is itself a lat/lon axis.
         if any(str(d).lower() in lat_names | lon_names for d in spatial_dims):
             return True
-        has_lat = any(str(c).lower() in lat_names and da[c].ndim >= 2
-                      for c in da.coords)
-        has_lon = any(str(c).lower() in lon_names and da[c].ndim >= 2
-                      for c in da.coords)
-        return has_lat and has_lon
+        # Curvilinear collapsed onto an index dim but with 2-D lat/lon coords.
+        has_lat_2d = any(str(c).lower() in lat_names and da[c].ndim >= 2
+                         for c in da.coords)
+        has_lon_2d = any(str(c).lower() in lon_names and da[c].ndim >= 2
+                         for c in da.coords)
+        if has_lat_2d and has_lon_2d:
+            return True
+        # Unstructured grid with 1-D lat/lon coords on the lone spatial dim.
+        if len(spatial_dims) == 1:
+            sdim = spatial_dims[0]
+            has_lat_1d = any(str(c).lower() in lat_names and da[c].dims == (sdim,)
+                             for c in da.coords)
+            has_lon_1d = any(str(c).lower() in lon_names and da[c].dims == (sdim,)
+                             for c in da.coords)
+            if has_lat_1d and has_lon_1d:
+                return True
+        return False
 
     def load_var_for_model_var(
         self,
