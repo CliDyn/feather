@@ -477,16 +477,14 @@ HadGEM3-GC31-MM, IPSL-CM6A-LR, IPSL-CM6A-LR-INCA, MPI-ESM-1-2-HAM, MPI-ESM1-2-LR
 currently missing a usable `tas` store (empty or not yet converted). They rejoin the
 ensemble automatically once their stores are rebuilt.
 
-**HighResMIP `hist-1950` — 16 of 22 candidate models included:**
+**HighResMIP `hist-1950` — 17 of 22 candidate models included:**
 
-> CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1, CNRM-CM6-1-HR,
-> EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR, ECMWF-IFS-LR, ECMWF-IFS-MR,
-> HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL, HadGEM3-GC31-MM,
-> MPI-ESM1-2-HR, MPI-ESM1-2-XR
+> BCC-CSM2-HR, CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1,
+> CNRM-CM6-1-HR, EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR, ECMWF-IFS-LR,
+> ECMWF-IFS-MR, HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL,
+> HadGEM3-GC31-MM, MPI-ESM1-2-HR, MPI-ESM1-2-XR
 
-*Excluded (6):*
-- **BCC-CSM2-HR** — `tas` currently only covers 2001–2014, so it fails the
-  full-period rule (joins if earlier years are converted).
+*Excluded (5):*
 - **AWI-CM-1-1-HR**, **AWI-CM-1-1-LR**, **CESM1-CAM5-SE-HR**, **GFDL-CM4C192**,
   **INM-CM5-H** — no usable `tas` store yet (empty / not yet converted); rejoin once
   rebuilt.
