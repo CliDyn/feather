@@ -568,3 +568,71 @@ class TestMultiObsStats:
         # Only ERA5; BERKELEY_EARTH_HR not in config → filtered
         assert "ERA5" in obs_stats
         assert "BERKELEY_EARTH_HR" not in obs_stats
+
+
+class TestBenchmarkToken:
+    """Benchmark token disambiguates AV filenames across reference ensembles."""
+
+    def _make_diag(self, synth_obs, synth_cmip6, eerie_config, label=None):
+        from tests.conftest import MockCMIP6Loader
+        loader = MockCMIP6Loader(synth_cmip6)
+        if label is not None:
+            loader.label = label  # instance attr read in __init__
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=loader,
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_default_cmip6_is_token_less(self, synth_obs, synth_cmip6, eerie_config):
+        """No label / CMIP6 label → empty suffix (backward compatible)."""
+        diag = self._make_diag(synth_obs, synth_cmip6, eerie_config)
+        assert diag._benchmark_token == "cmip6"
+        assert diag._bench_suffix == ""
+        assert diag._nc_path("tas", "annual", "ensemble_mean").name == (
+            "tas_annual_ensemble_mean_av.nc"
+        )
+        assert diag._obs_stats_path("tas").name == "tas_obs_stats.json"
+
+    def test_highresmip_label_adds_token(self, synth_obs, synth_cmip6, eerie_config):
+        """HighResMIP MMM label → '_highresmip' on NC + obs-stats filenames."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        assert diag._benchmark_token == "highresmip"
+        assert diag._bench_suffix == "_highresmip"
+        assert diag._nc_path("tas", "annual", "ensemble_mean").name == (
+            "tas_annual_ensemble_mean_av_highresmip.nc"
+        )
+        assert diag._obs_stats_path("tas").name == (
+            "tas_obs_stats_highresmip.json"
+        )
+        assert diag._bars_models_eerie_id("annual").endswith("_highresmip")
+
+    def test_figure_ids_carry_token(self, synth_obs, synth_cmip6, eerie_config):
+        """Saved AV map figure IDs include the benchmark token."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        fids = [meta["figure_id"] for _, meta in figures]
+        assert fids, "expected at least one figure"
+        assert all(fid.endswith("_highresmip") for fid in fids), fids
+
+    def test_nc_files_written_with_token(
+        self, synth_obs, synth_cmip6, eerie_config,
+    ):
+        """HighResMIP run writes tokenized NC files that don't collide."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        diag.compute()
+        assert (
+            diag.nc_dir / "tas_annual_ensemble_mean_av_highresmip.nc"
+        ).exists()
+        # The token-less (CMIP6) name must NOT be produced by this run.
+        assert not (diag.nc_dir / "tas_annual_ensemble_mean_av.nc").exists()

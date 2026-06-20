@@ -23,6 +23,7 @@ added value. Climate Dynamics, 44(9-10), 2637-2661.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -108,6 +109,17 @@ class AddedValueDiag(DiagnosticBase):
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
 
+        # Benchmark token — disambiguates AV figure IDs and NetCDF filenames
+        # when the same output dir holds runs against different reference
+        # ensembles (e.g. CMIP6 vs HighResMIP).  Derived from the benchmark
+        # loader's label ("HighResMIP MMM" -> "highresmip").  The default
+        # CMIP6 benchmark stays token-less so existing outputs are unchanged.
+        label = getattr(self.cmip6_loader, "label", "CMIP6 MMM") or "CMIP6 MMM"
+        tok = re.sub(r"\s*MMM\s*$", "", str(label)).strip().lower()
+        tok = re.sub(r"[^a-z0-9]+", "_", tok).strip("_") or "cmip6"
+        self._benchmark_token = tok
+        self._bench_suffix = "" if tok == "cmip6" else f"_{tok}"
+
     # -- Output paths -------------------------------------------------------
 
     @property
@@ -117,7 +129,9 @@ class AddedValueDiag(DiagnosticBase):
 
     def _nc_path(self, var: str, period: str, ensemble_type: str) -> Path:
         """Return path for a single AV NetCDF file."""
-        return self.nc_dir / f"{var}_{period}_{ensemble_type}_av.nc"
+        return self.nc_dir / (
+            f"{var}_{period}_{ensemble_type}_av{self._bench_suffix}.nc"
+        )
 
     def _all_nc_exist(self, var: str) -> bool:
         """True when all 10 NC files (5 periods × 2 ensemble types) exist."""
@@ -134,22 +148,26 @@ class AddedValueDiag(DiagnosticBase):
             d for d in self._MULTI_OBS_DATASETS.get(var, [])
             if d != primary_obs
         ]
+        bs = self._bench_suffix
         for p in ("annual", "djf", "mam", "jja", "son"):
-            if not self._figure_exists(f"{var}_{p}_added_value"):
+            if not self._figure_exists(f"{var}_{p}_added_value{bs}"):
                 return False
-            if not self._figure_exists(f"{var}_{p}_added_value_models"):
+            if not self._figure_exists(f"{var}_{p}_added_value_models{bs}"):
                 return False
             for sec_obs in secondary_obs:
                 suffix = self._OBS_FIGURE_SUFFIX.get(sec_obs, sec_obs.lower())
-                if not self._figure_exists(f"{var}_{p}_added_value_{suffix}"):
+                if not self._figure_exists(f"{var}_{p}_added_value_{suffix}{bs}"):
                     return False
-                if not self._figure_exists(f"{var}_{p}_added_value_models_{suffix}"):
+                if not self._figure_exists(f"{var}_{p}_added_value_models_{suffix}{bs}"):
                     return False
         return True
 
     def _bars_models_eerie_id(self, period_key: str) -> str:
         """Figure ID for the EERIE-only (no CMIP6 bar) models bar chart."""
-        return f"added_value_bars_models_eerie_{period_key}_{self.period[0]}_{self.period[1]}"
+        return (
+            f"added_value_bars_models_eerie_{period_key}"
+            f"_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
+        )
 
     # -- Orchestration -------------------------------------------------------
 
@@ -174,7 +192,7 @@ class AddedValueDiag(DiagnosticBase):
                 logger.info("Skipping %s — all figures exist", var)
                 for p in ("annual", "djf", "mam", "jja", "son"):
                     for suffix in ("added_value", "added_value_models"):
-                        fid = f"{var}_{p}_{suffix}"
+                        fid = f"{var}_{p}_{suffix}{self._bench_suffix}"
                         saved.append((
                             self.output_dir / f"{fid}.png",
                             self.output_dir / f"{fid}.json",
@@ -227,7 +245,10 @@ class AddedValueDiag(DiagnosticBase):
                     (self._plot_summary_bars_ensemble, "ensemble"),
                     (self._plot_summary_bars_models,   "models"),
                 ):
-                    bar_id = f"added_value_bars_{fn_name}_{period_key}"
+                    bar_id = (
+                        f"added_value_bars_{fn_name}_{period_key}"
+                        f"{self._bench_suffix}"
+                    )
                     if skip_existing and self._figure_exists(bar_id):
                         saved.append((
                             self.output_dir / f"{bar_id}.png",
@@ -1391,7 +1412,7 @@ class AddedValueDiag(DiagnosticBase):
 
     def _obs_stats_path(self, var: str) -> Path:
         """Path for the per-variable obs-comparison stats JSON."""
-        return self.nc_dir / f"{var}_obs_stats.json"
+        return self.nc_dir / f"{var}_obs_stats{self._bench_suffix}.json"
 
     def _save_obs_stats_json(
         self, var: str, obs_stats: dict, nc_meta: dict,
@@ -1553,7 +1574,7 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} {period_label} Added Value "
                         f"({self._project_name} ensemble vs CMIP6 MMM, obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1640,7 +1661,7 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} {period_label} Added Value "
                         f"— Individual Models (obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value_models{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value_models{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1803,7 +1824,7 @@ class AddedValueDiag(DiagnosticBase):
             fontsize=11, fontweight="bold", y=1.01,
         )
 
-        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}"
+        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
         meta = self._build_metadata(
             title=f"Added Value Summary — {period_label} (ensemble view)",
             figure_id=figure_id,
@@ -2023,7 +2044,7 @@ class AddedValueDiag(DiagnosticBase):
 
         if show_cmip6_bar:
             suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM"
-            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}"
+            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
             title = f"Added Value Summary — {period_label} (per-model view)"
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
