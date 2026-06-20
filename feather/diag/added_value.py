@@ -120,6 +120,14 @@ class AddedValueDiag(DiagnosticBase):
         self._benchmark_token = tok
         self._bench_suffix = "" if tok == "cmip6" else f"_{tok}"
 
+        # Human-readable benchmark names for figure text.
+        #   _bench_label : full MMM label  ("HighResMIP MMM")
+        #   _bench_name  : short name       ("HighResMIP", for "... mean")
+        self._bench_label = str(label)
+        self._bench_name = re.sub(r"\s*MMM\s*$", "", str(label)).strip() or "CMIP6"
+        # Title carries the active benchmark (class attr is the CMIP6 default).
+        self.title = f"Added Value (ensemble vs {self._bench_name})"
+
     # -- Output paths -------------------------------------------------------
 
     @property
@@ -616,8 +624,8 @@ class AddedValueDiag(DiagnosticBase):
                 eerie_seasonal_mean[season] = s_stack.mean("member")
                 eerie_seasonal_median[season] = s_stack.median("member")
 
-        # -- CMIP6 MMM -------------------------------------------------------
-        logger.info("  Computing CMIP6 MMM for %s...", var)
+        # -- Benchmark MMM ---------------------------------------------------
+        logger.info("  Computing %s for %s...", self._bench_label, var)
         cmip6_annual_fields: list[xr.DataArray] = []
         cmip6_seasonal_fields: dict[str, list[xr.DataArray]] = {
             "DJF": [], "MAM": [], "JJA": [], "SON": [],
@@ -1107,7 +1115,7 @@ class AddedValueDiag(DiagnosticBase):
                     attrs={
                         "long_name": (
                             f"Added Value: {self._project_name} ({ensemble_type}) vs "
-                            f"CMIP6 MMM for {meta['long_name']} "
+                            f"{self._bench_label} for {meta['long_name']} "
                             f"(AV>0 means {self._project_name} adds value)"
                         ),
                         "units": "1",
@@ -1115,7 +1123,7 @@ class AddedValueDiag(DiagnosticBase):
                         "reference": (
                             "Dosio et al. (2015), doi:10.1007/s00382-015-2869-x"
                         ),
-                        "model1": "CMIP6 multi-model mean",
+                        "model1": f"{self._bench_name} multi-model mean",
                         "model2": f"{self._project_name} {ensemble_type}",
                         "reference_dataset": meta.get("obs_dataset", "ERA5"),
                         "ensemble_type": ensemble_type,
@@ -1137,8 +1145,8 @@ class AddedValueDiag(DiagnosticBase):
         ds.attrs = {
             "Conventions": "CF-1.8",
             "title": (
-                f"Added Value: {self._project_name} {ensemble_type} vs CMIP6 MMM — "
-                f"{meta['long_name']} ({period})"
+                f"Added Value: {self._project_name} {ensemble_type} vs "
+                f"{self._bench_label} — {meta['long_name']} ({period})"
             ),
             "institution": "Feather climate evaluation framework",
             "source": "feather/diag/added_value.py",
@@ -1561,7 +1569,7 @@ class AddedValueDiag(DiagnosticBase):
                     data_dict,
                     title=(
                         f"{var_info.long_name} {period_label} Added Value"
-                        f" — {self._project_name} ensemble vs CMIP6 MMM"
+                        f" — {self._project_name} ensemble vs {self._bench_label}"
                         f"  (vs {obs_label}, green = {self._project_name} better)"
                     ),
                     cmap=_AV_CMAP,
@@ -1572,7 +1580,7 @@ class AddedValueDiag(DiagnosticBase):
                 meta1 = self._build_metadata(
                     title=(
                         f"{var_info.long_name} {period_label} Added Value "
-                        f"({self._project_name} ensemble vs CMIP6 MMM, obs: {obs_label})"
+                        f"({self._project_name} ensemble vs {self._bench_label}, obs: {obs_label})"
                     ),
                     figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
@@ -1583,9 +1591,9 @@ class AddedValueDiag(DiagnosticBase):
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
                         f"AV > 0: {self._project_name} ensemble reduces squared error over "
-                        f"CMIP6 MMM. "
+                        f"{self._bench_label}. "
                         f"{self._project_name} n={vr['n_eerie_models']}, "
-                        f"CMIP6 n={vr['n_cmip6_models']}."
+                        f"{self._bench_name} n={vr['n_cmip6_models']}."
                     ),
                     plot_type="added_value_map",
                     period=self.period,
@@ -1618,14 +1626,14 @@ class AddedValueDiag(DiagnosticBase):
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
                         f"{self._project_name}: {model_name}\n"
-                        f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                        f"vs {self._bench_label} — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
                 for cmip6_label, av_field in per_cmip6.items():
                     dom_av = self._domain_mean_av(av_field, _panel_area)
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
-                        f"CMIP6: {cmip6_label}\n"
+                        f"{self._bench_name}: {cmip6_label}\n"
                         f"vs {self._project_name} mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
@@ -1669,8 +1677,8 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} ({period_label}), "
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
-                        f"{self._project_name} panels: AV(CMIP6 MMM, {self._project_name}_i, {obs_label}). "
-                        f"CMIP6 panels: AV({self._project_name} mean, CMIP6_j, {obs_label}). "
+                        f"{self._project_name} panels: AV({self._bench_label}, {self._project_name}_i, {obs_label}). "
+                        f"{self._bench_name} panels: AV({self._project_name} mean, {self._bench_name}_j, {obs_label}). "
                         f"Green = model better than its baseline."
                     ),
                     plot_type="added_value_map",
@@ -1760,7 +1768,7 @@ class AddedValueDiag(DiagnosticBase):
         etype_labels = {
             "eerie_mean":   f"{self._project_name} mean",
             "eerie_median": f"{self._project_name} median",
-            "cmip6_mean":   "CMIP6 mean",
+            "cmip6_mean":   f"{self._bench_name} mean",
         }
         neutral_color = "#d5d5d5"
         det_color = "white"
@@ -1820,7 +1828,7 @@ class AddedValueDiag(DiagnosticBase):
 
         fig.suptitle(
             f"Added Value — {period_label}: area-weighted % improvement / neutral / degradation\n"
-            f"{self._project_name} ensemble vs CMIP6 MMM",
+            f"{self._project_name} ensemble vs {self._bench_label}",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
@@ -1981,7 +1989,7 @@ class AddedValueDiag(DiagnosticBase):
                 ])
                 ys_c = grp_centers + y_offsets[len(eerie_model_names)]
                 ax.barh(ys_c, imp_c, height=bar_h, color=cmip6_color,
-                        label="CMIP6 mean")
+                        label=f"{self._bench_name} mean")
                 ax.barh(ys_c, neu_c, height=bar_h, left=imp_c,
                         color=neutral_color, label="_")
                 ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
@@ -2026,7 +2034,7 @@ class AddedValueDiag(DiagnosticBase):
         legend_handles = (
             [Patch(facecolor=eerie_colors[m], label=m) for m in eerie_model_names]
             + (
-                [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
+                [Patch(facecolor=cmip6_color, label=f"{self._bench_name} mean")]
                 if show_cmip6_bar else [
                     Patch(facecolor=ensemble_mean_color,   label="Ensemble mean"),
                     Patch(facecolor=ensemble_median_color, label="Ensemble median"),
@@ -2043,18 +2051,18 @@ class AddedValueDiag(DiagnosticBase):
         )
 
         if show_cmip6_bar:
-            suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM"
+            suptitle_suffix = f"{self._project_name} models vs {self._bench_label}"
             figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
             title = f"Added Value Summary — {period_label} (per-model view)"
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
-                f"Blue shades = {self._project_name} models vs CMIP6 MMM, "
-                f"green = CMIP6 mean vs {self._project_name} mean, white = degradation."
+                f"Blue shades = {self._project_name} models vs {self._bench_label}, "
+                f"green = {self._bench_name} mean vs {self._project_name} mean, white = degradation."
             )
         else:
             suptitle_suffix = (
-                f"{self._project_name} models vs CMIP6 MMM "
+                f"{self._project_name} models vs {self._bench_label} "
                 f"({self._project_name} only)"
             )
             figure_id = self._bars_models_eerie_id(period_key)
@@ -2065,7 +2073,7 @@ class AddedValueDiag(DiagnosticBase):
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}), {self._project_name} models only "
-                f"(CMIP6 mean bar excluded). "
+                f"({self._bench_name} mean bar excluded). "
                 f"Individual model colors from config; light purple = ensemble mean, "
                 f"purple = ensemble median, white = degradation."
             )

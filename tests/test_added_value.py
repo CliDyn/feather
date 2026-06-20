@@ -636,3 +636,40 @@ class TestBenchmarkToken:
         ).exists()
         # The token-less (CMIP6) name must NOT be produced by this run.
         assert not (diag.nc_dir / "tas_annual_ensemble_mean_av.nc").exists()
+
+    def test_bench_label_and_name(self, synth_obs, synth_cmip6, eerie_config):
+        """Label/name fields and instance title reflect the benchmark."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        assert diag._bench_label == "HighResMIP MMM"
+        assert diag._bench_name == "HighResMIP"
+        assert diag.title == "Added Value (ensemble vs HighResMIP)"
+
+    def test_figure_text_uses_benchmark(
+        self, synth_obs, synth_cmip6, eerie_config,
+    ):
+        """Figure titles/descriptions say HighResMIP, never CMIP6."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        for _, meta in figures:
+            blob = f"{meta.get('title', '')} {meta.get('description', '')}"
+            assert "HighResMIP" in blob, meta.get("figure_id")
+            assert "CMIP6" not in blob, meta.get("figure_id")
+
+    def test_nc_attrs_use_benchmark(self, synth_obs, synth_cmip6, eerie_config):
+        """NC long_name/model1 reference the active benchmark."""
+        import xarray as xr
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        diag.compute()
+        ds = xr.open_dataset(
+            diag.nc_dir / "tas_annual_ensemble_mean_av_highresmip.nc"
+        )
+        assert "HighResMIP MMM" in ds["av"].attrs["long_name"]
+        assert "HighResMIP" in ds["av"].attrs["model1"]
+        ds.close()
