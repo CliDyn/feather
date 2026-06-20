@@ -572,6 +572,52 @@ class TestBiasMaps:
         assert "lat" in bias.dims
         assert "lon" in bias.dims
 
+    def test_ensemble_bias_figure(self, synth_temp_healpix, synth_temp_obs,
+                                  tmp_path):
+        """≥2 models → an ensemble bias summary figure is produced."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        cfg = FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom", "ifs-nemo"],
+            obs_root="",
+            obs_datasets={"BERKELEY_EARTH": {
+                "path": "/fake", "variables": {"2t": "fake.nc"},
+            }},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+        )
+        loader = MockTempModelLoader(synth_temp_healpix)
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, cfg)
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        assert results["ens_data"], "ens_data should be populated for 2 models"
+        figures = diag._plot_bias_maps(results)
+        fids = [m["figure_id"] for _, m in figures]
+        assert "tas_annual_ens_bias_combined" in fids
+        plt.close("all")
+
+    def test_no_ensemble_bias_for_single_model(
+        self, synth_temp_healpix, synth_temp_obs, berkeley_config,
+    ):
+        """1 model → no ensemble figure (ens_data empty)."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        loader = MockTempModelLoader(synth_temp_healpix)
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = _make_diag(loader, obs, berkeley_config)
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        assert results["ens_data"] == {}
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert not any("ens_bias" in f for f in fids)
+        plt.close("all")
+
     def test_plot_bias_maps_returns_figures(self, synth_temp_healpix,
                                             synth_temp_obs, berkeley_config):
         import matplotlib
@@ -1273,6 +1319,49 @@ class TestCMIP6Integration:
         shared = diag._load_shared_data()
         results = diag._compute_zonal_mean(shared)
         assert results.get("cmip6_zonal") is not None
+
+    def test_cmip6_zonal_mean_mismatched_grids(
+        self, synth_temp_healpix, synth_temp_obs, cmip6_berkeley_config,
+    ):
+        """MMM zonal profile is non-empty even when members differ in grid.
+
+        Regression: the old xr.align(join="inner") on native latitudes left
+        an empty intersection across heterogeneous resolutions, so the MMM
+        line was invisible. Members are now interpolated to a common 1° axis.
+        """
+        loader = MockTempModelLoader(synth_temp_healpix)
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        cmip6 = MockCMIP6TempLoader(self._make_cmip6_data())
+        # cmip6_loader set so cmip6_enabled is True; the MMM is computed from
+        # the explicit _MismatchLoader passed to the method below.
+        diag = _make_diag(loader, obs, cmip6_berkeley_config,
+                          cmip6_loader=cmip6)
+
+        # Two members on DIFFERENT latitude grids (2.5° and 4°) with NO
+        # exactly-shared latitude values → inner-join would be empty.
+        class _MismatchLoader:
+            def get_member_pairs(self, ensemble_mode=None):
+                return [("MA", "r1i1p1f1"), ("MB", "r1i1p1f1")]
+
+            def load_var_for_model_var(self, var, model, **kwargs):
+                lats = (np.arange(-88.75, 90, 2.5) if model == "MA"
+                        else np.arange(-88.0, 90, 4.0))
+                lons = np.arange(0, 360, 5.0)
+                data = np.broadcast_to(
+                    280 - 30 * np.abs(lats / 90.0)[:, None],
+                    (len(lats), len(lons)),
+                ).astype(float)
+                return xr.DataArray(
+                    data, dims=("lat", "lon"),
+                    coords={"lat": lats, "lon": lons},
+                )
+
+        zm = diag._compute_cmip6_zonal_mean(loader=_MismatchLoader())
+        assert zm is not None
+        assert zm.sizes["lat"] == len(np.arange(-89.5, 90.0, 1.0))
+        # Interior latitudes (within both members' range) are finite.
+        interior = zm.sel(lat=slice(-80, 80))
+        assert bool(np.isfinite(interior).all())
 
     def test_cmip6_disabled(self, synth_temp_healpix, synth_temp_obs,
                              berkeley_config):

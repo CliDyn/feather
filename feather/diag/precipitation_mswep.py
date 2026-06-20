@@ -95,6 +95,13 @@ class PrecipitationMSWEP(DiagnosticBase):
             f"pr_{p}_bias_combined"
             for p in ["annual", "djf", "mam", "jja", "son"]
         ]
+        # Ensemble summary panels are produced alongside the bias maps when
+        # ≥2 models are configured (mirrors GlobalBiases).
+        if len(list(self.config.models)) >= 2:
+            bias_ids += [
+                f"pr_{p}_ens_bias_combined"
+                for p in ["annual", "djf", "mam", "jja", "son"]
+            ]
         need_a = not skip_existing or not all(
             self._figure_exists(fid) for fid in bias_ids
         )
@@ -520,6 +527,12 @@ class PrecipitationMSWEP(DiagnosticBase):
                 cmip6_data = benchmark_data[primary_label]
                 cmip6_info = benchmark_info[primary_label]
 
+        # EERIE ensemble mean/median bias maps (when ≥2 models available)
+        from feather.diag.global_biases import GlobalBiases
+        ens_data = GlobalBiases._compute_ens_stats(
+            model_results, obs_clim_common, obs_seasonal_common, common_area,
+        )
+
         # Shared colorbar ranges
         colorbar_ranges = self._compute_colorbar_ranges(
             model_results, obs_clim_common, obs_seasonal_common,
@@ -543,6 +556,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             "benchmark_data": benchmark_data,
             "benchmark_info": benchmark_info,
             "benchmark_individual_data": benchmark_individual_data,
+            "ens_data": ens_data,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -657,6 +671,58 @@ class PrecipitationMSWEP(DiagnosticBase):
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
+
+            # ── Ensemble summary (obs + ens median/mean + benchmark MMM) ──
+            ens_data = results.get("ens_data", {})
+            if period_key in ens_data:
+                proj = self.config.project.get("name", "Ensemble")
+                edata = ens_data[period_key]
+                n = edata["n_members"]
+                lbl_median = rf"{proj} ens. median $\mathbf{{({n})}}$"
+                lbl_mean = rf"{proj} ens. mean $\mathbf{{({n})}}$"
+                ens_bias_plot = {
+                    lbl_median: edata["median_bias"] * _PR_TO_MMDAY,
+                    lbl_mean: edata["mean_bias"] * _PR_TO_MMDAY,
+                }
+                for b_label, b_data in benchmark_data.items():
+                    if period_key in b_data:
+                        ens_bias_plot[b_label] = (
+                            b_data[period_key]["bias"] * _PR_TO_MMDAY
+                        )
+
+                fig_e, _ = plot_combined_bias_map(
+                    obs_plot, ens_bias_plot,
+                    title=f"Precipitation {period_label} — Ensemble",
+                    obs_title="MSWEP v2.8",
+                    cmap="YlGnBu",
+                    bias_cmap="BrBG",
+                    vmin=vmin_plot,
+                    vmax=vmax_plot,
+                    bias_vmax=bvmax_plot,
+                    units="mm/day",
+                    method=self._regrid_method,
+                )
+                meta_e = self._build_metadata(
+                    title=(
+                        f"Precipitation {period_label} Bias "
+                        f"— Ensemble Summary"
+                    ),
+                    figure_id=f"pr_{period_key.lower()}_ens_bias_combined",
+                    models=list(self.config.models),
+                    variables=["pr"],
+                    description=(
+                        f"{period_label} precipitation bias maps — "
+                        f"{proj} ensemble median, ensemble mean, and "
+                        f"benchmark MMM(s) (model - MSWEP v2.8)."
+                    ),
+                    obs_dataset="MSWEP",
+                    obs_variable="precipitation",
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                )
+                figures.append((fig_e, meta_e))
 
         return figures
 
@@ -1028,32 +1094,40 @@ class PrecipitationMSWEP(DiagnosticBase):
         }
 
     def _compute_cmip6_zonal_mean(self, loader=None):
-        """Compute benchmark MMM zonal mean precipitation (per-benchmark loader)."""
+        """Compute benchmark MMM zonal mean precipitation (per-benchmark loader).
+
+        Each member's zonal profile is interpolated to a common 1° latitude
+        axis before averaging — member grids differ in resolution, so an
+        exact-coordinate ``xr.align(join="inner")`` would leave an empty
+        latitude intersection (and thus an invisible MMM line).
+        """
         loader = loader or self.cmip6_loader
         if loader is None or not self.cmip6_enabled:
             return None
 
-        member_pairs = loader.get_member_pairs()
-        zonal_fields = []
+        target_lat = np.arange(-89.5, 90.0, 1.0)
+        member_profiles = []
 
-        for model, variant in member_pairs:
+        for model, variant in loader.get_member_pairs():
             da = loader.load_var_for_model_var(
                 "pr", model, variant=variant, period=self.period,
             )
             if da is None:
                 continue
-            # Compute zonal mean
             lon_dim = "lon" if "lon" in da.dims else "longitude"
             zm = da.mean(lon_dim)
             if "latitude" in zm.dims:
                 zm = zm.rename({"latitude": "lat"})
-            zonal_fields.append(zm)
+            if "lat" not in zm.dims:
+                continue
+            zm = zm.sortby("lat")
+            member_profiles.append(zm.interp(lat=target_lat))
 
-        if not zonal_fields:
+        if not member_profiles:
             return None
 
-        aligned = xr.align(*zonal_fields, join="inner")
-        return sum(aligned) / len(aligned)
+        stacked = xr.concat(member_profiles, dim="_member")
+        return stacked.mean("_member", skipna=True)
 
     def _plot_zonal_mean(self, results: dict) -> list[tuple[plt.Figure, dict]]:
         """Plot zonal mean precipitation profile."""
