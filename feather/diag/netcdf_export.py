@@ -97,6 +97,15 @@ def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
         if period_data.get("bias") is not None:
             fields[f"{key}_bias"] = period_data["bias"]
 
+    # Evaluated-ensemble mean/median (and their bias vs obs), when present.
+    edata = results.get("ens_data", {}).get(period_key)
+    if edata:
+        for stat in ("mean", "median"):
+            if edata.get(stat) is not None:
+                fields[f"ens_{stat}"] = edata[stat]
+            if edata.get(f"{stat}_bias") is not None:
+                fields[f"ens_{stat}_bias"] = edata[f"{stat}_bias"]
+
     return fields
 
 

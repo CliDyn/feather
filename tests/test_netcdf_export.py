@@ -1,6 +1,7 @@
 """Tests for diagnostic NetCDF export (shared exporter + CLI wiring)."""
 
 import numpy as np
+import pytest
 import xarray as xr
 
 from feather.diag import netcdf_export as nx
@@ -68,6 +69,35 @@ def test_export_contents(tmp_path):
     assert ds.attrs["period"] == "1980-2014"
     assert ds.attrs["period_start"] == "1980"
     assert ds.attrs["variable"] == "tas"
+    ds.close()
+
+
+def test_ensemble_fields_exported(tmp_path):
+    """ens_data mean/median (and their bias) are written to the NetCDF."""
+    res = _results()
+    res["ens_data"] = {
+        "annual": {
+            "mean": _field(1.05), "median": _field(1.04),
+            "mean_bias": _field(0.05), "median_bias": _field(0.04),
+        },
+        "DJF": {
+            "mean": _field(2.05), "median": _field(2.04),
+            "mean_bias": _field(0.05), "median_bias": _field(0.04),
+        },
+    }
+    nx.export_biasmap_netcdf(tmp_path, "tas", res, ("1980", "2014"), units="K")
+    ds = xr.open_dataset(tmp_path / "tas_annual_1980-2014.nc")
+    for v in ("ens_mean", "ens_mean_bias", "ens_median", "ens_median_bias"):
+        assert v in ds, v
+    assert float(ds["ens_mean"].mean()) == pytest.approx(1.05)
+    ds.close()
+
+
+def test_no_ensemble_fields_when_absent(tmp_path):
+    """No ens_data → no ens_* fields (backward compatible)."""
+    nx.export_biasmap_netcdf(tmp_path, "tas", _results(), ("1980", "2014"))
+    ds = xr.open_dataset(tmp_path / "tas_annual_1980-2014.nc")
+    assert not any(str(v).startswith("ens_") for v in ds.data_vars)
     ds.close()
 
 
