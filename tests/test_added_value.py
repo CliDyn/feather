@@ -366,6 +366,36 @@ class TestAddedValueRun:
         assert png_path.exists()
         assert json_path.exists()
 
+    def test_run_iterates_all_benchmarks(self, synth_obs, synth_cmip6,
+                                         eerie_config):
+        """--benchmarks cmip6 HighResMIP → both AV sets in one run.
+
+        Regression: added_value did not accept ``benchmarks=`` so
+        cmip6_enabled was False (no AV computed), and it only ever used the
+        primary benchmark. It now iterates every benchmark, tokenising the
+        non-CMIP6 outputs.
+        """
+        from tests.conftest import MockCMIP6Loader
+        cmip6 = MockCMIP6Loader(synth_cmip6)          # no label → "cmip6"
+        highres = MockCMIP6Loader(synth_cmip6)
+        highres.label = "HighResMIP MMM"              # → "_highresmip"
+        diag = AddedValueDiag(
+            MockCMORLoader(synth_obs), MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=cmip6, benchmarks=[cmip6, highres],
+            variables=["tas"], period=("1990", "1990"),
+        )
+        diag.run(skip_existing=False)
+
+        nc_names = {p.name for p in diag.nc_dir.glob("*.nc")}
+        # CMIP6 (token-less) and HighResMIP (tokenised) checkpoints both exist.
+        assert "tas_annual_ensemble_mean_av.nc" in nc_names
+        assert "tas_annual_ensemble_mean_av_highresmip.nc" in nc_names
+
+        fig_ids = {p.stem for p in diag.output_dir.glob("*added_value*.png")}
+        assert any(f.endswith("_highresmip") for f in fig_ids)
+        assert any(not f.endswith("_highresmip") for f in fig_ids)
+
     def test_run_skip_existing(self, diag):
         diag.run(skip_existing=False)
         # Second run should skip (figures exist)

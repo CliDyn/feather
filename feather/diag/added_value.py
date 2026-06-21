@@ -94,13 +94,14 @@ class AddedValueDiag(DiagnosticBase):
         config,
         *,
         cmip6_loader=None,
+        benchmarks=None,
         variables=None,
         experiment="baseline_hist",
         period=("1990", "2014"),
         cmip6_individual=False,
     ):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -109,23 +110,29 @@ class AddedValueDiag(DiagnosticBase):
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
 
-        # Benchmark token — disambiguates AV figure IDs and NetCDF filenames
-        # when the same output dir holds runs against different reference
-        # ensembles (e.g. CMIP6 vs HighResMIP).  Derived from the benchmark
-        # loader's label ("HighResMIP MMM" -> "highresmip").  The default
-        # CMIP6 benchmark stays token-less so existing outputs are unchanged.
-        label = getattr(self.cmip6_loader, "label", "CMIP6 MMM") or "CMIP6 MMM"
+        # Activate the primary benchmark (sets token/labels/active loader).
+        # AV iterates over all benchmarks in run(); each pass re-activates.
+        self._set_active_benchmark(self.cmip6_loader)
+
+    def _set_active_benchmark(self, loader) -> None:
+        """Set the active AV reference benchmark and derived names/token.
+
+        - ``cmip6_loader`` becomes the AV reference used by the compute path.
+        - ``_bench_suffix`` disambiguates figure IDs / NetCDF filenames when
+          the same output dir holds multiple benchmarks (e.g. CMIP6 vs
+          HighResMIP).  The default CMIP6 benchmark stays token-less so
+          existing outputs are unchanged.
+        - ``_bench_label`` / ``_bench_name`` drive the figure text.
+        """
+        self.cmip6_loader = loader
+        label = getattr(loader, "label", "CMIP6 MMM") or "CMIP6 MMM"
         tok = re.sub(r"\s*MMM\s*$", "", str(label)).strip().lower()
         tok = re.sub(r"[^a-z0-9]+", "_", tok).strip("_") or "cmip6"
         self._benchmark_token = tok
         self._bench_suffix = "" if tok == "cmip6" else f"_{tok}"
-
-        # Human-readable benchmark names for figure text.
-        #   _bench_label : full MMM label  ("HighResMIP MMM")
-        #   _bench_name  : short name       ("HighResMIP", for "... mean")
         self._bench_label = str(label)
-        self._bench_name = re.sub(r"\s*MMM\s*$", "", str(label)).strip() or "CMIP6"
-        # Title carries the active benchmark (class attr is the CMIP6 default).
+        self._bench_name = re.sub(
+            r"\s*MMM\s*$", "", str(label)).strip() or "CMIP6"
         self.title = f"Added Value (ensemble vs {self._bench_name})"
 
     # -- Output paths -------------------------------------------------------
@@ -180,6 +187,26 @@ class AddedValueDiag(DiagnosticBase):
     # -- Orchestration -------------------------------------------------------
 
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
+        """Run Added Value against every configured benchmark.
+
+        Each benchmark (CMIP6, HighResMIP, …) is used in turn as the AV
+        reference; its outputs are disambiguated by the benchmark token
+        (the default CMIP6 stays token-less).  This lets a single
+        ``--benchmarks cmip6 HighResMIP`` invocation produce both AV sets.
+        """
+        benches = self.benchmarks or [self.cmip6_loader]
+        saved: list[tuple[Path, Path]] = []
+        for bench in benches:
+            self._set_active_benchmark(bench)
+            logger.info(
+                "Added Value reference benchmark: %s", self._bench_label,
+            )
+            saved.extend(self._run_single_benchmark(skip_existing=skip_existing))
+        return saved
+
+    def _run_single_benchmark(
+        self, skip_existing: bool = True,
+    ) -> list[tuple[Path, Path]]:
         """Execute per-variable: compute → save NC → plot → save figures.
 
         NC files are the durable checkpoint.  If all NC files for a
