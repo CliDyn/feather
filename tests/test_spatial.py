@@ -455,3 +455,28 @@ class TestZonalProfileToAxis:
     def test_returns_none_without_lat(self):
         da = xr.DataArray(np.ones(5), dims=("x",))
         assert zonal_profile_to_axis(da, self.TARGET) is None
+
+    def test_drops_scalar_height_coord_for_concat(self):
+        """Scalar coords (e.g. height=2m on tas) are dropped so members concat.
+
+        Regression: members with a scalar ``height`` coord and members without
+        could not be xr.concat'd ("'height' not present in all datasets").
+        """
+        lats = np.arange(-85.0, 90, 5.0)
+        lons = np.arange(0, 360, 10.0)
+        with_h = xr.DataArray(
+            np.ones((len(lats), len(lons))),
+            dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons, "height": 2.0},
+        )
+        without_h = xr.DataArray(
+            np.ones((len(lats), len(lons))) * 2,
+            dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        za = zonal_profile_to_axis(with_h, self.TARGET)
+        zb = zonal_profile_to_axis(without_h, self.TARGET)
+        assert "height" not in za.coords
+        # Both clean → concat across members works.
+        stacked = xr.concat([za, zb], dim="_member")
+        assert stacked.sizes["_member"] == 2

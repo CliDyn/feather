@@ -1100,6 +1100,18 @@ class TeleconnectionDiag(DiagnosticBase):
         if not vinfo.cmip6_variable:
             return None, None, {}, {}, {}
 
+        # The zonal-mean modes (QBO) have no CMIP6 implementation —
+        # ``_compute_cmip6_single`` returns ``(None, None)`` for them.  Skip
+        # the loop entirely so we never load the full 4-D pressure-level field
+        # (e.g. ``ua``) per model just to discard it — that eager load is both
+        # wasted I/O and an OOM risk for fine grids.
+        if mode_def.method == "zonal_mean":
+            logger.info(
+                "  %s: no CMIP6 zonal-mean implementation — skipping CMIP6",
+                mode_def.name,
+            )
+            return None, None, {}, {}, {}
+
         individual_idx: dict[str, xr.DataArray] = {}
         individual_pat: dict[str, xr.DataArray] = {}
         models_used = []

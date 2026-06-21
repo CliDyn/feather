@@ -501,7 +501,12 @@ def zonal_profile_to_axis(
         if lat_name != "lat":
             zm = zm.rename({lat_name: "lat"})
         zm = zm.sortby("lat")
-        return zm.interp(lat=target_lat)
+        zm = zm.interp(lat=target_lat)
+        # Return a clean lat-only profile.  Scalar coords (e.g. ``height`` at
+        # 2 m for tas) appear on some members but not others and would break
+        # ``xr.concat`` across members ("'height' not present in all datasets").
+        drop = [c for c in zm.coords if c != "lat"]
+        return zm.drop_vars(drop) if drop else zm
 
     # Unstructured: 1-D lat coord parallel to the data — bin by latitude.
     lat_vals = np.asarray(da[lat_name].values).ravel()

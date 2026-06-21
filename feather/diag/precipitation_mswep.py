@@ -1124,7 +1124,10 @@ class PrecipitationMSWEP(DiagnosticBase):
         if not member_profiles:
             return None
 
-        stacked = xr.concat(member_profiles, dim="_member")
+        stacked = xr.concat(
+            member_profiles, dim="_member",
+            coords="minimal", compat="override",
+        )
         return stacked.mean("_member", skipna=True)
 
     def _plot_zonal_mean(self, results: dict) -> list[tuple[plt.Figure, dict]]:
