@@ -3,12 +3,15 @@
 import numpy as np
 import pytest
 
+import xarray as xr
+
 from feather.util.spatial import (
     global_mean,
     spatial_anova,
     spatial_ttest,
     spatial_variance_ratio,
     zonal_mean,
+    zonal_profile_to_axis,
 )
 
 
@@ -397,3 +400,58 @@ def test_variance_ratio_uses_population_variance():
     obs2 = np.array([0.0, 0.0, 4.0, 4.0])    # var(ddof=0) = 4.0
     f2, _ = spatial_variance_ratio(model2, obs2)
     assert f2 == pytest.approx(0.25)  # 1.0/4.0 = 0.25
+
+
+class TestZonalProfileToAxis:
+    """zonal_profile_to_axis: rectilinear + unstructured onto a fixed axis."""
+
+    TARGET = np.arange(-89.5, 90.0, 1.0)
+
+    def test_rectilinear_lat_lon(self):
+        lats = np.arange(-88.0, 90, 4.0)
+        lons = np.arange(0, 360, 5.0)
+        data = np.broadcast_to(
+            (280 - 30 * np.abs(lats / 90.0))[:, None], (len(lats), len(lons)),
+        ).astype(float)
+        da = xr.DataArray(data, dims=("lat", "lon"),
+                          coords={"lat": lats, "lon": lons})
+        zm = zonal_profile_to_axis(da, self.TARGET)
+        assert zm.dims == ("lat",)
+        assert zm.sizes["lat"] == len(self.TARGET)
+        assert bool(np.isfinite(zm.sel(lat=slice(-80, 80))).all())
+
+    def test_rectilinear_latitude_longitude_names(self):
+        lats = np.arange(-85.0, 90, 5.0)
+        lons = np.arange(0, 360, 10.0)
+        da = xr.DataArray(
+            np.ones((len(lats), len(lons))),
+            dims=("latitude", "longitude"),
+            coords={"latitude": lats, "longitude": lons},
+        )
+        zm = zonal_profile_to_axis(da, self.TARGET)
+        assert zm.dims == ("lat",)
+        assert float(zm.sel(lat=0.5)) == pytest.approx(1.0)
+
+    def test_unstructured_per_cell_coords(self):
+        """ICON-like: 1-D lat/lon coords on a single non-lat dim."""
+        rng = np.random.default_rng(0)
+        n = 4000
+        ulat = rng.uniform(-89, 89, n)
+        ulon = rng.uniform(0, 360, n)
+        da = xr.DataArray(
+            280 - 30 * np.abs(ulat / 90.0),
+            dims=("ncells",),
+            coords={"latitude": ("ncells", ulat),
+                    "longitude": ("ncells", ulon)},
+        )
+        zm = zonal_profile_to_axis(da, self.TARGET)
+        assert zm.dims == ("lat",)
+        assert zm.sizes["lat"] == len(self.TARGET)
+        # Interior bands populated; profile decreases away from equator.
+        interior = zm.sel(lat=slice(-80, 80))
+        assert float(np.isfinite(interior).mean()) > 0.9
+        assert float(zm.sel(lat=0.5)) > float(zm.sel(lat=70.5))
+
+    def test_returns_none_without_lat(self):
+        da = xr.DataArray(np.ones(5), dims=("x",))
+        assert zonal_profile_to_axis(da, self.TARGET) is None

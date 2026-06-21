@@ -1024,6 +1024,56 @@ class TestCMIP6Timeseries:
         mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
         assert len(mmm["area_nh"].time) == 12
 
+    def test_unstructured_grid_no_oom(self, sea_ice_model_loader,
+                                      sea_ice_obs_loader, cmip6_sea_ice_config):
+        """Unstructured (ICON-like) member: 1-D per-cell lat/lon, single dim.
+
+        Regression: the loader meshgridded 1-D lat/lon into an
+        (ncells × ncells) array — for a real ICON grid that is ~10^8 points
+        and OOMs (`Killed`). With per-cell coords on one spatial dim the
+        meshgrid must be skipped; here a shape mismatch would also surface it.
+        """
+        rng = np.random.default_rng(0)
+        ncells = 500
+        clat = rng.uniform(-89, 89, ncells)
+        clon = rng.uniform(0, 360, ncells)
+        time = xr.date_range("1990-01", periods=12, freq="MS",
+                             calendar="standard")
+        base = np.clip(0.8 * (np.abs(clat) - 30) / 60.0, 0, 1)
+        siconc = np.broadcast_to(base, (12, ncells)).astype(float)
+        ds = xr.Dataset({
+            "siconc": xr.DataArray(
+                siconc, dims=("time", "ncells"),
+                coords={"time": time,
+                        "lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+            "sithick": xr.DataArray(
+                np.broadcast_to(2.0 * base, (12, ncells)).astype(float),
+                dims=("time", "ncells"),
+                coords={"time": time,
+                        "lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+            "areacello": xr.DataArray(
+                np.full(ncells, 3.1e10), dims=("ncells",),
+                coords={"lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+        })
+
+        class _UnstructuredLoader(MockCMIP6LoaderSeaIce):
+            def load_area(self, model, variant=None, table="Amon"):
+                return self._ds["areacello"]
+
+        loader = _UnstructuredLoader(ds, models={"ICON": {"variants": ["r1i1p1f1"]}})
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+            cmip6_loader=loader, experiment="hist", period=("1990", "1990"),
+        )
+        mmm, info, _ = diag._compute_cmip6_timeseries(loader=loader)
+        # Did not OOM / shape-error, and produced a usable NH metric.
+        assert info["n_members"] == 1
+        assert "area_nh" in mmm
+        assert float(mmm["area_nh"].mean()) >= 0
+
     def test_fill_values_sanitized(self, synth_cmip6_sea_ice,
                                     sea_ice_model_loader,
                                     sea_ice_obs_loader,

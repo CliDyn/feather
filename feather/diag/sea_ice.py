@@ -552,13 +552,24 @@ class SeaIceDiag(DiagnosticBase):
                 )
                 continue
 
-            # Flatten spatial dims to 1D for nereus ice functions
+            # Flatten spatial dims to 1D for nereus ice functions.
             ntime = siconc.sizes["time"]
-            if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+            spatial_dims = [d for d in siconc.dims if d != "time"]
+            n_spatial = int(np.prod([siconc.sizes[d] for d in spatial_dims]))
+            if (lat_arr.ndim == 1 and lon_arr.ndim == 1
+                    and len(spatial_dims) == 1
+                    and len(lat_arr) == n_spatial):
+                # Unstructured (e.g. ICON): 1-D lat/lon are PER-CELL coords on
+                # a single spatial dim — feed straight through.  Meshgridding
+                # them here would build an (ncells × ncells) array and OOM.
+                lat_flat = np.asarray(lat_arr).ravel()
+            elif lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                # Rectilinear: 1-D lat/lon are axes of a 2-D (lat, lon) grid.
                 lat_2d, _ = np.meshgrid(lat_arr, lon_arr, indexing="ij")
+                lat_flat = lat_2d.ravel()
             else:
-                lat_2d = lat_arr
-            lat_flat = lat_2d.ravel()
+                # Curvilinear: 2-D lat/lon arrays.
+                lat_flat = np.asarray(lat_arr).ravel()
             npoints = len(lat_flat)
 
             # Sanitize siconc.  After _normalise_siconc() in load_var,
@@ -611,13 +622,21 @@ class SeaIceDiag(DiagnosticBase):
                     )
                     area = None
             if area is None:
-                if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                # Only a true rectilinear grid (1-D axes spanning a 2-D field)
+                # can have areas reconstructed from lat/lon.  Unstructured grids
+                # (1-D per-cell coords) need areacello — skip if it is missing.
+                rectilinear_axes = (
+                    lat_arr.ndim == 1 and lon_arr.ndim == 1
+                    and len(spatial_dims) == 2
+                )
+                if rectilinear_axes:
                     area_flat = compute_latlon_areas(
                         lat_arr, lon_arr,
                     ).ravel()
                 else:
                     logger.warning(
-                        "    Cannot compute areas for %s — skipping", model,
+                        "    Cannot compute areas for %s (no areacello, "
+                        "non-rectilinear grid) — skipping", model,
                     )
                     continue
 

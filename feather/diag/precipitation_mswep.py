@@ -26,6 +26,7 @@ from feather.util.spatial import (
     compute_latlon_areas,
     latlon_global_mean,
     zonal_mean,
+    zonal_profile_to_axis,
 )
 from feather.util.temporal import (
     annual_mean,
@@ -1114,14 +1115,11 @@ class PrecipitationMSWEP(DiagnosticBase):
             )
             if da is None:
                 continue
-            lon_dim = "lon" if "lon" in da.dims else "longitude"
-            zm = da.mean(lon_dim)
-            if "latitude" in zm.dims:
-                zm = zm.rename({"latitude": "lat"})
-            if "lat" not in zm.dims:
-                continue
-            zm = zm.sortby("lat")
-            member_profiles.append(zm.interp(lat=target_lat))
+            # Handles rectilinear (lon dim) and unstructured (ICON: 1-D
+            # lat/lon on a single dim) members on a common 1° axis.
+            zm = zonal_profile_to_axis(da, target_lat)
+            if zm is not None:
+                member_profiles.append(zm)
 
         if not member_profiles:
             return None
