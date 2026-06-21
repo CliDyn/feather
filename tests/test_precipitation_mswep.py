@@ -452,6 +452,27 @@ class TestEnsembleBias:
         assert "pr_annual_ens_bias_combined" in fids
         plt.close("all")
 
+    def test_ensemble_only_skips_per_model(self, synth_precip_healpix,
+                                           synth_mswep, tmp_path):
+        """ensemble_only=True → only ens figures, no per-model bias maps."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from feather.diag.precipitation_mswep import PrecipitationMSWEP
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = PrecipitationMSWEP(
+            loader, obs, self._two_model_cfg(tmp_path),
+            experiment="hist", period=("1990", "1990"), ensemble_only=True,
+        )
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert fids, "expected ensemble figures"
+        assert all("ens_bias" in f for f in fids)
+        assert "pr_annual_bias_combined" not in fids
+        plt.close("all")
+
     def test_no_ensemble_bias_for_single_model(
         self, synth_precip_healpix, synth_mswep, precip_config,
     ):

@@ -64,7 +64,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False, save_netcdf=False,
-                 individual_netcdf_only=False):
+                 individual_netcdf_only=False, ensemble_only=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
@@ -75,6 +75,8 @@ class PrecipitationMSWEP(DiagnosticBase):
         # individual_netcdf_only implies NetCDF export (it is a data-only mode).
         self.individual_netcdf_only = individual_netcdf_only
         self.save_netcdf = save_netcdf or individual_netcdf_only
+        # ensemble_only: plot ONLY the ensemble bias-summary figures.
+        self.ensemble_only = ensemble_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-group incremental) ─────────────────────────
@@ -92,6 +94,10 @@ class PrecipitationMSWEP(DiagnosticBase):
         out = self.output_dir
 
         # Determine which groups need computing
+        ens_ids = [
+            f"pr_{p}_ens_bias_combined"
+            for p in ["annual", "djf", "mam", "jja", "son"]
+        ]
         bias_ids = [
             f"pr_{p}_bias_combined"
             for p in ["annual", "djf", "mam", "jja", "son"]
@@ -99,12 +105,11 @@ class PrecipitationMSWEP(DiagnosticBase):
         # Ensemble summary panels are produced alongside the bias maps when
         # ≥2 models are configured (mirrors GlobalBiases).
         if len(list(self.config.models)) >= 2:
-            bias_ids += [
-                f"pr_{p}_ens_bias_combined"
-                for p in ["annual", "djf", "mam", "jja", "son"]
-            ]
+            bias_ids += ens_ids
+        # ensemble_only: Group A is gated on the ensemble figures alone.
+        check_ids = ens_ids if self.ensemble_only else bias_ids
         need_a = not skip_existing or not all(
-            self._figure_exists(fid) for fid in bias_ids
+            self._figure_exists(fid) for fid in check_ids
         )
         rel_bias_ids = [
             f"pr_{p}_relative_bias"
@@ -131,6 +136,9 @@ class PrecipitationMSWEP(DiagnosticBase):
         # the Group A computation that feeds the individual-member export.
         if self.individual_netcdf_only:
             need_a = need_b = need_c = need_d = need_e = need_f = False
+        # ensemble_only mode: only Group A (ensemble figures); skip the rest.
+        if self.ensemble_only:
+            need_b = need_c = need_d = need_e = need_f = False
 
         # Collect existing paths (skipped entirely in NetCDF-only mode)
         if not self.individual_netcdf_only:
@@ -138,7 +146,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                 logger.info("Skipping bias maps -- figures exist")
                 saved.extend([
                     (out / f"{fid}.png", out / f"{fid}.json")
-                    for fid in bias_ids
+                    for fid in check_ids
                 ])
             if not need_b:
                 logger.info("Skipping relative bias -- figures exist")
@@ -640,38 +648,40 @@ class PrecipitationMSWEP(DiagnosticBase):
             bvmax_plot = (p_cb["bias_vmax"] * _PR_TO_MMDAY
                           if p_cb.get("bias_vmax") is not None else None)
 
-            fig, axes = plot_combined_bias_map(
-                obs_plot, bias_plot,
-                title=f"Precipitation {period_label}",
-                obs_title="MSWEP v2.8",
-                cmap="YlGnBu",
-                bias_cmap="BrBG",
-                vmin=vmin_plot,
-                vmax=vmax_plot,
-                bias_vmax=bvmax_plot,
-                units="mm/day",
-                method=self._regrid_method,
-            )
+            # Per-model bias maps — skipped in ensemble-only mode.
+            if not self.ensemble_only:
+                fig, axes = plot_combined_bias_map(
+                    obs_plot, bias_plot,
+                    title=f"Precipitation {period_label}",
+                    obs_title="MSWEP v2.8",
+                    cmap="YlGnBu",
+                    bias_cmap="BrBG",
+                    vmin=vmin_plot,
+                    vmax=vmax_plot,
+                    bias_vmax=bvmax_plot,
+                    units="mm/day",
+                    method=self._regrid_method,
+                )
 
-            meta = self._build_metadata(
-                title=f"Precipitation {period_label} Bias",
-                figure_id=f"pr_{period_key.lower()}_bias_combined",
-                models=all_models,
-                variables=["pr"],
-                description=(
-                    f"{period_label} precipitation bias maps "
-                    f"(model - MSWEP v2.8)."
-                ),
-                obs_dataset="MSWEP",
-                obs_variable="precipitation",
-                plot_type="combined_bias_map",
-                period=self.period,
-                cmip6_info=cmip6_info or None,
-                benchmark_info=self._benchmark_meta_from_info(
-                    results.get("benchmark_info")) or None,
-                summary_statistics=summary_stats,
-            )
-            figures.append((fig, meta))
+                meta = self._build_metadata(
+                    title=f"Precipitation {period_label} Bias",
+                    figure_id=f"pr_{period_key.lower()}_bias_combined",
+                    models=all_models,
+                    variables=["pr"],
+                    description=(
+                        f"{period_label} precipitation bias maps "
+                        f"(model - MSWEP v2.8)."
+                    ),
+                    obs_dataset="MSWEP",
+                    obs_variable="precipitation",
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                    summary_statistics=summary_stats,
+                )
+                figures.append((fig, meta))
 
             # ── Ensemble summary (obs + ens median/mean + benchmark MMM) ──
             ens_data = results.get("ens_data", {})
@@ -685,9 +695,13 @@ class PrecipitationMSWEP(DiagnosticBase):
                     lbl_median: edata["median_bias"] * _PR_TO_MMDAY,
                     lbl_mean: edata["mean_bias"] * _PR_TO_MMDAY,
                 }
+                benchmark_info = results.get("benchmark_info", {})
                 for b_label, b_data in benchmark_data.items():
                     if period_key in b_data:
-                        ens_bias_plot[b_label] = (
+                        m = benchmark_info.get(b_label, {}).get("n_members", 0)
+                        panel = (rf"{b_label} $\mathbf{{({m})}}$" if m
+                                 else b_label)
+                        ens_bias_plot[panel] = (
                             b_data[period_key]["bias"] * _PR_TO_MMDAY
                         )
 

@@ -63,7 +63,7 @@ class TemperatureBerkeley(DiagnosticBase):
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False, save_netcdf=False,
-                 individual_netcdf_only=False):
+                 individual_netcdf_only=False, ensemble_only=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
@@ -74,6 +74,9 @@ class TemperatureBerkeley(DiagnosticBase):
         self.individual_netcdf_only = individual_netcdf_only
         self.save_netcdf = save_netcdf or individual_netcdf_only
         self.cmip6_individual = cmip6_individual
+        # ensemble_only: plot ONLY the ensemble bias-summary figures
+        # (skip per-model bias maps and all other groups).
+        self.ensemble_only = ensemble_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
     # ── Orchestration (per-group incremental) ─────────────────────────
@@ -85,6 +88,10 @@ class TemperatureBerkeley(DiagnosticBase):
         out = self.output_dir
 
         # Determine which groups need computing
+        ens_ids = [
+            f"tas_{p}_ens_bias_combined"
+            for p in ["annual", "djf", "mam", "jja", "son"]
+        ]
         bias_ids = [
             f"tas_{p}_bias_combined"
             for p in ["annual", "DJF", "MAM", "JJA", "SON"]
@@ -92,12 +99,11 @@ class TemperatureBerkeley(DiagnosticBase):
         # Ensemble summary panels are produced alongside the bias maps when
         # ≥2 models are configured (mirrors GlobalBiases).
         if len(list(self.config.models)) >= 2:
-            bias_ids += [
-                f"tas_{p.lower()}_ens_bias_combined"
-                for p in ["annual", "DJF", "MAM", "JJA", "SON"]
-            ]
+            bias_ids += ens_ids
+        # ensemble_only: Group A is gated on the ensemble figures alone.
+        check_ids = ens_ids if self.ensemble_only else bias_ids
         need_a = not skip_existing or not all(
-            self._figure_exists(fid) for fid in bias_ids
+            self._figure_exists(fid) for fid in check_ids
         )
         need_b = not skip_existing or not self._figure_exists("tas_timeseries")
         need_c = not skip_existing or not self._figure_exists("tas_seasonal_cycle")
@@ -115,6 +121,9 @@ class TemperatureBerkeley(DiagnosticBase):
         # the Group A computation that feeds the individual-member export.
         if self.individual_netcdf_only:
             need_a = need_b = need_c = need_d = need_e = need_f = False
+        # ensemble_only mode: only Group A (ensemble figures); skip the rest.
+        if self.ensemble_only:
+            need_b = need_c = need_d = need_e = need_f = False
 
         # Collect existing paths (skipped entirely in NetCDF-only mode)
         if not self.individual_netcdf_only:
@@ -122,7 +131,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 logger.info("Skipping bias maps -- figures exist")
                 saved.extend([
                     (out / f"{fid}.png", out / f"{fid}.json")
-                    for fid in bias_ids
+                    for fid in check_ids
                 ])
             if not need_b:
                 logger.info("Skipping timeseries -- figure exists")
@@ -638,38 +647,40 @@ class TemperatureBerkeley(DiagnosticBase):
 
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
-            fig, axes = plot_combined_bias_map(
-                obs_period - _K_TO_C, bias_dict,
-                title=f"2m Temperature {period_label}",
-                obs_title="Berkeley Earth",
-                cmap="cmo.thermal",
-                bias_cmap="RdBu_r",
-                vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
-                vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
-                bias_vmax=p_cb.get("bias_vmax"),
-                units="°C",
-                method=self._regrid_method,
-            )
+            # Per-model bias maps — skipped in ensemble-only mode.
+            if not self.ensemble_only:
+                fig, axes = plot_combined_bias_map(
+                    obs_period - _K_TO_C, bias_dict,
+                    title=f"2m Temperature {period_label}",
+                    obs_title="Berkeley Earth",
+                    cmap="cmo.thermal",
+                    bias_cmap="RdBu_r",
+                    vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
+                    vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
+                    bias_vmax=p_cb.get("bias_vmax"),
+                    units="°C",
+                    method=self._regrid_method,
+                )
 
-            meta = self._build_metadata(
-                title=f"2m Temperature {period_label} Bias",
-                figure_id=f"tas_{period_key.lower()}_bias_combined",
-                models=all_models,
-                variables=["tas"],
-                description=(
-                    f"{period_label} 2m temperature bias maps "
-                    f"(model - Berkeley Earth)."
-                ),
-                obs_dataset="Berkeley Earth",
-                obs_variable="2m temperature",
-                plot_type="combined_bias_map",
-                period=self.period,
-                cmip6_info=cmip6_info or None,
-                benchmark_info=self._benchmark_meta_from_info(
-                    results.get("benchmark_info")) or None,
-                summary_statistics=summary_stats,
-            )
-            figures.append((fig, meta))
+                meta = self._build_metadata(
+                    title=f"2m Temperature {period_label} Bias",
+                    figure_id=f"tas_{period_key.lower()}_bias_combined",
+                    models=all_models,
+                    variables=["tas"],
+                    description=(
+                        f"{period_label} 2m temperature bias maps "
+                        f"(model - Berkeley Earth)."
+                    ),
+                    obs_dataset="Berkeley Earth",
+                    obs_variable="2m temperature",
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                    summary_statistics=summary_stats,
+                )
+                figures.append((fig, meta))
 
             # ── Ensemble summary (obs + ens median/mean + benchmark MMM) ──
             ens_data = results.get("ens_data", {})
@@ -683,9 +694,13 @@ class TemperatureBerkeley(DiagnosticBase):
                     lbl_median: edata["median_bias"],
                     lbl_mean: edata["mean_bias"],
                 }
+                benchmark_info = results.get("benchmark_info", {})
                 for b_label, b_data in benchmark_data.items():
                     if period_key in b_data:
-                        ens_bias_dict[b_label] = b_data[period_key]["bias"]
+                        m = benchmark_info.get(b_label, {}).get("n_members", 0)
+                        panel = (rf"{b_label} $\mathbf{{({m})}}$" if m
+                                 else b_label)
+                        ens_bias_dict[panel] = b_data[period_key]["bias"]
 
                 fig_e, _ = plot_combined_bias_map(
                     obs_period - _K_TO_C, ens_bias_dict,

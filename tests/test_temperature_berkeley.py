@@ -618,6 +618,73 @@ class TestBiasMaps:
         assert not any("ens_bias" in f for f in fids)
         plt.close("all")
 
+    def _two_model_cmip6_cfg(self, tmp_path):
+        return FeatherConfig(
+            model_catalogs={}, models=["ifs-fesom", "ifs-nemo"], obs_root="",
+            obs_datasets={"BERKELEY_EARTH": {
+                "path": "/fake", "variables": {"2t": "fake.nc"}}},
+            cmip6={"enabled": True, "models": {
+                "ModelA": {"variants": ["r1i1p1f1"]},
+                "ModelB": {"variants": ["r1i1p1f1"]}}},
+            dask={}, nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+        )
+
+    def test_ensemble_only_skips_per_model(self, synth_temp_healpix,
+                                           synth_temp_obs, tmp_path):
+        """ensemble_only=True → only ens figures, no per-model bias maps."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from feather.diag.temperature_berkeley import TemperatureBerkeley
+        loader = MockTempModelLoader(synth_temp_healpix)
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = TemperatureBerkeley(
+            loader, obs, self._two_model_cmip6_cfg(tmp_path),
+            cmip6_loader=MockCMIP6TempLoader(self._make_cmip6_data()),
+            experiment="hist", period=("1990", "1990"), ensemble_only=True,
+        )
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert fids, "expected ensemble figures"
+        assert all("ens_bias" in f for f in fids)
+        assert not any(f == "tas_annual_bias_combined" for f in fids)
+        plt.close("all")
+
+    def test_ensemble_label_has_member_count(self, synth_temp_healpix,
+                                             synth_temp_obs, tmp_path):
+        """Benchmark panel labels in the ens figure carry member counts."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from feather.diag.temperature_berkeley import TemperatureBerkeley
+        loader = MockTempModelLoader(synth_temp_healpix)
+        obs = MockBerkeleyObsLoader(synth_temp_obs)
+        diag = TemperatureBerkeley(
+            loader, obs, self._two_model_cmip6_cfg(tmp_path),
+            cmip6_loader=MockCMIP6TempLoader(self._make_cmip6_data()),
+            experiment="hist", period=("1990", "1990"),
+        )
+        results = diag._compute_bias_maps(shared := diag._load_shared_data())
+        # n_members on benchmark_info drives the "(N)" panel label.
+        binfo = results["benchmark_info"]
+        assert binfo
+        assert all("n_members" in v for v in binfo.values())
+        assert next(iter(binfo.values()))["n_members"] >= 1
+        plt.close("all")
+
+    def _make_cmip6_data(self):  # noqa: D401 - mirrors TestCMIP6Integration
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range("1990-01", periods=12, freq="MS",
+                             calendar="standard")
+        tas = 273.0 + 30 * np.cos(np.deg2rad(lats))[None, :, None] * np.ones(
+            (12, len(lats), len(lons)))
+        return xr.Dataset({"tas": xr.DataArray(
+            tas, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons})})
+
     def test_plot_bias_maps_returns_figures(self, synth_temp_healpix,
                                             synth_temp_obs, berkeley_config):
         import matplotlib

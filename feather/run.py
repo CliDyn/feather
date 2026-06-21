@@ -29,6 +29,7 @@ def run_pipeline(
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
+    ensemble_only: bool = False,
     no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
@@ -95,6 +96,7 @@ def run_pipeline(
             benchmarks=benchmarks,
             save_netcdf=save_netcdf,
             individual_netcdf_only=individual_netcdf_only,
+            ensemble_only=ensemble_only,
             skip_existing=skip_existing,
         )
 
@@ -141,6 +143,7 @@ def _run_diagnostics(
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
+    ensemble_only: bool = False,
     skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
@@ -235,6 +238,9 @@ def _run_diagnostics(
             kwargs["period"] = config.get_timeseries_period()
         if cmip6_individual and "cmip6_individual" in sig.parameters:
             kwargs["cmip6_individual"] = True
+        # Ensemble-only mode (plot just the ensemble bias figures).
+        if ensemble_only and "ensemble_only" in sig.parameters:
+            kwargs["ensemble_only"] = True
         # In NetCDF-only mode, skip diagnostics that cannot honour it — they
         # would otherwise render figures the user explicitly opted out of.
         if individual_netcdf_only and (
@@ -243,6 +249,12 @@ def _run_diagnostics(
             logger.info(
                 "Skipping %s: does not support --individual-netcdf-only",
                 name,
+            )
+            continue
+        # In ensemble-only mode, skip diagnostics that cannot honour it.
+        if ensemble_only and "ensemble_only" not in sig.parameters:
+            logger.info(
+                "Skipping %s: does not support --ensemble-only", name,
             )
             continue
         if variables:
