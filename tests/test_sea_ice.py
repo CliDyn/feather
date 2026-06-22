@@ -1074,6 +1074,56 @@ class TestCMIP6Timeseries:
         assert "area_nh" in mmm
         assert float(mmm["area_nh"].mean()) >= 0
 
+    def test_curvilinear_no_areacello_mesh_fallback(
+        self, sea_ice_model_loader, sea_ice_obs_loader,
+        cmip6_sea_ice_config,
+    ):
+        """Curvilinear member without areacello: areas from nereus mesh.
+
+        Most HighResMIP ocean models (NEMO/ORCA tripolar) ship no
+        areacello in the pool. With 2-D lat/lon and no cell areas the
+        member used to be skipped, dropping the whole benchmark MMM.
+        The mesh fallback must reconstruct areas so the member counts.
+        """
+        lats1 = np.arange(-87.5, 90, 5.0)
+        lons1 = np.arange(2.5, 360, 5.0)
+        lat2d, lon2d = np.meshgrid(lats1, lons1, indexing="ij")  # 2-D curvilinear
+        time = xr.date_range("1990-01", periods=12, freq="MS",
+                             calendar="standard")
+        base = np.clip(0.8 * (np.abs(lat2d) - 30) / 60.0, 0, 1)
+        siconc = np.broadcast_to(base, (12, *lat2d.shape)).astype(float)
+        ds = xr.Dataset({
+            "siconc": xr.DataArray(
+                siconc, dims=("time", "y", "x"),
+                coords={"time": time,
+                        "lat": (("y", "x"), lat2d),
+                        "lon": (("y", "x"), lon2d)},
+            ),
+            "sithick": xr.DataArray(
+                np.broadcast_to(2.0 * base, (12, *lat2d.shape)).astype(float),
+                dims=("time", "y", "x"),
+                coords={"time": time,
+                        "lat": (("y", "x"), lat2d),
+                        "lon": (("y", "x"), lon2d)},
+            ),
+            # NB: no areacello — forces the mesh fallback.
+        })
+
+        class _NoAreaLoader(MockCMIP6LoaderSeaIce):
+            def load_area(self, model, variant=None, table="Amon"):
+                return None
+
+        loader = _NoAreaLoader(ds, models={"NEMO-ER": {"variants": ["r1i1p1f1"]}})
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+            cmip6_loader=loader, experiment="hist", period=("1990", "1990"),
+        )
+        mmm, info, _ = diag._compute_cmip6_timeseries(loader=loader)
+        # Member survived (not skipped for missing areas) and metrics sane.
+        assert info["n_members"] == 1
+        assert "area_nh" in mmm
+        assert 0 < float(mmm["area_nh"].max()) < 1e14
+
     def test_fill_values_sanitized(self, synth_cmip6_sea_ice,
                                     sea_ice_model_loader,
                                     sea_ice_obs_loader,

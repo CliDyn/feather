@@ -219,6 +219,13 @@ class SeaIceDiag(DiagnosticBase):
         for i, bench in enumerate(self.benchmarks):
             mmm_ts, info, _ = self._compute_cmip6_timeseries(loader=bench)
             if not mmm_ts:
+                logger.warning(
+                    "Benchmark %s produced no sea-ice MMM — not shown. "
+                    "Common causes: no member has both siconc/sithick AND "
+                    "areacello in the zarr cache (curvilinear ocean grids "
+                    "cannot reconstruct cell areas without areacello).",
+                    getattr(bench, "label", "benchmark"),
+                )
                 continue
             benchmarks.append({
                 "label": getattr(bench, "label", "CMIP6 MMM"),
@@ -622,9 +629,14 @@ class SeaIceDiag(DiagnosticBase):
                     )
                     area = None
             if area is None:
-                # Only a true rectilinear grid (1-D axes spanning a 2-D field)
-                # can have areas reconstructed from lat/lon.  Unstructured grids
-                # (1-D per-cell coords) need areacello — skip if it is missing.
+                # A true rectilinear grid (1-D axes spanning a 2-D field) gets
+                # exact areas from the lat/lon spacing.  Curvilinear (2-D
+                # lat/lon, e.g. NEMO/ORCA tripolar) and unstructured (1-D
+                # per-cell coords) grids have no analytic spacing — and most
+                # HighResMIP ocean models ship no areacello in the pool — so
+                # approximate cell areas from the coordinates via a nereus mesh
+                # (spherical Voronoi).  Areas are imperfect near a tripolar
+                # fold but are the only weights available without areacello.
                 rectilinear_axes = (
                     lat_arr.ndim == 1 and lon_arr.ndim == 1
                     and len(spatial_dims) == 2
@@ -634,11 +646,32 @@ class SeaIceDiag(DiagnosticBase):
                         lat_arr, lon_arr,
                     ).ravel()
                 else:
-                    logger.warning(
-                        "    Cannot compute areas for %s (no areacello, "
-                        "non-rectilinear grid) — skipping", model,
+                    try:
+                        lon_flat = np.asarray(lon_arr).ravel()
+                        mesh = nr.mesh_from_arrays(lon_flat, lat_flat)
+                        area_flat = np.nan_to_num(
+                            np.asarray(mesh.area).ravel(), nan=0.0,
+                        )
+                        # Guard against degenerate fold cells.
+                        area_flat = np.clip(area_flat, 0.0, _MAX_CELL_AREA)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "    Cannot compute areas for %s (no areacello, "
+                            "mesh build failed: %s) — skipping", model, e,
+                        )
+                        continue
+                    if len(area_flat) != npoints:
+                        logger.warning(
+                            "    mesh area size mismatch for %s "
+                            "(%d vs %d points) — skipping",
+                            model, len(area_flat), npoints,
+                        )
+                        continue
+                    logger.info(
+                        "    %s: no areacello — using nereus mesh cell areas "
+                        "(%d cells, sum=%.3e m²)",
+                        model, npoints, float(area_flat.sum()),
                     )
-                    continue
 
             area_da = xr.DataArray(area_flat, dims="points")
             lat_da = xr.DataArray(lat_flat, dims="points")
@@ -836,10 +869,11 @@ class SeaIceDiag(DiagnosticBase):
                 if key in bench["ts"]:
                     ts_annual = annual_mean(bench["ts"][key])
                     time_vals = _to_plot_time(ts_annual.time.values)
-                    # Legend label only on the first axis to avoid duplicates
-                    lbl = bench["label"] if hemi == "nh" else "_nolegend_"
+                    # Each hemisphere panel has its own legend, so label on
+                    # both. Gating on hemi=="nh" dropped the entry from the SH
+                    # legend (and from both when a benchmark only has SH data).
                     ax.plot(time_vals, ts_annual.values * scale,
-                            label=lbl, color=bench["color"],
+                            label=bench["label"], color=bench["color"],
                             linewidth=2.0, linestyle="--")
 
             # Model annual (foreground)

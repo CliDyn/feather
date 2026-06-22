@@ -28,16 +28,17 @@
 #SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --time=12:00:00
-#SBATCH --output=/scratch/a/a270292/EERIE/cmip6_pool_zarr/logs/convert_pool_%j.out
+#SBATCH --output=/work/bm1344/AWI/EERIE/cmip6_pool_zarr/logs/convert_pool_%j.out
 
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────────────────────
 REPO=/home/a/a270292/feather
-CACHE=/scratch/a/a270292/EERIE/cmip6_pool_zarr
+# Permanent storage — scratch is purged periodically.
+CACHE=/work/bm1344/AWI/EERIE/cmip6_pool_zarr
 PERIOD=(1980 2014)
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
