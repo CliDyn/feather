@@ -556,8 +556,8 @@ class TestComputePlotWrappers:
         figures = sea_ice_diag.plot(results)
         assert isinstance(figures, list)
         # 3 timeseries + 3 seasonal + 3 extremes + 4 spatial
-        # + 4 bias maps (E) + 2 ens summary (F) = 19
-        assert len(figures) == 19
+        # + 4 bias maps (E) + 2 ens summary (F) + 2 mean-bias bars (G) = 21
+        assert len(figures) == 21
         for fig, meta in figures:
             assert isinstance(fig, plt.Figure)
             assert isinstance(meta, dict)
@@ -573,7 +573,7 @@ class TestRun:
     @patch("nereus.plot")
     def test_run_saves_figures(self, mock_nr_plot, sea_ice_diag):
         saved = sea_ice_diag.run(skip_existing=False)
-        assert len(saved) == 19
+        assert len(saved) == 21
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -585,11 +585,11 @@ class TestRun:
     def test_run_skip_existing(self, mock_nr_plot, sea_ice_diag):
         # First run
         saved1 = sea_ice_diag.run(skip_existing=False)
-        assert len(saved1) == 19
+        assert len(saved1) == 21
 
         # Second run with skip_existing
         saved2 = sea_ice_diag.run(skip_existing=True)
-        assert len(saved2) == 19  # Still returns paths
+        assert len(saved2) == 21  # Still returns paths
         plt.close("all")
 
     @patch("nereus.plot")
@@ -598,13 +598,13 @@ class TestRun:
         assert sea_ice_diag.output_dir.exists()
         pngs = list(sea_ice_diag.output_dir.glob("*.png"))
         jsons = list(sea_ice_diag.output_dir.glob("*.json"))
-        assert len(pngs) == 19
-        assert len(jsons) == 19
+        assert len(pngs) == 21
+        assert len(jsons) == 21
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_figure_ids(self, mock_nr_plot, sea_ice_diag):
-        """All 19 expected figure IDs are produced."""
+        """All 21 expected figure IDs are produced."""
         saved = sea_ice_diag.run(skip_existing=False)
         figure_ids = {p.stem for p, _ in saved}
         expected = {
@@ -633,6 +633,9 @@ class TestRun:
             # Group F: ensemble summary
             "siconc_ens_summary",
             "sithick_ens_summary",
+            # Group G: per-model mean-bias bar charts
+            "siconc_mean_bias",
+            "sithick_mean_bias",
         }
         assert figure_ids == expected
         plt.close("all")
@@ -673,6 +676,89 @@ class TestMetadata:
         obs_ts = sea_ice_diag._compute_obs_timeseries()
         _, meta = sea_ice_diag._plot_timeseries("volume", model_ts, obs_ts)[0]
         assert meta["obs_dataset"] == "PSC"
+        plt.close("all")
+
+
+# ── Test mean-bias helpers, orientation cache key, summary stats ──────
+
+
+class TestMeanBiasHelpers:
+    """Tests for the per-model mean-bias additions."""
+
+    def test_weighted_mean_rmse_uniform(self):
+        # Constant bias of 2 at all lats → weighted mean 2, rmse 2.
+        lat = np.linspace(-80, 80, 50)
+        bias = np.full_like(lat, 2.0)
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert mean == pytest.approx(2.0, abs=1e-9)
+        assert rmse == pytest.approx(2.0, abs=1e-9)
+
+    def test_weighted_mean_rmse_skips_nan(self):
+        lat = np.array([10.0, 20.0, 30.0])
+        bias = np.array([1.0, np.nan, -1.0])
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert np.isfinite(mean) and np.isfinite(rmse)
+        assert rmse >= abs(mean)
+
+    def test_weighted_mean_rmse_all_nan(self):
+        lat = np.array([10.0, 20.0])
+        bias = np.array([np.nan, np.nan])
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert np.isnan(mean) and np.isnan(rmse)
+
+    def test_grid_signature_distinguishes_lat_orientation(self):
+        """Ascending vs descending latitude must yield different cache keys.
+
+        Regression: IFS-NEMO r1 (lat 90→−90) and r2/r3 (−90→90) share point
+        count; keying the interpolator cache on count alone reused one
+        interpolator and mirrored r2/r3 hemispherically.
+        """
+        lon = np.linspace(0, 359, 360)
+        lat_desc = np.linspace(90, -90, 180)
+        lat_asc = np.linspace(-90, 90, 180)
+        # Build meshgridded src arrays the way _build_polar_bias_data does.
+        lo_d, la_d = np.meshgrid(lon, lat_desc)
+        lo_a, la_a = np.meshgrid(lon, lat_asc)
+        key_desc = SeaIceDiag._grid_signature(la_d.ravel(), lo_d.ravel())
+        key_asc = SeaIceDiag._grid_signature(la_a.ravel(), lo_a.ravel())
+        assert key_desc != key_asc
+        # Same orientation → same key (interpolator correctly reused).
+        assert key_asc == SeaIceDiag._grid_signature(la_a.ravel(), lo_a.ravel())
+
+    def test_polar_bias_stats_structure(self):
+        lat = np.array([60.0, 70.0, 80.0])
+        model_biases = {
+            "ModelA": {3: np.array([0.1, 0.2, 0.3]),
+                       9: np.array([-0.1, -0.2, -0.3])},
+        }
+        stats = SeaIceDiag._polar_bias_stats(
+            SeaIceDiag, model_biases, lat, [3, 9],
+        )
+        assert "ModelA" in stats
+        assert "march_mean_bias" in stats["ModelA"]
+        assert "september_rmse" in stats["ModelA"]
+        assert stats["ModelA"]["march_mean_bias"] > 0
+        assert stats["ModelA"]["september_mean_bias"] < 0
+
+    def test_mean_bias_bars_has_summary_stats(self, sea_ice_diag):
+        with patch("nereus.plot"):
+            figs = sea_ice_diag._plot_mean_bias_bars("siconc")
+        assert len(figs) == 1
+        _, meta = figs[0]
+        assert meta["figure_id"] == "siconc_mean_bias"
+        assert meta["plot_type"] == "bar_chart"
+        # Summary statistics must be populated (non-empty) per model.
+        assert meta["summary_statistics"]
+        plt.close("all")
+
+    def test_bias_map_has_summary_stats(self, sea_ice_diag):
+        with patch("nereus.plot"):
+            figs = sea_ice_diag._plot_bias_spatial(
+                "siconc_nh_bias", "siconc", "np",
+            )
+        assert len(figs) == 1
+        _, meta = figs[0]
+        assert meta["summary_statistics"]
         plt.close("all")
 
 
@@ -1531,11 +1617,11 @@ class TestCMIP6ComputePlotWrappers:
     def test_plot_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         results = sea_ice_diag_cmip6.compute()
         figures = sea_ice_diag_cmip6.plot(results)
-        assert len(figures) == 19
+        assert len(figures) == 21
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         saved = sea_ice_diag_cmip6.run(skip_existing=False)
-        assert len(saved) == 19
+        assert len(saved) == 21
         plt.close("all")
