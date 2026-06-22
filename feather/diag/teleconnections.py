@@ -222,10 +222,12 @@ class TeleconnectionDiag(DiagnosticBase):
             mode_def = _MODE_REGISTRY[mode_name]
             figure_ids = [
                 f"{mode_name}_timeseries",
-                f"{mode_name}_pattern",
                 f"{mode_name}_spectrum",
                 f"{mode_name}_seasonal_variance",
             ]
+            # Zonal-mean modes (QBO) emit no spatial-pattern figure.
+            if mode_def.method != "zonal_mean":
+                figure_ids.insert(1, f"{mode_name}_pattern")
 
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
@@ -1288,10 +1290,12 @@ class TeleconnectionDiag(DiagnosticBase):
         if fig_ts is not None:
             figures.append((fig_ts, meta_ts))
 
-        # 2. Spatial pattern
-        fig_pat, meta_pat = self._plot_pattern(mode_def, result)
-        if fig_pat is not None:
-            figures.append((fig_pat, meta_pat))
+        # 2. Spatial pattern — zonal-mean modes (QBO) have no horizontal
+        # pattern by definition, so skip the (empty) placeholder figure.
+        if mode_def.method != "zonal_mean":
+            fig_pat, meta_pat = self._plot_pattern(mode_def, result)
+            if fig_pat is not None:
+                figures.append((fig_pat, meta_pat))
 
         # 3. Power spectrum
         fig_sp, meta_sp = self._plot_spectrum(mode_def, result)
