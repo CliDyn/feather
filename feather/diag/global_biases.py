@@ -82,6 +82,24 @@ class GlobalBiases(DiagnosticBase):
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "Ensemble")
 
+    @staticmethod
+    def _grid_signature(lon, lat) -> tuple:
+        """Cache key capturing a source grid's size AND coordinate orientation.
+
+        Point count alone is ambiguous: two grids can share their point count
+        yet order their latitude axis oppositely (ascending vs descending). A
+        nereus interpolator built on one ordering mirrors the field if reused
+        on the other (e.g. IFS-NEMO r1 vs r2/r3), so the axis endpoints are
+        folded into the key.
+        """
+        lon_r = np.asarray(lon).ravel()
+        lat_r = np.asarray(lat).ravel()
+        return (
+            lon_r.shape[0],
+            round(float(lat_r[0]), 4), round(float(lat_r[-1]), 4),
+            round(float(lon_r[0]), 4), round(float(lon_r[-1]), 4),
+        )
+
     # -- Orchestration (per-variable incremental) ----------------------------
 
     def run(self, skip_existing: bool = True) -> list[tuple["Path", "Path"]]:
@@ -261,7 +279,7 @@ class GlobalBiases(DiagnosticBase):
         # Cache nereus interpolator per source grid size.
         # Different-resolution models (e.g. nside=1024 vs nside=128) need
         # separate interpolators, but models sharing a grid reuse the same one.
-        _interp_cache: dict[int, Any] = {}
+        _interp_cache: dict[tuple, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         # Pre-computed area weights for the common grid (set once)
@@ -297,9 +315,11 @@ class GlobalBiases(DiagnosticBase):
                 for s in model_seasonal.data_vars
             }
 
-            # Build/reuse interpolator keyed by source grid size
+            # Build/reuse interpolator keyed by source grid signature
+            # (size + orientation — see _grid_signature)
             n_src = np.asarray(lon).ravel().shape[0]
-            if n_src not in _interp_cache:
+            grid_key = self._grid_signature(lon, lat)
+            if grid_key not in _interp_cache:
                 logger.info("  Building nereus interpolator (grid size %d)...",
                             n_src)
                 annual_regrid, interp = nr.regrid(
@@ -310,7 +330,7 @@ class GlobalBiases(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                _interp_cache[n_src] = interp
+                _interp_cache[grid_key] = interp
 
                 if target_lats is None:
                     target_lats = interp.target_lat[:, 0]
@@ -354,7 +374,7 @@ class GlobalBiases(DiagnosticBase):
                             },
                         )
             else:
-                interp = _interp_cache[n_src]
+                interp = _interp_cache[grid_key]
                 regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
@@ -375,7 +395,7 @@ class GlobalBiases(DiagnosticBase):
             seasonal_regrids: dict[str, Any] = {}
             for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seasonal:
-                    s_np = _interp_cache[n_src](
+                    s_np = _interp_cache[grid_key](
                         model_seasonal[season].values.ravel()
                     )
                     s_regrid = xr.DataArray(

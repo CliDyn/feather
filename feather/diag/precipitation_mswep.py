@@ -79,6 +79,24 @@ class PrecipitationMSWEP(DiagnosticBase):
         self.ensemble_only = ensemble_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
 
+    @staticmethod
+    def _grid_signature(lon, lat) -> tuple:
+        """Cache key capturing a source grid's size AND coordinate orientation.
+
+        Point count alone is ambiguous: two grids can share their point count
+        yet order their latitude axis oppositely (ascending vs descending). A
+        nereus interpolator built on one ordering mirrors the field if reused
+        on the other (e.g. IFS-NEMO r1 vs r2/r3), so the axis endpoints are
+        folded into the key.
+        """
+        lon_r = np.asarray(lon).ravel()
+        lat_r = np.asarray(lat).ravel()
+        return (
+            lon_r.shape[0],
+            round(float(lat_r[0]), 4), round(float(lat_r[-1]), 4),
+            round(float(lon_r[0]), 4), round(float(lon_r[-1]), 4),
+        )
+
     # ── Orchestration (per-group incremental) ─────────────────────────
 
     def run(self, skip_existing: bool = True) -> list[tuple["Path", "Path"]]:
@@ -347,8 +365,8 @@ class PrecipitationMSWEP(DiagnosticBase):
         obs_lons = obs_clim.lon.values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Cache nereus interpolator per source grid size
-        _interp_cache: dict[int, Any] = {}
+        # Cache nereus interpolator per source grid signature
+        _interp_cache: dict[tuple, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         common_area = None
@@ -378,7 +396,8 @@ class PrecipitationMSWEP(DiagnosticBase):
             }
 
             n_src = np.asarray(lon).ravel().shape[0]
-            if n_src not in _interp_cache:
+            grid_key = self._grid_signature(lon, lat)
+            if grid_key not in _interp_cache:
                 logger.info("  Building nereus interpolator (grid size %d)...",
                             n_src)
                 annual_regrid, interp = nr.regrid(
@@ -390,7 +409,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                _interp_cache[n_src] = interp
+                _interp_cache[grid_key] = interp
 
                 if target_lats is None:
                     target_lats = interp.target_lat[:, 0]
@@ -429,7 +448,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                             },
                         )
             else:
-                interp = _interp_cache[n_src]
+                interp = _interp_cache[grid_key]
                 regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
@@ -466,7 +485,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             seasonal_regrids: dict[str, Any] = {}
             for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seas:
-                    s_np = _interp_cache[n_src](model_seas[season].values.ravel())
+                    s_np = _interp_cache[grid_key](model_seas[season].values.ravel())
                     s_regrid = xr.DataArray(
                         s_np, dims=("lat", "lon"),
                         coords={"lat": target_lats, "lon": target_lons},
