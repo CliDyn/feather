@@ -253,6 +253,13 @@ class TemperatureBerkeley(DiagnosticBase):
 
     # ── Berkeley Earth loading ───────────────────────────────────────
 
+    @property
+    def _berkeley_label(self) -> str:
+        """Display name for the Berkeley Earth product actually loaded."""
+        return ("Berkeley Earth HR"
+                if "BERKELEY_EARTH_HR" in self.config.obs_datasets
+                else "Berkeley Earth")
+
     def _load_berkeley_earth(
         self, period: tuple[str, str] | None = None,
     ) -> xr.DataArray:
@@ -652,7 +659,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 fig, axes = plot_combined_bias_map(
                     obs_period - _K_TO_C, bias_dict,
                     title=f"2m Temperature {period_label}",
-                    obs_title="Berkeley Earth",
+                    obs_title=self._berkeley_label,
                     cmap="cmo.thermal",
                     bias_cmap="RdBu_r",
                     vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
@@ -671,7 +678,7 @@ class TemperatureBerkeley(DiagnosticBase):
                         f"{period_label} 2m temperature bias maps "
                         f"(model - Berkeley Earth)."
                     ),
-                    obs_dataset="Berkeley Earth",
+                    obs_dataset=self._berkeley_label,
                     obs_variable="2m temperature",
                     plot_type="combined_bias_map",
                     period=self.period,
@@ -705,7 +712,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 fig_e, _ = plot_combined_bias_map(
                     obs_period - _K_TO_C, ens_bias_dict,
                     title=f"2m Temperature {period_label} — Ensemble",
-                    obs_title="Berkeley Earth",
+                    obs_title=self._berkeley_label,
                     cmap="cmo.thermal",
                     bias_cmap="RdBu_r",
                     vmin=(p_cb["vmin"] - _K_TO_C
@@ -729,7 +736,7 @@ class TemperatureBerkeley(DiagnosticBase):
                         f"{proj} ensemble median, ensemble mean, and "
                         f"benchmark MMM(s) (model - Berkeley Earth)."
                     ),
-                    obs_dataset="Berkeley Earth",
+                    obs_dataset=self._berkeley_label,
                     obs_variable="2m temperature",
                     plot_type="combined_bias_map",
                     period=self.period,

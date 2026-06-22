@@ -4,6 +4,8 @@ All tests use small synthetic data (nside=8 HEALPix / 5° lat-lon) and
 the MockCMIP6Loader from conftest.py — no real data needed.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -703,3 +705,111 @@ class TestBenchmarkToken:
         assert "HighResMIP MMM" in ds["av"].attrs["long_name"]
         assert "HighResMIP" in ds["av"].attrs["model1"]
         ds.close()
+
+
+# ── NetCDF fast-path tests ────────────────────────────────────────────
+
+
+def _write_bias_nc(path, models_bias, bench_bias, ens_mean_bias,
+                   ens_median_bias, bench_field="CMIP6_MMM"):
+    """Write a synthetic bias-map NetCDF like the bias-map diagnostics do."""
+    import xarray as xr
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+
+    def _f(val):
+        return xr.DataArray(
+            np.full((len(lats), len(lons)), val, dtype=float),
+            dims=("lat", "lon"), coords={"lat": lats, "lon": lons},
+        )
+
+    fields = {f"{bench_field}_bias": _f(bench_bias),
+              "ens_mean_bias": _f(ens_mean_bias),
+              "ens_median_bias": _f(ens_median_bias)}
+    for m, b in models_bias.items():
+        fields[f"{m}_bias"] = _f(b)
+    xr.Dataset(fields).to_netcdf(path)
+
+
+class TestAddedValueNetCDFFastPath:
+    """Added Value reuses precomputed biases from the bias-map NetCDFs."""
+
+    def _diag(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs), MockObsLoaderLatlon(synth_obs),
+            eerie_config, cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["psl"], period=("1990", "1990"),
+        )
+
+    def _seed(self, diag, var="psl"):
+        # global_biases is the source for psl (ERA5). Benchmark bias is large
+        # (worse), EERIE model biases small (better) → AV > 0.
+        out = Path(diag.config.output_dir) / "netcdf" / "global_biases"
+        for pk in ("annual", "DJF", "MAM", "JJA", "SON"):
+            _write_bias_nc(
+                out / f"{var}_{pk}_1990-1990.nc",
+                models_bias={"ModelA": 1.0, "ModelB": -1.0},
+                bench_bias=4.0, ens_mean_bias=1.0, ens_median_bias=1.0,
+            )
+
+    def test_av_from_biases_sign(self):
+        small = _make_latlon(0.5)   # candidate bias (better)
+        big = _make_latlon(4.0)     # reference bias (worse)
+        av = AddedValueDiag._av_from_biases(big, small)
+        # AV>0 everywhere: candidate reduces squared error vs reference.
+        assert float(av.min()) > 0
+        assert float(av.max()) <= 1.0 + 1e-9
+
+    def test_reads_from_netcdf(self, synth_obs, synth_cmip6, eerie_config):
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        self._seed(diag)
+        res = diag._compute_variable_from_netcdf("psl")
+        assert res is not None
+        assert set(res["eerie_models"]) == {"ModelA", "ModelB"}
+        annual = res["av"]["annual"]
+        assert "ModelA" in annual["per_eerie_av"]
+        # bench worse than EERIE → ensemble-mean AV positive.
+        assert annual["ensemble_mean_domain_av"] > 0
+        # per_cmip6 panels empty without --cmip6-individual.
+        assert annual["per_cmip6_av"] == {}
+        # secondary obs: psl has none → only ERA5.
+        assert set(res["av_by_obs"]) == {"ERA5"}
+        # obs_stats populated for the bars.
+        assert "ERA5" in res["obs_stats"]
+        assert "per_eerie_models" in res["obs_stats"]["ERA5"]["annual"]
+
+    def test_missing_netcdf_returns_none(self, synth_obs, synth_cmip6,
+                                         eerie_config):
+        """No bias NetCDF → fast path returns None (caller falls back)."""
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        assert diag._compute_variable_from_netcdf("psl") is None
+
+    def test_compute_variable_prefers_netcdf(self, synth_obs, synth_cmip6,
+                                             eerie_config):
+        """_compute_variable uses the NetCDF path without touching raw data."""
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        self._seed(diag)
+        called = {"recompute": False}
+        diag._compute_variable_recompute = lambda v: called.__setitem__(
+            "recompute", True)
+        res = diag._compute_variable("psl")
+        assert res is not None
+        assert called["recompute"] is False
+
+    def test_individual_members_when_opted_in(self, synth_obs, synth_cmip6,
+                                              eerie_config):
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        diag.cmip6_individual = True
+        self._seed(diag)
+        # Add an individual-member bias file for annual.
+        out = Path(diag.config.output_dir) / "netcdf" / "global_biases"
+        _write_bias_nc(
+            out / "psl_annual_individual_1990-1990.nc",
+            models_bias={"CMIP6__ACCESS_CM2_r1i1p1f1": 3.0},
+            bench_bias=4.0, ens_mean_bias=1.0, ens_median_bias=1.0,
+        )
+        res = diag._compute_variable_from_netcdf("psl")
+        per_cmip6 = res["av"]["annual"]["per_cmip6_av"]
+        assert "ACCESS_CM2_r1i1p1f1" in per_cmip6
