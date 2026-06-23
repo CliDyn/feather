@@ -33,6 +33,10 @@ def _nc_filename(var: str, period_key: str, period) -> str:
     return f"{var}_{period_key}_{period[0]}-{period[1]}.nc"
 
 
+def _individual_nc_filename(var: str, period_key: str, period) -> str:
+    return f"{var}_{period_key}_individual_{period[0]}-{period[1]}.nc"
+
+
 def biasmap_netcdf_paths(
     netcdf_dir: Path, var: str, period: tuple[str, str],
     *, seasons: bool = True,
@@ -40,6 +44,20 @@ def biasmap_netcdf_paths(
     """Expected NetCDF paths for a variable (annual + seasonal)."""
     keys = ["annual"] + (list(_SEASONS) if seasons else [])
     return [netcdf_dir / _nc_filename(var, k, period) for k in keys]
+
+
+def biasmap_individual_netcdf_paths(
+    netcdf_dir: Path, var: str, period: tuple[str, str],
+    *, seasons: bool = True,
+) -> list[Path]:
+    """Expected individual-member NetCDF paths for a variable."""
+    keys = ["annual"] + (list(_SEASONS) if seasons else [])
+    return [netcdf_dir / _individual_nc_filename(var, k, period) for k in keys]
+
+
+def _benchmark_member_prefix(label: str) -> str:
+    """Field-name prefix for a benchmark's members (drops a trailing 'MMM')."""
+    return sanitize_name(re.sub(r"\s*MMM\s*$", "", str(label)))
 
 
 def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
@@ -79,7 +97,47 @@ def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
         if period_data.get("bias") is not None:
             fields[f"{key}_bias"] = period_data["bias"]
 
+    # Evaluated-ensemble mean/median (and their bias vs obs), when present.
+    edata = results.get("ens_data", {}).get(period_key)
+    if edata:
+        for stat in ("mean", "median"):
+            if edata.get(stat) is not None:
+                fields[f"ens_{stat}"] = edata[stat]
+            if edata.get(f"{stat}_bias") is not None:
+                fields[f"ens_{stat}_bias"] = edata[f"{stat}_bias"]
+
     return fields
+
+
+def _individual_period_fields(
+    results: dict, period_key: str,
+) -> dict[str, xr.DataArray]:
+    """Collect individual benchmark-member fields for one period.
+
+    Reads ``results["benchmark_individual_data"]`` —
+    ``{label: {period_key: {member_label: {regrid, bias}}}}`` — and names each
+    field ``{benchmark}__{member}`` / ``{benchmark}__{member}_bias`` (e.g.
+    ``CMIP6__ACCESS_CM2_r1i1p1f1_bias``, ``HighResMIP__ECMWF_IFS_HR_bias``).
+    """
+    fields: dict[str, xr.DataArray] = {}
+    for label, perdict in results.get("benchmark_individual_data", {}).items():
+        prefix = _benchmark_member_prefix(label)
+        for member_label, mdata in perdict.get(period_key, {}).items():
+            key = f"{prefix}__{sanitize_name(member_label)}"
+            if mdata.get("regrid") is not None:
+                fields[key] = mdata["regrid"]
+            if mdata.get("bias") is not None:
+                fields[f"{key}_bias"] = mdata["bias"]
+    return fields
+
+
+def _individual_period_keys(results: dict) -> list[str]:
+    """Period keys ("annual" + seasons) present in the individual data."""
+    keys: set[str] = set()
+    for perdict in results.get("benchmark_individual_data", {}).values():
+        keys.update(perdict.keys())
+    ordered = ["annual"] + list(_SEASONS)
+    return [k for k in ordered if k in keys]
 
 
 #: Result-dict keys that hold metadata / non-source objects rather than
@@ -264,6 +322,67 @@ def export_biasmap_netcdf(
             ds.attrs.update(extra_attrs)
         ds.to_netcdf(path)
         logger.info("  Wrote NetCDF: %s", path.name)
+        written.append(path)
+
+    return written
+
+
+def export_biasmap_individual_netcdf(
+    netcdf_dir: Path,
+    var: str,
+    results: dict,
+    period: tuple[str, str],
+    *,
+    units: str = "",
+    scale: float = 1.0,
+    skip_existing: bool = True,
+    extra_attrs: dict | None = None,
+) -> list[Path]:
+    """Write the individual benchmark members to their own NetCDF files.
+
+    One file per period (``{var}_{period}_individual_{start}-{end}.nc``) holds
+    every individual CMIP6 and HighResMIP member's regridded climatology and
+    bias, named ``{benchmark}__{member}``. Kept separate from the obs/model/MMM
+    file so each product skips/regenerates independently.
+
+    Returns the list of written (or already-present) paths.
+    """
+    netcdf_dir = Path(netcdf_dir)
+    written: list[Path] = []
+
+    for period_key in _individual_period_keys(results):
+        path = netcdf_dir / _individual_nc_filename(var, period_key, period)
+        if skip_existing and path.exists():
+            written.append(path)
+            continue
+
+        fields = _individual_period_fields(results, period_key)
+        if not fields:
+            continue
+
+        if scale != 1.0:
+            fields = {k: v * scale for k, v in fields.items()}
+
+        netcdf_dir.mkdir(parents=True, exist_ok=True)
+        ds = xr.Dataset(fields)
+        ds.attrs.update(
+            variable=var,
+            period_key=period_key,
+            period_start=str(period[0]),
+            period_end=str(period[1]),
+            period=f"{period[0]}-{period[1]}",
+            units=units,
+            description=(
+                "Individual benchmark-member climatology and bias "
+                "(member minus obs) on the common analysis grid. "
+                "Sources: individual CMIP6 and HighResMIP models."
+            ),
+        )
+        if extra_attrs:
+            ds.attrs.update(extra_attrs)
+        ds.to_netcdf(path)
+        logger.info("  Wrote NetCDF: %s (%d members×fields)",
+                    path.name, len(ds.data_vars))
         written.append(path)
 
     return written

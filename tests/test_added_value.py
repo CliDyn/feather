@@ -4,6 +4,8 @@ All tests use small synthetic data (nside=8 HEALPix / 5° lat-lon) and
 the MockCMIP6Loader from conftest.py — no real data needed.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -366,6 +368,36 @@ class TestAddedValueRun:
         assert png_path.exists()
         assert json_path.exists()
 
+    def test_run_iterates_all_benchmarks(self, synth_obs, synth_cmip6,
+                                         eerie_config):
+        """--benchmarks cmip6 HighResMIP → both AV sets in one run.
+
+        Regression: added_value did not accept ``benchmarks=`` so
+        cmip6_enabled was False (no AV computed), and it only ever used the
+        primary benchmark. It now iterates every benchmark, tokenising the
+        non-CMIP6 outputs.
+        """
+        from tests.conftest import MockCMIP6Loader
+        cmip6 = MockCMIP6Loader(synth_cmip6)          # no label → "cmip6"
+        highres = MockCMIP6Loader(synth_cmip6)
+        highres.label = "HighResMIP MMM"              # → "_highresmip"
+        diag = AddedValueDiag(
+            MockCMORLoader(synth_obs), MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=cmip6, benchmarks=[cmip6, highres],
+            variables=["tas"], period=("1990", "1990"),
+        )
+        diag.run(skip_existing=False)
+
+        nc_names = {p.name for p in diag.nc_dir.glob("*.nc")}
+        # CMIP6 (token-less) and HighResMIP (tokenised) checkpoints both exist.
+        assert "tas_annual_ensemble_mean_av.nc" in nc_names
+        assert "tas_annual_ensemble_mean_av_highresmip.nc" in nc_names
+
+        fig_ids = {p.stem for p in diag.output_dir.glob("*added_value*.png")}
+        assert any(f.endswith("_highresmip") for f in fig_ids)
+        assert any(not f.endswith("_highresmip") for f in fig_ids)
+
     def test_run_skip_existing(self, diag):
         diag.run(skip_existing=False)
         # Second run should skip (figures exist)
@@ -568,3 +600,216 @@ class TestMultiObsStats:
         # Only ERA5; BERKELEY_EARTH_HR not in config → filtered
         assert "ERA5" in obs_stats
         assert "BERKELEY_EARTH_HR" not in obs_stats
+
+
+class TestBenchmarkToken:
+    """Benchmark token disambiguates AV filenames across reference ensembles."""
+
+    def _make_diag(self, synth_obs, synth_cmip6, eerie_config, label=None):
+        from tests.conftest import MockCMIP6Loader
+        loader = MockCMIP6Loader(synth_cmip6)
+        if label is not None:
+            loader.label = label  # instance attr read in __init__
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=loader,
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_default_cmip6_is_token_less(self, synth_obs, synth_cmip6, eerie_config):
+        """No label / CMIP6 label → empty suffix (backward compatible)."""
+        diag = self._make_diag(synth_obs, synth_cmip6, eerie_config)
+        assert diag._benchmark_token == "cmip6"
+        assert diag._bench_suffix == ""
+        assert diag._nc_path("tas", "annual", "ensemble_mean").name == (
+            "tas_annual_ensemble_mean_av.nc"
+        )
+        assert diag._obs_stats_path("tas").name == "tas_obs_stats.json"
+
+    def test_highresmip_label_adds_token(self, synth_obs, synth_cmip6, eerie_config):
+        """HighResMIP MMM label → '_highresmip' on NC + obs-stats filenames."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        assert diag._benchmark_token == "highresmip"
+        assert diag._bench_suffix == "_highresmip"
+        assert diag._nc_path("tas", "annual", "ensemble_mean").name == (
+            "tas_annual_ensemble_mean_av_highresmip.nc"
+        )
+        assert diag._obs_stats_path("tas").name == (
+            "tas_obs_stats_highresmip.json"
+        )
+        assert diag._bars_models_eerie_id("annual").endswith("_highresmip")
+
+    def test_figure_ids_carry_token(self, synth_obs, synth_cmip6, eerie_config):
+        """Saved AV map figure IDs include the benchmark token."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        fids = [meta["figure_id"] for _, meta in figures]
+        assert fids, "expected at least one figure"
+        assert all(fid.endswith("_highresmip") for fid in fids), fids
+
+    def test_nc_files_written_with_token(
+        self, synth_obs, synth_cmip6, eerie_config,
+    ):
+        """HighResMIP run writes tokenized NC files that don't collide."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        diag.compute()
+        assert (
+            diag.nc_dir / "tas_annual_ensemble_mean_av_highresmip.nc"
+        ).exists()
+        # The token-less (CMIP6) name must NOT be produced by this run.
+        assert not (diag.nc_dir / "tas_annual_ensemble_mean_av.nc").exists()
+
+    def test_bench_label_and_name(self, synth_obs, synth_cmip6, eerie_config):
+        """Label/name fields and instance title reflect the benchmark."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        assert diag._bench_label == "HighResMIP MMM"
+        assert diag._bench_name == "HighResMIP"
+        assert diag.title == "Added Value (ensemble vs HighResMIP)"
+
+    def test_figure_text_uses_benchmark(
+        self, synth_obs, synth_cmip6, eerie_config,
+    ):
+        """Figure titles/descriptions say HighResMIP, never CMIP6."""
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        results = diag.compute()
+        figures = diag._plot_variable("tas", results["tas"])
+        for _, meta in figures:
+            blob = f"{meta.get('title', '')} {meta.get('description', '')}"
+            assert "HighResMIP" in blob, meta.get("figure_id")
+            assert "CMIP6" not in blob, meta.get("figure_id")
+
+    def test_nc_attrs_use_benchmark(self, synth_obs, synth_cmip6, eerie_config):
+        """NC long_name/model1 reference the active benchmark."""
+        import xarray as xr
+        diag = self._make_diag(
+            synth_obs, synth_cmip6, eerie_config, label="HighResMIP MMM",
+        )
+        diag.compute()
+        ds = xr.open_dataset(
+            diag.nc_dir / "tas_annual_ensemble_mean_av_highresmip.nc"
+        )
+        assert "HighResMIP MMM" in ds["av"].attrs["long_name"]
+        assert "HighResMIP" in ds["av"].attrs["model1"]
+        ds.close()
+
+
+# ── NetCDF fast-path tests ────────────────────────────────────────────
+
+
+def _write_bias_nc(path, models_bias, bench_bias, ens_mean_bias,
+                   ens_median_bias, bench_field="CMIP6_MMM"):
+    """Write a synthetic bias-map NetCDF like the bias-map diagnostics do."""
+    import xarray as xr
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lats = np.arange(-87.5, 90, 5.0)
+    lons = np.arange(2.5, 360, 5.0)
+
+    def _f(val):
+        return xr.DataArray(
+            np.full((len(lats), len(lons)), val, dtype=float),
+            dims=("lat", "lon"), coords={"lat": lats, "lon": lons},
+        )
+
+    fields = {f"{bench_field}_bias": _f(bench_bias),
+              "ens_mean_bias": _f(ens_mean_bias),
+              "ens_median_bias": _f(ens_median_bias)}
+    for m, b in models_bias.items():
+        fields[f"{m}_bias"] = _f(b)
+    xr.Dataset(fields).to_netcdf(path)
+
+
+class TestAddedValueNetCDFFastPath:
+    """Added Value reuses precomputed biases from the bias-map NetCDFs."""
+
+    def _diag(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs), MockObsLoaderLatlon(synth_obs),
+            eerie_config, cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["psl"], period=("1990", "1990"),
+        )
+
+    def _seed(self, diag, var="psl"):
+        # global_biases is the source for psl (ERA5). Benchmark bias is large
+        # (worse), EERIE model biases small (better) → AV > 0.
+        out = Path(diag.config.output_dir) / "netcdf" / "global_biases"
+        for pk in ("annual", "DJF", "MAM", "JJA", "SON"):
+            _write_bias_nc(
+                out / f"{var}_{pk}_1990-1990.nc",
+                models_bias={"ModelA": 1.0, "ModelB": -1.0},
+                bench_bias=4.0, ens_mean_bias=1.0, ens_median_bias=1.0,
+            )
+
+    def test_av_from_biases_sign(self):
+        small = _make_latlon(0.5)   # candidate bias (better)
+        big = _make_latlon(4.0)     # reference bias (worse)
+        av = AddedValueDiag._av_from_biases(big, small)
+        # AV>0 everywhere: candidate reduces squared error vs reference.
+        assert float(av.min()) > 0
+        assert float(av.max()) <= 1.0 + 1e-9
+
+    def test_reads_from_netcdf(self, synth_obs, synth_cmip6, eerie_config):
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        self._seed(diag)
+        res = diag._compute_variable_from_netcdf("psl")
+        assert res is not None
+        assert set(res["eerie_models"]) == {"ModelA", "ModelB"}
+        annual = res["av"]["annual"]
+        assert "ModelA" in annual["per_eerie_av"]
+        # bench worse than EERIE → ensemble-mean AV positive.
+        assert annual["ensemble_mean_domain_av"] > 0
+        # per_cmip6 panels empty without --cmip6-individual.
+        assert annual["per_cmip6_av"] == {}
+        # secondary obs: psl has none → only ERA5.
+        assert set(res["av_by_obs"]) == {"ERA5"}
+        # obs_stats populated for the bars.
+        assert "ERA5" in res["obs_stats"]
+        assert "per_eerie_models" in res["obs_stats"]["ERA5"]["annual"]
+
+    def test_missing_netcdf_returns_none(self, synth_obs, synth_cmip6,
+                                         eerie_config):
+        """No bias NetCDF → fast path returns None (caller falls back)."""
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        assert diag._compute_variable_from_netcdf("psl") is None
+
+    def test_compute_variable_prefers_netcdf(self, synth_obs, synth_cmip6,
+                                             eerie_config):
+        """_compute_variable uses the NetCDF path without touching raw data."""
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        self._seed(diag)
+        called = {"recompute": False}
+        diag._compute_variable_recompute = lambda v: called.__setitem__(
+            "recompute", True)
+        res = diag._compute_variable("psl")
+        assert res is not None
+        assert called["recompute"] is False
+
+    def test_individual_members_when_opted_in(self, synth_obs, synth_cmip6,
+                                              eerie_config):
+        diag = self._diag(synth_obs, synth_cmip6, eerie_config)
+        diag.cmip6_individual = True
+        self._seed(diag)
+        # Add an individual-member bias file for annual.
+        out = Path(diag.config.output_dir) / "netcdf" / "global_biases"
+        _write_bias_nc(
+            out / "psl_annual_individual_1990-1990.nc",
+            models_bias={"CMIP6__ACCESS_CM2_r1i1p1f1": 3.0},
+            bench_bias=4.0, ens_mean_bias=1.0, ens_median_bias=1.0,
+        )
+        res = diag._compute_variable_from_netcdf("psl")
+        per_cmip6 = res["av"]["annual"]["per_cmip6_av"]
+        assert "ACCESS_CM2_r1i1p1f1" in per_cmip6

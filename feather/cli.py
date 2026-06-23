@@ -96,6 +96,25 @@ def main(argv: list[str] | None = None):
              "extremes/classification diagnostics write NetCDF unconditionally.)",
     )
     parser.add_argument(
+        "--individual-netcdf-only",
+        action="store_true",
+        help="Export NetCDF for each individual CMIP6/HighResMIP benchmark "
+             "member (regridded climatology + bias, one file per period under "
+             "{output}/netcdf/{diag}/{var}_{period}_individual_*.nc) WITHOUT "
+             "rendering any figures. Implies --save-netcdf. Supported by the "
+             "bias-map diagnostics global_biases, temperature_berkeley, and "
+             "precipitation_mswep.",
+    )
+    parser.add_argument(
+        "--ensemble-only",
+        action="store_true",
+        help="Plot ONLY the ensemble bias-summary figures "
+             "({var}_{period}_ens_bias_combined: obs + ensemble median/mean + "
+             "benchmark MMM(s) with member counts) and skip the per-model bias "
+             "maps and all other figure groups. Supported by the bias-map "
+             "diagnostics temperature_berkeley and precipitation_mswep.",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Generate website without LLM analysis (figures only)",
@@ -176,6 +195,8 @@ def main(argv: list[str] | None = None):
         cmip6_individual=args.cmip6_individual,
         benchmarks=args.benchmarks,
         save_netcdf=args.save_netcdf,
+        individual_netcdf_only=args.individual_netcdf_only,
+        ensemble_only=args.ensemble_only,
         no_llm=args.no_llm,
     )
 

@@ -7,6 +7,8 @@ and polar spatial maps.
 """
 
 import logging
+import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -47,13 +49,16 @@ _MINMAX_MONTHS = {
 class SeaIceDiag(DiagnosticBase):
     """Sea ice diagnostic.
 
-    Produces 6 groups of figures (19 total):
+    Produces 8 groups of figures (26 total):
     A) Time series — ice area/extent/volume (NH+SH subplots)
     B) Seasonal cycles — 12-month climatology (NH+SH subplots)
-    C) March & September trends — annual max/min months (2×2 subplots)
+    C) March & September trends — annual max/min months (2×2 subplots);
+       plus a sea-ice-area anomaly variant (each series minus its own mean)
     D) Spatial maps — polar stereographic maps of siconc/sithick (absolute)
     E) Bias maps — obs climatology + per-model bias (model − obs)
     F) Ensemble summary — obs climatology + ensemble mean/median bias
+    G) Mean-bias bars — per-model area-weighted mean bias (Arctic + Antarctic)
+    H) Per-family bias maps — obs climatology + per-model-family mean bias
     """
 
     name = "sea_ice"
@@ -146,6 +151,21 @@ class SeaIceDiag(DiagnosticBase):
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
+        # Group C2: Sea ice area anomalies (1 figure — area only)
+        fid = "sea_ice_area_extremes_anomaly"
+        if skip_existing and self._figure_exists(fid):
+            logger.info("Skipping %s — figure exists", fid)
+            saved.append((
+                self.output_dir / f"{fid}.png",
+                self.output_dir / f"{fid}.json",
+            ))
+        else:
+            figs = self._plot_extremes(
+                "area", model_ts, obs_ts, anomaly=True, **cmip6_kw,
+            )
+            for fig, meta in figs:
+                saved.append(self._save(fig, meta, meta["figure_id"]))
+
         # Group D: Spatial maps (4 figures)
         spatial_figs = [
             ("siconc_nh_spatial", "siconc", "np"),
@@ -198,6 +218,39 @@ class SeaIceDiag(DiagnosticBase):
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
+        # Group G: Per-model mean-bias bar charts (2 figures)
+        for var in ("siconc", "sithick"):
+            fid = f"{var}_mean_bias"
+            if skip_existing and self._figure_exists(fid):
+                logger.info("Skipping %s — figure exists", fid)
+                saved.append((
+                    self.output_dir / f"{fid}.png",
+                    self.output_dir / f"{fid}.json",
+                ))
+            else:
+                figs = self._plot_mean_bias_bars(var)
+                for fig, meta in figs:
+                    saved.append(self._save(fig, meta, meta["figure_id"]))
+
+        # Group H: Per-family mean-bias maps (4 figures)
+        family_bias_figs = [
+            ("siconc_nh_family_bias", "siconc", "np"),
+            ("siconc_sh_family_bias", "siconc", "sp"),
+            ("sithick_nh_family_bias", "sithick", "np"),
+            ("sithick_sh_family_bias", "sithick", "sp"),
+        ]
+        for fid, var, pole in family_bias_figs:
+            if skip_existing and self._figure_exists(fid):
+                logger.info("Skipping %s — figure exists", fid)
+                saved.append((
+                    self.output_dir / f"{fid}.png",
+                    self.output_dir / f"{fid}.json",
+                ))
+            else:
+                figs = self._plot_family_bias_spatial(fid, var, pole)
+                for fig, meta in figs:
+                    saved.append(self._save(fig, meta, meta["figure_id"]))
+
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
         )
@@ -219,6 +272,13 @@ class SeaIceDiag(DiagnosticBase):
         for i, bench in enumerate(self.benchmarks):
             mmm_ts, info, _ = self._compute_cmip6_timeseries(loader=bench)
             if not mmm_ts:
+                logger.warning(
+                    "Benchmark %s produced no sea-ice MMM — not shown. "
+                    "Common causes: no member has both siconc/sithick AND "
+                    "areacello in the zarr cache (curvilinear ocean grids "
+                    "cannot reconstruct cell areas without areacello).",
+                    getattr(bench, "label", "benchmark"),
+                )
                 continue
             benchmarks.append({
                 "label": getattr(bench, "label", "CMIP6 MMM"),
@@ -272,6 +332,9 @@ class SeaIceDiag(DiagnosticBase):
             figures.extend(self._plot_extremes(
                 metric, model_ts, obs_ts, **cmip6_kw,
             ))
+        figures.extend(self._plot_extremes(
+            "area", model_ts, obs_ts, anomaly=True, **cmip6_kw,
+        ))
         for fid, var, pole in [
             ("siconc_nh_spatial", "siconc", "np"),
             ("siconc_sh_spatial", "siconc", "sp"),
@@ -288,6 +351,15 @@ class SeaIceDiag(DiagnosticBase):
             figures.extend(self._plot_bias_spatial(fid, var, pole))
         for var in ("siconc", "sithick"):
             figures.extend(self._plot_ensemble_summary(var))
+        for var in ("siconc", "sithick"):
+            figures.extend(self._plot_mean_bias_bars(var))
+        for fid, var, pole in [
+            ("siconc_nh_family_bias", "siconc", "np"),
+            ("siconc_sh_family_bias", "siconc", "sp"),
+            ("sithick_nh_family_bias", "sithick", "np"),
+            ("sithick_sh_family_bias", "sithick", "sp"),
+        ]:
+            figures.extend(self._plot_family_bias_spatial(fid, var, pole))
         return figures
 
     # ── Computation: Model time series ────────────────────────────────
@@ -552,13 +624,24 @@ class SeaIceDiag(DiagnosticBase):
                 )
                 continue
 
-            # Flatten spatial dims to 1D for nereus ice functions
+            # Flatten spatial dims to 1D for nereus ice functions.
             ntime = siconc.sizes["time"]
-            if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+            spatial_dims = [d for d in siconc.dims if d != "time"]
+            n_spatial = int(np.prod([siconc.sizes[d] for d in spatial_dims]))
+            if (lat_arr.ndim == 1 and lon_arr.ndim == 1
+                    and len(spatial_dims) == 1
+                    and len(lat_arr) == n_spatial):
+                # Unstructured (e.g. ICON): 1-D lat/lon are PER-CELL coords on
+                # a single spatial dim — feed straight through.  Meshgridding
+                # them here would build an (ncells × ncells) array and OOM.
+                lat_flat = np.asarray(lat_arr).ravel()
+            elif lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                # Rectilinear: 1-D lat/lon are axes of a 2-D (lat, lon) grid.
                 lat_2d, _ = np.meshgrid(lat_arr, lon_arr, indexing="ij")
+                lat_flat = lat_2d.ravel()
             else:
-                lat_2d = lat_arr
-            lat_flat = lat_2d.ravel()
+                # Curvilinear: 2-D lat/lon arrays.
+                lat_flat = np.asarray(lat_arr).ravel()
             npoints = len(lat_flat)
 
             # Sanitize siconc.  After _normalise_siconc() in load_var,
@@ -611,15 +694,49 @@ class SeaIceDiag(DiagnosticBase):
                     )
                     area = None
             if area is None:
-                if lat_arr.ndim == 1 and lon_arr.ndim == 1:
+                # A true rectilinear grid (1-D axes spanning a 2-D field) gets
+                # exact areas from the lat/lon spacing.  Curvilinear (2-D
+                # lat/lon, e.g. NEMO/ORCA tripolar) and unstructured (1-D
+                # per-cell coords) grids have no analytic spacing — and most
+                # HighResMIP ocean models ship no areacello in the pool — so
+                # approximate cell areas from the coordinates via a nereus mesh
+                # (spherical Voronoi).  Areas are imperfect near a tripolar
+                # fold but are the only weights available without areacello.
+                rectilinear_axes = (
+                    lat_arr.ndim == 1 and lon_arr.ndim == 1
+                    and len(spatial_dims) == 2
+                )
+                if rectilinear_axes:
                     area_flat = compute_latlon_areas(
                         lat_arr, lon_arr,
                     ).ravel()
                 else:
-                    logger.warning(
-                        "    Cannot compute areas for %s — skipping", model,
+                    try:
+                        lon_flat = np.asarray(lon_arr).ravel()
+                        mesh = nr.mesh_from_arrays(lon_flat, lat_flat)
+                        area_flat = np.nan_to_num(
+                            np.asarray(mesh.area).ravel(), nan=0.0,
+                        )
+                        # Guard against degenerate fold cells.
+                        area_flat = np.clip(area_flat, 0.0, _MAX_CELL_AREA)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "    Cannot compute areas for %s (no areacello, "
+                            "mesh build failed: %s) — skipping", model, e,
+                        )
+                        continue
+                    if len(area_flat) != npoints:
+                        logger.warning(
+                            "    mesh area size mismatch for %s "
+                            "(%d vs %d points) — skipping",
+                            model, len(area_flat), npoints,
+                        )
+                        continue
+                    logger.info(
+                        "    %s: no areacello — using nereus mesh cell areas "
+                        "(%d cells, sum=%.3e m²)",
+                        model, npoints, float(area_flat.sum()),
                     )
-                    continue
 
             area_da = xr.DataArray(area_flat, dims="points")
             lat_da = xr.DataArray(lat_flat, dims="points")
@@ -817,10 +934,11 @@ class SeaIceDiag(DiagnosticBase):
                 if key in bench["ts"]:
                     ts_annual = annual_mean(bench["ts"][key])
                     time_vals = _to_plot_time(ts_annual.time.values)
-                    # Legend label only on the first axis to avoid duplicates
-                    lbl = bench["label"] if hemi == "nh" else "_nolegend_"
+                    # Each hemisphere panel has its own legend, so label on
+                    # both. Gating on hemi=="nh" dropped the entry from the SH
+                    # legend (and from both when a benchmark only has SH data).
                     ax.plot(time_vals, ts_annual.values * scale,
-                            label=lbl, color=bench["color"],
+                            label=bench["label"], color=bench["color"],
                             linewidth=2.0, linestyle="--")
 
             # Model annual (foreground)
@@ -969,9 +1087,14 @@ class SeaIceDiag(DiagnosticBase):
     def _plot_extremes(
         self, metric: str, model_ts: dict, obs_ts: dict,
         cmip6_ts=None, cmip6_individual_ts=None, cmip6_info=None,
-        benchmarks=None,
+        benchmarks=None, anomaly=False,
     ) -> list[tuple[plt.Figure, dict]]:
-        """Plot 2×2 extreme month trends for a given metric."""
+        """Plot 2×2 extreme month trends for a given metric.
+
+        When ``anomaly`` is True, each series is plotted relative to its own
+        temporal mean (value − mean) so that inter-model differences in
+        variability and trend are comparable despite large mean-state offsets.
+        """
         info = _METRICS[metric]
         scale = info["scale"]
         obs_label = "PIOMAS" if metric == "volume" else "OSI-SAF"
@@ -1016,8 +1139,11 @@ class SeaIceDiag(DiagnosticBase):
                             "CMIP6 members" if i == 0 else "_nolegend_"
                         )
                         time_vals = _to_plot_time(monthly.time.values)
+                        vals = monthly.values * scale
+                        if anomaly:
+                            vals = vals - np.nanmean(vals)
                         ax.plot(
-                            time_vals, monthly.values * scale,
+                            time_vals, vals,
                             color=CMIP6_COLOR, alpha=0.35, linewidth=0.8,
                             label=label,
                         )
@@ -1030,13 +1156,14 @@ class SeaIceDiag(DiagnosticBase):
                 monthly = ts.where(ts["time.month"] == month, drop=True)
                 if len(monthly) > 0:
                     time_vals = _to_plot_time(monthly.time.values)
-                    # Label once (first panel) to avoid legend duplicates
-                    lbl = (bench["label"]
-                           if (hemi == "nh" and extreme == "max")
-                           else "_nolegend_")
+                    vals = monthly.values * scale
+                    if anomaly:
+                        vals = vals - np.nanmean(vals)
+                    # Each panel has its own legend, so label the benchmark in
+                    # every panel (NH and SH) — not just NH March.
                     ax.plot(
-                        time_vals, monthly.values * scale,
-                        label=lbl, color=bench["color"],
+                        time_vals, vals,
+                        label=bench["label"], color=bench["color"],
                         linewidth=1.5, linestyle="--",
                     )
 
@@ -1048,7 +1175,10 @@ class SeaIceDiag(DiagnosticBase):
                     if len(monthly) > 0:
                         color = self.config.get_model_color(model)
                         time_vals = _to_plot_time(monthly.time.values)
-                        ax.plot(time_vals, monthly.values * scale,
+                        vals = monthly.values * scale
+                        if anomaly:
+                            vals = vals - np.nanmean(vals)
+                        ax.plot(time_vals, vals,
                                 label=model, color=color, linewidth=1.5)
                         if model not in all_models:
                             all_models.append(model)
@@ -1059,28 +1189,56 @@ class SeaIceDiag(DiagnosticBase):
                 monthly = ts.where(ts["time.month"] == month, drop=True)
                 if len(monthly) > 0:
                     time_vals = _to_plot_time(monthly.time.values)
-                    ax.plot(time_vals, monthly.values * scale,
+                    vals = monthly.values * scale
+                    if anomaly:
+                        vals = vals - np.nanmean(vals)
+                    ax.plot(time_vals, vals,
                             label=obs_label, color=OBS_COLOR, linewidth=2)
 
             ax.set_title(f"{hemi_label} {month_label}")
-            ax.set_ylabel(f"{info['long_name']} ({info['units']})")
+            ylabel = f"{info['long_name']} ({info['units']})"
+            if anomaly:
+                ylabel = f"{info['long_name']} anomaly ({info['units']})"
+            ax.set_ylabel(ylabel)
+            if anomaly:
+                ax.axhline(0.0, color="0.6", linewidth=0.8, zorder=0)
             ax.legend(fontsize=8)
             ax.grid(True, alpha=0.3)
 
-        fig.suptitle(
-            f"{info['long_name']} — March & September Trends", fontsize=13,
-        )
+        suptitle = f"{info['long_name']} — March & September Trends"
+        if anomaly:
+            suptitle = (
+                f"{info['long_name']} — March & September Anomalies "
+                f"(relative to each series' mean)"
+            )
+        fig.suptitle(suptitle, fontsize=13)
         plt.tight_layout()
 
-        meta = self._build_metadata(
-            title=f"{info['long_name']} March & September Trends",
-            figure_id=f"sea_ice_{metric}_extremes",
-            models=all_models,
-            description=(
-                f"Annual {info['long_name'].lower()} for March and September: "
+        fig_id = f"sea_ice_{metric}_extremes"
+        if anomaly:
+            fig_id = f"sea_ice_{metric}_extremes_anomaly"
+        desc = (
+            f"Annual {info['long_name'].lower()} for March and September: "
+            f"NH March (annual max) / September (annual min), "
+            f"SH September (annual max) / March (annual min)."
+        )
+        if anomaly:
+            desc = (
+                f"Anomalies (each series minus its own temporal mean) of "
+                f"annual {info['long_name'].lower()} for March and September: "
                 f"NH March (annual max) / September (annual min), "
-                f"SH September (annual max) / March (annual min)."
+                f"SH September (annual max) / March (annual min). "
+                f"Removing the mean state isolates inter-model differences in "
+                f"variability and trend."
+            )
+        meta = self._build_metadata(
+            title=(
+                f"{info['long_name']} March & September "
+                f"{'Anomalies' if anomaly else 'Trends'}"
             ),
+            figure_id=fig_id,
+            models=all_models,
+            description=desc,
             plot_type="monthly_trends",
             period=self.period,
             obs_dataset="OSI_SAF" if metric != "volume" else "PSC",
@@ -1295,6 +1453,223 @@ class SeaIceDiag(DiagnosticBase):
 
     # ── Helpers for polar bias regridding ────────────────────────────────
 
+    _MONTH_NAMES = {3: "march", 9: "september"}
+
+    @staticmethod
+    def _model_family(name: str) -> str:
+        """Collapse an ensemble member to its model family.
+
+        Strips a trailing member suffix like ``-r2``/``-r3`` so
+        IFS-NEMO-ER, IFS-NEMO-ER-r2 and IFS-NEMO-ER-r3 all map to the
+        family ``IFS-NEMO-ER``. Single-member models are unchanged.
+        """
+        return re.sub(r"-r\d+$", "", str(name))
+
+    @classmethod
+    def _aggregate_family_biases(
+        cls,
+        model_biases: dict[str, dict[int, np.ndarray]],
+        models_used: list[str],
+        months: list[int],
+    ) -> tuple[
+        dict[str, dict[int, np.ndarray]],  # family → {month → mean bias}
+        list[str],                          # ordered families
+        dict[str, list[str]],               # family → member names
+    ]:
+        """Average per-member biases into per-family mean biases.
+
+        Members sharing a family (see :meth:`_model_family`) are averaged
+        cell-by-cell (NaN-aware) for each month. Family order follows first
+        appearance in ``models_used``.
+        """
+        families: list[str] = []
+        fam_members: dict[str, list[str]] = {}
+        for m in models_used:
+            fam = cls._model_family(m)
+            if fam not in fam_members:
+                fam_members[fam] = []
+                families.append(fam)
+            fam_members[fam].append(m)
+
+        fam_biases: dict[str, dict[int, np.ndarray]] = {}
+        for fam in families:
+            per_month: dict[int, np.ndarray] = {}
+            for month in months:
+                arrs = [
+                    model_biases[m][month]
+                    for m in fam_members[fam]
+                    if month in model_biases.get(m, {})
+                    and model_biases[m].get(month) is not None
+                ]
+                if arrs:
+                    # Cells that are NaN across all members stay NaN — the
+                    # "Mean of empty slice" warning there is expected.
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", RuntimeWarning)
+                        per_month[month] = np.nanmean(
+                            np.stack(arrs, axis=0), axis=0,
+                        )
+            fam_biases[fam] = per_month
+        return fam_biases, families, fam_members
+
+    @staticmethod
+    def _grid_signature(src_lat: np.ndarray, src_lon: np.ndarray) -> tuple:
+        """Cache key capturing a source grid's size AND coordinate orientation.
+
+        Point count alone is ambiguous: two grids can share ``n_src`` yet
+        order their latitude axis oppositely (ascending vs descending). A
+        nereus interpolator built on one ordering mirrors the field if reused
+        on the other, so the endpoints are folded into the key.
+        """
+        return (
+            len(src_lon),
+            round(float(src_lat[0]), 4), round(float(src_lat[-1]), 4),
+            round(float(src_lon[0]), 4), round(float(src_lon[-1]), 4),
+        )
+
+    @staticmethod
+    def _weighted_mean_rmse(
+        bias: np.ndarray, lat: np.ndarray,
+    ) -> tuple[float, float]:
+        """cos(lat)-weighted mean and RMSE of a 1-D polar bias field.
+
+        NaN cells (land / outside the ice mask) are skipped.  Returns
+        ``(nan, nan)`` when no finite values remain.
+        """
+        w = np.cos(np.deg2rad(np.asarray(lat, dtype=float)))
+        b = np.asarray(bias, dtype=float)
+        finite = np.isfinite(b) & np.isfinite(w)
+        if not finite.any():
+            return float("nan"), float("nan")
+        bb, ww = b[finite], w[finite]
+        wsum = float(ww.sum())
+        if wsum <= 0:
+            return float("nan"), float("nan")
+        mean = float((ww * bb).sum() / wsum)
+        rmse = float(np.sqrt((ww * bb ** 2).sum() / wsum))
+        return mean, rmse
+
+    def _polar_bias_stats(
+        self,
+        model_biases: dict,
+        lat_polar: np.ndarray,
+        months: list[int],
+    ) -> dict[str, dict[str, float]]:
+        """Per-model cos-lat-weighted mean bias + RMSE for each month.
+
+        Returns ``{model: {"<month>_mean_bias": .., "<month>_rmse": ..}}``
+        for use as figure ``summary_statistics``.
+        """
+        stats: dict[str, dict[str, float]] = {}
+        for model, by_month in model_biases.items():
+            s: dict[str, float] = {}
+            for month in months:
+                bias = by_month.get(month)
+                if bias is None:
+                    continue
+                mean, rmse = self._weighted_mean_rmse(bias, lat_polar)
+                mname = self._MONTH_NAMES.get(month, str(month))
+                s[f"{mname}_mean_bias"] = mean
+                s[f"{mname}_rmse"] = rmse
+            if s:
+                stats[model] = s
+        return stats
+
+    # ── Plotting: Per-model mean-bias bars (Group G) ─────────────────────
+
+    def _plot_mean_bias_bars(
+        self, var: str,
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Bar chart of area-weighted mean bias per model (Arctic + Antarctic).
+
+        One figure per variable: two panels (Arctic, Antarctic), grouped bars
+        per model for March and September.  Mean bias is the cos(lat)-weighted
+        mean of (model − obs) over the polar cap.  The per-model mean/RMSE are
+        also written to the figure's ``summary_statistics``.
+        """
+        is_conc = var == "siconc"
+        var_label = "Sea Ice Concentration" if is_conc else "Sea Ice Thickness"
+        units = "fraction" if is_conc else "m"
+
+        hemi_configs = [
+            ("np", "Arctic", [3, 9]),
+            ("sp", "Antarctic", [9, 3]),
+        ]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        summary: dict[str, dict[str, float]] = {}
+        all_models: list[str] = []
+        any_data = False
+
+        for ax, (pole, hemi_label, months) in zip(axes, hemi_configs):
+            _obs, model_biases, _plon, plat, models_used = (
+                self._build_polar_bias_data(var, pole, months)
+            )
+            if not models_used:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center",
+                        transform=ax.transAxes)
+                ax.set_title(hemi_label)
+                continue
+            any_data = True
+
+            month_names = [self._MONTH_NAMES[m].capitalize() for m in months]
+            x = np.arange(len(models_used))
+            width = 0.38
+            for j, month in enumerate(months):
+                vals = []
+                for model in models_used:
+                    bias = model_biases.get(model, {}).get(month)
+                    if bias is None:
+                        vals.append(np.nan)
+                        continue
+                    mean, rmse = self._weighted_mean_rmse(bias, plat)
+                    vals.append(mean)
+                    key = f"{hemi_label.lower()}_{month_names[j].lower()}"
+                    summary.setdefault(model, {})[f"{key}_mean_bias"] = mean
+                    summary.setdefault(model, {})[f"{key}_rmse"] = rmse
+                ax.bar(x + (j - 0.5) * width, vals, width,
+                       label=month_names[j])
+
+            for m in models_used:
+                if m not in all_models:
+                    all_models.append(m)
+            ax.axhline(0, color="k", linewidth=0.8)
+            ax.set_xticks(x)
+            ax.set_xticklabels(models_used, rotation=45, ha="right", fontsize=8)
+            ax.set_title(hemi_label)
+            ax.set_ylabel(f"Mean bias ({units})")
+            ax.legend(fontsize=8)
+            ax.grid(True, axis="y", alpha=0.3)
+
+        if not any_data:
+            plt.close(fig)
+            logger.warning("No data for %s_mean_bias — skipping", var)
+            return []
+
+        fig.suptitle(
+            f"{var_label} — Area-weighted Mean Bias per Model (model − obs)",
+            fontsize=13,
+        )
+        plt.tight_layout()
+
+        meta = self._build_metadata(
+            title=f"{var_label} Mean Bias per Model",
+            figure_id=f"{var}_mean_bias",
+            models=all_models,
+            variables=[var],
+            description=(
+                f"cos(lat)-weighted mean bias (model − obs) of "
+                f"{var_label.lower()} over the polar cap, per model, for "
+                f"March and September in each hemisphere. Positive = model "
+                f"overestimates ice."
+            ),
+            plot_type="bar_chart",
+            period=self.period,
+            obs_dataset="OSI_SAF" if is_conc else "PSC",
+            summary_statistics=summary,
+        )
+        return [(fig, meta)]
+
     def _build_polar_bias_data(
         self,
         var: str,
@@ -1364,7 +1739,7 @@ class SeaIceDiag(DiagnosticBase):
             return {}, {}, np.array([]), np.array([]), []
 
         # --- Regrid models to same common grid and compute biases ---
-        _model_interp_cache: dict[int, Any] = {}
+        _model_interp_cache: dict[tuple, Any] = {}
         model_biases: dict[str, dict[int, np.ndarray]] = {}
         models_used: list[str] = []
 
@@ -1386,6 +1761,14 @@ class SeaIceDiag(DiagnosticBase):
                 src_lat = np.asarray(lat)
             src_lon = np.where(src_lon < 0, src_lon + 360.0, src_lon)
             n_src = len(src_lon)
+            # Key the interpolator cache by a grid SIGNATURE, not just the
+            # point count.  Two models can share n_src yet differ in
+            # coordinate orientation — e.g. IFS-NEMO r1 has descending
+            # latitude (90→−90) while r2/r3 ascend (−90→90).  Reusing one
+            # interpolator across them remaps every cell to its
+            # latitudinally-mirrored location, swapping NH↔SH and making
+            # r2/r3 look "opposite" to r1.
+            grid_key = self._grid_signature(src_lat, src_lon)
 
             biases: dict[int, np.ndarray] = {}
             for month in months:
@@ -1394,7 +1777,7 @@ class SeaIceDiag(DiagnosticBase):
                 clim = da.sel(time=da.time.dt.month == month).mean("time")
                 clim_vals = clim.values.ravel()
 
-                if n_src not in _model_interp_cache:
+                if grid_key not in _model_interp_cache:
                     _, m_interp = nr.regrid(
                         clim_vals,
                         lon=src_lon,
@@ -1404,9 +1787,9 @@ class SeaIceDiag(DiagnosticBase):
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
                     )
-                    _model_interp_cache[n_src] = m_interp
+                    _model_interp_cache[grid_key] = m_interp
                 else:
-                    m_interp = _model_interp_cache[n_src]
+                    m_interp = _model_interp_cache[grid_key]
 
                 model_common = np.asarray(m_interp(clim_vals)).ravel()[polar_mask]
                 biases[month] = model_common - obs_common[month]
@@ -1443,13 +1826,13 @@ class SeaIceDiag(DiagnosticBase):
             hemi_label = "Antarctic"
 
         if is_conc:
-            obs_cmap, bias_cmap = "Blues_r", "RdBu_r"
+            obs_cmap, bias_cmap = "Blues_r", "RdBu"
             vmin_obs, vmax_obs, vmax_bias = 0.0, 1.0, 0.3
             var_label, obs_units = "Sea Ice Concentration", "fraction"
         else:
             import cmocean
             obs_cmap = cmocean.cm.tempo
-            bias_cmap = "RdBu_r"
+            bias_cmap = "RdBu"
             vmin_obs, vmax_obs, vmax_bias = 0.0, 4.0, 1.5
             var_label, obs_units = "Sea Ice Thickness", "m"
 
@@ -1461,6 +1844,8 @@ class SeaIceDiag(DiagnosticBase):
         if not obs_common or not models_used:
             logger.warning("No data for %s — skipping", figure_id)
             return []
+
+        bias_stats = self._polar_bias_stats(model_biases, plat, months)
 
         nrows = len(months)
         ncols = 1 + len(models_used)
@@ -1534,6 +1919,138 @@ class SeaIceDiag(DiagnosticBase):
             period=self.period,
             spatial_extent="NH" if pole == "np" else "SH",
             obs_dataset="OSI_SAF" if is_conc else "PSC",
+            summary_statistics=bias_stats,
+        )
+        return [(fig, meta)]
+
+    # ── Plotting: Per-family bias maps (Group H) ─────────────────────────
+
+    def _plot_family_bias_spatial(
+        self, figure_id: str, var: str, pole: str,
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Polar bias maps with one column per model family (mean over members).
+
+        Layout mirrors :meth:`_plot_bias_spatial` but collapses ensemble
+        members into their family (e.g. IFS-FESOM, IFS-NEMO, ICON, HadGEM):
+        obs climatology column + one mean-bias column per family.
+        """
+        import cartopy.crs as ccrs
+
+        is_conc = var == "siconc"
+        if pole == "np":
+            proj = ccrs.NorthPolarStereo()
+            extent = (-180, 180, 50, 90)
+            months = [3, 9]
+            month_labels = ["March", "September"]
+            hemi_label = "Arctic"
+        else:
+            proj = ccrs.SouthPolarStereo()
+            extent = (-180, 180, -90, -50)
+            months = [9, 3]
+            month_labels = ["September", "March"]
+            hemi_label = "Antarctic"
+
+        if is_conc:
+            obs_cmap, bias_cmap = "Blues_r", "RdBu"
+            vmin_obs, vmax_obs, vmax_bias = 0.0, 1.0, 0.3
+            var_label, obs_units = "Sea Ice Concentration", "fraction"
+        else:
+            import cmocean
+            obs_cmap = cmocean.cm.tempo
+            bias_cmap = "RdBu"
+            vmin_obs, vmax_obs, vmax_bias = 0.0, 4.0, 1.5
+            var_label, obs_units = "Sea Ice Thickness", "m"
+
+        resolution = float(self.config.nereus.get("resolution", 0.25))
+
+        obs_common, model_biases, plon, plat, models_used = (
+            self._build_polar_bias_data(var, pole, months)
+        )
+        if not obs_common or not models_used:
+            logger.warning("No data for %s — skipping", figure_id)
+            return []
+
+        fam_biases, families, fam_members = self._aggregate_family_biases(
+            model_biases, models_used, months,
+        )
+        fam_stats = self._polar_bias_stats(fam_biases, plat, months)
+
+        nrows = len(months)
+        ncols = 1 + len(families)
+        fig, axes = plt.subplots(
+            nrows, ncols,
+            figsize=(5 * ncols, 5 * nrows),
+            subplot_kw={"projection": proj},
+        )
+        if nrows == 1:
+            axes = axes[np.newaxis, :]
+        if ncols == 1:
+            axes = axes[:, np.newaxis]
+
+        import nereus as nr
+
+        for row, (month, mlabel) in enumerate(zip(months, month_labels)):
+            ax = axes[row, 0]
+            if month in obs_common:
+                nr.plot(
+                    obs_common[month], plon, plat,
+                    ax=ax, projection=pole, extent=extent,
+                    cmap=obs_cmap, vmin=vmin_obs, vmax=vmax_obs,
+                    land=True, resolution=resolution,
+                    title=f"Obs {mlabel}", colorbar=False,
+                )
+            for col, fam in enumerate(families, start=1):
+                ax = axes[row, col]
+                bias = fam_biases.get(fam, {}).get(month)
+                if bias is not None:
+                    n_mem = len(fam_members[fam])
+                    suffix = f" (n={n_mem})" if n_mem > 1 else ""
+                    nr.plot(
+                        bias, plon, plat,
+                        ax=ax, projection=pole, extent=extent,
+                        cmap=bias_cmap, vmin=-vmax_bias, vmax=vmax_bias,
+                        land=True, resolution=resolution,
+                        title=f"{fam}{suffix} − Obs {mlabel}", colorbar=False,
+                    )
+
+        fig.suptitle(
+            f"{hemi_label} {var_label} — Mean Bias per Model",
+            fontsize=13, y=0.98,
+        )
+        fig.subplots_adjust(wspace=0.05, hspace=0.15, bottom=0.12)
+
+        cbar_obs_ax = fig.add_axes([0.05, 0.04, 0.18, 0.025])
+        sm_obs = plt.cm.ScalarMappable(
+            cmap=obs_cmap, norm=plt.Normalize(vmin=vmin_obs, vmax=vmax_obs),
+        )
+        sm_obs.set_array([])
+        fig.colorbar(sm_obs, cax=cbar_obs_ax, orientation="horizontal",
+                     label=f"Climatology ({obs_units})")
+
+        cbar_bias_ax = fig.add_axes([0.30, 0.04, 0.55, 0.025])
+        sm_bias = plt.cm.ScalarMappable(
+            cmap=bias_cmap, norm=plt.Normalize(vmin=-vmax_bias, vmax=vmax_bias),
+        )
+        sm_bias.set_array([])
+        fig.colorbar(sm_bias, cax=cbar_bias_ax, orientation="horizontal",
+                     label=f"Mean Bias ({obs_units})")
+
+        meta = self._build_metadata(
+            title=f"{hemi_label} {var_label} Mean Bias per Model",
+            figure_id=figure_id,
+            models=families,
+            variables=[var],
+            description=(
+                f"Polar stereographic mean-bias maps ({hemi_label}) of "
+                f"{var_label.lower()} for March and September. "
+                f"Column 1: obs climatology. Remaining columns: per-model-"
+                f"family mean bias (members averaged) minus obs."
+            ),
+            plot_type="bias_map",
+            period=self.period,
+            spatial_extent="NH" if pole == "np" else "SH",
+            obs_dataset="OSI_SAF" if is_conc else "PSC",
+            summary_statistics=fam_stats,
         )
         return [(fig, meta)]
 
@@ -1552,13 +2069,13 @@ class SeaIceDiag(DiagnosticBase):
 
         is_conc = var == "siconc"
         if is_conc:
-            obs_cmap, bias_cmap = "Blues_r", "RdBu_r"
+            obs_cmap, bias_cmap = "Blues_r", "RdBu"
             vmin_obs, vmax_obs, vmax_bias = 0.0, 1.0, 0.3
             var_label, obs_units = "Sea Ice Concentration", "fraction"
         else:
             import cmocean
             obs_cmap = cmocean.cm.tempo
-            bias_cmap = "RdBu_r"
+            bias_cmap = "RdBu"
             vmin_obs, vmax_obs, vmax_bias = 0.0, 4.0, 1.5
             var_label, obs_units = "Sea Ice Thickness", "m"
 
@@ -1585,6 +2102,7 @@ class SeaIceDiag(DiagnosticBase):
         gs = GridSpec(nrows, ncols, figure=fig, wspace=0.05, hspace=0.15)
 
         all_models_used: list[str] = []
+        ens_stats: dict[str, dict[str, float]] = {}
         global_row = 0
 
         for pole, proj, extent, months, month_labels, hemi_label in hemi_configs:
@@ -1594,6 +2112,11 @@ class SeaIceDiag(DiagnosticBase):
             for m in models_used:
                 if m not in all_models_used:
                     all_models_used.append(m)
+            # Per-model polar-cap stats also feed the JSON summary.
+            for model, mstats in self._polar_bias_stats(
+                model_biases, plat, months,
+            ).items():
+                ens_stats.setdefault(model, {}).update(mstats)
 
             for month_idx, (month, mlabel) in enumerate(zip(months, month_labels)):
                 row = global_row + month_idx
@@ -1625,6 +2148,15 @@ class SeaIceDiag(DiagnosticBase):
                         warnings.simplefilter("ignore", RuntimeWarning)
                         ens_mean = np.nanmean(bias_stack, axis=0)
                         ens_median = np.nanmedian(bias_stack, axis=0)
+
+                    em_mean, em_rmse = self._weighted_mean_rmse(ens_mean, plat)
+                    emed_mean, _ = self._weighted_mean_rmse(ens_median, plat)
+                    skey = f"ensemble_{hemi_label.lower()}_{mlabel.lower()}"
+                    ens_stats[skey] = {
+                        "ens_mean_bias": em_mean,
+                        "ens_mean_rmse": em_rmse,
+                        "ens_median_bias": emed_mean,
+                    }
 
                     nr.plot(
                         ens_mean, plon, plat,
@@ -1679,6 +2211,7 @@ class SeaIceDiag(DiagnosticBase):
             plot_type="bias_map",
             period=self.period,
             obs_dataset="OSI_SAF" if is_conc else "PSC",
+            summary_statistics=ens_stats,
         )
         return [(fig, meta)]
 

@@ -465,3 +465,67 @@ def _get_spatial_dim(da: xr.DataArray) -> str:
         if dim not in ("time", "depth", "level", "month", "lat", "lon"):
             return dim
     raise ValueError(f"Cannot identify spatial dimension in {da.dims}")
+
+
+def zonal_profile_to_axis(
+    da: xr.DataArray, target_lat: np.ndarray,
+) -> xr.DataArray | None:
+    """Zonal-mean a (time-mean) 2-D field onto a fixed latitude axis.
+
+    Handles three native layouts and always returns a 1-D profile on
+    *target_lat* (so heterogeneous members can be stacked + averaged):
+
+    * **Rectilinear** — a ``lon``/``longitude`` dimension is present: take the
+      mean over it, then linearly interpolate the latitude profile.
+    * **Unstructured** — 1-D ``lat``/``latitude`` coordinate on a single
+      non-lat spatial dim (e.g. ICON's ``i``/``ncells``): bin cell values into
+      latitude bands centred on *target_lat* and average within each band.
+
+    Returns ``None`` when no latitude information can be found.
+    """
+    lat_name = "lat" if "lat" in da.coords else (
+        "latitude" if "latitude" in da.coords else None
+    )
+    if lat_name is None:
+        return None
+
+    lon_dim = None
+    for cand in ("lon", "longitude"):
+        if cand in da.dims:
+            lon_dim = cand
+            break
+
+    # Rectilinear: average the longitude dimension, then interpolate.
+    if lon_dim is not None and lat_name in da.dims:
+        zm = da.mean(lon_dim)
+        if lat_name != "lat":
+            zm = zm.rename({lat_name: "lat"})
+        zm = zm.sortby("lat")
+        zm = zm.interp(lat=target_lat)
+        # Return a clean lat-only profile.  Scalar coords (e.g. ``height`` at
+        # 2 m for tas) appear on some members but not others and would break
+        # ``xr.concat`` across members ("'height' not present in all datasets").
+        drop = [c for c in zm.coords if c != "lat"]
+        return zm.drop_vars(drop) if drop else zm
+
+    # Unstructured: 1-D lat coord parallel to the data — bin by latitude.
+    lat_vals = np.asarray(da[lat_name].values).ravel()
+    data_vals = np.asarray(da.values).ravel()
+    if lat_vals.shape != data_vals.shape:
+        return None
+
+    target_lat = np.asarray(target_lat, dtype=float)
+    mids = (target_lat[:-1] + target_lat[1:]) / 2.0
+    edges = np.concatenate((
+        [target_lat[0] - (mids[0] - target_lat[0])],
+        mids,
+        [target_lat[-1] + (target_lat[-1] - mids[-1])],
+    ))
+    bin_idx = np.digitize(lat_vals, edges) - 1
+    out = np.full(target_lat.shape, np.nan, dtype=float)
+    finite = np.isfinite(data_vals)
+    for b in range(target_lat.size):
+        m = finite & (bin_idx == b)
+        if m.any():
+            out[b] = np.nanmean(data_vals[m])
+    return xr.DataArray(out, dims=["lat"], coords={"lat": target_lat})

@@ -421,6 +421,117 @@ class TestDataLoading:
         assert len(shared["model_monthly"]) == 2
 
 
+class TestEnsembleBias:
+    """Group A: ensemble bias summary panel."""
+
+    def _two_model_cfg(self, tmp_path):
+        return FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom", "ifs-nemo"],
+            obs_root="",
+            obs_datasets={"MSWEP": {"path": "/fake", "variables": {"pr": "fake"}}},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+        )
+
+    def test_ensemble_bias_figure(self, synth_precip_healpix, synth_mswep,
+                                  tmp_path):
+        """≥2 models → an ensemble bias summary figure is produced."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, self._two_model_cfg(tmp_path))
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        assert results["ens_data"], "ens_data should be populated for 2 models"
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert "pr_annual_ens_bias_combined" in fids
+        plt.close("all")
+
+    def test_ensemble_only_skips_per_model(self, synth_precip_healpix,
+                                           synth_mswep, tmp_path):
+        """ensemble_only=True → only ens figures, no per-model bias maps."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from feather.diag.precipitation_mswep import PrecipitationMSWEP
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = PrecipitationMSWEP(
+            loader, obs, self._two_model_cfg(tmp_path),
+            experiment="hist", period=("1990", "1990"), ensemble_only=True,
+        )
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert fids, "expected ensemble figures"
+        assert all("ens_bias" in f for f in fids)
+        assert "pr_annual_bias_combined" not in fids
+        plt.close("all")
+
+    def test_no_ensemble_bias_for_single_model(
+        self, synth_precip_healpix, synth_mswep, precip_config,
+    ):
+        """1 model → no ensemble figure (ens_data empty)."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, precip_config)
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        assert results["ens_data"] == {}
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert not any("ens_bias" in f for f in fids)
+        plt.close("all")
+
+    def test_cmip6_zonal_mean_mismatched_grids(
+        self, synth_precip_healpix, synth_mswep, cmip6_precip_config,
+    ):
+        """MMM zonal profile is non-empty when members differ in grid.
+
+        Regression: xr.align(join="inner") on native latitudes left an empty
+        intersection across heterogeneous resolutions (invisible MMM line).
+        """
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        # Minimal CMIP6 loader just to enable cmip6_enabled; the MMM is
+        # computed from the explicit _MismatchLoader passed to the method.
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        cmip6_ds = xr.Dataset({"pr": _make_precip_field(lats, lons)})
+        diag = _make_diag(loader, obs, cmip6_precip_config,
+                          cmip6_loader=MockCMIP6PrecipLoader(cmip6_ds))
+
+        class _MismatchLoader:
+            def get_member_pairs(self, ensemble_mode=None):
+                return [("MA", "r1i1p1f1"), ("MB", "r1i1p1f1")]
+
+            def load_var_for_model_var(self, var, model, **kwargs):
+                lats = (np.arange(-88.75, 90, 2.5) if model == "MA"
+                        else np.arange(-88.0, 90, 4.0))
+                lons = np.arange(0, 360, 5.0)
+                data = np.broadcast_to(
+                    (3e-5 * np.cos(np.deg2rad(lats)))[:, None],
+                    (len(lats), len(lons)),
+                ).astype(float)
+                return xr.DataArray(
+                    data, dims=("lat", "lon"),
+                    coords={"lat": lats, "lon": lons},
+                )
+
+        zm = diag._compute_cmip6_zonal_mean(loader=_MismatchLoader())
+        assert zm is not None
+        assert zm.sizes["lat"] == len(np.arange(-89.5, 90.0, 1.0))
+        interior = zm.sel(lat=slice(-80, 80))
+        assert bool(np.isfinite(interior).all())
+
+
 class TestBiasMaps:
     """Group A: Absolute bias maps."""
 

@@ -37,6 +37,51 @@ def test_is_griddable_accepts_named_lat_dim():
     assert CMIP6Loader._is_griddable(da)
 
 
+def test_is_griddable_accepts_unstructured_with_1d_latlon():
+    # ICON triangular grid: single spatial dim 'i' carrying 1-D lat/lon
+    # cell-centre coords → regriddable as scattered points.
+    n = 8
+    da = xr.DataArray(
+        np.zeros((2, n)), dims=("time", "i"),
+        coords={
+            "latitude": (("i",), np.linspace(-89, 89, n)),
+            "longitude": (("i",), np.linspace(0, 359, n)),
+        },
+    )
+    assert CMIP6Loader._is_griddable(da)
+
+
+def test_is_griddable_still_rejects_index_without_latlon():
+    # Same shape but no lat/lon coords on 'i' → cannot regrid.
+    da = xr.DataArray(np.zeros((2, 8)), dims=("time", "i"))
+    assert not CMIP6Loader._is_griddable(da)
+
+
+def _monthly(start, end):
+    t = xr.date_range(start, end, freq="MS", use_cftime=True)
+    return xr.DataArray(np.ones(len(t)), dims="time", coords={"time": t})
+
+
+def test_covers_period_full():
+    assert CMIP6Loader._covers_period(_monthly("1980-01", "2014-12"),
+                                      ("1980", "2014"))
+
+
+def test_covers_period_rejects_late_start():
+    assert not CMIP6Loader._covers_period(_monthly("2001-01", "2014-12"),
+                                          ("1980", "2014"))
+
+
+def test_covers_period_rejects_early_end():
+    assert not CMIP6Loader._covers_period(_monthly("1980-01", "2005-12"),
+                                          ("1980", "2014"))
+
+
+def test_covers_period_no_time_dim_is_true():
+    da = xr.DataArray(np.zeros((3, 3)), dims=("lat", "lon"))
+    assert CMIP6Loader._covers_period(da, ("1980", "2014"))
+
+
 def _mk_store(zdir: Path, name: str) -> None:
     (zdir / name).mkdir(parents=True, exist_ok=True)
 

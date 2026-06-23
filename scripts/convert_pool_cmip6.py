@@ -20,11 +20,11 @@ Examples
 --------
     python scripts/convert_pool_cmip6.py --activity CMIP \
         --experiment historical --period 1980 2014 \
-        --out /scratch/a/a270292/EERIE/cmip6_pool_zarr/cmip6_historical -v
+        --out /work/bm1344/AWI/EERIE/cmip6_pool_zarr/cmip6_historical -v
 
     python scripts/convert_pool_cmip6.py --activity HighResMIP \
         --experiment hist-1950 --period 1980 2014 \
-        --out /scratch/a/a270292/EERIE/cmip6_pool_zarr/highresmip_hist-1950 -v
+        --out /work/bm1344/AWI/EERIE/cmip6_pool_zarr/highresmip_hist-1950 -v
 """
 
 from __future__ import annotations

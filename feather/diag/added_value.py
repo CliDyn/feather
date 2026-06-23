@@ -23,6 +23,7 @@ added value. Climate Dynamics, 44(9-10), 2637-2661.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ import xarray as xr
 
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
+from feather.diag.netcdf_export import sanitize_name
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_map
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
@@ -93,13 +95,14 @@ class AddedValueDiag(DiagnosticBase):
         config,
         *,
         cmip6_loader=None,
+        benchmarks=None,
         variables=None,
         experiment="baseline_hist",
         period=("1990", "2014"),
         cmip6_individual=False,
     ):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -107,6 +110,31 @@ class AddedValueDiag(DiagnosticBase):
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
+
+        # Activate the primary benchmark (sets token/labels/active loader).
+        # AV iterates over all benchmarks in run(); each pass re-activates.
+        self._set_active_benchmark(self.cmip6_loader)
+
+    def _set_active_benchmark(self, loader) -> None:
+        """Set the active AV reference benchmark and derived names/token.
+
+        - ``cmip6_loader`` becomes the AV reference used by the compute path.
+        - ``_bench_suffix`` disambiguates figure IDs / NetCDF filenames when
+          the same output dir holds multiple benchmarks (e.g. CMIP6 vs
+          HighResMIP).  The default CMIP6 benchmark stays token-less so
+          existing outputs are unchanged.
+        - ``_bench_label`` / ``_bench_name`` drive the figure text.
+        """
+        self.cmip6_loader = loader
+        label = getattr(loader, "label", "CMIP6 MMM") or "CMIP6 MMM"
+        tok = re.sub(r"\s*MMM\s*$", "", str(label)).strip().lower()
+        tok = re.sub(r"[^a-z0-9]+", "_", tok).strip("_") or "cmip6"
+        self._benchmark_token = tok
+        self._bench_suffix = "" if tok == "cmip6" else f"_{tok}"
+        self._bench_label = str(label)
+        self._bench_name = re.sub(
+            r"\s*MMM\s*$", "", str(label)).strip() or "CMIP6"
+        self.title = f"Added Value (ensemble vs {self._bench_name})"
 
     # -- Output paths -------------------------------------------------------
 
@@ -117,7 +145,9 @@ class AddedValueDiag(DiagnosticBase):
 
     def _nc_path(self, var: str, period: str, ensemble_type: str) -> Path:
         """Return path for a single AV NetCDF file."""
-        return self.nc_dir / f"{var}_{period}_{ensemble_type}_av.nc"
+        return self.nc_dir / (
+            f"{var}_{period}_{ensemble_type}_av{self._bench_suffix}.nc"
+        )
 
     def _all_nc_exist(self, var: str) -> bool:
         """True when all 10 NC files (5 periods × 2 ensemble types) exist."""
@@ -134,26 +164,50 @@ class AddedValueDiag(DiagnosticBase):
             d for d in self._MULTI_OBS_DATASETS.get(var, [])
             if d != primary_obs
         ]
+        bs = self._bench_suffix
         for p in ("annual", "djf", "mam", "jja", "son"):
-            if not self._figure_exists(f"{var}_{p}_added_value"):
+            if not self._figure_exists(f"{var}_{p}_added_value{bs}"):
                 return False
-            if not self._figure_exists(f"{var}_{p}_added_value_models"):
+            if not self._figure_exists(f"{var}_{p}_added_value_models{bs}"):
                 return False
             for sec_obs in secondary_obs:
                 suffix = self._OBS_FIGURE_SUFFIX.get(sec_obs, sec_obs.lower())
-                if not self._figure_exists(f"{var}_{p}_added_value_{suffix}"):
+                if not self._figure_exists(f"{var}_{p}_added_value_{suffix}{bs}"):
                     return False
-                if not self._figure_exists(f"{var}_{p}_added_value_models_{suffix}"):
+                if not self._figure_exists(f"{var}_{p}_added_value_models_{suffix}{bs}"):
                     return False
         return True
 
     def _bars_models_eerie_id(self, period_key: str) -> str:
         """Figure ID for the EERIE-only (no CMIP6 bar) models bar chart."""
-        return f"added_value_bars_models_eerie_{period_key}_{self.period[0]}_{self.period[1]}"
+        return (
+            f"added_value_bars_models_eerie_{period_key}"
+            f"_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
+        )
 
     # -- Orchestration -------------------------------------------------------
 
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
+        """Run Added Value against every configured benchmark.
+
+        Each benchmark (CMIP6, HighResMIP, …) is used in turn as the AV
+        reference; its outputs are disambiguated by the benchmark token
+        (the default CMIP6 stays token-less).  This lets a single
+        ``--benchmarks cmip6 HighResMIP`` invocation produce both AV sets.
+        """
+        benches = self.benchmarks or [self.cmip6_loader]
+        saved: list[tuple[Path, Path]] = []
+        for bench in benches:
+            self._set_active_benchmark(bench)
+            logger.info(
+                "Added Value reference benchmark: %s", self._bench_label,
+            )
+            saved.extend(self._run_single_benchmark(skip_existing=skip_existing))
+        return saved
+
+    def _run_single_benchmark(
+        self, skip_existing: bool = True,
+    ) -> list[tuple[Path, Path]]:
         """Execute per-variable: compute → save NC → plot → save figures.
 
         NC files are the durable checkpoint.  If all NC files for a
@@ -174,7 +228,7 @@ class AddedValueDiag(DiagnosticBase):
                 logger.info("Skipping %s — all figures exist", var)
                 for p in ("annual", "djf", "mam", "jja", "son"):
                     for suffix in ("added_value", "added_value_models"):
-                        fid = f"{var}_{p}_{suffix}"
+                        fid = f"{var}_{p}_{suffix}{self._bench_suffix}"
                         saved.append((
                             self.output_dir / f"{fid}.png",
                             self.output_dir / f"{fid}.json",
@@ -227,7 +281,10 @@ class AddedValueDiag(DiagnosticBase):
                     (self._plot_summary_bars_ensemble, "ensemble"),
                     (self._plot_summary_bars_models,   "models"),
                 ):
-                    bar_id = f"added_value_bars_{fn_name}_{period_key}"
+                    bar_id = (
+                        f"added_value_bars_{fn_name}_{period_key}"
+                        f"{self._bench_suffix}"
+                    )
                     if skip_existing and self._figure_exists(bar_id):
                         saved.append((
                             self.output_dir / f"{bar_id}.png",
@@ -298,6 +355,19 @@ class AddedValueDiag(DiagnosticBase):
     _UNIT_FACTORS: dict[str, float] = {
         "pr": 86400.0,  # kg/m²/s → mm/day
     }
+
+    #: obs dataset name → the bias-map diagnostic whose NetCDF holds the
+    #: model/benchmark bias-vs-that-obs fields.  Added Value reuses these
+    #: precomputed biases (squared-error = bias²) instead of reloading and
+    #: regridding model data — see :meth:`_compute_variable_from_netcdf`.
+    _OBS_NETCDF_SOURCE: dict[str, str] = {
+        "ERA5": "global_biases",
+        "BERKELEY_EARTH_HR": "temperature_berkeley",
+        "MSWEP": "precipitation_mswep",
+    }
+
+    #: Period keys as written in the bias-map NetCDF filenames.
+    _NC_PERIOD_KEYS = ("annual", "DJF", "MAM", "JJA", "SON")
 
     def _load_obs_for_var(
         self, var: str, period: tuple[str, str],
@@ -423,8 +493,257 @@ class AddedValueDiag(DiagnosticBase):
                 results[var] = var_result
         return results
 
+    # -- NetCDF fast path ---------------------------------------------------
+
+    def _bias_nc_dir(self, diag_name: str) -> Path:
+        """Directory of the source diagnostic's bias NetCDFs."""
+        return Path(self.config.output_dir) / "netcdf" / diag_name
+
+    def _obs_names_for(self, var: str) -> list[str]:
+        """Obs datasets to evaluate for *var* (primary first), config-filtered."""
+        primary = self._OBS_ALT_DATASETS.get(var, "ERA5")
+        wanted = self._MULTI_OBS_DATASETS.get(var, ["ERA5"])
+        avail = [
+            n for n in wanted
+            if n == "ERA5" or n in self.config.obs_datasets
+        ]
+        if primary not in avail and (
+            primary == "ERA5" or primary in self.config.obs_datasets
+        ):
+            avail.append(primary)
+        # primary first, then the rest in declared order
+        return [primary] + [n for n in avail if n != primary]
+
+    def _read_period_biases(
+        self, var: str, obs_name: str, period_key: str,
+    ) -> dict[str, Any] | None:
+        """Read the bias fields for one (var, obs, period) from the source NC.
+
+        Returns a dict with ``bench``/``ens_mean``/``ens_median`` biases, a
+        ``models`` map of {EERIE model → bias}, and the grid ``area``/coords,
+        or ``None`` when the file or a required field is missing.
+        """
+        diag = self._OBS_NETCDF_SOURCE.get(obs_name)
+        if diag is None:
+            return None
+        path = self._bias_nc_dir(diag) / (
+            f"{var}_{period_key}_{self.period[0]}-{self.period[1]}.nc"
+        )
+        if not path.exists():
+            return None
+
+        ds = xr.open_dataset(path)
+        try:
+            bench_key = f"{sanitize_name(self._bench_label)}_bias"
+            if (bench_key not in ds
+                    or "ens_mean_bias" not in ds
+                    or "ens_median_bias" not in ds):
+                return None
+            models = {}
+            for model in self.config.models:
+                mkey = f"{sanitize_name(model)}_bias"
+                if mkey in ds:
+                    models[model] = ds[mkey].load()
+            if not models:
+                return None
+            bench = ds[bench_key].load()
+            lat = bench["lat"].values
+            lon = bench["lon"].values
+            return {
+                "bench": bench,
+                "ens_mean": ds["ens_mean_bias"].load(),
+                "ens_median": ds["ens_median_bias"].load(),
+                "models": models,
+                "area": compute_latlon_areas(lat, lon),
+            }
+        finally:
+            ds.close()
+
+    def _read_individual_biases(
+        self, var: str, obs_name: str, period_key: str,
+    ) -> dict[str, xr.DataArray]:
+        """Read individual benchmark-member biases for the active benchmark."""
+        diag = self._OBS_NETCDF_SOURCE.get(obs_name)
+        if diag is None:
+            return {}
+        path = self._bias_nc_dir(diag) / (
+            f"{var}_{period_key}_individual_"
+            f"{self.period[0]}-{self.period[1]}.nc"
+        )
+        if not path.exists():
+            return {}
+        prefix = sanitize_name(
+            re.sub(r"\s*MMM\s*$", "", self._bench_label)
+        )
+        out: dict[str, xr.DataArray] = {}
+        ds = xr.open_dataset(path)
+        try:
+            for name in ds.data_vars:
+                s = str(name)
+                if s.startswith(f"{prefix}__") and s.endswith("_bias"):
+                    member = s[len(prefix) + 2: -len("_bias")]
+                    out[member] = ds[name].load()
+        finally:
+            ds.close()
+        return out
+
+    def _compute_variable_from_netcdf(
+        self, var: str,
+    ) -> dict[str, Any] | None:
+        """Build the AV result for *var* by reusing precomputed bias fields.
+
+        Reads model/benchmark biases from the bias-map diagnostics' NetCDFs
+        (``tas`` ← temperature_berkeley, ``pr`` ← precipitation_mswep, other
+        vars ← global_biases; secondary ERA5 for tas/pr ← global_biases) and
+        computes Dosio AV as ``(bench_bias² − model_bias²)/max(...)``.  Returns
+        ``None`` (→ recompute fallback) when the primary obs NetCDF is absent.
+        """
+        if not self.cmip6_enabled:
+            return None
+
+        var_info = get_var(var)
+        primary_obs = self._OBS_ALT_DATASETS.get(var, "ERA5")
+        obs_names = self._obs_names_for(var)
+
+        av_by_obs: dict[str, dict] = {}
+        obs_stats: dict[str, dict] = {}
+        eerie_models_used: list[str] = []
+
+        for obs_name in obs_names:
+            per_period: dict[str, dict] = {}
+            for period_key in self._NC_PERIOD_KEYS:
+                pb = self._read_period_biases(var, obs_name, period_key)
+                if pb is None:
+                    continue
+
+                area = pb["area"]
+                bench_b = pb["bench"]
+                ens_mean_b = pb["ens_mean"]
+                ens_median_b = pb["ens_median"]
+
+                av_mean = self._av_from_biases(bench_b, ens_mean_b)
+                av_median = self._av_from_biases(bench_b, ens_median_b)
+                per_eerie = {
+                    m: self._av_from_biases(bench_b, b)
+                    for m, b in pb["models"].items()
+                }
+                per_cmip6: dict[str, xr.DataArray] = {}
+                if self.cmip6_individual:
+                    for member, mbias in self._read_individual_biases(
+                        var, obs_name, period_key,
+                    ).items():
+                        # AV(EERIE mean, member): >0 → member beats EERIE mean.
+                        per_cmip6[member] = self._av_from_biases(
+                            ens_mean_b, mbias,
+                        )
+
+                per_period[period_key] = {
+                    "ensemble_mean": av_mean,
+                    "ensemble_median": av_median,
+                    "per_eerie_av": per_eerie,
+                    "per_cmip6_av": per_cmip6,
+                    "ensemble_mean_domain_av": self._domain_mean_av(
+                        av_mean, area),
+                    "ensemble_median_domain_av": self._domain_mean_av(
+                        av_median, area),
+                    "ensemble_mean_frac_positive": self._frac_positive(
+                        av_mean, area),
+                    "ensemble_median_frac_positive": self._frac_positive(
+                        av_median, area),
+                }
+
+                # Category fractions for the summary bar charts.
+                obs_stats.setdefault(obs_name, {})[period_key.lower()] = {
+                    "eerie_mean": self._frac_categories(av_mean, area=area),
+                    "eerie_median": self._frac_categories(
+                        av_median, area=area),
+                    "cmip6_mean": self._frac_categories(
+                        self._av_from_biases(ens_mean_b, bench_b), area=area),
+                    "per_eerie_models": {
+                        m: self._frac_categories(av, area=area)
+                        for m, av in per_eerie.items()
+                    },
+                }
+
+                if obs_name == primary_obs and not eerie_models_used:
+                    eerie_models_used = list(pb["models"].keys())
+
+            if per_period:
+                av_by_obs[obs_name] = per_period
+
+        # No usable data for the primary obs → fall back to recompute.
+        if primary_obs not in av_by_obs:
+            return None
+
+        av_results = av_by_obs[primary_obs]
+        try:
+            cmip6_labels = [
+                f"{m}/{v}" for m, v in self.cmip6_loader.get_member_pairs()
+            ]
+        except Exception:  # noqa: BLE001
+            cmip6_labels = []
+
+        # Persist the AV NetCDF checkpoint (primary obs, ensemble mean/median).
+        nc_meta = {
+            "eerie_models": eerie_models_used,
+            "n_eerie_models": len(eerie_models_used),
+            "cmip6_models": cmip6_labels,
+            "n_cmip6_models": len(cmip6_labels),
+            "period_start": self.period[0],
+            "period_end": self.period[1],
+            "variable": var,
+            "long_name": var_info.long_name,
+            "units": var_info.units,
+            "obs_dataset": primary_obs,
+        }
+        for period_key, pdata in av_results.items():
+            for etype in ("ensemble_mean", "ensemble_median"):
+                nc_path = self._nc_path(var, period_key.lower(), etype)
+                if not nc_path.exists():
+                    self._save_av_to_nc(
+                        pdata[etype], var, period_key.lower(), etype, nc_meta,
+                    )
+        if obs_stats:
+            self._save_obs_stats_json(var, obs_stats, nc_meta)
+
+        logger.info(
+            "  Added Value for %s from bias NetCDFs (%d EERIE, %d %s, obs: %s)",
+            var, len(eerie_models_used), len(cmip6_labels),
+            self._bench_name, ", ".join(av_by_obs.keys()),
+        )
+
+        return {
+            "var_info": var_info,
+            "av": av_results,
+            "av_by_obs": av_by_obs,
+            "obs_dataset_name": primary_obs,
+            "obs_stats": obs_stats,
+            "n_eerie_models": len(eerie_models_used),
+            "eerie_models": eerie_models_used,
+            "n_cmip6_models": len(cmip6_labels),
+            "cmip6_models": cmip6_labels,
+        }
+
     def _compute_variable(self, var: str) -> dict[str, Any] | None:
         """Compute AV fields for a single variable.
+
+        Fast path: reuse the precomputed bias fields written by the bias-map
+        diagnostics (global_biases / temperature_berkeley / precipitation_mswep)
+        via :meth:`_compute_variable_from_netcdf` — no model loading or
+        regridding.  Falls back to the full recompute when those NetCDFs are
+        absent (or lack the required fields).
+        """
+        result = self._compute_variable_from_netcdf(var)
+        if result is not None:
+            return result
+        logger.info(
+            "  Bias NetCDFs unavailable for %s — recomputing from raw data",
+            var,
+        )
+        return self._compute_variable_recompute(var)
+
+    def _compute_variable_recompute(self, var: str) -> dict[str, Any] | None:
+        """Compute AV fields for a single variable from raw model data.
 
         Steps
         -----
@@ -595,8 +914,8 @@ class AddedValueDiag(DiagnosticBase):
                 eerie_seasonal_mean[season] = s_stack.mean("member")
                 eerie_seasonal_median[season] = s_stack.median("member")
 
-        # -- CMIP6 MMM -------------------------------------------------------
-        logger.info("  Computing CMIP6 MMM for %s...", var)
+        # -- Benchmark MMM ---------------------------------------------------
+        logger.info("  Computing %s for %s...", self._bench_label, var)
         cmip6_annual_fields: list[xr.DataArray] = []
         cmip6_seasonal_fields: dict[str, list[xr.DataArray]] = {
             "DJF": [], "MAM": [], "JJA": [], "SON": [],
@@ -954,6 +1273,25 @@ class AddedValueDiag(DiagnosticBase):
         )
 
     @staticmethod
+    def _av_from_biases(
+        bias1: xr.DataArray, bias2: xr.DataArray,
+    ) -> xr.DataArray:
+        """Dosio AV from precomputed bias fields (model − obs).
+
+        Equivalent to :meth:`_compute_av` but takes the biases directly:
+        ``sqerr = bias²``, ``AV = (sqerr1 − sqerr2) / max(sqerr1, sqerr2)``.
+        With ``bias1`` = reference (e.g. CMIP6 MMM) and ``bias2`` = candidate
+        (e.g. an EERIE model), ``AV > 0`` means the candidate reduces the
+        squared error, i.e. adds value.  Used by the NetCDF fast path.
+        """
+        sq1 = np.asarray(bias1.values) ** 2
+        sq2 = np.asarray(bias2.values) ** 2
+        denom = np.maximum(sq1, sq2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            av_vals = np.where(denom > 0, (sq1 - sq2) / denom, 0.0)
+        return xr.DataArray(av_vals, dims=bias1.dims, coords=bias1.coords)
+
+    @staticmethod
     def _domain_mean_av(
         av: xr.DataArray, area: np.ndarray | None,
     ) -> float:
@@ -1086,7 +1424,7 @@ class AddedValueDiag(DiagnosticBase):
                     attrs={
                         "long_name": (
                             f"Added Value: {self._project_name} ({ensemble_type}) vs "
-                            f"CMIP6 MMM for {meta['long_name']} "
+                            f"{self._bench_label} for {meta['long_name']} "
                             f"(AV>0 means {self._project_name} adds value)"
                         ),
                         "units": "1",
@@ -1094,7 +1432,7 @@ class AddedValueDiag(DiagnosticBase):
                         "reference": (
                             "Dosio et al. (2015), doi:10.1007/s00382-015-2869-x"
                         ),
-                        "model1": "CMIP6 multi-model mean",
+                        "model1": f"{self._bench_name} multi-model mean",
                         "model2": f"{self._project_name} {ensemble_type}",
                         "reference_dataset": meta.get("obs_dataset", "ERA5"),
                         "ensemble_type": ensemble_type,
@@ -1116,8 +1454,8 @@ class AddedValueDiag(DiagnosticBase):
         ds.attrs = {
             "Conventions": "CF-1.8",
             "title": (
-                f"Added Value: {self._project_name} {ensemble_type} vs CMIP6 MMM — "
-                f"{meta['long_name']} ({period})"
+                f"Added Value: {self._project_name} {ensemble_type} vs "
+                f"{self._bench_label} — {meta['long_name']} ({period})"
             ),
             "institution": "Feather climate evaluation framework",
             "source": "feather/diag/added_value.py",
@@ -1146,6 +1484,30 @@ class AddedValueDiag(DiagnosticBase):
         lon_name = "lon" if "lon" in da.coords else "longitude"
         lat_arr = da[lat_name].values
         lon_arr = da[lon_name].values
+
+        # Unstructured / scattered native grid (e.g. ICON): a single
+        # spatial dimension with 1-D lat & lon parallel to the data.
+        # Feed the points straight to nereus — no meshgrid, no sorting.
+        data = np.asarray(da.values)
+        if (data.ndim == 1 and lat_arr.ndim == 1 and lon_arr.ndim == 1
+                and lat_arr.shape == data.shape
+                and lon_arr.shape == data.shape):
+            src_lon = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+            grid_key = ("unstructured", int(data.shape[0]))
+            if grid_key not in interp_cache:
+                _, interp_cache[grid_key] = nr.regrid(
+                    data, lon=src_lon, lat=lat_arr,
+                    resolution=resolution, method=method,
+                    influence_radius=ir, lon_bounds=(-180.0, 180.0),
+                    as_xarray=True,
+                )
+            regridded = interp_cache[grid_key](data)
+            n_roll = regridded.shape[1] // 2
+            regridded = np.roll(regridded, -n_roll, axis=1)
+            return xr.DataArray(
+                regridded, dims=("lat", "lon"),
+                coords={"lat": target_lats, "lon": target_lons},
+            )
 
         lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
         sort_idx = np.argsort(lon_arr)
@@ -1367,7 +1729,7 @@ class AddedValueDiag(DiagnosticBase):
 
     def _obs_stats_path(self, var: str) -> Path:
         """Path for the per-variable obs-comparison stats JSON."""
-        return self.nc_dir / f"{var}_obs_stats.json"
+        return self.nc_dir / f"{var}_obs_stats{self._bench_suffix}.json"
 
     def _save_obs_stats_json(
         self, var: str, obs_stats: dict, nc_meta: dict,
@@ -1516,7 +1878,7 @@ class AddedValueDiag(DiagnosticBase):
                     data_dict,
                     title=(
                         f"{var_info.long_name} {period_label} Added Value"
-                        f" — {self._project_name} ensemble vs CMIP6 MMM"
+                        f" — {self._project_name} ensemble vs {self._bench_label}"
                         f"  (vs {obs_label}, green = {self._project_name} better)"
                     ),
                     cmap=_AV_CMAP,
@@ -1527,9 +1889,9 @@ class AddedValueDiag(DiagnosticBase):
                 meta1 = self._build_metadata(
                     title=(
                         f"{var_info.long_name} {period_label} Added Value "
-                        f"({self._project_name} ensemble vs CMIP6 MMM, obs: {obs_label})"
+                        f"({self._project_name} ensemble vs {self._bench_label}, obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1538,9 +1900,9 @@ class AddedValueDiag(DiagnosticBase):
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
                         f"AV > 0: {self._project_name} ensemble reduces squared error over "
-                        f"CMIP6 MMM. "
+                        f"{self._bench_label}. "
                         f"{self._project_name} n={vr['n_eerie_models']}, "
-                        f"CMIP6 n={vr['n_cmip6_models']}."
+                        f"{self._bench_name} n={vr['n_cmip6_models']}."
                     ),
                     plot_type="added_value_map",
                     period=self.period,
@@ -1555,8 +1917,14 @@ class AddedValueDiag(DiagnosticBase):
                 figures.append((fig1, meta1))
 
                 # ── Figure 2: individual model panels ─────────────────────
+                # Default: one panel per EERIE model vs the benchmark MMM.
+                # The per-CMIP6/HighResMIP-member panels are shown only when
+                # the user opts in with --cmip6-individual.
                 per_eerie = period_data.get("per_eerie_av", {})
-                per_cmip6 = period_data.get("per_cmip6_av", {})
+                per_cmip6 = (
+                    period_data.get("per_cmip6_av", {})
+                    if self.cmip6_individual else {}
+                )
                 if not per_eerie and not per_cmip6:
                     continue
 
@@ -1573,14 +1941,14 @@ class AddedValueDiag(DiagnosticBase):
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
                         f"{self._project_name}: {model_name}\n"
-                        f"vs CMIP6 MMM — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
+                        f"vs {self._bench_label} — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
                 for cmip6_label, av_field in per_cmip6.items():
                     dom_av = self._domain_mean_av(av_field, _panel_area)
                     frac = self._frac_positive(av_field, _panel_area)
                     title_str = (
-                        f"CMIP6: {cmip6_label}\n"
+                        f"{self._bench_name}: {cmip6_label}\n"
                         f"vs {self._project_name} mean — mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     models_data_dict[title_str] = av_field
@@ -1616,7 +1984,7 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} {period_label} Added Value "
                         f"— Individual Models (obs: {obs_label})"
                     ),
-                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value_models{obs_suffix}",
+                    figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value_models{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
                     variables=[var],
                     description=(
@@ -1624,8 +1992,8 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} ({period_label}), "
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
-                        f"{self._project_name} panels: AV(CMIP6 MMM, {self._project_name}_i, {obs_label}). "
-                        f"CMIP6 panels: AV({self._project_name} mean, CMIP6_j, {obs_label}). "
+                        f"{self._project_name} panels: AV({self._bench_label}, {self._project_name}_i, {obs_label}). "
+                        f"{self._bench_name} panels: AV({self._project_name} mean, {self._bench_name}_j, {obs_label}). "
                         f"Green = model better than its baseline."
                     ),
                     plot_type="added_value_map",
@@ -1715,7 +2083,7 @@ class AddedValueDiag(DiagnosticBase):
         etype_labels = {
             "eerie_mean":   f"{self._project_name} mean",
             "eerie_median": f"{self._project_name} median",
-            "cmip6_mean":   "CMIP6 mean",
+            "cmip6_mean":   f"{self._bench_name} mean",
         }
         neutral_color = "#d5d5d5"
         det_color = "white"
@@ -1775,11 +2143,11 @@ class AddedValueDiag(DiagnosticBase):
 
         fig.suptitle(
             f"Added Value — {period_label}: area-weighted % improvement / neutral / degradation\n"
-            f"{self._project_name} ensemble vs CMIP6 MMM",
+            f"{self._project_name} ensemble vs {self._bench_label}",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
-        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}"
+        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
         meta = self._build_metadata(
             title=f"Added Value Summary — {period_label} (ensemble view)",
             figure_id=figure_id,
@@ -1936,7 +2304,7 @@ class AddedValueDiag(DiagnosticBase):
                 ])
                 ys_c = grp_centers + y_offsets[len(eerie_model_names)]
                 ax.barh(ys_c, imp_c, height=bar_h, color=cmip6_color,
-                        label="CMIP6 mean")
+                        label=f"{self._bench_name} mean")
                 ax.barh(ys_c, neu_c, height=bar_h, left=imp_c,
                         color=neutral_color, label="_")
                 ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
@@ -1981,7 +2349,7 @@ class AddedValueDiag(DiagnosticBase):
         legend_handles = (
             [Patch(facecolor=eerie_colors[m], label=m) for m in eerie_model_names]
             + (
-                [Patch(facecolor=cmip6_color, label="CMIP6 mean")]
+                [Patch(facecolor=cmip6_color, label=f"{self._bench_name} mean")]
                 if show_cmip6_bar else [
                     Patch(facecolor=ensemble_mean_color,   label="Ensemble mean"),
                     Patch(facecolor=ensemble_median_color, label="Ensemble median"),
@@ -1998,18 +2366,18 @@ class AddedValueDiag(DiagnosticBase):
         )
 
         if show_cmip6_bar:
-            suptitle_suffix = f"{self._project_name} models vs CMIP6 MMM"
-            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}"
+            suptitle_suffix = f"{self._project_name} models vs {self._bench_label}"
+            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
             title = f"Added Value Summary — {period_label} (per-model view)"
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
-                f"Blue shades = {self._project_name} models vs CMIP6 MMM, "
-                f"green = CMIP6 mean vs {self._project_name} mean, white = degradation."
+                f"Blue shades = {self._project_name} models vs {self._bench_label}, "
+                f"green = {self._bench_name} mean vs {self._project_name} mean, white = degradation."
             )
         else:
             suptitle_suffix = (
-                f"{self._project_name} models vs CMIP6 MMM "
+                f"{self._project_name} models vs {self._bench_label} "
                 f"({self._project_name} only)"
             )
             figure_id = self._bars_models_eerie_id(period_key)
@@ -2020,7 +2388,7 @@ class AddedValueDiag(DiagnosticBase):
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}), {self._project_name} models only "
-                f"(CMIP6 mean bar excluded). "
+                f"({self._bench_name} mean bar excluded). "
                 f"Individual model colors from config; light purple = ensemble mean, "
                 f"purple = ensemble median, white = degradation."
             )

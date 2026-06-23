@@ -402,21 +402,47 @@ class KerchunkParquetLoader:
         ds = self._open_store(model, "atmos3d")
         raw = ds[kname]
 
-        data = raw.values.copy().astype(np.float32)
-        data[data >= _ATMOS_FILL_VALUE] = np.nan
-        if scale != 1.0:
-            data *= np.float32(scale)
+        # Geometry from the (small) flat coordinate arrays.
+        lat_flat = ds["lat"].values
+        lon_flat = ds["lon"].values
+        n_lat, n_lon = self._detect_grid_shape(lat_flat)
+        lat_1d = lat_flat.reshape(n_lat, n_lon)[:, 0]
+        lon_1d = lon_flat.reshape(n_lat, n_lon)[0, :]
+        lon_1d = np.where(lon_1d < 0, lon_1d + 360.0, lon_1d)
+        lat_sort = np.argsort(lat_1d)
+        lon_sort = np.argsort(lon_1d)
+        lat_1d = lat_1d[lat_sort]
+        lon_1d = lon_1d[lon_sort]
 
         time = ds["time"].values
         levels = ds["level"].values
-        lat, lon, data_4d = self._reshape_atmos_flat(data, ds, has_level=True)
+
+        # Keep the array LAZY (dask).  Materialising the full
+        # (time, level, lat, lon) field here — as ``raw.values`` did — OOMs
+        # for monthly 0.25° 3-D atmos data (tens of GB).  Downstream consumers
+        # (e.g. the QBO index, which needs a single pressure level) then pull
+        # only the slice they require.  ``_open_store`` opens with ``chunks={}``
+        # so ``raw`` is already dask-backed; we only collapse the flat spatial
+        # ("value") dimension into one chunk so the reshape can split it into
+        # (lat, lon), and rely on the store's native (per-timestep) time
+        # chunking to bound memory.
+        value_dim = raw.dims[-1]
+        arr = raw.chunk({value_dim: -1}).data.astype("float32")
+        n_time, n_lev = arr.shape[0], arr.shape[1]
+        arr = arr.reshape(n_time, n_lev, n_lat, n_lon)
+        arr = arr[:, :, lat_sort, :][:, :, :, lon_sort]
+
         da = xr.DataArray(
-            data_4d,
+            arr,
             dims=["time", "level", "lat", "lon"],
-            coords={"time": time, "level": levels, "lat": lat, "lon": lon},
+            coords={"time": time, "level": levels, "lat": lat_1d, "lon": lon_1d},
             name=variable,
             attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
         )
+        # Lazy fill-value masking + scaling (was eager numpy before).
+        da = da.where(da < _ATMOS_FILL_VALUE)
+        if scale != 1.0:
+            da = da * np.float32(scale)
         return da
 
     # ------------------------------------------------------------------

@@ -1857,6 +1857,49 @@ class TestRegridToTarget:
         )
         assert result.shape == (len(target_lats), len(target_lons))
 
+    def test_handles_unstructured_1d_grid(self):
+        """1-D unstructured grid (e.g. ICON: lat/lon on a single 'i' dim).
+
+        Regression for IndexError ``too many indices for array`` — the
+        rectilinear path indexed ``da.values[:, sort_idx]`` on a 1-D array.
+        """
+        import healpy as hp
+
+        target_lats, target_lons, res = self._build_target_grid()
+
+        # A HEALPix field is a stand-in for any unstructured grid: 1-D data
+        # with 1-D lat/lon coords parallel to it on a single spatial dim.
+        nside = 8
+        ncells = 12 * nside**2
+        lon, lat = hp.pix2ang(
+            nside, np.arange(ncells), nest=True, lonlat=True,
+        )
+        da = xr.DataArray(
+            np.cos(np.deg2rad(lat)),
+            dims=("i",),
+            coords={
+                "latitude": ("i", lat),
+                "longitude": ("i", lon),
+            },
+        )
+
+        cache = {}
+        result = GlobalTrends._regrid_to_target(
+            da, target_lats, target_lons,
+            resolution=res, influence_radius=1_000_000,
+            interp_cache=cache,
+        )
+
+        assert result.shape == (len(target_lats), len(target_lons))
+        np.testing.assert_array_equal(result.lat.values, target_lats)
+        np.testing.assert_array_equal(result.lon.values, target_lons)
+        # Cache keyed for an unstructured grid, distinct from rectilinear keys.
+        assert ("unstructured", ncells) in cache
+        vals = result.values[np.isfinite(result.values)]
+        assert vals.size > 0
+        assert vals.min() >= -1.01
+        assert vals.max() <= 1.01
+
 
 # ============================================================================
 # O. CMIP6 trend computation edge cases

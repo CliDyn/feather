@@ -28,6 +28,8 @@ def run_pipeline(
     cmip6_individual: bool = False,
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
+    individual_netcdf_only: bool = False,
+    ensemble_only: bool = False,
     no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
@@ -93,6 +95,8 @@ def run_pipeline(
             cmip6_individual=cmip6_individual,
             benchmarks=benchmarks,
             save_netcdf=save_netcdf,
+            individual_netcdf_only=individual_netcdf_only,
+            ensemble_only=ensemble_only,
             skip_existing=skip_existing,
         )
 
@@ -138,6 +142,8 @@ def _run_diagnostics(
     cmip6_individual: bool = False,
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
+    individual_netcdf_only: bool = False,
+    ensemble_only: bool = False,
     skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
@@ -220,12 +226,37 @@ def _run_diagnostics(
         # NetCDF export, only for diagnostics that support it.
         if save_netcdf and "save_netcdf" in sig.parameters:
             kwargs["save_netcdf"] = True
+        # Individual-member NetCDF-only mode (no figures), for the bias-map
+        # diagnostics that support it.
+        if individual_netcdf_only and (
+            "individual_netcdf_only" in sig.parameters
+        ):
+            kwargs["individual_netcdf_only"] = True
         # The time-series diagnostic may extend beyond the analysis period
         # (e.g. to show each model's full projection continuation).
         if name == "timeseries":
             kwargs["period"] = config.get_timeseries_period()
         if cmip6_individual and "cmip6_individual" in sig.parameters:
             kwargs["cmip6_individual"] = True
+        # Ensemble-only mode (plot just the ensemble bias figures).
+        if ensemble_only and "ensemble_only" in sig.parameters:
+            kwargs["ensemble_only"] = True
+        # In NetCDF-only mode, skip diagnostics that cannot honour it — they
+        # would otherwise render figures the user explicitly opted out of.
+        if individual_netcdf_only and (
+            "individual_netcdf_only" not in sig.parameters
+        ):
+            logger.info(
+                "Skipping %s: does not support --individual-netcdf-only",
+                name,
+            )
+            continue
+        # In ensemble-only mode, skip diagnostics that cannot honour it.
+        if ensemble_only and "ensemble_only" not in sig.parameters:
+            logger.info(
+                "Skipping %s: does not support --ensemble-only", name,
+            )
+            continue
         if variables:
             supported = set(cls.variables)
             overlap = [v for v in variables if v in supported]

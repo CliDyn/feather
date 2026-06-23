@@ -28,6 +28,7 @@ from feather.util.spatial import (
     compute_latlon_areas,
     latlon_global_mean,
     zonal_mean,
+    zonal_profile_to_axis,
 )
 from feather.util.temporal import (
     annual_mean,
@@ -61,16 +62,40 @@ class TemperatureBerkeley(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False, save_netcdf=False):
+                 cmip6_individual=False, save_netcdf=False,
+                 individual_netcdf_only=False, ensemble_only=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
         self.period = period
-        self.save_netcdf = save_netcdf
+        # individual_netcdf_only implies NetCDF export (it is a data-only mode).
+        self.individual_netcdf_only = individual_netcdf_only
+        self.save_netcdf = save_netcdf or individual_netcdf_only
         self.cmip6_individual = cmip6_individual
+        # ensemble_only: plot ONLY the ensemble bias-summary figures
+        # (skip per-model bias maps and all other groups).
+        self.ensemble_only = ensemble_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
+
+    @staticmethod
+    def _grid_signature(lon, lat) -> tuple:
+        """Cache key capturing a source grid's size AND coordinate orientation.
+
+        Point count alone is ambiguous: two grids can share their point count
+        yet order their latitude axis oppositely (ascending vs descending). A
+        nereus interpolator built on one ordering mirrors the field if reused
+        on the other (e.g. IFS-NEMO r1 vs r2/r3), so the axis endpoints are
+        folded into the key.
+        """
+        lon_r = np.asarray(lon).ravel()
+        lat_r = np.asarray(lat).ravel()
+        return (
+            lon_r.shape[0],
+            round(float(lat_r[0]), 4), round(float(lat_r[-1]), 4),
+            round(float(lon_r[0]), 4), round(float(lon_r[-1]), 4),
+        )
 
     # ── Orchestration (per-group incremental) ─────────────────────────
 
@@ -81,12 +106,22 @@ class TemperatureBerkeley(DiagnosticBase):
         out = self.output_dir
 
         # Determine which groups need computing
+        ens_ids = [
+            f"tas_{p}_ens_bias_combined"
+            for p in ["annual", "djf", "mam", "jja", "son"]
+        ]
         bias_ids = [
             f"tas_{p}_bias_combined"
             for p in ["annual", "DJF", "MAM", "JJA", "SON"]
         ]
+        # Ensemble summary panels are produced alongside the bias maps when
+        # ≥2 models are configured (mirrors GlobalBiases).
+        if len(list(self.config.models)) >= 2:
+            bias_ids += ens_ids
+        # ensemble_only: Group A is gated on the ensemble figures alone.
+        check_ids = ens_ids if self.ensemble_only else bias_ids
         need_a = not skip_existing or not all(
-            self._figure_exists(fid) for fid in bias_ids
+            self._figure_exists(fid) for fid in check_ids
         )
         need_b = not skip_existing or not self._figure_exists("tas_timeseries")
         need_c = not skip_existing or not self._figure_exists("tas_seasonal_cycle")
@@ -98,33 +133,42 @@ class TemperatureBerkeley(DiagnosticBase):
             self._figure_exists(fid) for fid in trend_ids
         )
         need_f = not skip_existing or not self._figure_exists("tas_taylor")
-        nc_needed = self.save_netcdf and not self._netcdf_exists("tas")
+        nc_needed = self.save_netcdf and not self._netcdf_complete("tas")
 
-        # Collect existing paths
-        if not need_a:
-            logger.info("Skipping bias maps -- figures exist")
-            saved.extend([
-                (out / f"{fid}.png", out / f"{fid}.json")
-                for fid in bias_ids
-            ])
-        if not need_b:
-            logger.info("Skipping timeseries -- figure exists")
-            saved.append((out / "tas_timeseries.png", out / "tas_timeseries.json"))
-        if not need_c:
-            logger.info("Skipping seasonal cycle -- figure exists")
-            saved.append((out / "tas_seasonal_cycle.png", out / "tas_seasonal_cycle.json"))
-        if not need_d:
-            logger.info("Skipping zonal mean -- figure exists")
-            saved.append((out / "tas_zonal_mean.png", out / "tas_zonal_mean.json"))
-        if not need_e:
-            logger.info("Skipping trend maps -- figures exist")
-            saved.extend([
-                (out / f"{fid}.png", out / f"{fid}.json")
-                for fid in trend_ids
-            ])
-        if not need_f:
-            logger.info("Skipping Taylor diagram -- figure exists")
-            saved.append((out / "tas_taylor.png", out / "tas_taylor.json"))
+        # NetCDF-only mode never plots: suppress every figure group, keep only
+        # the Group A computation that feeds the individual-member export.
+        if self.individual_netcdf_only:
+            need_a = need_b = need_c = need_d = need_e = need_f = False
+        # ensemble_only mode: only Group A (ensemble figures); skip the rest.
+        if self.ensemble_only:
+            need_b = need_c = need_d = need_e = need_f = False
+
+        # Collect existing paths (skipped entirely in NetCDF-only mode)
+        if not self.individual_netcdf_only:
+            if not need_a:
+                logger.info("Skipping bias maps -- figures exist")
+                saved.extend([
+                    (out / f"{fid}.png", out / f"{fid}.json")
+                    for fid in check_ids
+                ])
+            if not need_b:
+                logger.info("Skipping timeseries -- figure exists")
+                saved.append((out / "tas_timeseries.png", out / "tas_timeseries.json"))
+            if not need_c:
+                logger.info("Skipping seasonal cycle -- figure exists")
+                saved.append((out / "tas_seasonal_cycle.png", out / "tas_seasonal_cycle.json"))
+            if not need_d:
+                logger.info("Skipping zonal mean -- figure exists")
+                saved.append((out / "tas_zonal_mean.png", out / "tas_zonal_mean.json"))
+            if not need_e:
+                logger.info("Skipping trend maps -- figures exist")
+                saved.extend([
+                    (out / f"{fid}.png", out / f"{fid}.json")
+                    for fid in trend_ids
+                ])
+            if not need_f:
+                logger.info("Skipping Taylor diagram -- figure exists")
+                saved.append((out / "tas_taylor.png", out / "tas_taylor.json"))
 
         if not any([need_a, need_b, need_c, need_d, need_e, need_f,
                     nc_needed]):
@@ -226,6 +270,13 @@ class TemperatureBerkeley(DiagnosticBase):
         return figures
 
     # ── Berkeley Earth loading ───────────────────────────────────────
+
+    @property
+    def _berkeley_label(self) -> str:
+        """Display name for the Berkeley Earth product actually loaded."""
+        return ("Berkeley Earth HR"
+                if "BERKELEY_EARTH_HR" in self.config.obs_datasets
+                else "Berkeley Earth")
 
     def _load_berkeley_earth(
         self, period: tuple[str, str] | None = None,
@@ -377,8 +428,8 @@ class TemperatureBerkeley(DiagnosticBase):
         obs_lons = obs_clim.lon.values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
 
-        # Cache nereus interpolator per source grid size
-        _interp_cache: dict[int, Any] = {}
+        # Cache nereus interpolator per source grid signature
+        _interp_cache: dict[tuple, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         common_area = None
@@ -408,7 +459,8 @@ class TemperatureBerkeley(DiagnosticBase):
             }
 
             n_src = np.asarray(lon).ravel().shape[0]
-            if n_src not in _interp_cache:
+            grid_key = self._grid_signature(lon, lat)
+            if grid_key not in _interp_cache:
                 logger.info("  Building nereus interpolator (%d pts)...", n_src)
                 annual_regrid, interp = nr.regrid(
                     model_clim.values.ravel(),
@@ -419,7 +471,7 @@ class TemperatureBerkeley(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                _interp_cache[n_src] = interp
+                _interp_cache[grid_key] = interp
 
                 if target_lats is None:
                     target_lats = interp.target_lat[:, 0]
@@ -449,7 +501,7 @@ class TemperatureBerkeley(DiagnosticBase):
                             coords={"lat": target_lats, "lon": target_lons},
                         )
             else:
-                interp = _interp_cache[n_src]
+                interp = _interp_cache[grid_key]
                 regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
@@ -466,7 +518,7 @@ class TemperatureBerkeley(DiagnosticBase):
             # Seasonal biases
             seasonal_biases: dict[str, Any] = {}
             seasonal_regrids: dict[str, Any] = {}
-            interp = _interp_cache[n_src]
+            interp = _interp_cache[grid_key]
             for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seas:
                     s_np = interp(model_seas[season].values.ravel())
@@ -495,18 +547,32 @@ class TemperatureBerkeley(DiagnosticBase):
         cmip6_individual_data: dict[str, dict] = {}
         benchmark_data: dict[str, dict] = {}
         benchmark_info: dict[str, dict] = {}
+        # {label: per-period individual-member data} — for NetCDF export.
+        benchmark_individual_data: dict[str, dict] = {}
+        # Plot individual panels for the primary benchmark; export them (for
+        # every benchmark) when saving NetCDF.
+        plot_individual = self.cmip6_individual and not self.individual_netcdf_only
         if self.cmip6_enabled and target_lats is not None:
             for i, bench in enumerate(self.benchmarks):
                 label = getattr(bench, "label", "CMIP6 MMM")
-                if i == 0 and self.cmip6_individual:
-                    cmip6_individual_data = self._compute_cmip6_individual(
+                primary = (i == 0)
+                want_individual = (
+                    (primary and (plot_individual or self._export_individual))
+                    or (not primary and self._export_individual)
+                )
+                if want_individual:
+                    ind = self._compute_cmip6_individual(
                         target_lats, target_lons,
                         obs_clim_common, obs_seasonal_common, common_area,
+                        loader=bench,
                     )
+                    benchmark_individual_data[label] = ind
                     b_data, b_info = self._mmm_from_individual(
-                        cmip6_individual_data,
+                        ind,
                         obs_clim_common, obs_seasonal_common, common_area,
                     )
+                    if primary and plot_individual:
+                        cmip6_individual_data = ind
                 else:
                     b_data, b_info = self._compute_cmip6_mmm(
                         target_lats, target_lons,
@@ -521,6 +587,12 @@ class TemperatureBerkeley(DiagnosticBase):
                 primary_label = next(iter(benchmark_data))
                 cmip6_data = benchmark_data[primary_label]
                 cmip6_info = benchmark_info[primary_label]
+
+        # EERIE ensemble mean/median bias maps (when ≥2 models available)
+        from feather.diag.global_biases import GlobalBiases
+        ens_data = GlobalBiases._compute_ens_stats(
+            model_results, obs_clim_common, obs_seasonal_common, common_area,
+        )
 
         # Shared colorbar ranges
         colorbar_ranges = self._compute_colorbar_ranges(
@@ -542,6 +614,8 @@ class TemperatureBerkeley(DiagnosticBase):
             "cmip6_individual_data": cmip6_individual_data,
             "benchmark_data": benchmark_data,
             "benchmark_info": benchmark_info,
+            "benchmark_individual_data": benchmark_individual_data,
+            "ens_data": ens_data,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -599,38 +673,96 @@ class TemperatureBerkeley(DiagnosticBase):
 
             p_cb = cb.get(period_key, cb.get("annual", {}))
 
-            fig, axes = plot_combined_bias_map(
-                obs_period - _K_TO_C, bias_dict,
-                title=f"2m Temperature {period_label}",
-                obs_title="Berkeley Earth",
-                cmap="cmo.thermal",
-                bias_cmap="RdBu_r",
-                vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
-                vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
-                bias_vmax=p_cb.get("bias_vmax"),
-                units="°C",
-                method=self._regrid_method,
-            )
+            # Per-model bias maps — skipped in ensemble-only mode.
+            if not self.ensemble_only:
+                fig, axes = plot_combined_bias_map(
+                    obs_period - _K_TO_C, bias_dict,
+                    title=f"2m Temperature {period_label}",
+                    obs_title=self._berkeley_label,
+                    cmap="cmo.thermal",
+                    bias_cmap="RdBu_r",
+                    vmin=(p_cb["vmin"] - _K_TO_C if p_cb.get("vmin") is not None else None),
+                    vmax=(p_cb["vmax"] - _K_TO_C if p_cb.get("vmax") is not None else None),
+                    bias_vmax=p_cb.get("bias_vmax"),
+                    units="°C",
+                    method=self._regrid_method,
+                )
 
-            meta = self._build_metadata(
-                title=f"2m Temperature {period_label} Bias",
-                figure_id=f"tas_{period_key.lower()}_bias_combined",
-                models=all_models,
-                variables=["tas"],
-                description=(
-                    f"{period_label} 2m temperature bias maps "
-                    f"(model - Berkeley Earth)."
-                ),
-                obs_dataset="Berkeley Earth",
-                obs_variable="2m temperature",
-                plot_type="combined_bias_map",
-                period=self.period,
-                cmip6_info=cmip6_info or None,
-                benchmark_info=self._benchmark_meta_from_info(
-                    results.get("benchmark_info")) or None,
-                summary_statistics=summary_stats,
-            )
-            figures.append((fig, meta))
+                meta = self._build_metadata(
+                    title=f"2m Temperature {period_label} Bias",
+                    figure_id=f"tas_{period_key.lower()}_bias_combined",
+                    models=all_models,
+                    variables=["tas"],
+                    description=(
+                        f"{period_label} 2m temperature bias maps "
+                        f"(model - Berkeley Earth)."
+                    ),
+                    obs_dataset=self._berkeley_label,
+                    obs_variable="2m temperature",
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    cmip6_info=cmip6_info or None,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                    summary_statistics=summary_stats,
+                )
+                figures.append((fig, meta))
+
+            # ── Ensemble summary (obs + ens median/mean + benchmark MMM) ──
+            ens_data = results.get("ens_data", {})
+            if period_key in ens_data:
+                proj = self.config.project.get("name", "Ensemble")
+                edata = ens_data[period_key]
+                n = edata["n_members"]
+                lbl_median = rf"{proj} ens. median $\mathbf{{({n})}}$"
+                lbl_mean = rf"{proj} ens. mean $\mathbf{{({n})}}$"
+                ens_bias_dict = {
+                    lbl_median: edata["median_bias"],
+                    lbl_mean: edata["mean_bias"],
+                }
+                benchmark_info = results.get("benchmark_info", {})
+                for b_label, b_data in benchmark_data.items():
+                    if period_key in b_data:
+                        m = benchmark_info.get(b_label, {}).get("n_members", 0)
+                        panel = (rf"{b_label} $\mathbf{{({m})}}$" if m
+                                 else b_label)
+                        ens_bias_dict[panel] = b_data[period_key]["bias"]
+
+                fig_e, _ = plot_combined_bias_map(
+                    obs_period - _K_TO_C, ens_bias_dict,
+                    title=f"2m Temperature {period_label} — Ensemble",
+                    obs_title=self._berkeley_label,
+                    cmap="cmo.thermal",
+                    bias_cmap="RdBu_r",
+                    vmin=(p_cb["vmin"] - _K_TO_C
+                          if p_cb.get("vmin") is not None else None),
+                    vmax=(p_cb["vmax"] - _K_TO_C
+                          if p_cb.get("vmax") is not None else None),
+                    bias_vmax=p_cb.get("bias_vmax"),
+                    units="°C",
+                    method=self._regrid_method,
+                )
+                meta_e = self._build_metadata(
+                    title=(
+                        f"2m Temperature {period_label} Bias "
+                        f"— Ensemble Summary"
+                    ),
+                    figure_id=f"tas_{period_key.lower()}_ens_bias_combined",
+                    models=list(self.config.models),
+                    variables=["tas"],
+                    description=(
+                        f"{period_label} 2m temperature bias maps — "
+                        f"{proj} ensemble median, ensemble mean, and "
+                        f"benchmark MMM(s) (model - Berkeley Earth)."
+                    ),
+                    obs_dataset=self._berkeley_label,
+                    obs_variable="2m temperature",
+                    plot_type="combined_bias_map",
+                    period=self.period,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                )
+                figures.append((fig_e, meta_e))
 
         return figures
 
@@ -901,31 +1033,40 @@ class TemperatureBerkeley(DiagnosticBase):
         }
 
     def _compute_cmip6_zonal_mean(self, loader=None):
-        """Compute benchmark MMM zonal mean temperature (per-benchmark loader)."""
+        """Compute benchmark MMM zonal mean temperature (per-benchmark loader).
+
+        Each member's zonal profile is interpolated to a common 1° latitude
+        axis before averaging — member grids differ in resolution, so an
+        exact-coordinate ``xr.align(join="inner")`` would leave an empty
+        latitude intersection (and thus an invisible MMM line).
+        """
         loader = loader or self.cmip6_loader
         if loader is None or not self.cmip6_enabled:
             return None
 
-        member_pairs = loader.get_member_pairs()
-        zonal_fields = []
+        target_lat = np.arange(-89.5, 90.0, 1.0)
+        member_profiles = []
 
-        for model, variant in member_pairs:
+        for model, variant in loader.get_member_pairs():
             da = loader.load_var_for_model_var(
                 "tas", model, variant=variant, period=self.period,
             )
             if da is None:
                 continue
-            lon_dim = "lon" if "lon" in da.dims else "longitude"
-            zm = da.mean(lon_dim)
-            if "latitude" in zm.dims:
-                zm = zm.rename({"latitude": "lat"})
-            zonal_fields.append(zm)
+            # Handles rectilinear (lon dim) and unstructured (ICON: 1-D
+            # lat/lon on a single dim) members on a common 1° axis.
+            zm = zonal_profile_to_axis(da, target_lat)
+            if zm is not None:
+                member_profiles.append(zm)
 
-        if not zonal_fields:
+        if not member_profiles:
             return None
 
-        aligned = xr.align(*zonal_fields, join="inner")
-        return sum(aligned) / len(aligned)
+        stacked = xr.concat(
+            member_profiles, dim="_member",
+            coords="minimal", compat="override",
+        )
+        return stacked.mean("_member", skipna=True)
 
     def _plot_zonal_mean(self, results: dict) -> list[tuple[plt.Figure, dict]]:
         """Plot zonal mean temperature profile."""
@@ -998,7 +1139,7 @@ class TemperatureBerkeley(DiagnosticBase):
         obs_trend_native = linear_trend(berkeley.compute()) * 10  # °C/decade
 
         # Regrid everything to common nereus grid
-        _trend_interp_cache: dict[int, Any] = {}
+        _trend_interp_cache: dict[tuple, Any] = {}
         target_lats = None
         target_lons = None
 
@@ -1010,7 +1151,8 @@ class TemperatureBerkeley(DiagnosticBase):
                 lon, lat = np.meshgrid(lon, lat)
 
             n_src = np.asarray(lon).ravel().shape[0]
-            if n_src not in _trend_interp_cache:
+            grid_key = self._grid_signature(lon, lat)
+            if grid_key not in _trend_interp_cache:
                 regridded, interp = nr.regrid(
                     trend.values.ravel(),
                     lon=np.asarray(lon).ravel(),
@@ -1020,12 +1162,12 @@ class TemperatureBerkeley(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                _trend_interp_cache[n_src] = interp
+                _trend_interp_cache[grid_key] = interp
                 if target_lats is None:
                     target_lats = interp.target_lat[:, 0]
                     target_lons = interp.target_lon[0, :]
             else:
-                regridded = _trend_interp_cache[n_src](trend.values.ravel())
+                regridded = _trend_interp_cache[grid_key](trend.values.ravel())
 
             model_trends_common[model] = xr.DataArray(
                 regridded, dims=("lat", "lon"),
@@ -1630,10 +1772,15 @@ class TemperatureBerkeley(DiagnosticBase):
 
     def _compute_cmip6_individual(self, target_lats, target_lons,
                                    obs_clim_common, obs_seasonal_common,
-                                   common_area):
-        """Compute individual CMIP6 model temperature biases."""
+                                   common_area, loader=None):
+        """Compute individual benchmark-member temperature biases.
+
+        *loader* defaults to the primary benchmark; pass another benchmark
+        loader (e.g. HighResMIP) to compute its members.
+        """
         from feather.diag.global_biases import GlobalBiases
 
+        loader = loader or self.cmip6_loader
         cmip6_individual_data: dict[str, dict] = {}
         influence_radius = self.config.nereus.get(
             "influence_radius", 80_000.0,
@@ -1641,12 +1788,13 @@ class TemperatureBerkeley(DiagnosticBase):
         resolution = abs(float(target_lats[1] - target_lats[0]))
         cmip6_interp_cache: dict[tuple, Any] = {}
 
-        logger.info("  Loading individual CMIP6 models for tas...")
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Loading individual %s models for tas...",
+                    getattr(loader, "label", "CMIP6"))
+        member_pairs = loader.get_member_pairs()
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 "tas", model, variant=variant, period=self.period,
             )
             if da is None:
@@ -1669,7 +1817,7 @@ class TemperatureBerkeley(DiagnosticBase):
             }
 
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     "tas", model, variant=variant,
                     period=self.period, season=season,
                 )
@@ -1832,12 +1980,34 @@ class TemperatureBerkeley(DiagnosticBase):
         from pathlib import Path
         return Path(self.config.output_dir) / "netcdf" / self.name
 
+    @property
+    def _export_individual(self) -> bool:
+        """Whether individual benchmark members should be exported to NetCDF."""
+        return self.save_netcdf and (
+            self.cmip6_individual or self.individual_netcdf_only
+        )
+
     def _netcdf_exists(self, var: str) -> bool:
         from feather.diag import netcdf_export
         paths = netcdf_export.biasmap_netcdf_paths(
             self._netcdf_dir, var, self.period,
         )
         return all(p.exists() for p in paths)
+
+    def _individual_netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_individual_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _netcdf_complete(self, var: str) -> bool:
+        """True when every requested NetCDF product is already on disk."""
+        if not self._netcdf_exists(var):
+            return False
+        if self._export_individual and not self._individual_netcdf_exists(var):
+            return False
+        return True
 
     def _export_netcdf(self, var: str, results: dict) -> None:
         from feather.data.variables import get_var
@@ -1850,6 +2020,11 @@ class TemperatureBerkeley(DiagnosticBase):
             self._netcdf_dir, var, results, self.period,
             units=units, skip_existing=True,
         )
+        if self._export_individual:
+            netcdf_export.export_biasmap_individual_netcdf(
+                self._netcdf_dir, var, results, self.period,
+                units=units, skip_existing=True,
+            )
 
     @staticmethod
     def _pattern_correlation(model_field, obs_field, area):

@@ -900,6 +900,40 @@ class TestCMIP6:
         assert result["cmip6_mmm_index"] is None
         assert result["cmip6_individual"] == {}
 
+    def test_cmip6_qbo_skips_load(self, sst_field, sst_obs_field, tmp_path):
+        """QBO (zonal_mean) short-circuits the CMIP6 loop without loading ua.
+
+        Regression: CMIP6 has no zonal-mean implementation, so the full 4-D
+        ``ua`` field was loaded per model (eagerly via load_var's .compute())
+        and then discarded — wasted I/O and an OOM risk. The loop is now
+        skipped, so load_var must not be called.
+        """
+        cmip6_ds = xr.Dataset({"tos": sst_field})
+
+        class _TrackingLoader(MockCMIP6Loader):
+            load_calls = 0
+
+            def load_var(self, *a, **k):
+                type(self).load_calls += 1
+                return super().load_var(*a, **k)
+
+        loader = _TrackingLoader(cmip6_ds)
+        config = FeatherConfig(
+            model_catalogs={}, models=["model-a"], obs_root="",
+            obs_datasets={}, cmip6={"enabled": True}, dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            data_source={"type": "cmor"},
+        )
+        model_loader = MultiVarModelLoader({"ua": sst_field})
+        obs_loader = MultiVarObsLoader({"ua": sst_obs_field})
+        diag = TeleconnectionDiag(
+            model_loader, obs_loader, config, cmip6_loader=loader,
+        )
+        out = diag._compute_cmip6_index(_MODE_REGISTRY["qbo"])
+        assert out == (None, None, {}, {}, {})
+        assert _TrackingLoader.load_calls == 0
+
 
 # ── Registration tests ───────────────────────────────────────────────
 

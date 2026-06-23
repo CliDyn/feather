@@ -458,6 +458,34 @@ class TestPlotExtremes:
             assert len(result) == 1
             plt.close("all")
 
+    def test_anomaly_figure_id(self, sea_ice_diag):
+        model_ts = sea_ice_diag._compute_model_timeseries()
+        obs_ts = sea_ice_diag._compute_obs_timeseries()
+        _, meta = sea_ice_diag._plot_extremes(
+            "area", model_ts, obs_ts, anomaly=True,
+        )[0]
+        assert meta["figure_id"] == "sea_ice_area_extremes_anomaly"
+        assert meta["plot_type"] == "monthly_trends"
+        plt.close("all")
+
+    def test_anomaly_series_centered_near_zero(self, sea_ice_diag):
+        """Anomaly series should remove each series' mean (centred ~0)."""
+        model_ts = sea_ice_diag._compute_model_timeseries()
+        obs_ts = sea_ice_diag._compute_obs_timeseries()
+        fig, _ = sea_ice_diag._plot_extremes(
+            "area", model_ts, obs_ts, anomaly=True,
+        )[0]
+        # Every plotted model/obs line (solid, not the zero ref) is mean-zero.
+        for ax in fig.axes:
+            for line in ax.get_lines():
+                ydata = line.get_ydata()
+                if len(ydata) > 2 and line.get_linewidth() >= 1.0:
+                    # axhline zero ref has constant y; skip it.
+                    if np.allclose(ydata, ydata[0]):
+                        continue
+                    assert abs(float(np.nanmean(ydata))) < 1e-6
+        plt.close(fig)
+
 
 # ── Test Plotting: Spatial Maps ──────────────────────────────────────
 
@@ -555,9 +583,10 @@ class TestComputePlotWrappers:
         results = sea_ice_diag.compute()
         figures = sea_ice_diag.plot(results)
         assert isinstance(figures, list)
-        # 3 timeseries + 3 seasonal + 3 extremes + 4 spatial
-        # + 4 bias maps (E) + 2 ens summary (F) = 19
-        assert len(figures) == 19
+        # 3 timeseries + 3 seasonal + 3 extremes + 1 area anomaly + 4 spatial
+        # + 4 bias maps (E) + 2 ens summary (F) + 2 mean-bias bars (G)
+        # + 4 per-family bias maps (H) = 26
+        assert len(figures) == 26
         for fig, meta in figures:
             assert isinstance(fig, plt.Figure)
             assert isinstance(meta, dict)
@@ -573,7 +602,7 @@ class TestRun:
     @patch("nereus.plot")
     def test_run_saves_figures(self, mock_nr_plot, sea_ice_diag):
         saved = sea_ice_diag.run(skip_existing=False)
-        assert len(saved) == 19
+        assert len(saved) == 26
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -585,11 +614,11 @@ class TestRun:
     def test_run_skip_existing(self, mock_nr_plot, sea_ice_diag):
         # First run
         saved1 = sea_ice_diag.run(skip_existing=False)
-        assert len(saved1) == 19
+        assert len(saved1) == 26
 
         # Second run with skip_existing
         saved2 = sea_ice_diag.run(skip_existing=True)
-        assert len(saved2) == 19  # Still returns paths
+        assert len(saved2) == 26  # Still returns paths
         plt.close("all")
 
     @patch("nereus.plot")
@@ -598,13 +627,13 @@ class TestRun:
         assert sea_ice_diag.output_dir.exists()
         pngs = list(sea_ice_diag.output_dir.glob("*.png"))
         jsons = list(sea_ice_diag.output_dir.glob("*.json"))
-        assert len(pngs) == 19
-        assert len(jsons) == 19
+        assert len(pngs) == 26
+        assert len(jsons) == 26
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_figure_ids(self, mock_nr_plot, sea_ice_diag):
-        """All 19 expected figure IDs are produced."""
+        """All 26 expected figure IDs are produced."""
         saved = sea_ice_diag.run(skip_existing=False)
         figure_ids = {p.stem for p, _ in saved}
         expected = {
@@ -620,6 +649,8 @@ class TestRun:
             "sea_ice_area_extremes",
             "sea_ice_extent_extremes",
             "sea_ice_volume_extremes",
+            # Group C2: sea ice area anomaly
+            "sea_ice_area_extremes_anomaly",
             # Group D: absolute spatial maps
             "siconc_nh_spatial",
             "siconc_sh_spatial",
@@ -633,6 +664,14 @@ class TestRun:
             # Group F: ensemble summary
             "siconc_ens_summary",
             "sithick_ens_summary",
+            # Group G: per-model mean-bias bar charts
+            "siconc_mean_bias",
+            "sithick_mean_bias",
+            # Group H: per-family mean-bias maps
+            "siconc_nh_family_bias",
+            "siconc_sh_family_bias",
+            "sithick_nh_family_bias",
+            "sithick_sh_family_bias",
         }
         assert figure_ids == expected
         plt.close("all")
@@ -673,6 +712,147 @@ class TestMetadata:
         obs_ts = sea_ice_diag._compute_obs_timeseries()
         _, meta = sea_ice_diag._plot_timeseries("volume", model_ts, obs_ts)[0]
         assert meta["obs_dataset"] == "PSC"
+        plt.close("all")
+
+
+# ── Test mean-bias helpers, orientation cache key, summary stats ──────
+
+
+class TestMeanBiasHelpers:
+    """Tests for the per-model mean-bias additions."""
+
+    def test_weighted_mean_rmse_uniform(self):
+        # Constant bias of 2 at all lats → weighted mean 2, rmse 2.
+        lat = np.linspace(-80, 80, 50)
+        bias = np.full_like(lat, 2.0)
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert mean == pytest.approx(2.0, abs=1e-9)
+        assert rmse == pytest.approx(2.0, abs=1e-9)
+
+    def test_weighted_mean_rmse_skips_nan(self):
+        lat = np.array([10.0, 20.0, 30.0])
+        bias = np.array([1.0, np.nan, -1.0])
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert np.isfinite(mean) and np.isfinite(rmse)
+        assert rmse >= abs(mean)
+
+    def test_weighted_mean_rmse_all_nan(self):
+        lat = np.array([10.0, 20.0])
+        bias = np.array([np.nan, np.nan])
+        mean, rmse = SeaIceDiag._weighted_mean_rmse(bias, lat)
+        assert np.isnan(mean) and np.isnan(rmse)
+
+    def test_grid_signature_distinguishes_lat_orientation(self):
+        """Ascending vs descending latitude must yield different cache keys.
+
+        Regression: IFS-NEMO r1 (lat 90→−90) and r2/r3 (−90→90) share point
+        count; keying the interpolator cache on count alone reused one
+        interpolator and mirrored r2/r3 hemispherically.
+        """
+        lon = np.linspace(0, 359, 360)
+        lat_desc = np.linspace(90, -90, 180)
+        lat_asc = np.linspace(-90, 90, 180)
+        # Build meshgridded src arrays the way _build_polar_bias_data does.
+        lo_d, la_d = np.meshgrid(lon, lat_desc)
+        lo_a, la_a = np.meshgrid(lon, lat_asc)
+        key_desc = SeaIceDiag._grid_signature(la_d.ravel(), lo_d.ravel())
+        key_asc = SeaIceDiag._grid_signature(la_a.ravel(), lo_a.ravel())
+        assert key_desc != key_asc
+        # Same orientation → same key (interpolator correctly reused).
+        assert key_asc == SeaIceDiag._grid_signature(la_a.ravel(), lo_a.ravel())
+
+    def test_polar_bias_stats_structure(self):
+        lat = np.array([60.0, 70.0, 80.0])
+        model_biases = {
+            "ModelA": {3: np.array([0.1, 0.2, 0.3]),
+                       9: np.array([-0.1, -0.2, -0.3])},
+        }
+        stats = SeaIceDiag._polar_bias_stats(
+            SeaIceDiag, model_biases, lat, [3, 9],
+        )
+        assert "ModelA" in stats
+        assert "march_mean_bias" in stats["ModelA"]
+        assert "september_rmse" in stats["ModelA"]
+        assert stats["ModelA"]["march_mean_bias"] > 0
+        assert stats["ModelA"]["september_mean_bias"] < 0
+
+    def test_mean_bias_bars_has_summary_stats(self, sea_ice_diag):
+        with patch("nereus.plot"):
+            figs = sea_ice_diag._plot_mean_bias_bars("siconc")
+        assert len(figs) == 1
+        _, meta = figs[0]
+        assert meta["figure_id"] == "siconc_mean_bias"
+        assert meta["plot_type"] == "bar_chart"
+        # Summary statistics must be populated (non-empty) per model.
+        assert meta["summary_statistics"]
+        plt.close("all")
+
+    def test_bias_map_has_summary_stats(self, sea_ice_diag):
+        with patch("nereus.plot"):
+            figs = sea_ice_diag._plot_bias_spatial(
+                "siconc_nh_bias", "siconc", "np",
+            )
+        assert len(figs) == 1
+        _, meta = figs[0]
+        assert meta["summary_statistics"]
+        plt.close("all")
+
+
+class TestFamilyBiasMaps:
+    """Tests for the per-family mean-bias maps (Group H)."""
+
+    def test_model_family_strips_member_suffix(self):
+        assert SeaIceDiag._model_family("IFS-NEMO-ER-r2") == "IFS-NEMO-ER"
+        assert SeaIceDiag._model_family("IFS-NEMO-ER-r3") == "IFS-NEMO-ER"
+        assert SeaIceDiag._model_family("IFS-NEMO-ER") == "IFS-NEMO-ER"
+        assert SeaIceDiag._model_family("IFS-FESOM2-SR-r3") == "IFS-FESOM2-SR"
+        assert SeaIceDiag._model_family("ICON-ESM-ER") == "ICON-ESM-ER"
+        assert SeaIceDiag._model_family("HadGEM3-GC5") == "HadGEM3-GC5"
+
+    def test_aggregate_family_biases_averages_members(self):
+        model_biases = {
+            "IFS-NEMO-ER": {3: np.array([1.0, 2.0])},
+            "IFS-NEMO-ER-r2": {3: np.array([3.0, 4.0])},
+            "ICON-ESM-ER": {3: np.array([5.0, 6.0])},
+        }
+        fam_biases, families, members = SeaIceDiag._aggregate_family_biases(
+            model_biases, list(model_biases), [3],
+        )
+        # Two families, member order preserved.
+        assert families == ["IFS-NEMO-ER", "ICON-ESM-ER"]
+        assert members["IFS-NEMO-ER"] == ["IFS-NEMO-ER", "IFS-NEMO-ER-r2"]
+        # Family mean is the cell-wise average over members.
+        np.testing.assert_allclose(
+            fam_biases["IFS-NEMO-ER"][3], np.array([2.0, 3.0]),
+        )
+        np.testing.assert_allclose(
+            fam_biases["ICON-ESM-ER"][3], np.array([5.0, 6.0]),
+        )
+
+    def test_aggregate_family_biases_nan_aware(self):
+        model_biases = {
+            "M-r1": {3: np.array([2.0, np.nan])},
+            "M-r2": {3: np.array([4.0, 6.0])},
+        }
+        fam_biases, families, _ = SeaIceDiag._aggregate_family_biases(
+            model_biases, list(model_biases), [3],
+        )
+        assert families == ["M"]
+        # NaN ignored in the mean of the second cell.
+        np.testing.assert_allclose(
+            fam_biases["M"][3], np.array([3.0, 6.0]),
+        )
+
+    def test_family_bias_map_has_summary_stats(self, sea_ice_diag):
+        with patch("nereus.plot"):
+            figs = sea_ice_diag._plot_family_bias_spatial(
+                "siconc_nh_family_bias", "siconc", "np",
+            )
+        assert len(figs) == 1
+        _, meta = figs[0]
+        assert meta["figure_id"] == "siconc_nh_family_bias"
+        assert meta["plot_type"] == "bias_map"
+        assert meta["summary_statistics"]
         plt.close("all")
 
 
@@ -1024,6 +1204,106 @@ class TestCMIP6Timeseries:
         mmm, _, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
         assert len(mmm["area_nh"].time) == 12
 
+    def test_unstructured_grid_no_oom(self, sea_ice_model_loader,
+                                      sea_ice_obs_loader, cmip6_sea_ice_config):
+        """Unstructured (ICON-like) member: 1-D per-cell lat/lon, single dim.
+
+        Regression: the loader meshgridded 1-D lat/lon into an
+        (ncells × ncells) array — for a real ICON grid that is ~10^8 points
+        and OOMs (`Killed`). With per-cell coords on one spatial dim the
+        meshgrid must be skipped; here a shape mismatch would also surface it.
+        """
+        rng = np.random.default_rng(0)
+        ncells = 500
+        clat = rng.uniform(-89, 89, ncells)
+        clon = rng.uniform(0, 360, ncells)
+        time = xr.date_range("1990-01", periods=12, freq="MS",
+                             calendar="standard")
+        base = np.clip(0.8 * (np.abs(clat) - 30) / 60.0, 0, 1)
+        siconc = np.broadcast_to(base, (12, ncells)).astype(float)
+        ds = xr.Dataset({
+            "siconc": xr.DataArray(
+                siconc, dims=("time", "ncells"),
+                coords={"time": time,
+                        "lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+            "sithick": xr.DataArray(
+                np.broadcast_to(2.0 * base, (12, ncells)).astype(float),
+                dims=("time", "ncells"),
+                coords={"time": time,
+                        "lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+            "areacello": xr.DataArray(
+                np.full(ncells, 3.1e10), dims=("ncells",),
+                coords={"lat": ("ncells", clat), "lon": ("ncells", clon)},
+            ),
+        })
+
+        class _UnstructuredLoader(MockCMIP6LoaderSeaIce):
+            def load_area(self, model, variant=None, table="Amon"):
+                return self._ds["areacello"]
+
+        loader = _UnstructuredLoader(ds, models={"ICON": {"variants": ["r1i1p1f1"]}})
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+            cmip6_loader=loader, experiment="hist", period=("1990", "1990"),
+        )
+        mmm, info, _ = diag._compute_cmip6_timeseries(loader=loader)
+        # Did not OOM / shape-error, and produced a usable NH metric.
+        assert info["n_members"] == 1
+        assert "area_nh" in mmm
+        assert float(mmm["area_nh"].mean()) >= 0
+
+    def test_curvilinear_no_areacello_mesh_fallback(
+        self, sea_ice_model_loader, sea_ice_obs_loader,
+        cmip6_sea_ice_config,
+    ):
+        """Curvilinear member without areacello: areas from nereus mesh.
+
+        Most HighResMIP ocean models (NEMO/ORCA tripolar) ship no
+        areacello in the pool. With 2-D lat/lon and no cell areas the
+        member used to be skipped, dropping the whole benchmark MMM.
+        The mesh fallback must reconstruct areas so the member counts.
+        """
+        lats1 = np.arange(-87.5, 90, 5.0)
+        lons1 = np.arange(2.5, 360, 5.0)
+        lat2d, lon2d = np.meshgrid(lats1, lons1, indexing="ij")  # 2-D curvilinear
+        time = xr.date_range("1990-01", periods=12, freq="MS",
+                             calendar="standard")
+        base = np.clip(0.8 * (np.abs(lat2d) - 30) / 60.0, 0, 1)
+        siconc = np.broadcast_to(base, (12, *lat2d.shape)).astype(float)
+        ds = xr.Dataset({
+            "siconc": xr.DataArray(
+                siconc, dims=("time", "y", "x"),
+                coords={"time": time,
+                        "lat": (("y", "x"), lat2d),
+                        "lon": (("y", "x"), lon2d)},
+            ),
+            "sithick": xr.DataArray(
+                np.broadcast_to(2.0 * base, (12, *lat2d.shape)).astype(float),
+                dims=("time", "y", "x"),
+                coords={"time": time,
+                        "lat": (("y", "x"), lat2d),
+                        "lon": (("y", "x"), lon2d)},
+            ),
+            # NB: no areacello — forces the mesh fallback.
+        })
+
+        class _NoAreaLoader(MockCMIP6LoaderSeaIce):
+            def load_area(self, model, variant=None, table="Amon"):
+                return None
+
+        loader = _NoAreaLoader(ds, models={"NEMO-ER": {"variants": ["r1i1p1f1"]}})
+        diag = SeaIceDiag(
+            sea_ice_model_loader, sea_ice_obs_loader, cmip6_sea_ice_config,
+            cmip6_loader=loader, experiment="hist", period=("1990", "1990"),
+        )
+        mmm, info, _ = diag._compute_cmip6_timeseries(loader=loader)
+        # Member survived (not skipped for missing areas) and metrics sane.
+        assert info["n_members"] == 1
+        assert "area_nh" in mmm
+        assert 0 < float(mmm["area_nh"].max()) < 1e14
+
     def test_fill_values_sanitized(self, synth_cmip6_sea_ice,
                                     sea_ice_model_loader,
                                     sea_ice_obs_loader,
@@ -1331,6 +1611,28 @@ class TestCMIP6PlotExtremes:
         assert "CMIP6 MMM" in all_labels
         plt.close(fig)
 
+    def test_benchmark_in_every_panel_legend(self, sea_ice_diag_cmip6):
+        """The benchmark MMM must appear in all four panel legends (incl. SH).
+
+        Regression: benchmark labels were only set on the NH-max panel, so the
+        SH panel legends were missing CMIP6/HighResMIP.
+        """
+        model_ts = sea_ice_diag_cmip6._compute_model_timeseries()
+        obs_ts = sea_ice_diag_cmip6._compute_obs_timeseries()
+        mmm, info, _ = sea_ice_diag_cmip6._compute_cmip6_timeseries()
+        result = sea_ice_diag_cmip6._plot_extremes(
+            "area", model_ts, obs_ts, cmip6_ts=mmm, cmip6_info=info,
+        )
+        fig, _ = result[0]
+        axes = fig.get_axes()
+        assert len(axes) == 4
+        for ax in axes:
+            legend = ax.get_legend()
+            assert legend is not None
+            labels = [t.get_text() for t in legend.get_texts()]
+            assert "CMIP6 MMM" in labels
+        plt.close(fig)
+
     def test_individual_lines_present(self, sea_ice_diag_cmip6_individual):
         model_ts = sea_ice_diag_cmip6_individual._compute_model_timeseries()
         obs_ts = sea_ice_diag_cmip6_individual._compute_obs_timeseries()
@@ -1431,11 +1733,11 @@ class TestCMIP6ComputePlotWrappers:
     def test_plot_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         results = sea_ice_diag_cmip6.compute()
         figures = sea_ice_diag_cmip6.plot(results)
-        assert len(figures) == 19
+        assert len(figures) == 26
         plt.close("all")
 
     @patch("nereus.plot")
     def test_run_with_cmip6(self, mock_nr_plot, sea_ice_diag_cmip6):
         saved = sea_ice_diag_cmip6.run(skip_existing=False)
-        assert len(saved) == 19
+        assert len(saved) == 26
         plt.close("all")

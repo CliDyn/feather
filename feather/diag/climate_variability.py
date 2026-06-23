@@ -525,6 +525,30 @@ class ClimateVariability(DiagnosticBase):
         lat_arr = da[lat_name].values
         lon_arr = da[lon_name].values
 
+        # Unstructured / scattered native grid (e.g. ICON): a single
+        # spatial dimension with 1-D lat & lon parallel to the data.
+        # Feed the points straight to nereus — no meshgrid, no sorting.
+        data = np.asarray(da.values)
+        if (data.ndim == 1 and lat_arr.ndim == 1 and lon_arr.ndim == 1
+                and lat_arr.shape == data.shape
+                and lon_arr.shape == data.shape):
+            src_lon = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+            grid_key = ("unstructured", int(data.shape[0]))
+            if grid_key not in interp_cache:
+                _, interp_cache[grid_key] = nr.regrid(
+                    data, lon=src_lon, lat=lat_arr,
+                    resolution=resolution, method=method,
+                    influence_radius=ir, lon_bounds=(-180.0, 180.0),
+                    as_xarray=True,
+                )
+            regridded = interp_cache[grid_key](data)
+            n_roll = regridded.shape[1] // 2
+            regridded = np.roll(regridded, -n_roll, axis=1)
+            return xr.DataArray(
+                regridded, dims=("lat", "lon"),
+                coords={"lat": target_lats, "lon": target_lons},
+            )
+
         # Convert to -180..180 to avoid gap at 0° in triangulation
         lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
         sort_idx = np.argsort(lon_arr)

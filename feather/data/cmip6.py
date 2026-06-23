@@ -91,6 +91,7 @@ class CMIP6Loader:
         period: tuple[str, str] | None = None,
         season: str | None = None,
         time_mean: bool = True,
+        require_full_coverage: bool = False,
     ) -> xr.DataArray | None:
         """Load a single CMIP6 variable for one model+variant.
 
@@ -111,12 +112,20 @@ class CMIP6Loader:
         time_mean : bool
             If True (default), return time-mean 2D field. If False, return
             the full time series after period/season filtering.
+        require_full_coverage : bool
+            If True and *period* is given, return ``None`` unless the model's
+            time series spans the entire requested period (first year at or
+            before ``period[0]`` and last year at or after ``period[1]``).
+            Used by the multi-model mean so partial-coverage models do not
+            bias the ensemble. Default False (individual loads keep whatever
+            overlap exists).
 
         Returns
         -------
         xr.DataArray or None
             Time-mean 2D field (or full time series if ``time_mean=False``),
-            or None if data not found.
+            or None if data not found (or coverage incomplete when
+            ``require_full_coverage=True``).
         """
         if variant is None:
             model_cfg = self.models.get(model, {})
@@ -131,6 +140,20 @@ class CMIP6Loader:
 
         da = self._open_stitched(cmip6_var, model, variant, table)
         if da is None:
+            return None
+
+        # Reject partial-coverage members before slicing (e.g. a model whose
+        # data starts in 2001 cannot enter a 1980–2014 ensemble mean).
+        if (
+            require_full_coverage
+            and period is not None
+            and "time" in da.dims
+            and not self._covers_period(da, period)
+        ):
+            logger.info(
+                "Skipping %s/%s — does not cover full period %s–%s",
+                model, cmip6_var, period[0], period[1],
+            )
             return None
 
         # Normalize time coordinate
@@ -174,27 +197,69 @@ class CMIP6Loader:
         return da.compute()
 
     @staticmethod
+    def _covers_period(da: xr.DataArray, period: tuple[str, str]) -> bool:
+        """True when *da*'s time axis spans the whole requested *period*.
+
+        Compares calendar years only: the first available year must be at or
+        before ``period[0]`` and the last at or after ``period[1]``. Works for
+        both ``cftime`` objects (non-standard calendars) and ``datetime64``.
+        Returns True when there is nothing to check (no time dim / empty).
+        """
+        if "time" not in da.dims or da.sizes.get("time", 0) == 0:
+            return True
+
+        def _year(t) -> int:
+            if hasattr(t, "year"):
+                return int(t.year)
+            return int(str(t)[:4])
+
+        times = da["time"].values
+        first_year = _year(np.min(times))
+        last_year = _year(np.max(times))
+        start_year = int(str(period[0])[:4])
+        end_year = int(str(period[1])[:4])
+        return first_year <= start_year and last_year >= end_year
+
+    @staticmethod
     def _is_griddable(da: xr.DataArray) -> bool:
         """True when *da* has lat/lon dims/coords usable for regridding.
 
-        Accepts rectilinear (1-D lat & lon dims) and curvilinear (2-D
-        lat/lon coordinates).  Rejects fields whose only spatial dimension
-        is a non-lat/lon index (unstructured / reduced Gaussian grids).
+        Accepts:
+        - rectilinear (≥2 spatial dims, or a single lat/lon-named dim);
+        - curvilinear (2-D lat/lon coordinates, e.g. ORCA ``nav_lat``);
+        - unstructured grids carrying 1-D lat/lon cell-centre coordinates on
+          their single spatial dim (e.g. ICON's triangular ``i``/``ncells``).
+          ``nereus.regrid`` treats these as scattered points, exactly like the
+          HEALPix data the rest of feather already regrids.
+
+        Rejects fields whose only spatial dimension is a bare index with no
+        lat/lon coordinates (reduced Gaussian / truly unstructured-without-coords).
         """
         lat_names = {"lat", "latitude", "nav_lat", "y"}
         lon_names = {"lon", "longitude", "nav_lon", "x"}
         spatial_dims = [d for d in da.dims if d != "time"]
         if len(spatial_dims) >= 2:
             return True
-        # Single (or zero) spatial dim: only OK if it is itself lat/lon, or a
-        # 2-D lat/lon coordinate is present.
+        # Single (or zero) spatial dim: OK if it is itself a lat/lon axis.
         if any(str(d).lower() in lat_names | lon_names for d in spatial_dims):
             return True
-        has_lat = any(str(c).lower() in lat_names and da[c].ndim >= 2
-                      for c in da.coords)
-        has_lon = any(str(c).lower() in lon_names and da[c].ndim >= 2
-                      for c in da.coords)
-        return has_lat and has_lon
+        # Curvilinear collapsed onto an index dim but with 2-D lat/lon coords.
+        has_lat_2d = any(str(c).lower() in lat_names and da[c].ndim >= 2
+                         for c in da.coords)
+        has_lon_2d = any(str(c).lower() in lon_names and da[c].ndim >= 2
+                         for c in da.coords)
+        if has_lat_2d and has_lon_2d:
+            return True
+        # Unstructured grid with 1-D lat/lon coords on the lone spatial dim.
+        if len(spatial_dims) == 1:
+            sdim = spatial_dims[0]
+            has_lat_1d = any(str(c).lower() in lat_names and da[c].dims == (sdim,)
+                             for c in da.coords)
+            has_lon_1d = any(str(c).lower() in lon_names and da[c].dims == (sdim,)
+                             for c in da.coords)
+            if has_lat_1d and has_lon_1d:
+                return True
+        return False
 
     def load_var_for_model_var(
         self,
@@ -278,6 +343,9 @@ class CMIP6Loader:
 
         resolution = self._cfg.get("regrid_resolution", 1.0)
         influence_radius = self._cfg.get("influence_radius", 80_000.0)
+        # Only average models that cover the full analysis period (default on;
+        # opt out with ``require_full_coverage: false`` in the benchmark config).
+        require_full_coverage = self._cfg.get("require_full_coverage", True)
 
         regridded_fields = []
         models_used = []
@@ -290,6 +358,7 @@ class CMIP6Loader:
                 cmip6_var, model,
                 variant=variant, table=table,
                 period=period, season=season,
+                require_full_coverage=require_full_coverage,
             )
             if da is None:
                 models_skipped.append(member_label)

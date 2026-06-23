@@ -67,10 +67,13 @@ class GlobalBiases(DiagnosticBase):
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
-                 cmip6_individual=False, save_netcdf=False):
+                 cmip6_individual=False, save_netcdf=False,
+                 individual_netcdf_only=False):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
-        self.save_netcdf = save_netcdf
+        # individual_netcdf_only implies NetCDF export (it is a data-only mode).
+        self.individual_netcdf_only = individual_netcdf_only
+        self.save_netcdf = save_netcdf or individual_netcdf_only
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -78,6 +81,24 @@ class GlobalBiases(DiagnosticBase):
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "Ensemble")
+
+    @staticmethod
+    def _grid_signature(lon, lat) -> tuple:
+        """Cache key capturing a source grid's size AND coordinate orientation.
+
+        Point count alone is ambiguous: two grids can share their point count
+        yet order their latitude axis oppositely (ascending vs descending). A
+        nereus interpolator built on one ordering mirrors the field if reused
+        on the other (e.g. IFS-NEMO r1 vs r2/r3), so the axis endpoints are
+        folded into the key.
+        """
+        lon_r = np.asarray(lon).ravel()
+        lat_r = np.asarray(lat).ravel()
+        return (
+            lon_r.shape[0],
+            round(float(lat_r[0]), 4), round(float(lat_r[-1]), 4),
+            round(float(lon_r[0]), 4), round(float(lon_r[-1]), 4),
+        )
 
     # -- Orchestration (per-variable incremental) ----------------------------
 
@@ -117,17 +138,20 @@ class GlobalBiases(DiagnosticBase):
                     for p in ["annual", "djf", "mam", "jja", "son"]
                 ]
             figs_exist = all(self._figure_exists(fid) for fid in figure_ids)
-            nc_needed = self.save_netcdf and not self._netcdf_exists(var)
+            nc_needed = self.save_netcdf and not self._netcdf_complete(var)
+            # NetCDF-only mode never plots, so figures are irrelevant to the skip.
+            figs_ok = figs_exist or self.individual_netcdf_only
 
-            if skip_existing and figs_exist and not nc_needed:
+            if skip_existing and figs_ok and not nc_needed:
                 logger.info(
-                    "Skipping %s — all figures exist", var,
+                    "Skipping %s — outputs already present", var,
                 )
-                saved.extend([
-                    (self.output_dir / f"{fid}.png",
-                     self.output_dir / f"{fid}.json")
-                    for fid in figure_ids
-                ])
+                if not self.individual_netcdf_only:
+                    saved.extend([
+                        (self.output_dir / f"{fid}.png",
+                         self.output_dir / f"{fid}.json")
+                        for fid in figure_ids
+                    ])
                 continue
 
             try:
@@ -135,8 +159,11 @@ class GlobalBiases(DiagnosticBase):
                 if var_result is None:
                     continue
 
-                # Save figures only when they were not already present.
-                if not (skip_existing and figs_exist):
+                # Save figures only when not already present and not in the
+                # NetCDF-only data-extraction mode.
+                if not self.individual_netcdf_only and not (
+                    skip_existing and figs_exist
+                ):
                     figures = self._plot_variable(var, var_result)
                     for fig, meta in figures:
                         paths = self._save(fig, meta, meta["figure_id"])
@@ -161,12 +188,34 @@ class GlobalBiases(DiagnosticBase):
         from pathlib import Path
         return Path(self.config.output_dir) / "netcdf" / self.name
 
+    @property
+    def _export_individual(self) -> bool:
+        """Whether individual benchmark members should be exported to NetCDF."""
+        return self.save_netcdf and (
+            self.cmip6_individual or self.individual_netcdf_only
+        )
+
     def _netcdf_exists(self, var: str) -> bool:
         from feather.diag import netcdf_export
         paths = netcdf_export.biasmap_netcdf_paths(
             self._netcdf_dir, var, self.period,
         )
         return all(p.exists() for p in paths)
+
+    def _individual_netcdf_exists(self, var: str) -> bool:
+        from feather.diag import netcdf_export
+        paths = netcdf_export.biasmap_individual_netcdf_paths(
+            self._netcdf_dir, var, self.period,
+        )
+        return all(p.exists() for p in paths)
+
+    def _netcdf_complete(self, var: str) -> bool:
+        """True when every requested NetCDF product is already on disk."""
+        if not self._netcdf_exists(var):
+            return False
+        if self._export_individual and not self._individual_netcdf_exists(var):
+            return False
+        return True
 
     def _export_netcdf(self, var: str, var_result: dict) -> None:
         from feather.diag import netcdf_export
@@ -176,6 +225,11 @@ class GlobalBiases(DiagnosticBase):
             self._netcdf_dir, var, var_result, self.period,
             units=units, skip_existing=True,
         )
+        if self._export_individual:
+            netcdf_export.export_biasmap_individual_netcdf(
+                self._netcdf_dir, var, var_result, self.period,
+                units=units, skip_existing=True,
+            )
 
     # -- Computation --------------------------------------------------------
 
@@ -225,7 +279,7 @@ class GlobalBiases(DiagnosticBase):
         # Cache nereus interpolator per source grid size.
         # Different-resolution models (e.g. nside=1024 vs nside=128) need
         # separate interpolators, but models sharing a grid reuse the same one.
-        _interp_cache: dict[int, Any] = {}
+        _interp_cache: dict[tuple, Any] = {}
         obs_clim_common = None
         obs_seasonal_common = {}
         # Pre-computed area weights for the common grid (set once)
@@ -261,9 +315,11 @@ class GlobalBiases(DiagnosticBase):
                 for s in model_seasonal.data_vars
             }
 
-            # Build/reuse interpolator keyed by source grid size
+            # Build/reuse interpolator keyed by source grid signature
+            # (size + orientation — see _grid_signature)
             n_src = np.asarray(lon).ravel().shape[0]
-            if n_src not in _interp_cache:
+            grid_key = self._grid_signature(lon, lat)
+            if grid_key not in _interp_cache:
                 logger.info("  Building nereus interpolator (grid size %d)...",
                             n_src)
                 annual_regrid, interp = nr.regrid(
@@ -274,7 +330,7 @@ class GlobalBiases(DiagnosticBase):
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
                 )
-                _interp_cache[n_src] = interp
+                _interp_cache[grid_key] = interp
 
                 if target_lats is None:
                     target_lats = interp.target_lat[:, 0]
@@ -318,7 +374,7 @@ class GlobalBiases(DiagnosticBase):
                             },
                         )
             else:
-                interp = _interp_cache[n_src]
+                interp = _interp_cache[grid_key]
                 regridded_np = interp(model_clim.values.ravel())
                 annual_regrid = xr.DataArray(
                     regridded_np, dims=("lat", "lon"),
@@ -339,7 +395,7 @@ class GlobalBiases(DiagnosticBase):
             seasonal_regrids: dict[str, Any] = {}
             for season in ["DJF", "MAM", "JJA", "SON"]:
                 if season in model_seasonal:
-                    s_np = _interp_cache[n_src](
+                    s_np = _interp_cache[grid_key](
                         model_seasonal[season].values.ravel()
                     )
                     s_regrid = xr.DataArray(
@@ -405,21 +461,33 @@ class GlobalBiases(DiagnosticBase):
         cmip6_individual_data: dict[str, dict] = {}
         benchmark_data: dict[str, dict] = {}    # {label: per-period MMM data}
         benchmark_info: dict[str, dict] = {}
+        # {label: per-period individual-member data} — for NetCDF export.
+        benchmark_individual_data: dict[str, dict] = {}
+        # Plot individual panels for the primary benchmark; export them (for
+        # every benchmark) when saving NetCDF.
+        plot_individual = self.cmip6_individual and not self.individual_netcdf_only
         if self.cmip6_enabled and target_lats is not None:
             for i, bench in enumerate(self.benchmarks):
                 label = getattr(bench, "label", "CMIP6 MMM")
-                if i == 0 and self.cmip6_individual:
-                    # Primary benchmark: individual models + MMM from them.
-                    cmip6_individual_data = self._compute_cmip6_individual(
+                primary = (i == 0)
+                want_individual = (
+                    (primary and (plot_individual or self._export_individual))
+                    or (not primary and self._export_individual)
+                )
+                if want_individual:
+                    # Individual models + MMM derived from them (no double regrid).
+                    ind = self._compute_cmip6_individual(
                         var, target_lats, target_lons,
                         obs_clim_common, obs_seasonal_common,
-                        common_area,
+                        common_area, loader=bench,
                     )
+                    benchmark_individual_data[label] = ind
                     b_data, b_info = self._mmm_from_individual(
-                        cmip6_individual_data,
-                        obs_clim_common, obs_seasonal_common,
+                        ind, obs_clim_common, obs_seasonal_common,
                         common_area,
                     )
+                    if primary and plot_individual:
+                        cmip6_individual_data = ind
                 else:
                     b_data, b_info = self._compute_cmip6_mmm(
                         var, target_lats, target_lons,
@@ -468,6 +536,7 @@ class GlobalBiases(DiagnosticBase):
             "cmip6_individual_data": cmip6_individual_data,
             "benchmark_data": benchmark_data,
             "benchmark_info": benchmark_info,
+            "benchmark_individual_data": benchmark_individual_data,
             "ens_data": ens_data,
         }
 
@@ -770,8 +839,13 @@ class GlobalBiases(DiagnosticBase):
 
     def _compute_cmip6_individual(self, var, target_lats, target_lons,
                                   obs_clim_common, obs_seasonal_common,
-                                  common_area):
-        """Compute individual CMIP6 model biases."""
+                                  common_area, loader=None):
+        """Compute individual benchmark-member biases.
+
+        *loader* defaults to the primary benchmark; pass another benchmark
+        loader (e.g. HighResMIP) to compute its members.
+        """
+        loader = loader or self.cmip6_loader
         cmip6_individual_data: dict[str, dict] = {}
         influence_radius = self.config.nereus.get(
             "influence_radius", 80_000.0,
@@ -782,14 +856,15 @@ class GlobalBiases(DiagnosticBase):
         # same native grid share a single KDTree build.
         cmip6_interp_cache: dict[tuple, nr.RegridInterpolator] = {}
 
-        logger.info("  Loading individual CMIP6 models for %s...", var)
-        member_pairs = self.cmip6_loader.get_member_pairs()
+        logger.info("  Loading individual %s models for %s...",
+                    getattr(loader, "label", "CMIP6"), var)
+        member_pairs = loader.get_member_pairs()
 
         for model, variant in member_pairs:
             label = f"{model}/{variant}"
 
             # Annual
-            da = self.cmip6_loader.load_var_for_model_var(
+            da = loader.load_var_for_model_var(
                 var, model, variant=variant, period=self.period,
             )
             if da is None:
@@ -830,7 +905,7 @@ class GlobalBiases(DiagnosticBase):
 
             # Seasonal
             for season in ["DJF", "MAM", "JJA", "SON"]:
-                da_s = self.cmip6_loader.load_var_for_model_var(
+                da_s = loader.load_var_for_model_var(
                     var, model, variant=variant,
                     period=self.period, season=season,
                 )
@@ -978,6 +1053,30 @@ class GlobalBiases(DiagnosticBase):
         lon_name = "lon" if "lon" in da.coords else "longitude"
         lat_arr = da[lat_name].values
         lon_arr = da[lon_name].values
+
+        # Unstructured / scattered native grid (e.g. ICON): a single
+        # spatial dimension with 1-D lat & lon parallel to the data.
+        # Feed the points straight to nereus — no meshgrid, no sorting.
+        data = np.asarray(da.values)
+        if (data.ndim == 1 and lat_arr.ndim == 1 and lon_arr.ndim == 1
+                and lat_arr.shape == data.shape
+                and lon_arr.shape == data.shape):
+            src_lon = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
+            grid_key = ("unstructured", int(data.shape[0]))
+            if grid_key not in interp_cache:
+                _, interp_cache[grid_key] = nr.regrid(
+                    data, lon=src_lon, lat=lat_arr,
+                    resolution=resolution, method=method,
+                    influence_radius=ir, lon_bounds=(-180.0, 180.0),
+                    as_xarray=True,
+                )
+            regridded = interp_cache[grid_key](data)
+            n_roll = regridded.shape[1] // 2
+            regridded = np.roll(regridded, -n_roll, axis=1)
+            return xr.DataArray(
+                regridded, dims=("lat", "lon"),
+                coords={"lat": target_lats, "lon": target_lons},
+            )
 
         # Convert to -180..180 to avoid gap at 0° in triangulation
         lon_arr = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
