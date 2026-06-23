@@ -49,6 +49,7 @@ import feather.diag.precip_obs_comparison  # noqa: F401
 import feather.diag.added_value  # noqa: F401
 import feather.diag.tropical_nights  # noqa: F401
 import feather.diag.heatwave  # noqa: F401
+import feather.diag.heatwave_hotspots  # noqa: F401
 import feather.diag.tropical_nights_change  # noqa: F401
 import feather.diag.heatwave_change  # noqa: F401
 import feather.diag.climate_classification  # noqa: F401

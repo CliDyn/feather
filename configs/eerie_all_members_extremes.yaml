@@ -1,0 +1,145 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE all-members heatwave-hotspots (extreme-heat tail-widening) diagnostic.
+#
+# Reproduces Figures 2–4 of Sambartusek, Kornhuber et al. (2024, PNAS,
+# doi:10.1073/pnas.2411258121) — "A global emergence of regional heatwave
+# hotspots" — within the Feather framework.
+#
+# Core metric ("tail-widening"): at each grid point and each year, compute the
+# 99th and 87.5th percentiles of *daily* maximum 2 m temperature (tasmax, day
+# table); the yearly tail width D = P99 − P87.5; then the linear trend of D over
+# the analysis period (°C/decade).  Everything is regridded to a common 0.25°
+# grid, land-masked (>25 %), and masked grey where the P87.5 trend is negative.
+#
+# Reference = ERA5 (derived daily tasmax CMOR tree).  The "model ensemble" is
+# the EERIE high-resolution members.  CMIP6 is NOT included in this first pass
+# (daily tasmax is not available as a zarr cache — only on the DKRZ pool DRS at
+# /pool/data/CMIP6/.../day/tasmax/).  To add it later, build a yearly-percentile
+# cache from the pool and wire it in as a benchmark (see the cmip6 stub below).
+#
+# Prerequisites (ERA5 derived daily/monthly, run scripts/era5_derive_*.sh):
+#   daily   ERA5 → /work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/...
+#   sftlf   ERA5 → /work/bm1344/AWI/OBS/era5_derived/CMOR/.../fx/sftlf/gr/v1/...
+#
+# Run (compute node — daily data + per-year percentiles are heavy):
+#   feather --config configs/eerie_all_members_extremes.yaml \
+#           --diagnostics heatwave_hotspots --variables tasmax \
+#           --steps diagnostics -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE all-members heatwave hotspots (extreme-heat tail-widening) vs ERA5"
+  experiment: "hist-1950"
+  period: ["1980", "2014"]          # common window: ERA5 + EERIE hist + CMIP6 historical
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    Trends in extreme-heat tail-widening (yearly 99th minus 87.5th percentile of
+    daily tasmax) across all EERIE high-resolution members, evaluated against
+    ERA5-derived daily extremes, reproducing Sambartusek/Kornhuber et al. (2024,
+    PNAS) Figs. 2–4.
+  extremes_obs_reference: "ERA5"    # ERA5 is the reanalysis reference
+
+# Global default source for the flat-model diagnostics.
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+# Flat models: ERA5 (reference) + EERIE members publishing daily tasmax.
+# Members lacking daily tasmax are skipped gracefully by the diagnostic.
+models:
+  ERA5:
+    institution: ECMWF
+    experiment: era5
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5"
+    grids:
+      sfc: latlon
+    color: "#000000"
+
+  IFS-FESOM2-SR:
+    institution: AWI
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#1f77b4"
+
+  IFS-NEMO-ER:
+    institution: BSC
+    experiment: hist-1950
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    grids:
+      sfc: latlon
+    color: "#ff7f0e"
+
+  ICON-ESM-ER:
+    institution: MPI-M
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids:
+      sfc: latlon
+    color: "#2ca02c"
+
+  HadGEM3-GC5:
+    institution: MOHC
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    grids:
+      sfc: latlon
+    color: "#d62728"
+
+obs_root: "/work/bm1344/AWI/OBS"
+obs_datasets:
+  # Derived ERA5 monthly tasmin/tasmax (monthly mean of daily extremes), K.
+  ERA5_TMINMAX:
+    path: "/work/bm1344/AWI/OBS/era5_derived/mon"
+    variables:
+      tasmin: "ERA5_tasmin_daymin_mon_1980-2023.nc"
+      tasmax: "ERA5_tasmax_daymax_mon_1980-2023.nc"
+  # ERA5 land-sea mask (sftlf, %) — used to land-mask the common-grid fields.
+  ERA5_SFTLF:
+    path: "/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/fx/sftlf/gr/v1"
+    variables:
+      sftlf: "sftlf_fx_ERA5_era5_r1i1p1f1_gr.nc"
+
+# CMIP6 benchmark is deferred for this first pass — daily tasmax is not cached
+# as zarr.  To include CMIP6 (or HighResMIP CMIP archive) later, build a
+# yearly-percentile cache from the DKRZ pool DRS (/pool/data/CMIP6/.../day/
+# tasmax/) and expose it as a benchmark loader, then set enabled: true.
+cmip6:
+  enabled: false
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_extremes"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-2.5-flash"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — EERIE Heatwave Hotspots"
+  subtitle: "Extreme-heat tail-widening (99th − 87.5th pctile tasmax) vs ERA5 (1980–2014)"
+  group_order:
+    - extremes
+  group_labels:
+    extremes: "Extreme Events"
