@@ -278,7 +278,10 @@ def _run_diagnostics(
                 "%s: running with variables %s (of %s requested)",
                 name, overlap, variables,
             )
-            kwargs["variables"] = overlap
+            # Only pass the selection to diagnostics that accept it; others
+            # derive their variables internally (still filtered/skipped above).
+            if "variables" in sig.parameters:
+                kwargs["variables"] = overlap
         diag = cls(
             model_loader, obs_loader, config,
             **kwargs,
