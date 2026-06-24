@@ -14,14 +14,37 @@ Diagnostics with the standard bias-map result structure
 from __future__ import annotations
 
 import logging
+import numbers
 import re
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
 logger = logging.getLogger(__name__)
 
 _SEASONS = ("DJF", "MAM", "JJA", "SON")
+
+#: Attribute value types that serialize cleanly to NetCDF (mirrors xarray's
+#: own ``_validate_attrs`` check).
+_VALID_ATTR_TYPES = (str, numbers.Number, np.ndarray, np.number, list, tuple, bytes)
+
+
+def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
+    """Drop attrs whose values can't serialize to NetCDF (e.g. GRIB/earthkit
+    dict attrs like ``_earthkit={'bitsPerValue': 24}``).
+
+    Cleans the dataset's own attrs plus every variable's and coordinate's
+    attrs. Mutates *ds* in place and returns it.
+    """
+    def clean(attrs: dict) -> None:
+        for k in [k for k, v in attrs.items() if not isinstance(v, _VALID_ATTR_TYPES)]:
+            del attrs[k]
+
+    clean(ds.attrs)
+    for var in ds.variables.values():
+        clean(var.attrs)
+    return ds
 
 
 def sanitize_name(name: str) -> str:
@@ -258,7 +281,7 @@ def export_generic_netcdf(
     )
     if extra_attrs:
         ds.attrs.update(extra_attrs)
-    ds.to_netcdf(path)
+    _sanitize_attrs(ds).to_netcdf(path)
     logger.info("  Wrote NetCDF: %s (%d fields)", path.name, len(ds.data_vars))
     return [path]
 
@@ -320,7 +343,7 @@ def export_biasmap_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        ds.to_netcdf(path)
+        _sanitize_attrs(ds).to_netcdf(path)
         logger.info("  Wrote NetCDF: %s", path.name)
         written.append(path)
 
@@ -380,7 +403,7 @@ def export_biasmap_individual_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        ds.to_netcdf(path)
+        _sanitize_attrs(ds).to_netcdf(path)
         logger.info("  Wrote NetCDF: %s (%d members×fields)",
                     path.name, len(ds.data_vars))
         written.append(path)
