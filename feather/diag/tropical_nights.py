@@ -81,8 +81,14 @@ class TropicalNightsDiag(DiagnosticBase):
         cmip6_loader=None,
         experiment: str = "baseline_hist",
         period: tuple[str, str] = ("1990", "2014"),
+        variables=None,
     ):
         super().__init__(model_loader, obs_loader, config, cmip6_loader=cmip6_loader)
+        # Single-variable diagnostic (tasmin); accept the pipeline's --variables
+        # selection so the CLI can target it, but only honour the overlap.
+        if variables:
+            self.variables = [v for v in variables if v in type(self).variables] \
+                or list(type(self).variables)
         self.experiment = experiment
         self.period = period
 

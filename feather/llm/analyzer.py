@@ -59,6 +59,11 @@ class FigureAnalyzer:
         self.retry_delay = fa_config.get("retry_delay", 10)
         self.skip_existing_default = fa_config.get("skip_existing", True)
         self.thinking_budget = fa_config.get("thinking_budget", 0)
+        # Cap on response length. For gemini-2.5 models the thinking tokens
+        # count toward this budget, so when thinking is enabled the JSON
+        # response can be truncated (→ "Unterminated string" on parse) unless
+        # the cap leaves room beyond the thinking budget.
+        self.max_output_tokens = fa_config.get("max_output_tokens", 8192)
 
         # Configure Vertex AI client
         api_key_env = fa_config.get("api_key_env", "VERTEX_API_KEY")
@@ -287,10 +292,15 @@ class FigureAnalyzer:
         }
         if response_schema is not None:
             config_kwargs["response_schema"] = response_schema
+        # Thinking tokens count toward max_output_tokens on gemini-2.5, so the
+        # output cap must exceed the thinking budget or the JSON gets truncated.
+        max_output = self.max_output_tokens
         if self.thinking_budget > 0:
             config_kwargs["thinking_config"] = types.ThinkingConfig(
                 thinking_budget=self.thinking_budget,
             )
+            max_output = max(max_output, self.thinking_budget + 4096)
+        config_kwargs["max_output_tokens"] = max_output
 
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -299,6 +309,7 @@ class FigureAnalyzer:
                     contents=contents,
                     config=types.GenerateContentConfig(**config_kwargs),
                 )
+                self._raise_if_truncated(response)
                 return response.text
             except Exception as exc:
                 if attempt < self.max_retries:
@@ -315,6 +326,26 @@ class FigureAnalyzer:
                     raise
 
         raise RuntimeError("Gemini call failed after all retries")  # pragma: no cover
+
+    @staticmethod
+    def _raise_if_truncated(response: Any) -> None:
+        """Raise if the model stopped at the token cap (truncated JSON).
+
+        A ``MAX_TOKENS`` finish reason means the response was cut off, so the
+        JSON is incomplete and would fail to parse with a misleading
+        "Unterminated string" error. Raising here lets the retry loop run and
+        produces a clear, diagnosable message if it persists.
+        """
+        candidates = getattr(response, "candidates", None) or []
+        for cand in candidates:
+            reason = getattr(cand, "finish_reason", None)
+            if reason is not None and str(reason).rsplit(".", 1)[-1] == "MAX_TOKENS":
+                raise RuntimeError(
+                    "Gemini response truncated at the output-token cap "
+                    "(finish_reason=MAX_TOKENS); increase "
+                    "llm.figure_analysis.max_output_tokens or lower "
+                    "thinking_budget."
+                )
 
     @staticmethod
     def _parse_json_response(text: str) -> dict:
