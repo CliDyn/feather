@@ -372,8 +372,13 @@ class CMIP6Loader:
                 models_skipped.append(member_label)
                 continue
 
-            # For regular grids (1D lat + 1D lon), meshgrid to scattered
-            if lat.ndim == 1 and lon.ndim == 1 and len(lat) != len(lon):
+            # For regular grids (1D lat + 1D lon), meshgrid to scattered.
+            # Detect a regular grid by data size (n_lat × n_lon), not by
+            # n_lat != n_lon — the latter misclassifies square grids (e.g.
+            # 96×96) as already-scattered, leaving 1D coords against the
+            # raveled 2D field.
+            if (lat.ndim == 1 and lon.ndim == 1
+                    and da.values.size == len(lat) * len(lon)):
                 lon_2d, lat_2d = np.meshgrid(lon, lat)
                 lon_flat = lon_2d.ravel()
                 lat_flat = lat_2d.ravel()

@@ -513,6 +513,30 @@ class TestMultiModelMean:
         assert mmm is None
         assert info["n_members"] == 0
 
+    def test_square_grid_regrids(self, tmp_path):
+        """Square grid (n_lat == n_lon) must still meshgrid to scattered.
+
+        Regression for the ``len(lat) != len(lon)`` guard, which left a 24×24
+        model with 1D coords against the raveled 2D field and raised
+        ``Coordinate size must match data's last dimension`` in nr.regrid.
+        """
+        config = _make_config(tmp_path, models={
+            "ModelSquare": {"variants": ["r1i1p1f1"]},
+        })
+        loader = CMIP6Loader(config)
+        loader._zarr_dir = str(tmp_path / "zarr")
+
+        lats = np.linspace(-86.25, 86.25, 24)
+        lons = np.linspace(7.5, 352.5, 24)
+        ds = _synth_cmip6_ds("tas", lats=lats, lons=lons)
+        _write_zarr(tmp_path, "ModelSquare", "r1i1p1f1", "Amon", "tas", ds)
+
+        mmm, info = loader.load_multi_model_mean(
+            "tas", table="Amon", ensemble_mode="one_per_model",
+        )
+        assert mmm is not None
+        assert info["n_members"] == 1
+
 
 # ═════════════════════════════════════════════════════════════════════
 # TestAreaWeights

@@ -712,10 +712,19 @@ class RadiationBudget(DiagnosticBase):
                 if all(v is not None for v in [t2m, rsdt, rsut, rlut]):
                     area = self.cmip6_loader.load_area(model)
                     area = self._align_area(t2m, area)
-                    t2m_ts = latlon_global_mean(t2m, area=area)
                     rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                     toa_net = rsdt - rsut - rlut
-                    toa_ts = latlon_global_mean(toa_net, area=area)
+                    try:
+                        t2m_ts = latlon_global_mean(t2m, area=area)
+                        toa_ts = latlon_global_mean(toa_net, area=area)
+                    except (ValueError, KeyError) as e:
+                        # Skip models on grids we cannot reduce to lat/lon
+                        # (e.g. unstructured grids with dims like (time, i)).
+                        logger.warning(
+                            "    Skipping %s for Gregory — cannot compute "
+                            "global mean: %s", model, e,
+                        )
+                        continue
                     t2m_ts, toa_ts = xr.align(t2m_ts, toa_ts, join="inner")
                     if len(t2m_ts) > 0:
                         individual[model] = {
@@ -774,8 +783,17 @@ class RadiationBudget(DiagnosticBase):
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
-                toa_ts = latlon_global_mean(toa_net, area=area)
-                member_toa.append(toa_ts)
+                try:
+                    toa_ts = latlon_global_mean(toa_net, area=area)
+                except (ValueError, KeyError) as e:
+                    # Skip models on grids we cannot reduce to lat/lon
+                    # (e.g. unstructured grids with dims like (time, i)).
+                    logger.warning(
+                        "    Skipping %s for Gregory TOA MMM — cannot "
+                        "compute global mean: %s", model, e,
+                    )
+                    continue
+                member_toa.append(toa_ts.reset_coords(drop=True))
 
         if not member_toa:
             return None
@@ -961,15 +979,32 @@ class RadiationBudget(DiagnosticBase):
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
-                toa_ts = latlon_global_mean(toa_net, area=area)
-                member_toa.append(toa_ts)
+                try:
+                    toa_ts = latlon_global_mean(toa_net, area=area)
+                except (ValueError, KeyError) as e:
+                    # Skip models on grids we cannot reduce to lat/lon
+                    # (e.g. unstructured grids with dims like (time, i)).
+                    logger.warning(
+                        "    Skipping %s for net-TOA timeseries — cannot "
+                        "compute global mean: %s", model, e,
+                    )
+                    continue
+                if toa_ts.time.size == 0:
+                    continue
+                member_toa.append(toa_ts.reset_coords(drop=True))
                 models_used.append(model)
 
         if not member_toa:
             return None, {}
 
-        aligned = xr.align(*member_toa, join="inner")
-        mmm = sum(aligned) / len(aligned)
+        # Outer join + skipna mean (consistent with
+        # _cmip6_global_mean_timeseries): average over members available at
+        # each step instead of truncating to the shortest member's record,
+        # which an inner join can collapse to an empty time axis.
+        aligned = xr.align(*member_toa, join="outer")
+        mmm = xr.concat(aligned, dim="member").mean("member", skipna=True)
+        if mmm.time.size == 0:
+            return None, {}
         return mmm, {"n_members": len(models_used), "models_used": models_used}
 
     def _plot_imbalance_timeseries(
@@ -984,6 +1019,20 @@ class RadiationBudget(DiagnosticBase):
         """
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = []
+
+        # Drop any empty series (e.g. a benchmark whose members share no
+        # timesteps) — they would crash annual_mean's resample and the
+        # x-range indexing below.
+        results = dict(results)
+        results["models"] = {
+            m: ts for m, ts in results["models"].items() if ts.time.size > 0
+        }
+        results["benchmarks"] = [
+            b for b in results.get("benchmarks", [])
+            if b["ts"].time.size > 0
+        ]
+        if results.get("obs") is not None and results["obs"].time.size == 0:
+            results["obs"] = None
 
         # Determine model time range for x-axis limits
         model_start = model_end = None

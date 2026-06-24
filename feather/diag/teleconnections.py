@@ -673,13 +673,18 @@ class TeleconnectionDiag(DiagnosticBase):
         if idx is None or len(idx) < 3:
             return None
 
-        # Align times first (cheap — just coordinate matching)
-        common_times = np.intersect1d(da.time.values, idx.time.values)
-        if len(common_times) < 3:
-            return None
-
-        da_aligned = da.sel(time=common_times)
-        idx_aligned = idx.sel(time=common_times)
+        # Align times (cheap — coordinate matching). Skip the .sel() copy when
+        # the field and index already share the same time axis (the common case
+        # for an EOF PC derived from this field), avoiding a full-field copy.
+        if (da.sizes.get("time") == idx.sizes.get("time")
+                and np.array_equal(da.time.values, idx.time.values)):
+            da_aligned, idx_aligned = da, idx
+        else:
+            common_times = np.intersect1d(da.time.values, idx.time.values)
+            if len(common_times) < 3:
+                return None
+            da_aligned = da.sel(time=common_times)
+            idx_aligned = idx.sel(time=common_times)
 
         # Normalise index
         idx_std = float(idx_aligned.std())
@@ -687,17 +692,29 @@ class TeleconnectionDiag(DiagnosticBase):
             return None
         idx_norm = idx_aligned / idx_std
 
-        # Remove temporal mean from field (lazy — no .compute())
-        da_centred = da_aligned - da_aligned.mean("time")
+        # Dask-backed (lazy) fields: let dask stream the reduction.
+        if da_aligned.chunks is not None:
+            da_centred = da_aligned - da_aligned.mean("time")
+            pattern = (da_centred * idx_norm).mean("time")
+            return pattern.compute()
 
-        # Regression: mean(centred_field * normalised_index) — all lazy
-        pattern = (da_centred * idx_norm).mean("time")
+        # In-memory fields (e.g. a materialised global ocean grid): compute the
+        # regression via a streaming matmul on the flattened array rather than
+        # broadcasting a full-size (field × index) product, which needs ~2–3×
+        # the field in RAM and OOMs on large curvilinear grids. Uses the
+        # covariance identity  mean((X−X̄)·i) = mean(X·i) − X̄·mean(i)  so no
+        # centred copy of the field is materialised.
+        spatial_dims = [d for d in da_aligned.dims if d != "time"]
+        nt = da_aligned.sizes["time"]
+        arr = da_aligned.transpose("time", *spatial_dims).values
+        flat = arr.reshape(nt, -1)
+        idxv = np.asarray(idx_norm.values, dtype=flat.dtype)
+        coef = (idxv @ flat) / nt - flat.mean(axis=0) * float(idxv.mean())
 
-        # Only materialise the 2D result (tiny: lat × lon)
-        if hasattr(pattern, "compute"):
-            pattern = pattern.compute()
-
-        return pattern
+        # Reuse a single-time slice as a template to preserve spatial dims and
+        # coords (incl. 2-D curvilinear lat/lon) without a large allocation.
+        template = da_aligned.isel(time=0).drop_vars("time", errors="ignore")
+        return template.copy(data=coef.reshape(template.shape))
 
     # ── EOF modes (NAO, SAM, AO, PDO) ──────────────────────────────
 
