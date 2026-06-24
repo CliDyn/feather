@@ -712,10 +712,19 @@ class RadiationBudget(DiagnosticBase):
                 if all(v is not None for v in [t2m, rsdt, rsut, rlut]):
                     area = self.cmip6_loader.load_area(model)
                     area = self._align_area(t2m, area)
-                    t2m_ts = latlon_global_mean(t2m, area=area)
                     rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                     toa_net = rsdt - rsut - rlut
-                    toa_ts = latlon_global_mean(toa_net, area=area)
+                    try:
+                        t2m_ts = latlon_global_mean(t2m, area=area)
+                        toa_ts = latlon_global_mean(toa_net, area=area)
+                    except (ValueError, KeyError) as e:
+                        # Skip models on grids we cannot reduce to lat/lon
+                        # (e.g. unstructured grids with dims like (time, i)).
+                        logger.warning(
+                            "    Skipping %s for Gregory — cannot compute "
+                            "global mean: %s", model, e,
+                        )
+                        continue
                     t2m_ts, toa_ts = xr.align(t2m_ts, toa_ts, join="inner")
                     if len(t2m_ts) > 0:
                         individual[model] = {
@@ -774,8 +783,17 @@ class RadiationBudget(DiagnosticBase):
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
-                toa_ts = latlon_global_mean(toa_net, area=area)
-                member_toa.append(toa_ts)
+                try:
+                    toa_ts = latlon_global_mean(toa_net, area=area)
+                except (ValueError, KeyError) as e:
+                    # Skip models on grids we cannot reduce to lat/lon
+                    # (e.g. unstructured grids with dims like (time, i)).
+                    logger.warning(
+                        "    Skipping %s for Gregory TOA MMM — cannot "
+                        "compute global mean: %s", model, e,
+                    )
+                    continue
+                member_toa.append(toa_ts.reset_coords(drop=True))
 
         if not member_toa:
             return None
@@ -961,8 +979,17 @@ class RadiationBudget(DiagnosticBase):
                 area = self._align_area(rsdt, area)
                 rsdt, rsut, rlut = xr.align(rsdt, rsut, rlut, join="inner")
                 toa_net = rsdt - rsut - rlut
-                toa_ts = latlon_global_mean(toa_net, area=area)
-                member_toa.append(toa_ts)
+                try:
+                    toa_ts = latlon_global_mean(toa_net, area=area)
+                except (ValueError, KeyError) as e:
+                    # Skip models on grids we cannot reduce to lat/lon
+                    # (e.g. unstructured grids with dims like (time, i)).
+                    logger.warning(
+                        "    Skipping %s for net-TOA timeseries — cannot "
+                        "compute global mean: %s", model, e,
+                    )
+                    continue
+                member_toa.append(toa_ts.reset_coords(drop=True))
                 models_used.append(model)
 
         if not member_toa:
