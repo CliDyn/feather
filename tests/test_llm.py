@@ -446,6 +446,39 @@ class TestParseJsonResponse:
         assert result["summary"] == "ok"
 
 
+class _FakeCandidate:
+    def __init__(self, finish_reason):
+        self.finish_reason = finish_reason
+
+
+class _FakeResponse:
+    def __init__(self, finish_reason):
+        self.candidates = [_FakeCandidate(finish_reason)]
+
+
+class TestRaiseIfTruncated:
+    def test_max_tokens_string_raises(self):
+        resp = _FakeResponse("FinishReason.MAX_TOKENS")
+        with pytest.raises(RuntimeError, match="truncated"):
+            FigureAnalyzer._raise_if_truncated(resp)
+
+    def test_max_tokens_bare_raises(self):
+        resp = _FakeResponse("MAX_TOKENS")
+        with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+            FigureAnalyzer._raise_if_truncated(resp)
+
+    def test_stop_ok(self):
+        FigureAnalyzer._raise_if_truncated(_FakeResponse("STOP"))  # no raise
+
+    def test_none_reason_ok(self):
+        FigureAnalyzer._raise_if_truncated(_FakeResponse(None))  # no raise
+
+    def test_no_candidates_ok(self):
+        class _Empty:
+            candidates = []
+        FigureAnalyzer._raise_if_truncated(_Empty())  # no raise
+
+
 # ── Analyzer tests ───────────────────────────────────────────────────
 
 @patch("feather.llm.analyzer.genai")
@@ -487,6 +520,17 @@ class TestFigureAnalyzerInit:
         del cfg.llm["figure_analysis"]["thinking_budget"]
         analyzer = FigureAnalyzer(cfg, api_key="k")
         assert analyzer.thinking_budget == 0
+
+    def test_init_max_output_tokens_default(self, mock_genai, tmp_path):
+        cfg = _minimal_config(tmp_path)
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        assert analyzer.max_output_tokens == 8192
+
+    def test_init_max_output_tokens_override(self, mock_genai, tmp_path):
+        cfg = _minimal_config(tmp_path)
+        cfg.llm["figure_analysis"]["max_output_tokens"] = 20000
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        assert analyzer.max_output_tokens == 20000
 
 
 @patch("feather.llm.analyzer.genai")
