@@ -989,14 +989,22 @@ class RadiationBudget(DiagnosticBase):
                         "compute global mean: %s", model, e,
                     )
                     continue
+                if toa_ts.time.size == 0:
+                    continue
                 member_toa.append(toa_ts.reset_coords(drop=True))
                 models_used.append(model)
 
         if not member_toa:
             return None, {}
 
-        aligned = xr.align(*member_toa, join="inner")
-        mmm = sum(aligned) / len(aligned)
+        # Outer join + skipna mean (consistent with
+        # _cmip6_global_mean_timeseries): average over members available at
+        # each step instead of truncating to the shortest member's record,
+        # which an inner join can collapse to an empty time axis.
+        aligned = xr.align(*member_toa, join="outer")
+        mmm = xr.concat(aligned, dim="member").mean("member", skipna=True)
+        if mmm.time.size == 0:
+            return None, {}
         return mmm, {"n_members": len(models_used), "models_used": models_used}
 
     def _plot_imbalance_timeseries(
@@ -1011,6 +1019,20 @@ class RadiationBudget(DiagnosticBase):
         """
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = []
+
+        # Drop any empty series (e.g. a benchmark whose members share no
+        # timesteps) — they would crash annual_mean's resample and the
+        # x-range indexing below.
+        results = dict(results)
+        results["models"] = {
+            m: ts for m, ts in results["models"].items() if ts.time.size > 0
+        }
+        results["benchmarks"] = [
+            b for b in results.get("benchmarks", [])
+            if b["ts"].time.size > 0
+        ]
+        if results.get("obs") is not None and results["obs"].time.size == 0:
+            results["obs"] = None
 
         # Determine model time range for x-axis limits
         model_start = model_end = None

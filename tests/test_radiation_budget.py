@@ -643,6 +643,32 @@ class TestImbalanceTimeseries:
         assert meta["plot_type"] == "timeseries"
         plt.close(fig)
 
+    def test_imbalance_plot_skips_empty_series(
+        self, rad_model_loader, rad_obs_loader, rad_config,
+    ):
+        """An empty benchmark/model series must not crash annual_mean.
+
+        Regression: a benchmark MMM whose members share no timesteps yields a
+        non-None but time-empty series; annual_mean's resample then raised
+        ``__resample_dim__ must not be empty``.
+        """
+        diag = RadiationBudget(rad_model_loader, rad_obs_loader, rad_config)
+        results = diag._compute_imbalance_timeseries()
+
+        empty = xr.DataArray(
+            np.array([], dtype=float),
+            dims=("time",),
+            coords={"time": np.array([], dtype="datetime64[ns]")},
+        )
+        results["benchmarks"] = [
+            {"label": "EmptyBench", "color": "#888888", "ts": empty, "info": {}},
+        ]
+        results["models"] = {**results["models"], "empty-model": empty}
+
+        figs = diag._plot_imbalance_timeseries(results)
+        assert len(figs) == 1
+        plt.close(figs[0][0])
+
 
 class TestBiasMaps:
     """Tests for derived-quantity bias maps."""
