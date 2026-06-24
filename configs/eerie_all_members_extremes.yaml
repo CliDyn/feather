@@ -124,15 +124,11 @@ models:
       sfc: latlon
     color: "#2ca02c"
 
-  HadGEM3-GC5:
-    institution: MOHC
-    experiment: eerie-historical
-    variant: r1i1p1f1
-    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
-    grid_label: "gr1"
-    grids:
-      sfc: latlon
-    color: "#d62728"
+  # HadGEM3-GC5 is intentionally excluded: neither the EERIE-N640-ORCA12 run
+  # (…/AWI/EERIE/MOHC/…, only Amon/psl) nor the GC5E-HH run
+  # (/work/bm1344/DKRZ/MOHC/HadGEM3-GC5E-HH/, day/ has tas/pr/psl/ua/uas/vas
+  # but no tasmax — tasmax only in monthly Amon) publishes *daily* tasmax,
+  # which this tail-widening diagnostic requires.
 
 obs_root: "/work/bm1344/AWI/OBS"
 obs_datasets:

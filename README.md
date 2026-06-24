@@ -316,7 +316,7 @@ Feather uses YAML configuration files. Fourteen configs are provided:
 | `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
 | `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
 | `configs/eerie_climchange_hw.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 heatwave signal | CMOR + kerchunk native | `multi_model` |
-| `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + 8 members (3×FESOM2 + 3×NEMO + ICON + HadGEM3), heatwave-hotspot tail-widening (PNAS Fig 2–4) | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
+| `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + 7 members (3×FESOM2 + 3×NEMO + ICON; HadGEM3 has no daily tasmax), heatwave-hotspot tail-widening (PNAS Fig 2–4) | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |
