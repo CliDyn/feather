@@ -169,6 +169,31 @@ Supported by `global_biases`, `temperature_berkeley`, `precipitation_mswep`,
 write NetCDF as part of their normal operation. A new diagnostic can opt in by
 following the template in `NEW_DIAGNOSTIC_SPEC.md`.
 
+### Statistical significance tests
+
+Bias-map diagnostics attach two area-weighted significance tests to each
+evaluated source (every model, the CMIP6 MMM, and — with `--cmip6-individual` —
+each individual CMIP6 model), comparing its spatial field against the
+observations:
+
+- **Paired t-test** — treats each grid point as a paired sample and tests
+  whether the mean bias (model − obs) differs significantly from zero. Cell
+  areas are used as weights so the test matches the area-weighted global-mean
+  bias and does not overrepresent polar cells; the weighted degrees of freedom
+  use **Kish's effective sample size**. Reported as `t_test_statistic` /
+  `t_test_p_value`.
+- **Variance-ratio F-test** — computes `F = Var(model) / Var(obs)` across grid
+  points (population variance, `ddof=0`, area-weighted) to test whether the
+  model reproduces the observed spatial variability. `F = 1` means equal
+  variability, `F > 1` the model is too noisy, `F < 1` too smooth; the p-value
+  is two-sided. Reported as `variance_ratio` / `variance_ratio_p_value`.
+
+Both statistics are written into each figure's sidecar JSON metadata and
+surfaced on the dashboard (the website's `format_stat` filter renders very small
+p-values in scientific notation). The underlying helpers are `spatial_ttest()`
+and `spatial_variance_ratio()` in `feather/util/spatial.py`. Currently emitted by
+`global_biases`; other bias-map diagnostics can reuse the same helpers.
+
 ## Python API
 
 ```python
