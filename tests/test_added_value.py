@@ -813,3 +813,75 @@ class TestAddedValueNetCDFFastPath:
         res = diag._compute_variable_from_netcdf("psl")
         per_cmip6 = res["av"]["annual"]["per_cmip6_av"]
         assert "ACCESS_CM2_r1i1p1f1" in per_cmip6
+
+
+class TestCordexRegionStats:
+    """Per-CORDEX-region category stats and region-scoped bar charts."""
+
+    @pytest.fixture
+    def diag_multi(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_regions_present_in_obs_stats(self, diag_multi):
+        from feather.util.regions import list_regions
+        annual = diag_multi.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        assert "regions" in annual
+        # Every catalogued region has an entry.
+        for r in list_regions():
+            assert r in annual["regions"]
+
+    def test_region_block_has_category_keys(self, diag_multi):
+        annual = diag_multi.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        eur = annual["regions"]["EUR"]
+        for etype in ("eerie_mean", "eerie_median", "cmip6_mean"):
+            cats = eur[etype]
+            assert set(cats) >= {
+                "pct_improvement", "pct_neutral", "pct_deterioration",
+            }
+
+    def test_region_fractions_sum_to_100(self, diag_multi):
+        annual = diag_multi.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        eur = annual["regions"]["EUR"]["eerie_mean"]
+        total = (
+            eur["pct_improvement"]
+            + eur["pct_neutral"]
+            + eur["pct_deterioration"]
+        )
+        # EUR has cells on the synthetic grid → finite, summing to 100.
+        assert total == pytest.approx(100.0, abs=1e-6)
+
+    def test_global_and_region_differ_or_match_schema(self, diag_multi):
+        """Global block keeps legacy keys; regions is additive."""
+        annual = diag_multi.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        # Legacy keys still at top level (backward compat).
+        for etype in ("eerie_mean", "eerie_median", "cmip6_mean"):
+            assert etype in annual
+
+    def test_region_bar_chart_builds(self, diag_multi):
+        results = diag_multi.compute()
+        all_obs_stats = {"tas": results["tas"]["obs_stats"]}
+        figs = diag_multi._plot_summary_bars_ensemble(
+            all_obs_stats, "annual", region="EUR")
+        assert len(figs) == 1
+        fig, meta = figs[0]
+        assert meta["figure_id"].startswith("added_value_bars_ensemble_EUR_")
+        assert meta.get("region") == "EUR"
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_region_figure_ids_unique_from_global(self, diag_multi):
+        assert (
+            diag_multi._bars_ensemble_id("annual", None)
+            != diag_multi._bars_ensemble_id("annual", "EUR")
+        )
+        assert diag_multi._bars_models_eerie_id("annual", "AFR").startswith(
+            "added_value_bars_models_eerie_AFR_"
+        )

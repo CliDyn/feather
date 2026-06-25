@@ -39,6 +39,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.netcdf_export import sanitize_name
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_map
+from feather.util.regions import get_region, list_regions, region_mask
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import climatology, seasonal_climatology
 
@@ -88,6 +89,11 @@ class AddedValueDiag(DiagnosticBase):
     ]
     group = "evaluation"
 
+    #: Temporal periods for which per-CORDEX-region summary bar charts are
+    #: produced (the global charts still span all five periods).  Annual plus
+    #: the two solstitial seasons is the conventional regional summary set.
+    _REGION_BAR_PERIODS = ("annual", "djf", "jja")
+
     def __init__(
         self,
         model_loader,
@@ -110,6 +116,9 @@ class AddedValueDiag(DiagnosticBase):
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
+        # Cache of CORDEX region masks keyed by grid signature (see
+        # ``_region_masks``); reused across periods/etypes/models for a grid.
+        self._region_mask_cache: dict[tuple, dict[str, np.ndarray]] = {}
 
         # Activate the primary benchmark (sets token/labels/active loader).
         # AV iterates over all benchmarks in run(); each pass re-activates.
@@ -178,11 +187,56 @@ class AddedValueDiag(DiagnosticBase):
                     return False
         return True
 
-    def _bars_models_eerie_id(self, period_key: str) -> str:
+    @staticmethod
+    def _region_token(region: str | None) -> str:
+        """Figure-id token for a region (empty for the global chart)."""
+        return f"_{region}" if region else ""
+
+    @staticmethod
+    def _region_label(region: str | None) -> str:
+        """Human-readable region label (empty string for the global chart)."""
+        if not region:
+            return ""
+        return f"{get_region(region).long_name} ({region})"
+
+    @staticmethod
+    def _region_period_stats(
+        vr_stats: dict, obs_name: str, period_key: str, region: str | None,
+    ) -> dict:
+        """Per-period category stats for *obs_name*, optionally region-scoped."""
+        ps = vr_stats.get(obs_name, {}).get(period_key, {})
+        if region is None:
+            return ps
+        return ps.get("regions", {}).get(region, {})
+
+    def _bars_ensemble_id(
+        self, period_key: str, region: str | None = None,
+    ) -> str:
+        """Figure ID for the ensemble-view summary bar chart."""
+        return (
+            f"added_value_bars_ensemble{self._region_token(region)}"
+            f"_{period_key}_{self.period[0]}_{self.period[1]}"
+            f"{self._bench_suffix}"
+        )
+
+    def _bars_models_id(
+        self, period_key: str, region: str | None = None,
+    ) -> str:
+        """Figure ID for the per-model summary bar chart (with CMIP6 bar)."""
+        return (
+            f"added_value_bars_models{self._region_token(region)}"
+            f"_{period_key}_{self.period[0]}_{self.period[1]}"
+            f"{self._bench_suffix}"
+        )
+
+    def _bars_models_eerie_id(
+        self, period_key: str, region: str | None = None,
+    ) -> str:
         """Figure ID for the EERIE-only (no CMIP6 bar) models bar chart."""
         return (
-            f"added_value_bars_models_eerie_{period_key}"
-            f"_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
+            f"added_value_bars_models_eerie{self._region_token(region)}"
+            f"_{period_key}_{self.period[0]}_{self.period[1]}"
+            f"{self._bench_suffix}"
         )
 
     # -- Orchestration -------------------------------------------------------
@@ -275,49 +329,65 @@ class AddedValueDiag(DiagnosticBase):
                 )
 
         # ── Summary bar charts (cross-variable, one per period) ─────────────
+        # ``region=None`` is the global domain (legacy figure IDs); each
+        # CORDEX ``-11`` region then gets its own set of bar charts.
         if all_obs_stats:
-            for period_key in ("annual", "djf", "mam", "jja", "son"):
-                for bar_fn, fn_name in (
-                    (self._plot_summary_bars_ensemble, "ensemble"),
-                    (self._plot_summary_bars_models,   "models"),
-                ):
-                    bar_id = (
-                        f"added_value_bars_{fn_name}_{period_key}"
-                        f"{self._bench_suffix}"
-                    )
-                    if skip_existing and self._figure_exists(bar_id):
-                        saved.append((
-                            self.output_dir / f"{bar_id}.png",
-                            self.output_dir / f"{bar_id}.json",
-                        ))
-                        continue
-                    try:
-                        for fig, meta in bar_fn(all_obs_stats, period_key):
-                            paths = self._save(fig, meta, meta["figure_id"])
-                            saved.append(paths)
-                    except Exception:
-                        logger.warning(
-                            "Bar chart %s failed", bar_id, exc_info=True,
-                        )
+            for region in [None, *list_regions()]:
+                # Global chart spans all five periods (backward compat);
+                # per-region charts use the conventional annual + DJF + JJA
+                # summary set to keep the figure count manageable.
+                periods = (
+                    ("annual", "djf", "mam", "jja", "son")
+                    if region is None else self._REGION_BAR_PERIODS
+                )
+                for period_key in periods:
+                    for bar_fn, id_fn in (
+                        (self._plot_summary_bars_ensemble,
+                         self._bars_ensemble_id),
+                        (self._plot_summary_bars_models,
+                         self._bars_models_id),
+                    ):
+                        bar_id = id_fn(period_key, region)
+                        if skip_existing and self._figure_exists(bar_id):
+                            saved.append((
+                                self.output_dir / f"{bar_id}.png",
+                                self.output_dir / f"{bar_id}.json",
+                            ))
+                            continue
+                        try:
+                            for fig, meta in bar_fn(
+                                all_obs_stats, period_key, region=region,
+                            ):
+                                paths = self._save(
+                                    fig, meta, meta["figure_id"])
+                                saved.append(paths)
+                        except Exception:
+                            logger.warning(
+                                "Bar chart %s failed", bar_id, exc_info=True,
+                            )
 
-                # Additional EERIE-only bar chart (no CMIP6 mean bar)
-                eerie_bar_id = self._bars_models_eerie_id(period_key)
-                if skip_existing and self._figure_exists(eerie_bar_id):
-                    saved.append((
-                        self.output_dir / f"{eerie_bar_id}.png",
-                        self.output_dir / f"{eerie_bar_id}.json",
-                    ))
-                else:
-                    try:
-                        for fig, meta in self._plot_summary_bars_models(
-                            all_obs_stats, period_key, show_cmip6_bar=False,
-                        ):
-                            paths = self._save(fig, meta, meta["figure_id"])
-                            saved.append(paths)
-                    except Exception:
-                        logger.warning(
-                            "Bar chart %s failed", eerie_bar_id, exc_info=True,
-                        )
+                    # Additional EERIE-only bar chart (no CMIP6 mean bar)
+                    eerie_bar_id = self._bars_models_eerie_id(
+                        period_key, region)
+                    if skip_existing and self._figure_exists(eerie_bar_id):
+                        saved.append((
+                            self.output_dir / f"{eerie_bar_id}.png",
+                            self.output_dir / f"{eerie_bar_id}.json",
+                        ))
+                    else:
+                        try:
+                            for fig, meta in self._plot_summary_bars_models(
+                                all_obs_stats, period_key,
+                                show_cmip6_bar=False, region=region,
+                            ):
+                                paths = self._save(
+                                    fig, meta, meta["figure_id"])
+                                saved.append(paths)
+                        except Exception:
+                            logger.warning(
+                                "Bar chart %s failed", eerie_bar_id,
+                                exc_info=True,
+                            )
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -652,18 +722,16 @@ class AddedValueDiag(DiagnosticBase):
                         av_median, area),
                 }
 
-                # Category fractions for the summary bar charts.
-                obs_stats.setdefault(obs_name, {})[period_key.lower()] = {
-                    "eerie_mean": self._frac_categories(av_mean, area=area),
-                    "eerie_median": self._frac_categories(
-                        av_median, area=area),
-                    "cmip6_mean": self._frac_categories(
-                        self._av_from_biases(ens_mean_b, bench_b), area=area),
-                    "per_eerie_models": {
-                        m: self._frac_categories(av, area=area)
-                        for m, av in per_eerie.items()
-                    },
-                }
+                # Category fractions for the summary bar charts (global
+                # domain + per CORDEX region).
+                obs_stats.setdefault(obs_name, {})[period_key.lower()] = (
+                    self._stats_block(
+                        av_mean, av_median,
+                        self._av_from_biases(ens_mean_b, bench_b),
+                        per_eerie, area,
+                        bench_b["lat"].values, bench_b["lon"].values,
+                    )
+                )
 
                 if obs_name == primary_obs and not eerie_models_used:
                     eerie_models_used = list(pb["models"].keys())
@@ -1386,6 +1454,120 @@ class AddedValueDiag(DiagnosticBase):
             "pct_deterioration": pct_det,
         }
 
+    # -- CORDEX regional category stats -------------------------------------
+
+    def _region_masks(
+        self, lat: np.ndarray, lon: np.ndarray,
+    ) -> dict[str, np.ndarray]:
+        """Return per-region boolean masks for a lat/lon grid (cached).
+
+        Masks are keyed by a compact grid signature so they are computed
+        once per unique common grid and reused across every period, ensemble
+        type and individual model within a variable.
+        """
+        lat = np.asarray(lat)
+        lon = np.asarray(lon)
+        key = (
+            len(lat), len(lon),
+            round(float(lat[0]), 4), round(float(lat[-1]), 4),
+            round(float(lon[0]), 4), round(float(lon[-1]), 4),
+        )
+        masks = self._region_mask_cache.get(key)
+        if masks is None:
+            masks = {r: region_mask(lat, lon, r) for r in list_regions()}
+            self._region_mask_cache[key] = masks
+        return masks
+
+    def _regional_stats(
+        self,
+        av_mean: xr.DataArray,
+        av_median: xr.DataArray,
+        av_cmip6: xr.DataArray,
+        per_eerie_av: dict[str, xr.DataArray],
+        area: np.ndarray | None,
+        lat: np.ndarray,
+        lon: np.ndarray,
+    ) -> dict[str, dict]:
+        """Area-weighted improvement/neutral/degradation per CORDEX region.
+
+        For each region the AV fields are masked to the region (cells outside
+        set to NaN, so :meth:`_frac_categories` excludes them) and the same
+        category fractions are computed as for the global domain.
+        """
+        masks = self._region_masks(lat, lon)
+        out: dict[str, dict] = {}
+        for rname, mask in masks.items():
+            m = xr.DataArray(mask, dims=av_mean.dims, coords=av_mean.coords)
+            out[rname] = {
+                "eerie_mean": self._frac_categories(
+                    av_mean.where(m), area=area),
+                "eerie_median": self._frac_categories(
+                    av_median.where(m), area=area),
+                "cmip6_mean": self._frac_categories(
+                    av_cmip6.where(m), area=area),
+                "per_eerie_models": {
+                    mm: self._frac_categories(av.where(m), area=area)
+                    for mm, av in per_eerie_av.items()
+                },
+            }
+        return out
+
+    def _stats_block(
+        self,
+        av_mean: xr.DataArray,
+        av_median: xr.DataArray,
+        av_cmip6: xr.DataArray,
+        per_eerie_av: dict[str, xr.DataArray],
+        area: np.ndarray | None,
+        lat: np.ndarray,
+        lon: np.ndarray,
+    ) -> dict[str, Any]:
+        """Build the global category-stats block plus a ``"regions"`` sub-dict.
+
+        The global keys (``eerie_mean``/``eerie_median``/``cmip6_mean``/
+        ``per_eerie_models``) match the legacy schema for backward compat;
+        ``regions`` adds the same structure per CORDEX ``-11`` region.
+        """
+        block: dict[str, Any] = {
+            "eerie_mean": self._frac_categories(av_mean, area=area),
+            "eerie_median": self._frac_categories(av_median, area=area),
+            "cmip6_mean": self._frac_categories(av_cmip6, area=area),
+            "per_eerie_models": {
+                m: self._frac_categories(av, area=area)
+                for m, av in per_eerie_av.items()
+            },
+        }
+        block["regions"] = self._regional_stats(
+            av_mean, av_median, av_cmip6, per_eerie_av, area, lat, lon,
+        )
+        return block
+
+    def _period_stats_block_from_fields(
+        self,
+        eerie_mean: xr.DataArray,
+        eerie_median: xr.DataArray,
+        cmip6_mmm: xr.DataArray,
+        obs: xr.DataArray,
+        eerie_individual: dict[str, xr.DataArray] | None,
+        area: np.ndarray | None,
+        lat: np.ndarray,
+        lon: np.ndarray,
+    ) -> dict[str, Any]:
+        """Global + per-region category-stats block for one period.
+
+        Computes the AV fields from the period climatologies (recompute path)
+        and returns the area-weighted improvement/neutral/degradation
+        fractions for the global domain and each CORDEX region.
+        """
+        av_em = self._compute_av(cmip6_mmm, eerie_mean, obs)
+        av_emd = self._compute_av(cmip6_mmm, eerie_median, obs)
+        av_c = self._compute_av(eerie_mean, cmip6_mmm, obs)
+        per_eerie = {
+            n: self._compute_av(cmip6_mmm, f, obs)
+            for n, f in (eerie_individual or {}).items()
+        }
+        return self._stats_block(av_em, av_emd, av_c, per_eerie, area, lat, lon)
+
     # -- NetCDF I/O ---------------------------------------------------------
 
     def _save_av_to_nc(
@@ -1579,47 +1761,6 @@ class AddedValueDiag(DiagnosticBase):
             coords={"lat": target_lats, "lon": target_lons},
         )
 
-    @staticmethod
-    def _compute_period_category_stats(
-        eerie_mean: xr.DataArray,
-        eerie_median: xr.DataArray,
-        cmip6_mmm: xr.DataArray,
-        obs: xr.DataArray,
-        eerie_individual: dict[str, xr.DataArray] | None = None,
-        area: np.ndarray | None = None,
-    ) -> dict[str, dict[str, float]]:
-        """Compute area-weighted improvement/neutral/degradation fractions.
-
-        Returns a dict with keys ``eerie_mean``, ``eerie_median``,
-        ``cmip6_mean``, each containing ``pct_improvement``,
-        ``pct_neutral``, ``pct_deterioration``.
-
-        ``cmip6_mean`` uses the EERIE ensemble mean as the baseline
-        (AV > 0 means CMIP6 reduces error vs EERIE).
-
-        When ``eerie_individual`` is supplied, also adds
-        ``per_eerie_models`` with per-model fractions.
-
-        When *area* is supplied, percentages are area-weighted.
-        """
-        av_em = AddedValueDiag._compute_av(cmip6_mmm, eerie_mean, obs)
-        av_emd = AddedValueDiag._compute_av(cmip6_mmm, eerie_median, obs)
-        av_c = AddedValueDiag._compute_av(eerie_mean, cmip6_mmm, obs)
-        result: dict[str, Any] = {
-            "eerie_mean":   AddedValueDiag._frac_categories(av_em, area=area),
-            "eerie_median": AddedValueDiag._frac_categories(av_emd, area=area),
-            "cmip6_mean":   AddedValueDiag._frac_categories(av_c, area=area),
-        }
-        if eerie_individual:
-            result["per_eerie_models"] = {
-                name: AddedValueDiag._frac_categories(
-                    AddedValueDiag._compute_av(cmip6_mmm, field, obs),
-                    area=area,
-                )
-                for name, field in eerie_individual.items()
-            }
-        return result
-
     def _compute_multi_obs_stats(
         self,
         var: str,
@@ -1684,10 +1825,9 @@ class AddedValueDiag(DiagnosticBase):
                 )
 
                 periods_stats: dict[str, dict] = {}
-                periods_stats["annual"] = self._compute_period_category_stats(
+                periods_stats["annual"] = self._period_stats_block_from_fields(
                     eerie_mean, eerie_median, cmip6_mmm, obs_common,
-                    eerie_individual=eerie_individual,
-                    area=common_area,
+                    eerie_individual, common_area, target_lats, target_lons,
                 )
 
                 obs_seasonal = _sclim(obs_data)
@@ -1707,13 +1847,13 @@ class AddedValueDiag(DiagnosticBase):
                             if eerie_seasonal_individual else None
                         )
                         periods_stats[season.lower()] = (
-                            self._compute_period_category_stats(
+                            self._period_stats_block_from_fields(
                                 eerie_seasonal_mean[season],
                                 eerie_seasonal_median[season],
                                 cmip6_seasonal_mmm[season],
                                 obs_s_common,
-                                eerie_individual=sea_ind,
-                                area=common_area,
+                                sea_ind, common_area,
+                                target_lats, target_lons,
                             )
                         )
 
@@ -2019,6 +2159,7 @@ class AddedValueDiag(DiagnosticBase):
         self,
         all_obs_stats: dict[str, dict],
         period_key: str,
+        region: str | None = None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Grouped horizontal stacked bar chart — ensemble view.
 
@@ -2029,6 +2170,10 @@ class AddedValueDiag(DiagnosticBase):
 
         Colors: EERIE improvement = blue palette, CMIP6 = green,
         neutral = light gray, deterioration = white.
+
+        When *region* is a CORDEX ``-11`` domain name, the fractions are
+        restricted to that region (read from the ``"regions"`` sub-dict of
+        each per-period stats block); ``region=None`` is the global domain.
         """
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
@@ -2036,6 +2181,7 @@ class AddedValueDiag(DiagnosticBase):
         period_label = {"annual": "Annual", "djf": "DJF", "mam": "MAM", "jja": "JJA", "son": "SON"}.get(
             period_key, period_key.upper()
         )
+        region_label = self._region_label(region)
 
         # ── Gather data per obs panel ───────────────────────────────────────
         obs_panels = [
@@ -2047,7 +2193,8 @@ class AddedValueDiag(DiagnosticBase):
         for obs_name, _ in obs_panels:
             rows: list[tuple[str, str, dict]] = []
             for var, vr_stats in all_obs_stats.items():
-                period_stats = vr_stats.get(obs_name, {}).get(period_key, {})
+                period_stats = self._region_period_stats(
+                    vr_stats, obs_name, period_key, region)
                 if period_stats:
                     rows.append((var, get_var(var).long_name, period_stats))
             if rows:
@@ -2141,25 +2288,36 @@ class AddedValueDiag(DiagnosticBase):
             loc="lower right", framealpha=0.85,
         )
 
+        region_suffix = f"  [{region_label}]" if region_label else ""
         fig.suptitle(
-            f"Added Value — {period_label}: area-weighted % improvement / neutral / degradation\n"
+            f"Added Value — {period_label}{region_suffix}: "
+            f"area-weighted % improvement / neutral / degradation\n"
             f"{self._project_name} ensemble vs {self._bench_label}",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
-        figure_id = f"added_value_bars_ensemble_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
+        region_title = f" — {region_label}" if region_label else ""
+        region_desc = (
+            f" Restricted to the CORDEX {region_label} region."
+            if region_label else ""
+        )
         meta = self._build_metadata(
-            title=f"Added Value Summary — {period_label} (ensemble view)",
-            figure_id=figure_id,
+            title=(
+                f"Added Value Summary — {period_label} "
+                f"(ensemble view){region_title}"
+            ),
+            figure_id=self._bars_ensemble_id(period_key, region),
             models=list(self.config.models),
             variables=list(all_obs_stats.keys()),
             description=(
                 f"Summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}) for all variables and obs datasets. "
                 f"Blue = {self._project_name} improves, green = CMIP6 reference, white = degradation."
+                f"{region_desc}"
             ),
             plot_type="added_value_bars",
             period=self.period,
+            extra={"region": region} if region else None,
         )
         return [(fig, meta)]
 
@@ -2168,6 +2326,7 @@ class AddedValueDiag(DiagnosticBase):
         all_obs_stats: dict[str, dict],
         period_key: str,
         show_cmip6_bar: bool = True,
+        region: str | None = None,
     ) -> list[tuple[plt.Figure, dict]]:
         """Grouped horizontal stacked bar chart — per-EERIE-model view.
 
@@ -2181,6 +2340,9 @@ class AddedValueDiag(DiagnosticBase):
         show_cmip6_bar : bool
             When False, omit the CMIP6 mean bar and produce a separate
             figure ID (``added_value_bars_models_eerie_{period}``).
+        region : str, optional
+            CORDEX ``-11`` region name; restricts the fractions to that
+            region.  ``None`` is the global domain.
         """
         from matplotlib import gridspec as mgs
         from matplotlib.patches import Patch
@@ -2188,12 +2350,15 @@ class AddedValueDiag(DiagnosticBase):
         period_label = {"annual": "Annual", "djf": "DJF", "mam": "MAM", "jja": "JJA", "son": "SON"}.get(
             period_key, period_key.upper()
         )
+        region_label = self._region_label(region)
 
         # Collect model names from first available entry
         eerie_model_names: list[str] = []
         for vr_stats in all_obs_stats.values():
-            for _obs, pdata in vr_stats.items():
-                pm = pdata.get(period_key, {}).get("per_eerie_models", {})
+            for _obs in vr_stats:
+                pm = self._region_period_stats(
+                    vr_stats, _obs, period_key, region,
+                ).get("per_eerie_models", {})
                 if pm:
                     eerie_model_names = list(pm.keys())
                     break
@@ -2213,7 +2378,8 @@ class AddedValueDiag(DiagnosticBase):
         for obs_name, _ in obs_panels:
             rows: list[tuple[str, str, dict]] = []
             for var, vr_stats in all_obs_stats.items():
-                period_stats = vr_stats.get(obs_name, {}).get(period_key, {})
+                period_stats = self._region_period_stats(
+                    vr_stats, obs_name, period_key, region)
                 if period_stats and period_stats.get("per_eerie_models"):
                     rows.append((var, get_var(var).long_name, period_stats))
             if rows:
@@ -2365,25 +2531,34 @@ class AddedValueDiag(DiagnosticBase):
             loc="lower right", framealpha=0.85,
         )
 
+        region_title = f" — {region_label}" if region_label else ""
+        region_desc = (
+            f" Restricted to the CORDEX {region_label} region."
+            if region_label else ""
+        )
         if show_cmip6_bar:
             suptitle_suffix = f"{self._project_name} models vs {self._bench_label}"
-            figure_id = f"added_value_bars_models_{period_key}_{self.period[0]}_{self.period[1]}{self._bench_suffix}"
-            title = f"Added Value Summary — {period_label} (per-model view)"
+            figure_id = self._bars_models_id(period_key, region)
+            title = (
+                f"Added Value Summary — {period_label} "
+                f"(per-model view){region_title}"
+            )
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
                 f"Blue shades = {self._project_name} models vs {self._bench_label}, "
                 f"green = {self._bench_name} mean vs {self._project_name} mean, white = degradation."
+                f"{region_desc}"
             )
         else:
             suptitle_suffix = (
                 f"{self._project_name} models vs {self._bench_label} "
                 f"({self._project_name} only)"
             )
-            figure_id = self._bars_models_eerie_id(period_key)
+            figure_id = self._bars_models_eerie_id(period_key, region)
             title = (
                 f"Added Value Summary — {period_label} "
-                f"({self._project_name} models only)"
+                f"({self._project_name} models only){region_title}"
             )
             description = (
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
@@ -2391,10 +2566,13 @@ class AddedValueDiag(DiagnosticBase):
                 f"({self._bench_name} mean bar excluded). "
                 f"Individual model colors from config; light purple = ensemble mean, "
                 f"purple = ensemble median, white = degradation."
+                f"{region_desc}"
             )
 
+        region_suffix = f"  [{region_label}]" if region_label else ""
         fig.suptitle(
-            f"Added Value — {period_label}: per-model area-weighted % improvement / neutral / degradation\n"
+            f"Added Value — {period_label}{region_suffix}: "
+            f"per-model area-weighted % improvement / neutral / degradation\n"
             f"{suptitle_suffix}",
             fontsize=11, fontweight="bold", y=1.01,
         )
@@ -2407,5 +2585,6 @@ class AddedValueDiag(DiagnosticBase):
             description=description,
             plot_type="added_value_bars",
             period=self.period,
+            extra={"region": region} if region else None,
         )
         return [(fig, meta)]
