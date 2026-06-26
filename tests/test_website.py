@@ -316,6 +316,40 @@ class TestGroupDiagnostics:
         gen = SiteGenerator(cfg)
         assert gen._group_diagnostics([]) == []
 
+    def test_region_bars_surface_as_own_nav_group(self, tmp_path):
+        """The added_value_regions figures dir → its own "regions" nav group."""
+        cfg = _make_config(
+            tmp_path,
+            website={
+                "group_order": ["evaluation", "regions"],
+                "group_labels": {"regions": "CORDEX Regions"},
+            },
+        )
+        gen = SiteGenerator(cfg)
+        figures_dir = gen.figures_dir
+        # A global Added Value figure (evaluation) + a region bar figure.
+        _create_figure(
+            figures_dir, "added_value", "tas_annual_added_value",
+            {"title": "AV", "group": "evaluation"},
+        )
+        _create_figure(
+            figures_dir, "added_value_regions",
+            "added_value_bars_models_EUR_annual_1990_2014",
+            {"title": "AV EUR", "group": "regions", "region": "EUR"},
+        )
+        diags = gen.collect_diagnostics()
+        names = {d["name"]: d["group"] for d in diags}
+        assert names.get("added_value_regions") == "regions"
+
+        groups = gen._group_diagnostics(diags)
+        keys = [g[0] for g in groups]
+        assert "regions" in keys
+        regions_group = next(g for g in groups if g[0] == "regions")
+        assert regions_group[1] == "CORDEX Regions"
+        assert any(
+            d["name"] == "added_value_regions" for d in regions_group[2]
+        )
+
 
 # ── build Tests ──────────────────────────────────────────────────────
 

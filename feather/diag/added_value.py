@@ -36,6 +36,7 @@ import xarray as xr
 
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
+from feather.diag.figure_meta import save_figure_with_metadata
 from feather.diag.netcdf_export import sanitize_name
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_map
@@ -209,6 +210,39 @@ class AddedValueDiag(DiagnosticBase):
             return ps
         return ps.get("regions", {}).get(region, {})
 
+    #: Website nav group for the per-CORDEX-region bar charts.  They are
+    #: written to their own ``figures/`` subdirectory so the site generator
+    #: surfaces them as a dedicated nav entry separate from the global
+    #: Added Value page.
+    _REGION_NAV_GROUP = "regions"
+
+    @property
+    def region_output_dir(self) -> Path:
+        """Figures directory for the per-region bar charts (own nav page)."""
+        return Path(self.config.output_dir) / "figures" / "added_value_regions"
+
+    def _save_region_fig(
+        self, fig, meta: dict, filename: str,
+    ) -> tuple[Path, Path]:
+        """Save a per-region bar figure to its dedicated nav directory."""
+        return save_figure_with_metadata(
+            fig, meta, self.region_output_dir, filename,
+        )
+
+    def _region_figure_exists(self, figure_id: str) -> bool:
+        """True when the per-region figure PNG + JSON exist in the region dir."""
+        d = self.region_output_dir
+        return (d / f"{figure_id}.png").exists() and (
+            d / f"{figure_id}.json"
+        ).exists()
+
+    def _bar_extra(self, region: str | None) -> dict | None:
+        """``extra`` metadata for a bar figure (routes region bars to the nav
+        group + records the region code)."""
+        if not region:
+            return None
+        return {"region": region, "group": self._REGION_NAV_GROUP}
+
     def _bars_ensemble_id(
         self, period_key: str, region: str | None = None,
     ) -> str:
@@ -333,13 +367,22 @@ class AddedValueDiag(DiagnosticBase):
         # CORDEX ``-11`` region then gets its own set of bar charts.
         if all_obs_stats:
             for region in [None, *list_regions()]:
-                # Global chart spans all five periods (backward compat);
-                # per-region charts use the conventional annual + DJF + JJA
-                # summary set to keep the figure count manageable.
-                periods = (
-                    ("annual", "djf", "mam", "jja", "son")
-                    if region is None else self._REGION_BAR_PERIODS
-                )
+                # Global charts stay on the main Added Value page (all five
+                # periods, backward-compatible IDs).  Per-region charts go to
+                # their own ``added_value_regions`` figures directory — a
+                # dedicated website nav entry — and use the conventional
+                # annual + DJF + JJA summary set to keep the count manageable.
+                if region is None:
+                    periods = ("annual", "djf", "mam", "jja", "son")
+                    fig_dir = self.output_dir
+                    exists_fn = self._figure_exists
+                    save_fn = self._save
+                else:
+                    periods = self._REGION_BAR_PERIODS
+                    fig_dir = self.region_output_dir
+                    exists_fn = self._region_figure_exists
+                    save_fn = self._save_region_fig
+
                 for period_key in periods:
                     for bar_fn, id_fn in (
                         (self._plot_summary_bars_ensemble,
@@ -348,17 +391,17 @@ class AddedValueDiag(DiagnosticBase):
                          self._bars_models_id),
                     ):
                         bar_id = id_fn(period_key, region)
-                        if skip_existing and self._figure_exists(bar_id):
+                        if skip_existing and exists_fn(bar_id):
                             saved.append((
-                                self.output_dir / f"{bar_id}.png",
-                                self.output_dir / f"{bar_id}.json",
+                                fig_dir / f"{bar_id}.png",
+                                fig_dir / f"{bar_id}.json",
                             ))
                             continue
                         try:
                             for fig, meta in bar_fn(
                                 all_obs_stats, period_key, region=region,
                             ):
-                                paths = self._save(
+                                paths = save_fn(
                                     fig, meta, meta["figure_id"])
                                 saved.append(paths)
                         except Exception:
@@ -369,10 +412,10 @@ class AddedValueDiag(DiagnosticBase):
                     # Additional EERIE-only bar chart (no CMIP6 mean bar)
                     eerie_bar_id = self._bars_models_eerie_id(
                         period_key, region)
-                    if skip_existing and self._figure_exists(eerie_bar_id):
+                    if skip_existing and exists_fn(eerie_bar_id):
                         saved.append((
-                            self.output_dir / f"{eerie_bar_id}.png",
-                            self.output_dir / f"{eerie_bar_id}.json",
+                            fig_dir / f"{eerie_bar_id}.png",
+                            fig_dir / f"{eerie_bar_id}.json",
                         ))
                     else:
                         try:
@@ -380,7 +423,7 @@ class AddedValueDiag(DiagnosticBase):
                                 all_obs_stats, period_key,
                                 show_cmip6_bar=False, region=region,
                             ):
-                                paths = self._save(
+                                paths = save_fn(
                                     fig, meta, meta["figure_id"])
                                 saved.append(paths)
                         except Exception:
@@ -2317,7 +2360,7 @@ class AddedValueDiag(DiagnosticBase):
             ),
             plot_type="added_value_bars",
             period=self.period,
-            extra={"region": region} if region else None,
+            extra=self._bar_extra(region),
         )
         return [(fig, meta)]
 
@@ -2585,6 +2628,6 @@ class AddedValueDiag(DiagnosticBase):
             description=description,
             plot_type="added_value_bars",
             period=self.period,
-            extra={"region": region} if region else None,
+            extra=self._bar_extra(region),
         )
         return [(fig, meta)]

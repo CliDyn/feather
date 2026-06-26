@@ -874,8 +874,28 @@ class TestCordexRegionStats:
         fig, meta = figs[0]
         assert meta["figure_id"].startswith("added_value_bars_ensemble_EUR_")
         assert meta.get("region") == "EUR"
+        # Region bars carry the dedicated nav group so the website surfaces
+        # them as their own entry.
+        assert meta.get("group") == "regions"
         import matplotlib.pyplot as plt
         plt.close(fig)
+
+    def test_global_bar_chart_keeps_default_group(self, diag_multi):
+        results = diag_multi.compute()
+        all_obs_stats = {"tas": results["tas"]["obs_stats"]}
+        fig, meta = diag_multi._plot_summary_bars_ensemble(
+            all_obs_stats, "annual", region=None)[0]
+        assert meta.get("group") != "regions"
+        assert "region" not in meta
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_region_output_dir_is_separate_nav_page(self, diag_multi):
+        d = diag_multi.region_output_dir
+        assert d.name == "added_value_regions"
+        # Distinct from the main Added Value figures directory.
+        assert d != diag_multi.output_dir
+        assert d.parent == diag_multi.output_dir.parent
 
     def test_region_figure_ids_unique_from_global(self, diag_multi):
         assert (
