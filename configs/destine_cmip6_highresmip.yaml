@@ -218,6 +218,7 @@ website:
   subtitle: "DestinE High-Resolution Ensemble vs CMIP6 historical + HighResMIP hist-1950 MMM (1990-2025)"
   group_order:
     - evaluation
+    - regions
     - temperature
     - precipitation
     - radiation
@@ -228,6 +229,7 @@ website:
     - atmosphere_3d
   group_labels:
     evaluation: "Global Biases"
+    regions: "CORDEX Regions"
     temperature: "Temperature"
     precipitation: "Precipitation"
     radiation: "Radiation Budget"

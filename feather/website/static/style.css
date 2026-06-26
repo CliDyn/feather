@@ -270,6 +270,11 @@ img {
     color: var(--group-atmosphere_3d);
 }
 
+.group-badge--regions {
+    background: rgba(45, 212, 191, 0.15);
+    color: #2dd4bf;
+}
+
 .group-badge--other {
     background: rgba(156, 160, 174, 0.15);
     color: var(--group-other);

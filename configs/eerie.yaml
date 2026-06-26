@@ -195,6 +195,7 @@ website:
   subtitle: "EERIE Ensemble hist-1950 Simulations vs Observations (1980-2014)"
   group_order:
     - evaluation
+    - regions
     - temperature
     - precipitation
     - radiation
@@ -204,6 +205,7 @@ website:
     - ocean_3d
   group_labels:
     evaluation: "Global Biases"
+    regions: "CORDEX Regions"
     temperature: "Temperature"
     precipitation: "Precipitation"
     radiation: "Radiation Budget"

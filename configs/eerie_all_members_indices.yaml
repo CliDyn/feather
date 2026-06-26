@@ -216,5 +216,7 @@ website:
   subtitle: "Tropical nights & heatwave indices vs ERA5 (1981–2000; SSP2-4.5 to 2050)"
   group_order:
     - extremes
+    - regions
   group_labels:
     extremes: "Extreme Events"
+    regions: "CORDEX Regions"

@@ -266,6 +266,7 @@ website:
   subtitle: "EERIE Ensemble — 3 members IFS-FESOM2-SR + 3 members IFS-NEMO-ER + ICON-ESM-ER + HadGEM3-GC5 vs Observations (1980-2014)"
   group_order:
     - evaluation
+    - regions
     - temperature
     - precipitation
     - climate_classification
@@ -276,6 +277,7 @@ website:
     - ocean_3d
   group_labels:
     evaluation: "Global Biases"
+    regions: "CORDEX Regions"
     temperature: "Temperature"
     precipitation: "Precipitation"
     climate_classification: "Climate Classification"
