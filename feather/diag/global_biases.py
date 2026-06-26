@@ -29,6 +29,23 @@ logger = logging.getLogger(__name__)
 _PR_TO_MMDAY = 86400.0          # kg/m²/s → mm/day (display only)
 _REL_BIAS_THRESHOLD = 0.1 / 86400  # mask relative bias where obs < 0.1 mm/day
 
+# Surface turbulent heat fluxes in ERA5/DestinE are predominantly one-sided in
+# the absolute panels.  A diverging palette suggests a sign split that is not
+# present over most of the ocean, so use a sequential palette anchored at zero.
+_SURFACE_HEAT_FLUX_VARS = frozenset({"hfss", "hfls"})
+_SURFACE_HEAT_FLUX_CMAP = "YlOrRd_r"
+
+
+def _zero_anchored_range(vmin, vmax):
+    """Include zero as the neutral edge for one-sided absolute fields."""
+    if vmin is None or vmax is None:
+        return vmin, vmax
+    if vmax <= 0.0:
+        return vmin, 0.0
+    if vmin >= 0.0:
+        return 0.0, vmax
+    return vmin, vmax
+
 
 @register
 class GlobalBiases(DiagnosticBase):
@@ -1410,6 +1427,16 @@ class GlobalBiases(DiagnosticBase):
                           if p_cb.get("vmax") is not None else None)
                 bvmax_p = p_cb.get("bias_vmax")
                 disp_cmap = var_info.cmap
+                disp_bias_cmap = "RdBu_r"
+                disp_units = var_info.display_units or var_info.units
+            elif var in _SURFACE_HEAT_FLUX_VARS:
+                obs_plot = obs_period
+                bias_plot = bias_dict
+                vmin_p = p_cb.get("vmin")
+                vmax_p = p_cb.get("vmax")
+                vmin_p, vmax_p = _zero_anchored_range(vmin_p, vmax_p)
+                bvmax_p = p_cb.get("bias_vmax")
+                disp_cmap = _SURFACE_HEAT_FLUX_CMAP
                 disp_bias_cmap = "RdBu_r"
                 disp_units = var_info.display_units or var_info.units
             else:

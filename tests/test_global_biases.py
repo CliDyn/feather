@@ -546,6 +546,74 @@ class TestGlobalBiasesPlot:
         _, meta = pairs[0]
         assert "ifs-fesom" in meta["models"]
 
+    def test_surface_heat_flux_absolute_panel_uses_zero_anchored_scale(
+        self, minimal_config, mock_model_loader, mock_obs_loader,
+    ):
+        """Absolute LH/SH flux panels use a sequential scale with zero edge."""
+        from feather.data.variables import get_var
+
+        lat = np.array([-45.0, 45.0])
+        lon = np.array([0.0, 180.0])
+        obs_clim = xr.DataArray(
+            [[-90.0, -55.0], [-30.0, -5.0]],
+            dims=("lat", "lon"),
+            coords={"lat": lat, "lon": lon},
+        )
+        bias = xr.DataArray(
+            [[-12.0, 3.0], [8.0, 16.0]],
+            dims=("lat", "lon"),
+            coords={"lat": lat, "lon": lon},
+        )
+        model_results = {
+            "ifs-fesom": {
+                "annual_regrid": obs_clim + bias,
+                "seasonal_regrids": {},
+                "global_mean": float(obs_clim.mean()),
+                "annual_bias": bias,
+                "annual_bias_gmean": float(bias.mean()),
+                "annual_rmse": float((bias ** 2).mean() ** 0.5),
+                "seasonal_biases": {},
+                "ttest_statistic": 1.0,
+                "ttest_pvalue": 0.3,
+                "ftest_statistic": 1.0,
+                "ftest_pvalue": 0.4,
+            },
+        }
+        vr = {
+            "models": model_results,
+            "obs": {
+                "clim": obs_clim,
+                "seasonal_clim": {},
+                "global_mean": float(obs_clim.mean()),
+            },
+            "var_info": get_var("hfls"),
+            "colorbar_ranges": {
+                "annual": {"vmin": -100.0, "vmax": -4.0, "bias_vmax": 20.0},
+            },
+            "cmip6_data": {},
+            "cmip6_info": {},
+            "cmip6_individual_data": {},
+        }
+
+        diag = GlobalBiases(
+            mock_model_loader, mock_obs_loader, minimal_config,
+            variables=["hfls"],
+        )
+        mock_fig = MagicMock(spec=plt.Figure)
+        with patch(
+            "feather.diag.global_biases.plot_combined_bias_map",
+            return_value=(mock_fig, [None, None]),
+        ) as plot_mock:
+            figures = diag._plot_variable("hfls", vr)
+
+        plt.close("all")
+        assert len(figures) == 1
+        _, kwargs = plot_mock.call_args
+        assert kwargs["cmap"] == "YlOrRd_r"
+        assert kwargs["bias_cmap"] == "RdBu_r"
+        assert kwargs["vmin"] == -100.0
+        assert kwargs["vmax"] == 0.0
+
 
 # -- CMIP6 integration tests -----------------------------------------------
 
