@@ -69,5 +69,7 @@ website:
   subtitle: "ERA5 tropical nights & heatwave indices (1980–2023)"
   group_order:
     - extremes
+    - regions
   group_labels:
     extremes: "Extreme Events"
+    regions: "CORDEX Regions"
