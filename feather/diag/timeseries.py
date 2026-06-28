@@ -127,34 +127,19 @@ class TimeseriesDiag(DiagnosticBase):
     # ── NetCDF export / replot ─────────────────────────────────────────
 
     def _maybe_export_netcdf(self, results, token: str) -> None:
-        """Export per-source series, tagging benchmark metadata as attrs.
+        """Export per-source series (incl. the benchmark envelope band).
 
-        Extends the generic export with ``ts_benchmark_*`` global attributes
-        (label, color, member count, indexed by benchmark) so the figures can
-        later be rebuilt from the NetCDF alone via :meth:`replot_from_netcdf`.
+        Delegates to :func:`export_timeseries_netcdf`, which tags the
+        ``ts_benchmark_*`` metadata attrs needed to rebuild the figures from
+        the NetCDF alone via :meth:`replot_from_netcdf`.
         """
         if not getattr(self, "save_netcdf", False):
             return
-        import json
-
-        from feather.diag import netcdf_export
+        from feather.diag._ts_panel import export_timeseries_netcdf
 
         period = getattr(self, "period", None) or self.config.get_period()
-        benches = results.get("benchmarks_ts", []) or []
-        extra = {
-            "ts_benchmark_labels": json.dumps(
-                [b.get("label", "") for b in benches]),
-            "ts_benchmark_colors": json.dumps(
-                [b.get("color") or "" for b in benches]),
-            "ts_benchmark_n_members": json.dumps(
-                [int((b.get("info") or {}).get("n_members", 0))
-                 for b in benches]),
-        }
         try:
-            netcdf_export.export_generic_netcdf(
-                self._netcdf_dir, token, results, period,
-                skip_existing=True, extra_attrs=extra,
-            )
+            export_timeseries_netcdf(self._netcdf_dir, token, results, period)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "NetCDF export failed for %s/%s", self.name, token,
@@ -228,63 +213,15 @@ class TimeseriesDiag(DiagnosticBase):
         self, nc_path: "Path", var: str, name_map: dict[str, str],
     ) -> dict[str, Any] | None:
         """Reconstruct a ``_compute_single``-shaped result dict from NetCDF."""
-        import json
+        from feather.diag._ts_panel import load_timeseries_netcdf
 
-        import xarray as xr
-
-        ds = xr.open_dataset(nc_path, decode_timedelta=False).load()
-        dv = set(ds.data_vars)
-        if "obs" not in dv:
+        vr = load_timeseries_netcdf(
+            nc_path, name_map, self.benchmarks, _benchmark_color,
+        )
+        if vr is None:
             return None
-
-        models = {
-            name_map.get(f[len("models_"):], f[len("models_"):]): ds[f]
-            for f in dv if f.startswith("models_")
-        }
-
-        labels = json.loads(ds.attrs.get("ts_benchmark_labels", "[]"))
-        colors = json.loads(ds.attrs.get("ts_benchmark_colors", "[]"))
-        counts = json.loads(ds.attrs.get("ts_benchmark_n_members", "[]"))
-        indices = sorted({
-            int(f.split("_")[2]) for f in dv
-            if f.startswith("benchmarks_ts_") and f.endswith("_ts")
-        })
-        benchmarks_ts: list[dict] = []
-        for i in indices:
-            ts = ds.get(f"benchmarks_ts_{i}_ts")
-            if ts is None:
-                continue
-            if i < len(labels) and labels[i]:
-                label = labels[i]
-            elif i < len(self.benchmarks):
-                label = getattr(self.benchmarks[i], "label", f"Benchmark {i}")
-            else:
-                label = f"Benchmark {i}"
-            color = (colors[i] if i < len(colors) and colors[i] else None) \
-                or _benchmark_color(i)
-            n_members = int(counts[i]) if i < len(counts) else 0
-            benchmarks_ts.append({
-                "label": label,
-                "color": color,
-                "ts": ts,
-                "info": {"n_members": n_members},
-                "env_min": ds.get(f"benchmarks_ts_{i}_env_min"),
-                "env_max": ds.get(f"benchmarks_ts_{i}_env_max"),
-                "individual": {},
-            })
-
-        primary = benchmarks_ts[0] if benchmarks_ts else None
-        return {
-            "models": models,
-            "obs": ds["obs"],
-            "var_info": get_var(var),
-            "benchmarks_ts": benchmarks_ts,
-            "cmip6_ts": primary["ts"] if primary else ds.get("cmip6_ts"),
-            "cmip6_info": dict(primary["info"]) if primary else {},
-            "cmip6_individual_ts": {},
-            "ens_mean": ds.get("ens_mean"),
-            "ens_median": ds.get("ens_median"),
-        }
+        vr["var_info"] = get_var(var)
+        return vr
 
     # ── Computation ────────────────────────────────────────────────────
 

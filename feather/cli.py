@@ -119,8 +119,9 @@ def main(argv: list[str] | None = None):
         action="store_true",
         help="Rebuild figures from previously saved per-source NetCDF "
              "({output}/netcdf/{diag}/) instead of recomputing from source "
-             "data. Cheap enough for a login node. Currently supported by the "
-             "timeseries diagnostic (main + envelope + anomaly figures).",
+             "data. Cheap enough for a login node. Supported by the "
+             "timeseries, temperature_berkeley, and precipitation_mswep "
+             "diagnostics (main + envelope + anomaly time-series figures).",
     )
     parser.add_argument(
         "--no-llm",

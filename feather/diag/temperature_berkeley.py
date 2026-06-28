@@ -140,14 +140,17 @@ class TemperatureBerkeley(DiagnosticBase):
         )
         need_f = not skip_existing or not self._figure_exists("tas_taylor")
         nc_needed = self.save_netcdf and not self._netcdf_complete("tas")
+        ts_nc_needed = self.save_netcdf and not self._timeseries_netcdf_exists("tas")
 
         # NetCDF-only mode never plots: suppress every figure group, keep only
         # the Group A computation that feeds the individual-member export.
         if self.individual_netcdf_only:
             need_a = need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
         # ensemble_only mode: only Group A (ensemble figures); skip the rest.
         if self.ensemble_only:
             need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
 
         # Collect existing paths (skipped entirely in NetCDF-only mode)
         if not self.individual_netcdf_only:
@@ -180,7 +183,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 saved.append((out / "tas_taylor.png", out / "tas_taylor.json"))
 
         if not any([need_a, need_b, need_c, need_d, need_e, need_f,
-                    nc_needed]):
+                    nc_needed, ts_nc_needed]):
             logger.info("Diagnostic %s complete -- all figures exist", self.name)
             return saved
 
@@ -206,11 +209,14 @@ class TemperatureBerkeley(DiagnosticBase):
                 logger.warning("Group A (bias maps) failed", exc_info=True)
 
         # Group B: Timeseries
-        if need_b:
+        if need_b or ts_nc_needed:
             try:
                 results = self._compute_timeseries(shared)
-                for fig, meta in self._plot_timeseries(results):
-                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                if need_b:
+                    for fig, meta in self._plot_timeseries(results):
+                        saved.append(self._save(fig, meta, meta["figure_id"]))
+                if self.save_netcdf:
+                    self._export_timeseries_netcdf("tas", results)
             except Exception:
                 logger.warning("Group B (timeseries) failed", exc_info=True)
 
@@ -2115,6 +2121,69 @@ class TemperatureBerkeley(DiagnosticBase):
                 self._netcdf_dir, var, results, self.period,
                 units=units, skip_existing=True,
             )
+
+    # ── Timeseries NetCDF persistence + replot ───────────────────────
+
+    def _timeseries_netcdf_path(self, var: str):
+        return self._netcdf_dir / (
+            f"{var}_timeseries_{self.period[0]}-{self.period[1]}.nc"
+        )
+
+    def _timeseries_netcdf_exists(self, var: str) -> bool:
+        return self._timeseries_netcdf_path(var).exists()
+
+    def _export_timeseries_netcdf(self, var: str, results: dict) -> None:
+        """Persist the timeseries series + envelope band to NetCDF."""
+        from feather.diag._ts_panel import export_timeseries_netcdf
+        try:
+            export_timeseries_netcdf(
+                self._netcdf_dir, f"{var}_timeseries", results, self.period,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Timeseries NetCDF export failed for %s", var, exc_info=True,
+            )
+
+    def replot_from_netcdf(
+        self, skip_existing: bool = True,
+    ) -> list[tuple[Path, Path]]:
+        """Rebuild the timeseries figures from the persisted NetCDF.
+
+        Reads ``{output}/netcdf/temperature_berkeley/tas_timeseries_*.nc``
+        (written by an earlier ``--save-netcdf`` run) and re-renders the main,
+        envelope, and anomaly figures without reloading source data.  The
+        other figure groups (bias maps, trends, Taylor) are not rebuilt — they
+        are not persisted in a replot-friendly form.
+        """
+        from feather.diag._ts_panel import load_timeseries_netcdf
+        from feather.diag.netcdf_export import sanitize_name
+        from feather.plot.styles import benchmark_color
+
+        out = self.output_dir
+        nc = self._timeseries_netcdf_path("tas")
+        if not nc.exists():
+            logger.info(
+                "No timeseries NetCDF (%s) — nothing to replot", nc.name,
+            )
+            return []
+
+        ts_ids = [
+            "tas_timeseries", "tas_timeseries_envelope", "tas_timeseries_anomaly",
+        ]
+        if skip_existing and all(self._figure_exists(f) for f in ts_ids):
+            logger.info("Timeseries figures exist — skipping replot")
+            return [(out / f"{f}.png", out / f"{f}.json") for f in ts_ids]
+
+        name_map = {sanitize_name(m): m for m in self.config.models}
+        results = load_timeseries_netcdf(
+            nc, name_map, self.benchmarks, benchmark_color,
+        )
+        if results is None:
+            return []
+        saved: list[tuple[Path, Path]] = []
+        for fig, meta in self._plot_timeseries(results):
+            saved.append(self._save(fig, meta, meta["figure_id"]))
+        return saved
 
     @staticmethod
     def _pattern_correlation(model_field, obs_field, area):

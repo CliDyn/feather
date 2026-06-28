@@ -24,6 +24,108 @@ from feather.util.temporal import annual_mean
 _ERA5_COLOR = "black"
 
 
+# ── NetCDF persistence / reconstruction for the envelope figures ────────
+
+def export_timeseries_netcdf(
+    netcdf_dir, token: str, results: dict, period, *, skip_existing: bool = True,
+):
+    """Write a timeseries result dict to NetCDF, tagging benchmark metadata.
+
+    Extends the generic per-source export with ``ts_benchmark_*`` global
+    attributes (label, color, member count, indexed by benchmark) so the
+    figures can later be rebuilt from the NetCDF alone via
+    :func:`load_timeseries_netcdf`.  *token* names the file
+    (``{token}_{start}-{end}.nc``); pass the bare variable for the standalone
+    timeseries diagnostic or ``{var}_timeseries`` for diagnostics that also
+    write bias-map NetCDF for the same variable.
+    """
+    import json
+
+    from feather.diag import netcdf_export
+
+    benches = results.get("benchmarks_ts", []) or []
+    extra = {
+        "ts_benchmark_labels": json.dumps([b.get("label", "") for b in benches]),
+        "ts_benchmark_colors": json.dumps(
+            [b.get("color") or "" for b in benches]),
+        "ts_benchmark_n_members": json.dumps(
+            [int((b.get("info") or {}).get("n_members", 0)) for b in benches]),
+    }
+    return netcdf_export.export_generic_netcdf(
+        netcdf_dir, token, results, period,
+        skip_existing=skip_existing, extra_attrs=extra,
+    )
+
+
+def load_timeseries_netcdf(nc_path, name_map: dict, benchmarks, benchmark_color):
+    """Reconstruct a timeseries result dict from a NetCDF written by
+    :func:`export_timeseries_netcdf`.
+
+    Returns a dict with ``models``, ``obs``, ``era5_ts``, ``benchmarks_ts``
+    (each with ``env_min``/``env_max``), plus ``ens_mean``/``ens_median`` and
+    the back-compat ``cmip6_*`` keys.  Returns ``None`` when the file has no
+    ``obs`` field.  *name_map* maps sanitised model names back to display
+    names; *benchmark_color(i)`` supplies a fallback color.
+    """
+    import json
+
+    import xarray as xr
+
+    ds = xr.open_dataset(nc_path, decode_timedelta=False).load()
+    dv = set(ds.data_vars)
+    if "obs" not in dv:
+        return None
+
+    models = {
+        name_map.get(f[len("models_"):], f[len("models_"):]): ds[f]
+        for f in dv if f.startswith("models_")
+    }
+
+    labels = json.loads(ds.attrs.get("ts_benchmark_labels", "[]"))
+    colors = json.loads(ds.attrs.get("ts_benchmark_colors", "[]"))
+    counts = json.loads(ds.attrs.get("ts_benchmark_n_members", "[]"))
+    indices = sorted({
+        int(f.split("_")[2]) for f in dv
+        if f.startswith("benchmarks_ts_") and f.endswith("_ts")
+    })
+    benchmarks_ts: list[dict] = []
+    for i in indices:
+        ts = ds.get(f"benchmarks_ts_{i}_ts")
+        if ts is None:
+            continue
+        if i < len(labels) and labels[i]:
+            label = labels[i]
+        elif i < len(benchmarks):
+            label = getattr(benchmarks[i], "label", f"Benchmark {i}")
+        else:
+            label = f"Benchmark {i}"
+        color = (colors[i] if i < len(colors) and colors[i] else None) \
+            or benchmark_color(i)
+        n_members = int(counts[i]) if i < len(counts) else 0
+        benchmarks_ts.append({
+            "label": label,
+            "color": color,
+            "ts": ts,
+            "info": {"n_members": n_members},
+            "env_min": ds.get(f"benchmarks_ts_{i}_env_min"),
+            "env_max": ds.get(f"benchmarks_ts_{i}_env_max"),
+            "individual": {},
+        })
+
+    primary = benchmarks_ts[0] if benchmarks_ts else None
+    return {
+        "models": models,
+        "obs": ds["obs"],
+        "era5_ts": ds.get("era5_ts"),
+        "benchmarks_ts": benchmarks_ts,
+        "ens_mean": ds.get("ens_mean"),
+        "ens_median": ds.get("ens_median"),
+        "cmip6_ts": primary["ts"] if primary else ds.get("cmip6_ts"),
+        "cmip6_info": dict(primary["info"]) if primary else {},
+        "cmip6_individual_ts": {},
+    }
+
+
 def _to_plot_time(time_values: np.ndarray) -> np.ndarray:
     """Convert (possibly cftime) time values to a matplotlib-friendly array."""
     if len(time_values) == 0:

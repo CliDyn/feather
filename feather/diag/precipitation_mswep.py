@@ -153,14 +153,17 @@ class PrecipitationMSWEP(DiagnosticBase):
             "pr_intensity_distribution"
         )
         nc_needed = self.save_netcdf and not self._netcdf_complete("pr")
+        ts_nc_needed = self.save_netcdf and not self._timeseries_netcdf_exists("pr")
 
         # NetCDF-only mode never plots: suppress every figure group, keep only
         # the Group A computation that feeds the individual-member export.
         if self.individual_netcdf_only:
             need_a = need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
         # ensemble_only mode: only Group A (ensemble figures); skip the rest.
         if self.ensemble_only:
             need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
 
         # Collect existing paths (skipped entirely in NetCDF-only mode)
         if not self.individual_netcdf_only:
@@ -201,7 +204,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                 ))
 
         if not any([need_a, need_b, need_c, need_d, need_e, need_f,
-                    nc_needed]):
+                    nc_needed, ts_nc_needed]):
             logger.info(
                 "Diagnostic %s complete -- all figures exist", self.name,
             )
@@ -243,11 +246,14 @@ class PrecipitationMSWEP(DiagnosticBase):
                 )
 
         # Group C: Timeseries
-        if need_c:
+        if need_c or ts_nc_needed:
             try:
                 results = self._compute_timeseries(shared)
-                for fig, meta in self._plot_timeseries(results):
-                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                if need_c:
+                    for fig, meta in self._plot_timeseries(results):
+                        saved.append(self._save(fig, meta, meta["figure_id"]))
+                if self.save_netcdf:
+                    self._export_timeseries_netcdf("pr", results)
             except Exception:
                 logger.warning(
                     "Group C (timeseries) failed", exc_info=True,
@@ -1505,6 +1511,68 @@ class PrecipitationMSWEP(DiagnosticBase):
                 self._netcdf_dir, var, results, self.period,
                 units="mm/day", scale=_PR_TO_MMDAY, skip_existing=True,
             )
+
+    # ── Timeseries NetCDF persistence + replot ───────────────────────
+
+    def _timeseries_netcdf_path(self, var: str):
+        from pathlib import Path
+        return Path(self._netcdf_dir) / (
+            f"{var}_timeseries_{self.period[0]}-{self.period[1]}.nc"
+        )
+
+    def _timeseries_netcdf_exists(self, var: str) -> bool:
+        return self._timeseries_netcdf_path(var).exists()
+
+    def _export_timeseries_netcdf(self, var: str, results: dict) -> None:
+        """Persist the timeseries series + envelope band to NetCDF."""
+        from feather.diag._ts_panel import export_timeseries_netcdf
+        try:
+            export_timeseries_netcdf(
+                self._netcdf_dir, f"{var}_timeseries", results, self.period,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Timeseries NetCDF export failed for %s", var, exc_info=True,
+            )
+
+    def replot_from_netcdf(self, skip_existing: bool = True):
+        """Rebuild the timeseries figures from the persisted NetCDF.
+
+        Reads ``{output}/netcdf/precipitation_mswep/pr_timeseries_*.nc``
+        (written by an earlier ``--save-netcdf`` run) and re-renders the main,
+        envelope, and anomaly figures without reloading source data.  The
+        other figure groups are not rebuilt — they are not persisted in a
+        replot-friendly form.
+        """
+        from feather.diag._ts_panel import load_timeseries_netcdf
+        from feather.diag.netcdf_export import sanitize_name
+        from feather.plot.styles import benchmark_color
+
+        out = self.output_dir
+        nc = self._timeseries_netcdf_path("pr")
+        if not nc.exists():
+            logger.info(
+                "No timeseries NetCDF (%s) — nothing to replot", nc.name,
+            )
+            return []
+
+        ts_ids = [
+            "pr_timeseries", "pr_timeseries_envelope", "pr_timeseries_anomaly",
+        ]
+        if skip_existing and all(self._figure_exists(f) for f in ts_ids):
+            logger.info("Timeseries figures exist — skipping replot")
+            return [(out / f"{f}.png", out / f"{f}.json") for f in ts_ids]
+
+        name_map = {sanitize_name(m): m for m in self.config.models}
+        results = load_timeseries_netcdf(
+            nc, name_map, self.benchmarks, benchmark_color,
+        )
+        if results is None:
+            return []
+        saved = []
+        for fig, meta in self._plot_timeseries(results):
+            saved.append(self._save(fig, meta, meta["figure_id"]))
+        return saved
 
     def _compute_cmip6_mmm(self, target_lats, target_lons,
                             obs_clim_common, obs_seasonal_common,
