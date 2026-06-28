@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from feather.data.variables import get_var
+from feather.diag._ts_panel import build_envelope_timeseries
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.styles import (
@@ -88,13 +89,20 @@ class TimeseriesDiag(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
 
         for var in self.variables:
-            figure_id = f"{var}_timeseries"
-            if skip_existing and self._figure_exists(figure_id):
-                logger.info("Skipping %s — figure exists", var)
-                saved.append((
-                    self.output_dir / f"{figure_id}.png",
-                    self.output_dir / f"{figure_id}.json",
-                ))
+            figure_ids = [
+                f"{var}_timeseries",
+                f"{var}_timeseries_envelope",
+                f"{var}_timeseries_anomaly",
+            ]
+            if skip_existing and all(
+                self._figure_exists(fid) for fid in figure_ids
+            ):
+                logger.info("Skipping %s — figures exist", var)
+                saved.extend(
+                    (self.output_dir / f"{fid}.png",
+                     self.output_dir / f"{fid}.json")
+                    for fid in figure_ids
+                )
                 continue
 
             try:
@@ -115,6 +123,168 @@ class TimeseriesDiag(DiagnosticBase):
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    # ── NetCDF export / replot ─────────────────────────────────────────
+
+    def _maybe_export_netcdf(self, results, token: str) -> None:
+        """Export per-source series, tagging benchmark metadata as attrs.
+
+        Extends the generic export with ``ts_benchmark_*`` global attributes
+        (label, color, member count, indexed by benchmark) so the figures can
+        later be rebuilt from the NetCDF alone via :meth:`replot_from_netcdf`.
+        """
+        if not getattr(self, "save_netcdf", False):
+            return
+        import json
+
+        from feather.diag import netcdf_export
+
+        period = getattr(self, "period", None) or self.config.get_period()
+        benches = results.get("benchmarks_ts", []) or []
+        extra = {
+            "ts_benchmark_labels": json.dumps(
+                [b.get("label", "") for b in benches]),
+            "ts_benchmark_colors": json.dumps(
+                [b.get("color") or "" for b in benches]),
+            "ts_benchmark_n_members": json.dumps(
+                [int((b.get("info") or {}).get("n_members", 0))
+                 for b in benches]),
+        }
+        try:
+            netcdf_export.export_generic_netcdf(
+                self._netcdf_dir, token, results, period,
+                skip_existing=True, extra_attrs=extra,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "NetCDF export failed for %s/%s", self.name, token,
+                exc_info=True,
+            )
+
+    def replot_from_netcdf(
+        self, skip_existing: bool = True,
+    ) -> list[tuple["Path", "Path"]]:
+        """Regenerate the time-series figures from previously saved NetCDF.
+
+        Reads ``{output}/netcdf/timeseries/{var}_{start}-{end}.nc`` (written by
+        an earlier run with ``--save-netcdf``) and re-renders the main,
+        envelope, and anomaly figures *without* touching the source
+        model/obs/CMIP6 data — cheap enough for a login node.  Variables whose
+        NetCDF file is missing are skipped.
+        """
+        from pathlib import Path
+
+        from feather.diag.netcdf_export import sanitize_name
+
+        logger.info("Replotting %s from NetCDF", self.name)
+        saved: list[tuple[Path, Path]] = []
+        # sanitised config-model name → real name (recovers display colors)
+        name_map = {sanitize_name(m): m for m in self.config.models}
+
+        for var in self.variables:
+            nc = self._netcdf_dir / (
+                f"{var}_{self.period[0]}-{self.period[1]}.nc"
+            )
+            if not nc.exists():
+                logger.info("  %s: no NetCDF (%s) — skipping", var, nc.name)
+                continue
+
+            figure_ids = [
+                f"{var}_timeseries",
+                f"{var}_timeseries_envelope",
+                f"{var}_timeseries_anomaly",
+            ]
+            if skip_existing and all(
+                self._figure_exists(fid) for fid in figure_ids
+            ):
+                logger.info("  %s: figures exist — skipping", var)
+                saved.extend(
+                    (self.output_dir / f"{fid}.png",
+                     self.output_dir / f"{fid}.json")
+                    for fid in figure_ids
+                )
+                continue
+
+            try:
+                vr = self._results_from_netcdf(nc, var, name_map)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "  %s: could not rebuild from NetCDF — skipping",
+                    var, exc_info=True,
+                )
+                continue
+            if vr is None:
+                continue
+
+            for fig, meta in self._plot_single(var, vr):
+                saved.append(self._save(fig, meta, meta["figure_id"]))
+
+        logger.info(
+            "Replot %s complete — %d figure(s)", self.name, len(saved),
+        )
+        return saved
+
+    def _results_from_netcdf(
+        self, nc_path: "Path", var: str, name_map: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Reconstruct a ``_compute_single``-shaped result dict from NetCDF."""
+        import json
+
+        import xarray as xr
+
+        ds = xr.open_dataset(nc_path, decode_timedelta=False).load()
+        dv = set(ds.data_vars)
+        if "obs" not in dv:
+            return None
+
+        models = {
+            name_map.get(f[len("models_"):], f[len("models_"):]): ds[f]
+            for f in dv if f.startswith("models_")
+        }
+
+        labels = json.loads(ds.attrs.get("ts_benchmark_labels", "[]"))
+        colors = json.loads(ds.attrs.get("ts_benchmark_colors", "[]"))
+        counts = json.loads(ds.attrs.get("ts_benchmark_n_members", "[]"))
+        indices = sorted({
+            int(f.split("_")[2]) for f in dv
+            if f.startswith("benchmarks_ts_") and f.endswith("_ts")
+        })
+        benchmarks_ts: list[dict] = []
+        for i in indices:
+            ts = ds.get(f"benchmarks_ts_{i}_ts")
+            if ts is None:
+                continue
+            if i < len(labels) and labels[i]:
+                label = labels[i]
+            elif i < len(self.benchmarks):
+                label = getattr(self.benchmarks[i], "label", f"Benchmark {i}")
+            else:
+                label = f"Benchmark {i}"
+            color = (colors[i] if i < len(colors) and colors[i] else None) \
+                or _benchmark_color(i)
+            n_members = int(counts[i]) if i < len(counts) else 0
+            benchmarks_ts.append({
+                "label": label,
+                "color": color,
+                "ts": ts,
+                "info": {"n_members": n_members},
+                "env_min": ds.get(f"benchmarks_ts_{i}_env_min"),
+                "env_max": ds.get(f"benchmarks_ts_{i}_env_max"),
+                "individual": {},
+            })
+
+        primary = benchmarks_ts[0] if benchmarks_ts else None
+        return {
+            "models": models,
+            "obs": ds["obs"],
+            "var_info": get_var(var),
+            "benchmarks_ts": benchmarks_ts,
+            "cmip6_ts": primary["ts"] if primary else ds.get("cmip6_ts"),
+            "cmip6_info": dict(primary["info"]) if primary else {},
+            "cmip6_individual_ts": {},
+            "ens_mean": ds.get("ens_mean"),
+            "ens_median": ds.get("ens_median"),
+        }
 
     # ── Computation ────────────────────────────────────────────────────
 
@@ -151,26 +321,12 @@ class TimeseriesDiag(DiagnosticBase):
         logger.info("    Obs global mean: %.4g %s", float(obs_ts.mean()), var_info.units)
 
         # Per-benchmark global-mean MMM time series (CMIP6, HighResMIP, …).
-        benchmarks_ts: list[dict] = []
-        for i, bench in enumerate(self.benchmarks):
-            b_ts, b_info = self._cmip6_global_mean_timeseries(
-                var, period=self.period,
-                return_individual=self.cmip6_individual,
-                loader=bench,
-            )
-            if b_ts is None:
-                continue
-            benchmarks_ts.append({
-                "label": getattr(bench, "label", "CMIP6 MMM"),
-                "color": getattr(bench, "color", None) or _benchmark_color(i),
-                "ts": b_ts,
-                "info": b_info,
-                "individual": (
-                    dict(b_info["individual_series"])
-                    if self.cmip6_individual and "individual_series" in b_info
-                    else {}
-                ),
-            })
+        # ``_benchmark_timeseries`` always derives the min/max envelope band
+        # internally; the individual *spaghetti* lines stay gated on
+        # ``cmip6_individual``.
+        benchmarks_ts = self._benchmark_timeseries(
+            var, period=self.period, return_individual=self.cmip6_individual,
+        )
 
         # Back-compat: expose the primary benchmark under the cmip6_* keys.
         primary = benchmarks_ts[0] if benchmarks_ts else None
@@ -383,7 +539,75 @@ class TimeseriesDiag(DiagnosticBase):
             benchmark_info=self._benchmark_meta_from_list(
                 vr.get("benchmarks_ts")) or None,
         )
-        return [(fig, meta)]
+        figures = [(fig, meta)]
+
+        # Two extra figures: an absolute time series with a gray CMIP6
+        # min/max envelope band, and the same as anomalies relative to the
+        # full-period mean (also with the envelope band).
+        figures.append(self._plot_envelope(var, vr, anomaly=False))
+        figures.append(self._plot_envelope(var, vr, anomaly=True))
+        return figures
+
+    def _plot_envelope(
+        self, var: str, vr: dict[str, Any], *, anomaly: bool,
+    ) -> tuple[plt.Figure, dict]:
+        """Time-series figure with a gray benchmark min/max envelope band.
+
+        Replaces the per-member benchmark spaghetti with a shaded min-to-max
+        band (computed across the benchmark's individual members).  When
+        *anomaly* is True every series is shown relative to its own full-period
+        mean, so offsets cancel and the band highlights spread about each
+        series' baseline.
+        """
+        var_info = vr["var_info"]
+        _disp_units = var_info.display_units or var_info.units
+        benchmarks = vr.get("benchmarks_ts", [])
+        all_models = list(self.config.models)
+        for bench in benchmarks:
+            all_models.append(bench["label"])
+
+        fig = build_envelope_timeseries(
+            anomaly=anomaly,
+            models=vr["models"],
+            model_color=self.config.get_model_color,
+            obs=vr["obs"],
+            obs_label=var_info.obs_dataset,
+            long_name=var_info.long_name,
+            units=_disp_units,
+            benchmarks=benchmarks,
+            ens_mean=vr.get("ens_mean"),
+            ens_median=vr.get("ens_median"),
+            ens_prefix=self._project_name,
+            offset=var_info.display_offset,
+        )
+
+        if anomaly:
+            suffix, title_kind = "anomaly", " Anomaly"
+            descr = (
+                f"Area-weighted global mean {var_info.long_name} anomaly "
+                f"(relative to the {self.period[0]}–{self.period[1]} mean) "
+                f"with a gray benchmark min–max envelope."
+            )
+        else:
+            suffix, title_kind = "envelope", ""
+            descr = (
+                f"Area-weighted global mean {var_info.long_name} with a gray "
+                f"benchmark min–max envelope across members."
+            )
+
+        meta = self._build_metadata(
+            title=f"{var_info.long_name} Global Mean{title_kind} Time Series",
+            figure_id=f"{var}_timeseries_{suffix}",
+            models=all_models,
+            variables=[var],
+            description=descr,
+            plot_type="timeseries",
+            period=self.period,
+            cmip6_info=vr.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                vr.get("benchmarks_ts")) or None,
+        )
+        return (fig, meta)
 
 
 def _to_plot_time(time_values: np.ndarray) -> np.ndarray:

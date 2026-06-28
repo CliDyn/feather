@@ -835,12 +835,17 @@ class TestTimeseries:
         shared = diag._load_shared_data()
         results = diag._compute_timeseries(shared)
         figures = diag._plot_timeseries(results)
-        assert len(figures) == 1
+        # main + envelope + anomaly
+        assert len(figures) == 3
         _, meta = figures[0]
         assert meta["figure_id"] == "pr_timeseries"
         assert meta["plot_type"] == "timeseries"
+        ids = {m["figure_id"] for _, m in figures}
+        assert ids == {
+            "pr_timeseries", "pr_timeseries_envelope", "pr_timeseries_anomaly",
+        }
         import matplotlib.pyplot as plt
-        plt.close(figures[0][0])
+        plt.close("all")
 
     def test_timeseries_values_positive(self, synth_precip_healpix,
                                          synth_mswep, precip_config):

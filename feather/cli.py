@@ -115,6 +115,14 @@ def main(argv: list[str] | None = None):
              "diagnostics temperature_berkeley and precipitation_mswep.",
     )
     parser.add_argument(
+        "--replot-from-netcdf",
+        action="store_true",
+        help="Rebuild figures from previously saved per-source NetCDF "
+             "({output}/netcdf/{diag}/) instead of recomputing from source "
+             "data. Cheap enough for a login node. Currently supported by the "
+             "timeseries diagnostic (main + envelope + anomaly figures).",
+    )
+    parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Generate website without LLM analysis (figures only)",
@@ -197,6 +205,7 @@ def main(argv: list[str] | None = None):
         save_netcdf=args.save_netcdf,
         individual_netcdf_only=args.individual_netcdf_only,
         ensemble_only=args.ensemble_only,
+        replot_from_netcdf=args.replot_from_netcdf,
         no_llm=args.no_llm,
     )
 

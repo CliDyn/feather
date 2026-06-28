@@ -101,11 +101,18 @@ class TestTimeseriesPlot:
         results = diag.compute()
         pairs = diag.plot(results)
 
-        assert len(pairs) == 1  # 1 variable
+        # 1 variable → main + envelope + anomaly figures.
+        assert len(pairs) == 3
         fig, meta = pairs[0]
         assert isinstance(fig, plt.Figure)
         assert isinstance(meta, dict)
-        plt.close(fig)
+        assert meta["figure_id"] == "tas_timeseries"
+        ids = {m["figure_id"] for _, m in pairs}
+        assert ids == {
+            "tas_timeseries", "tas_timeseries_envelope", "tas_timeseries_anomaly",
+        }
+        for f, _ in pairs:
+            plt.close(f)
 
     def test_plot_metadata(self, mock_model_loader, mock_obs_loader,
                             minimal_config):
@@ -133,12 +140,13 @@ class TestTimeseriesPlot:
         )
         saved = diag.run()
 
-        assert len(saved) == 1
-        png_path, json_path = saved[0]
-        assert png_path.exists()
-        assert json_path.exists()
-        assert png_path.suffix == ".png"
-        assert json_path.suffix == ".json"
+        # main + envelope + anomaly
+        assert len(saved) == 3
+        for png_path, json_path in saved:
+            assert png_path.exists()
+            assert json_path.exists()
+            assert png_path.suffix == ".png"
+            assert json_path.suffix == ".json"
 
 
 class TestTimeseriesSkipExisting:
@@ -151,14 +159,16 @@ class TestTimeseriesSkipExisting:
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["tas"],
         )
-        # Pre-create the output files
+        # Pre-create all three output figures (main + envelope + anomaly)
         diag.output_dir.mkdir(parents=True, exist_ok=True)
-        (diag.output_dir / "tas_timeseries.png").write_bytes(b"fake")
-        (diag.output_dir / "tas_timeseries.json").write_text("{}")
+        for fid in ("tas_timeseries", "tas_timeseries_envelope",
+                    "tas_timeseries_anomaly"):
+            (diag.output_dir / f"{fid}.png").write_bytes(b"fake")
+            (diag.output_dir / f"{fid}.json").write_text("{}")
 
         saved = diag.run(skip_existing=True)
 
-        assert len(saved) == 1
+        assert len(saved) == 3
         png_path, json_path = saved[0]
         assert png_path == diag.output_dir / "tas_timeseries.png"
         # File should not have been overwritten (still "fake")
@@ -177,7 +187,7 @@ class TestTimeseriesSkipExisting:
 
         saved = diag.run(skip_existing=False)
 
-        assert len(saved) == 1
+        assert len(saved) == 3
         png_path, _ = saved[0]
         # File should have been overwritten (no longer "fake")
         assert png_path.read_bytes() != b"fake"
@@ -196,7 +206,7 @@ class TestTimeseriesSkipExisting:
 
         saved = diag.run(skip_existing=True)
 
-        assert len(saved) == 1
+        assert len(saved) == 3
         png_path, _ = saved[0]
         # Should have been regenerated
         assert png_path.read_bytes() != b"fake"

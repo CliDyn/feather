@@ -780,10 +780,15 @@ class TestTimeseries:
         shared = diag._load_shared_data()
         results = diag._compute_timeseries(shared)
         figures = diag._plot_timeseries(results)
-        assert len(figures) == 1
+        # main + envelope + anomaly
+        assert len(figures) == 3
         fig, meta = figures[0]
         assert meta["figure_id"] == "tas_timeseries"
         assert meta["plot_type"] == "timeseries"
+        ids = {m["figure_id"] for _, m in figures}
+        assert ids == {
+            "tas_timeseries", "tas_timeseries_envelope", "tas_timeseries_anomaly",
+        }
         import matplotlib.pyplot as plt
         plt.close("all")
 
