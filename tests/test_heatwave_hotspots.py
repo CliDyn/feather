@@ -238,3 +238,132 @@ def test_nc_checkpoint_roundtrip(diag, tmp_path):
     reloaded = diag._load_or_compute_percs("ModelA")
     assert {"p99", "p875"}.issubset(reloaded.data_vars)
     np.testing.assert_allclose(reloaded["p99"].values, ds["p99"].values)
+
+
+# ── Daily CMIP6 discovery + envelope ─────────────────────────────────────────
+
+class _MultiLoader:
+    """Loader serving a {model: daily DataArray} mapping (period-sliced)."""
+
+    def __init__(self, mapping):
+        self._m = mapping
+
+    def load_var(self, model, variable, *, table=None, period=None,
+                 time_mean=False):
+        da = self._m[model]
+        if period:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
+
+def test_discover_daily_models(tmp_path):
+    from feather.data.cmip6_nc_loader import discover_daily_models
+
+    root = tmp_path / "CMIP6"
+    base = (root / "CMIP" / "TEST-INST" / "TEST-MODEL" / "historical"
+            / "r1i1p1f1" / "day" / "tasmax" / "gn" / "v20200101")
+    base.mkdir(parents=True)
+    (base / "tasmax_day_TEST-MODEL_historical_r1i1p1f1_gn_198001-201412.nc").touch()
+    # A model that only has daily tas (no tasmax) must be skipped.
+    other = (root / "CMIP" / "X" / "NO-TX" / "historical" / "r1i1p1f1"
+             / "day" / "tas" / "gn" / "v1")
+    other.mkdir(parents=True)
+    (other / "tas.nc").touch()
+
+    mcs = discover_daily_models(
+        root, experiment="historical", table="day", variable="tasmax",
+    )
+    assert [m.name for m in mcs] == ["TEST-MODEL"]
+    mc = mcs[0]
+    assert mc.institution == "TEST-INST"
+    assert mc.variant == "r1i1p1f1"
+    assert mc.grid_dir == "gn"
+    assert mc.grids == {"sfc": "latlon"}
+    assert mc.experiments == ["historical"]
+
+
+def test_discover_daily_models_exclude_and_cap(tmp_path):
+    from feather.data.cmip6_nc_loader import discover_daily_models
+
+    root = tmp_path / "CMIP6"
+    for inst, model in [("I1", "M-AAA"), ("I2", "M-BBB"), ("I3", "M-CCC")]:
+        d = (root / "CMIP" / inst / model / "historical" / "r1i1p1f1"
+             / "day" / "tasmax" / "gn" / "v1")
+        d.mkdir(parents=True)
+        (d / "f.nc").touch()
+    excl = discover_daily_models(
+        root, experiment="historical", table="day", variable="tasmax",
+        exclude=("M-BBB",),
+    )
+    assert [m.name for m in excl] == ["M-AAA", "M-CCC"]
+    capped = discover_daily_models(
+        root, experiment="historical", table="day", variable="tasmax",
+        max_models=1,
+    )
+    assert len(capped) == 1
+
+
+def test_for_models_factory_isolates_config(tmp_path):
+    from feather.data.cmip6_nc_loader import CMIP6NCLoader
+
+    cfg = _make_config(tmp_path)
+    mcs = [ModelConfig(name="CM1", institution="I", variant="r1i1p1f1",
+                       grids={"sfc": "latlon"}, experiments=["historical"])]
+    loader = CMIP6NCLoader.for_models(cfg, mcs, root="/some/root")
+    assert loader.model_names == ["CM1"]
+    assert str(loader._root) == "/some/root"
+    # The original config (and EERIE model list) must be untouched.
+    assert "CM1" not in cfg.model_configs
+
+
+def test_cmip6_nc_path_tagged(diag):
+    p = diag._nc_path("CM1", tag="cmip6")
+    assert p.name.startswith("cmip6_CM1_percs_")
+    assert diag._nc_path("CM1").name.startswith("CM1_percs_")
+
+
+def test_cmip6_envelope_compute_and_plot(diag):
+    # Attach a synthetic daily CMIP6 ensemble on the same small grid so the
+    # identity interpolator (monkeypatched in the fixture) applies.
+    diag._cmip6_loader = _MultiLoader({
+        "CM1": _make_daily_tasmax(seed=1),
+        "CM2": _make_daily_tasmax(seed=2),
+    })
+    diag._cmip6_models = ["CM1", "CM2"]
+
+    results = diag.compute()
+    assert results["cmip6_models"] == ["CM1", "CM2"]
+    assert results["cmip6_mmm_trend"].dims == ("lat", "lon")
+    assert results["cmip6_env_min"] is not None
+    assert results["cmip6_env_max"] is not None
+    # Envelope brackets the MMM everywhere.
+    assert bool((results["cmip6_env_min"] <= results["cmip6_mmm_trend"]).all())
+    assert bool((results["cmip6_env_max"] >= results["cmip6_mmm_trend"]).all())
+    # Per-region CMIP6 series + trends present.
+    assert set(results["regions"][0]["cmip6_series"]) == {"CM1", "CM2"}
+    assert set(results["regions"][0]["cmip6_trends"]) == {"CM1", "CM2"}
+
+    # CMIP6 percentile checkpoints saved with the cmip6_ prefix.
+    assert diag._nc_path("CM1", tag="cmip6").exists()
+
+    figs = diag.plot(results)
+    fig_ids = {meta["figure_id"] for _, meta in figs}
+    assert {
+        "heatwave_hotspots_cmip6_mmm_map",
+        "heatwave_hotspots_cmip6_discrepancy",
+        "heatwave_hotspots_eerie_vs_cmip6",
+    } <= fig_ids
+    import matplotlib.pyplot as plt
+    for fig, _ in figs:
+        plt.close(fig)
+
+
+def test_no_cmip6_keeps_base_figures(diag):
+    """Without a CMIP6 loader, only the 5 base figures are produced."""
+    assert diag._cmip6_models == []
+    results = diag.compute()
+    assert results["cmip6_models"] == []
+    fig_ids = {meta["figure_id"] for _, meta in diag.plot(results)}
+    assert fig_ids == set(HeatwaveHotspotsDiag._FIG_IDS)
+    import matplotlib.pyplot as plt
+    plt.close("all")

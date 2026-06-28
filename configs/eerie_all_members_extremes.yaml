@@ -12,10 +12,11 @@
 # grid, land-masked (>25 %), and masked grey where the P87.5 trend is negative.
 #
 # Reference = ERA5 (derived daily tasmax CMOR tree).  The "model ensemble" is
-# the EERIE high-resolution members.  CMIP6 is NOT included in this first pass
-# (daily tasmax is not available as a zarr cache — only on the DKRZ pool DRS at
-# /pool/data/CMIP6/.../day/tasmax/).  To add it later, build a yearly-percentile
-# cache from the pool and wire it in as a benchmark (see the cmip6 stub below).
+# the EERIE high-resolution members.  A daily CMIP6 envelope is included by
+# reading tasmax straight from the DKRZ CMIP6 DRS tree (/work/ik1017/CMIP6/
+# data/CMIP6/.../historical/r1i1p1f1/day/tasmax/) — no zarr cache needed; see
+# the cmip6_daily block below.  Per-model yearly percentiles are cached to
+# NetCDF so the heavy daily recompute runs once per model.
 #
 # Prerequisites (ERA5 derived daily/monthly, run scripts/era5_derive_*.sh):
 #   daily   ERA5 → /work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/...
@@ -144,12 +145,28 @@ obs_datasets:
     variables:
       sftlf: "sftlf_fx_ERA5_era5_r1i1p1f1_gr.nc"
 
-# CMIP6 benchmark is deferred for this first pass — daily tasmax is not cached
-# as zarr.  To include CMIP6 (or HighResMIP CMIP archive) later, build a
-# yearly-percentile cache from the DKRZ pool DRS (/pool/data/CMIP6/.../day/
-# tasmax/) and expose it as a benchmark loader, then set enabled: true.
+# Monthly-zarr CMIP6 benchmark stays off (this diagnostic needs *daily* data).
 cmip6:
   enabled: false
+
+# Daily CMIP6 envelope — read straight from the DKRZ CMIP6 DRS NetCDF tree
+# (/work/ik1017/CMIP6/data/CMIP6/CMIP/.../historical/r1i1p1f1/day/tasmax/),
+# no zarr cache required.  The diagnostic auto-discovers every model that
+# publishes daily tasmax (one member each), computes yearly P99/P87.5, and
+# caches each model's percentiles to NetCDF (cmip6_{model}_percs_*.nc) so
+# re-runs skip the heavy daily recompute.  Shown as a grey min–max envelope
+# + dashed MMM on the regional time series / box-whisker, plus three extra
+# maps (CMIP6 MMM trend, ERA5−CMIP6 discrepancy, EERIE-mean−CMIP6 MMM).
+cmip6_daily:
+  enabled: true
+  root: "/work/ik1017/CMIP6/data/CMIP6"
+  experiment: "historical"
+  table: "day"
+  member: "r1i1p1f1"
+  models: auto            # auto-discover all models with day/tasmax
+  label: "CMIP6"
+  # exclude: []           # optional list of source_id names to skip
+  # max_models: 40        # optional cap for staged runs
 
 dask:
   n_workers: 8
