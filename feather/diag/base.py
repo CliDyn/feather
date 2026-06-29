@@ -726,22 +726,49 @@ class DiagnosticBase(ABC):
         for i, bench in enumerate(self.benchmarks):
             ts, info = self._cmip6_global_mean_timeseries(
                 var, period=period,
-                return_individual=return_individual, loader=bench,
+                return_individual=True, loader=bench,
             )
             if ts is None:
                 continue
+            # Always load the member series internally so we can derive the
+            # min/max envelope band; only *expose* the per-member series when
+            # the caller asked for the individual spaghetti lines.
+            indiv_all = dict(info.get("individual_series", {}))
+            env_min, env_max = self._envelope_from_series(indiv_all)
             out.append({
                 "label": getattr(bench, "label", "CMIP6 MMM"),
                 "color": getattr(bench, "color", None) or benchmark_color(i),
                 "ts": ts,
                 "info": info,
-                "individual": (
-                    dict(info["individual_series"])
-                    if return_individual and "individual_series" in info
-                    else {}
-                ),
+                "env_min": env_min,
+                "env_max": env_max,
+                "individual": indiv_all if return_individual else {},
             })
         return out
+
+    @staticmethod
+    def _envelope_from_series(
+        series_dict: dict,
+    ) -> tuple["xr.DataArray | None", "xr.DataArray | None"]:
+        """Min/max envelope across a benchmark's individual member series.
+
+        Aligns the members on the outer time union (so members with shorter
+        records still contribute where present) and takes the per-timestep
+        minimum and maximum across members.
+
+        Returns ``(None, None)`` when fewer than 2 members are available.
+        """
+        import xarray as xr
+
+        series = [s.reset_coords(drop=True) for s in series_dict.values()]
+        if len(series) < 2:
+            return None, None
+        aligned = xr.align(*series, join="outer")
+        stacked = xr.concat(list(aligned), dim="member")
+        return (
+            stacked.min("member", skipna=True),
+            stacked.max("member", skipna=True),
+        )
 
     @staticmethod
     def _align_area(da, area):

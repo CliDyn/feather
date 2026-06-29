@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 
 from feather.data.variables import get_var
+from feather.diag._ts_panel import build_envelope_timeseries
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.lines import plot_taylor_diagram
@@ -123,7 +124,12 @@ class TemperatureBerkeley(DiagnosticBase):
         need_a = not skip_existing or not all(
             self._figure_exists(fid) for fid in check_ids
         )
-        need_b = not skip_existing or not self._figure_exists("tas_timeseries")
+        ts_ids = [
+            "tas_timeseries", "tas_timeseries_envelope", "tas_timeseries_anomaly",
+        ]
+        need_b = not skip_existing or not all(
+            self._figure_exists(fid) for fid in ts_ids
+        )
         need_c = not skip_existing or not self._figure_exists("tas_seasonal_cycle")
         need_d = not skip_existing or not self._figure_exists("tas_zonal_mean")
         trend_ids = [
@@ -134,14 +140,17 @@ class TemperatureBerkeley(DiagnosticBase):
         )
         need_f = not skip_existing or not self._figure_exists("tas_taylor")
         nc_needed = self.save_netcdf and not self._netcdf_complete("tas")
+        ts_nc_needed = self.save_netcdf and not self._timeseries_netcdf_exists("tas")
 
         # NetCDF-only mode never plots: suppress every figure group, keep only
         # the Group A computation that feeds the individual-member export.
         if self.individual_netcdf_only:
             need_a = need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
         # ensemble_only mode: only Group A (ensemble figures); skip the rest.
         if self.ensemble_only:
             need_b = need_c = need_d = need_e = need_f = False
+            ts_nc_needed = False
 
         # Collect existing paths (skipped entirely in NetCDF-only mode)
         if not self.individual_netcdf_only:
@@ -152,8 +161,11 @@ class TemperatureBerkeley(DiagnosticBase):
                     for fid in check_ids
                 ])
             if not need_b:
-                logger.info("Skipping timeseries -- figure exists")
-                saved.append((out / "tas_timeseries.png", out / "tas_timeseries.json"))
+                logger.info("Skipping timeseries -- figures exist")
+                saved.extend([
+                    (out / f"{fid}.png", out / f"{fid}.json")
+                    for fid in ts_ids
+                ])
             if not need_c:
                 logger.info("Skipping seasonal cycle -- figure exists")
                 saved.append((out / "tas_seasonal_cycle.png", out / "tas_seasonal_cycle.json"))
@@ -171,7 +183,7 @@ class TemperatureBerkeley(DiagnosticBase):
                 saved.append((out / "tas_taylor.png", out / "tas_taylor.json"))
 
         if not any([need_a, need_b, need_c, need_d, need_e, need_f,
-                    nc_needed]):
+                    nc_needed, ts_nc_needed]):
             logger.info("Diagnostic %s complete -- all figures exist", self.name)
             return saved
 
@@ -197,11 +209,14 @@ class TemperatureBerkeley(DiagnosticBase):
                 logger.warning("Group A (bias maps) failed", exc_info=True)
 
         # Group B: Timeseries
-        if need_b:
+        if need_b or ts_nc_needed:
             try:
                 results = self._compute_timeseries(shared)
-                for fig, meta in self._plot_timeseries(results):
-                    saved.append(self._save(fig, meta, meta["figure_id"]))
+                if need_b:
+                    for fig, meta in self._plot_timeseries(results):
+                        saved.append(self._save(fig, meta, meta["figure_id"]))
+                if self.save_netcdf:
+                    self._export_timeseries_netcdf("tas", results)
             except Exception:
                 logger.warning("Group B (timeseries) failed", exc_info=True)
 
@@ -780,6 +795,9 @@ class TemperatureBerkeley(DiagnosticBase):
         berkeley = shared["berkeley"]
         obs_ts = latlon_global_mean(berkeley)
 
+        # ERA5 global-mean series as an auxiliary reference (dashed black).
+        era5_ts = self._era5_global_mean("tas")
+
         # Benchmark global-mean series (CMIP6, HighResMIP, …)
         benchmarks_ts = self._benchmark_timeseries("tas")
         primary = benchmarks_ts[0] if benchmarks_ts else None
@@ -787,11 +805,21 @@ class TemperatureBerkeley(DiagnosticBase):
         return {
             "models": model_ts,
             "obs": obs_ts,
+            "era5_ts": era5_ts,
             "benchmarks_ts": benchmarks_ts,
             "cmip6_ts": primary["ts"] if primary else None,
             "cmip6_info": primary["info"] if primary else {},
             "cmip6_individual_ts": primary["individual"] if primary else {},
         }
+
+    def _era5_global_mean(self, var: str):
+        """Area-weighted ERA5 global-mean series, or None if unavailable."""
+        try:
+            era5 = self._load_obs_var(var, self.period)
+            return latlon_global_mean(era5)
+        except Exception:  # noqa: BLE001 — ERA5 is an optional overlay
+            logger.info("  ERA5 %s unavailable — skipping reference line", var)
+            return None
 
     def _plot_timeseries(self, results: dict) -> list[tuple[plt.Figure, dict]]:
         """Plot global-mean T2m time series."""
@@ -859,6 +887,17 @@ class TemperatureBerkeley(DiagnosticBase):
         ax.plot(obs_annual_time, obs_annual.values - _K_TO_C,
                 label="Berkeley Earth", color=OBS_COLOR, linewidth=2.5)
 
+        # ERA5 reference (dashed black): monthly faint + annual foreground
+        era5_ts = results.get("era5_ts")
+        if era5_ts is not None:
+            e_time = _to_plot_time(era5_ts.time.values)
+            ax.plot(e_time, era5_ts.values - _K_TO_C,
+                    color="black", alpha=0.25, linewidth=0.7, linestyle="--")
+            era5_annual = annual_mean(era5_ts)
+            ax.plot(_to_plot_time(era5_annual.time.values),
+                    era5_annual.values - _K_TO_C,
+                    label="ERA5", color="black", linewidth=2.0, linestyle="--")
+
         ax.set_title("2m Temperature \u2014 Global Mean")
         ax.set_ylabel("Temperature (\u00b0C)")
         ax.legend()
@@ -872,7 +911,7 @@ class TemperatureBerkeley(DiagnosticBase):
             variables=["tas"],
             description=(
                 "Area-weighted global mean monthly 2m temperature "
-                "time series for all models vs Berkeley Earth."
+                "time series for all models vs Berkeley Earth (ERA5 dashed)."
             ),
             obs_dataset="Berkeley Earth",
             obs_variable="2m temperature",
@@ -882,7 +921,64 @@ class TemperatureBerkeley(DiagnosticBase):
             benchmark_info=self._benchmark_meta_from_list(
                 results.get("benchmarks_ts")) or None,
         )
-        return [(fig, meta)]
+        figures = [(fig, meta)]
+        figures.append(self._plot_ts_envelope(results, anomaly=False))
+        figures.append(self._plot_ts_envelope(results, anomaly=True))
+        return figures
+
+    def _plot_ts_envelope(
+        self, results: dict, *, anomaly: bool,
+    ) -> tuple[plt.Figure, dict]:
+        """Envelope / anomaly T2m time-series figure (gray CMIP6 band)."""
+        era5_ts = results.get("era5_ts")
+        extra_obs = [(era5_ts, "ERA5")] if era5_ts is not None else None
+        benchmarks = results.get("benchmarks_ts", [])
+        all_models = list(self.config.models)
+        for bench in benchmarks:
+            all_models.append(bench["label"])
+
+        fig = build_envelope_timeseries(
+            anomaly=anomaly,
+            models=results["models"],
+            model_color=self.config.get_model_color,
+            obs=results["obs"],
+            obs_label="Berkeley Earth",
+            long_name="2m Temperature",
+            units="\u00b0C",
+            benchmarks=benchmarks,
+            extra_obs=extra_obs,
+            offset=-_K_TO_C,
+        )
+
+        if anomaly:
+            suffix, title_kind = "anomaly", " Anomaly"
+            descr = (
+                "Area-weighted global mean 2m temperature anomaly "
+                f"(relative to the {self.period[0]}\u2013{self.period[1]} mean) "
+                "with a gray benchmark min\u2013max envelope (ERA5 dashed)."
+            )
+        else:
+            suffix, title_kind = "envelope", ""
+            descr = (
+                "Area-weighted global mean 2m temperature with a gray "
+                "benchmark min\u2013max envelope across members (ERA5 dashed)."
+            )
+
+        meta = self._build_metadata(
+            title=f"2m Temperature Global Mean{title_kind} Time Series",
+            figure_id=f"tas_timeseries_{suffix}",
+            models=all_models,
+            variables=["tas"],
+            description=descr,
+            obs_dataset="Berkeley Earth",
+            obs_variable="2m temperature",
+            plot_type="timeseries",
+            period=self.period,
+            cmip6_info=results.get("cmip6_info") or None,
+            benchmark_info=self._benchmark_meta_from_list(
+                results.get("benchmarks_ts")) or None,
+        )
+        return (fig, meta)
 
     # ── Group C: Seasonal cycle ──────────────────────────────────────
 
@@ -2025,6 +2121,69 @@ class TemperatureBerkeley(DiagnosticBase):
                 self._netcdf_dir, var, results, self.period,
                 units=units, skip_existing=True,
             )
+
+    # ── Timeseries NetCDF persistence + replot ───────────────────────
+
+    def _timeseries_netcdf_path(self, var: str):
+        return self._netcdf_dir / (
+            f"{var}_timeseries_{self.period[0]}-{self.period[1]}.nc"
+        )
+
+    def _timeseries_netcdf_exists(self, var: str) -> bool:
+        return self._timeseries_netcdf_path(var).exists()
+
+    def _export_timeseries_netcdf(self, var: str, results: dict) -> None:
+        """Persist the timeseries series + envelope band to NetCDF."""
+        from feather.diag._ts_panel import export_timeseries_netcdf
+        try:
+            export_timeseries_netcdf(
+                self._netcdf_dir, f"{var}_timeseries", results, self.period,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Timeseries NetCDF export failed for %s", var, exc_info=True,
+            )
+
+    def replot_from_netcdf(
+        self, skip_existing: bool = True,
+    ) -> list[tuple[Path, Path]]:
+        """Rebuild the timeseries figures from the persisted NetCDF.
+
+        Reads ``{output}/netcdf/temperature_berkeley/tas_timeseries_*.nc``
+        (written by an earlier ``--save-netcdf`` run) and re-renders the main,
+        envelope, and anomaly figures without reloading source data.  The
+        other figure groups (bias maps, trends, Taylor) are not rebuilt — they
+        are not persisted in a replot-friendly form.
+        """
+        from feather.diag._ts_panel import load_timeseries_netcdf
+        from feather.diag.netcdf_export import sanitize_name
+        from feather.plot.styles import benchmark_color
+
+        out = self.output_dir
+        nc = self._timeseries_netcdf_path("tas")
+        if not nc.exists():
+            logger.info(
+                "No timeseries NetCDF (%s) — nothing to replot", nc.name,
+            )
+            return []
+
+        ts_ids = [
+            "tas_timeseries", "tas_timeseries_envelope", "tas_timeseries_anomaly",
+        ]
+        if skip_existing and all(self._figure_exists(f) for f in ts_ids):
+            logger.info("Timeseries figures exist — skipping replot")
+            return [(out / f"{f}.png", out / f"{f}.json") for f in ts_ids]
+
+        name_map = {sanitize_name(m): m for m in self.config.models}
+        results = load_timeseries_netcdf(
+            nc, name_map, self.benchmarks, benchmark_color,
+        )
+        if results is None:
+            return []
+        saved: list[tuple[Path, Path]] = []
+        for fig, meta in self._plot_timeseries(results):
+            saved.append(self._save(fig, meta, meta["figure_id"]))
+        return saved
 
     @staticmethod
     def _pattern_correlation(model_field, obs_field, area):

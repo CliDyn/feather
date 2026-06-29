@@ -835,12 +835,47 @@ class TestTimeseries:
         shared = diag._load_shared_data()
         results = diag._compute_timeseries(shared)
         figures = diag._plot_timeseries(results)
-        assert len(figures) == 1
+        # main + envelope + anomaly
+        assert len(figures) == 3
         _, meta = figures[0]
         assert meta["figure_id"] == "pr_timeseries"
         assert meta["plot_type"] == "timeseries"
+        ids = {m["figure_id"] for _, m in figures}
+        assert ids == {
+            "pr_timeseries", "pr_timeseries_envelope", "pr_timeseries_anomaly",
+        }
         import matplotlib.pyplot as plt
-        plt.close(figures[0][0])
+        plt.close("all")
+
+    def test_timeseries_netcdf_export_and_replot(
+        self, synth_precip_healpix, synth_mswep, precip_config,
+    ):
+        """Export the timeseries NetCDF, then rebuild figures from it."""
+        import matplotlib
+        matplotlib.use("Agg")
+        from feather.diag.precipitation_mswep import PrecipitationMSWEP
+
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = PrecipitationMSWEP(
+            loader, obs, precip_config,
+            experiment="baseline_hist", period=("1990", "1990"),
+            save_netcdf=True,
+        )
+        shared = diag._load_shared_data()
+        results = diag._compute_timeseries(shared)
+        diag._export_timeseries_netcdf("pr", results)
+        assert diag._timeseries_netcdf_exists("pr")
+
+        saved = diag.replot_from_netcdf(skip_existing=False)
+        ids = {p[0].stem for p in saved}
+        assert ids == {
+            "pr_timeseries", "pr_timeseries_envelope", "pr_timeseries_anomaly",
+        }
+        for png, js in saved:
+            assert png.exists() and js.exists()
+        import matplotlib.pyplot as plt
+        plt.close("all")
 
     def test_timeseries_values_positive(self, synth_precip_healpix,
                                          synth_mswep, precip_config):

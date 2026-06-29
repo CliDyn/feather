@@ -30,6 +30,7 @@ def run_pipeline(
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
     ensemble_only: bool = False,
+    replot_from_netcdf: bool = False,
     no_llm: bool = False,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
@@ -97,6 +98,7 @@ def run_pipeline(
             save_netcdf=save_netcdf,
             individual_netcdf_only=individual_netcdf_only,
             ensemble_only=ensemble_only,
+            replot_from_netcdf=replot_from_netcdf,
             skip_existing=skip_existing,
         )
 
@@ -144,6 +146,7 @@ def _run_diagnostics(
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
     ensemble_only: bool = False,
+    replot_from_netcdf: bool = False,
     skip_existing: bool = True,
 ) -> int:
     """Run registered diagnostics and return the number of figures generated."""
@@ -282,12 +285,21 @@ def _run_diagnostics(
             # derive their variables internally (still filtered/skipped above).
             if "variables" in sig.parameters:
                 kwargs["variables"] = overlap
+        # Replot-from-NetCDF mode: skip diagnostics that cannot honour it.
+        if replot_from_netcdf and not hasattr(cls, "replot_from_netcdf"):
+            logger.info(
+                "Skipping %s: does not support --replot-from-netcdf", name,
+            )
+            continue
         diag = cls(
             model_loader, obs_loader, config,
             **kwargs,
         )
         try:
-            saved = diag.run(skip_existing=skip_existing)
+            if replot_from_netcdf:
+                saved = diag.replot_from_netcdf(skip_existing=skip_existing)
+            else:
+                saved = diag.run(skip_existing=skip_existing)
             total_figures += len(saved)
         except Exception:
             logger.exception("Diagnostic %s failed", name)
