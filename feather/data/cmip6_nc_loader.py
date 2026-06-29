@@ -14,14 +14,16 @@ Distinct from the existing zarr-based :class:`CMIP6Loader`, which only serves
 the pre-staged historical MMM.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 import numpy as np
 import xarray as xr
 
-from feather.config import FeatherConfig
+from feather.config import FeatherConfig, ModelConfig
 from feather.data._cftime import cftime_decode_kwargs
+from feather.data import pool_discovery as _pd
 
 logger = logging.getLogger(__name__)
 _CFTIME = cftime_decode_kwargs()
@@ -35,6 +37,66 @@ def _activity(experiment: str) -> str:
     return "ScenarioMIP" if experiment.startswith("ssp") else "CMIP"
 
 
+def discover_daily_models(
+    root: str | Path,
+    *,
+    experiment: str,
+    table: str,
+    variable: str,
+    member: str = "r1i1p1f1",
+    exclude: tuple[str, ...] = (),
+    max_models: int | None = None,
+) -> list[ModelConfig]:
+    """Discover CMIP6 models publishing ``{table}/{variable}`` for *experiment*.
+
+    Walks the DRS tree ``{root}/{activity}/{inst}/{model}/{experiment}/...``
+    (login-node safe — only ``glob``/``iterdir``) and returns a
+    :class:`~feather.config.ModelConfig` for every model that has at least one
+    NetCDF file for the requested variable, one member each (preferring
+    *member*).  No data is read.
+
+    Parameters
+    ----------
+    root : str or Path
+        CMIP6 DRS root, e.g. ``/work/ik1017/CMIP6/data/CMIP6``.
+    experiment, table, variable : str
+        e.g. ``"historical"``, ``"day"``, ``"tasmax"``.
+    member : str
+        Preferred ensemble member (default ``r1i1p1f1``).
+    exclude : tuple of str
+        Model names to skip (case-sensitive ``source_id``).
+    max_models : int, optional
+        Keep at most this many models (sorted by name) — for staged runs.
+    """
+    activity_root = Path(root) / _activity(experiment)
+    excl = set(exclude)
+    found: list[ModelConfig] = []
+    for model, exp_dir in _pd.iter_model_dirs(activity_root, experiment):
+        if model in excl:
+            continue
+        mem = _pd.select_member(exp_dir, prefer=member)
+        if mem is None:
+            continue
+        files = _pd.variable_files(exp_dir, mem, table, variable)
+        if not files:
+            continue
+        institution = exp_dir.parent.parent.name
+        var_dir = exp_dir / mem / table / variable
+        grid = _pd.select_grid(var_dir) or ""
+        found.append(ModelConfig(
+            name=model,
+            institution=institution,
+            experiment=experiment,
+            variant=mem,
+            grids={"sfc": "latlon"},
+            experiments=[experiment],
+            grid_dir=grid,
+        ))
+        if max_models is not None and len(found) >= max_models:
+            break
+    return found
+
+
 class CMIP6NCLoader:
     """Load CMIP6 monthly atmosphere data from the CMOR NetCDF tree."""
 
@@ -42,6 +104,34 @@ class CMIP6NCLoader:
         self._config = config
         self._root = Path(config.data_source.get("cmip6_root", _DEFAULT_ROOT))
         self._cache: dict[tuple, xr.DataArray] = {}
+
+    @classmethod
+    def for_models(
+        cls,
+        base_config: FeatherConfig,
+        model_configs: list[ModelConfig],
+        *,
+        root: str | Path = _DEFAULT_ROOT,
+    ) -> "CMIP6NCLoader":
+        """Build a loader serving an explicit set of CMIP6 models.
+
+        Used to attach an auto-discovered daily CMIP6 ensemble to a diagnostic
+        without disturbing the main config.  A shallow copy of *base_config* is
+        made with its ``model_configs`` and CMIP6 root replaced, so the
+        original config (and the EERIE model list) is untouched.
+        """
+        cfg = copy.copy(base_config)
+        cfg.model_configs = {mc.name: mc for mc in model_configs}
+        cfg.data_source = {**getattr(base_config, "data_source", {}),
+                           "type": "cmip6_nc", "cmip6_root": str(root)}
+        loader = cls(cfg)
+        loader._model_names = [mc.name for mc in model_configs]
+        return loader
+
+    @property
+    def model_names(self) -> list[str]:
+        """Model names this loader was built for (factory path only)."""
+        return list(getattr(self, "_model_names", list(self._config.model_configs)))
 
     def load_var(
         self,

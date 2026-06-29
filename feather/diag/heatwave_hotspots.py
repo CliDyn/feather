@@ -131,6 +131,73 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         self._land_thresh = 25.0  # land fraction % (paper: 0.25)
         self._resolution = self.config.nereus.get("resolution", 0.25)
         self._influence_radius = self.config.nereus.get("influence_radius", 80_000.0)
+        # Shared target grid + per-source-grid interpolator cache (filled by the
+        # first ensemble member computed; reused by every subsequent member,
+        # including the CMIP6 envelope, since the target grid is resolution-fixed).
+        self._target_lats: np.ndarray | None = None
+        self._target_lons: np.ndarray | None = None
+        self._interp_cache: dict[tuple, Any] = {}
+        # Optional daily CMIP6 envelope (read straight from the DRS NetCDF tree).
+        self._cmip6_loader = None
+        self._cmip6_models: list[str] = []
+        self._cmip6_label = "CMIP6"
+        self._init_cmip6_daily()
+
+    # ── Daily CMIP6 setup ─────────────────────────────────────────────
+
+    def _init_cmip6_daily(self) -> None:
+        """Auto-discover the daily-CMIP6 ensemble from ``config.cmip6_daily``.
+
+        Never raises: any discovery failure logs a warning and leaves the
+        diagnostic running ERA5+EERIE only.
+        """
+        cfg = getattr(self.config, "cmip6_daily", {}) or {}
+        if not cfg.get("enabled", False):
+            return
+        from feather.data.cmip6_nc_loader import (
+            discover_daily_models, CMIP6NCLoader,
+        )
+
+        root = cfg.get("root", "/work/ik1017/CMIP6/data/CMIP6")
+        experiment = cfg.get("experiment", "historical")
+        table = cfg.get("table", "day")
+        member = cfg.get("member", "r1i1p1f1")
+        exclude = tuple(cfg.get("exclude", []))
+        max_models = cfg.get("max_models")
+        variable = self.variables[0] if self.variables else "tasmax"
+        self._cmip6_label = cfg.get("label", "CMIP6")
+
+        try:
+            discovered = discover_daily_models(
+                root, experiment=experiment, table=table, variable=variable,
+                member=member, exclude=exclude, max_models=max_models,
+            )
+            wanted = cfg.get("models", "auto")
+            if isinstance(wanted, (list, tuple, set)):
+                names = set(wanted)
+                discovered = [m for m in discovered if m.name in names]
+        except Exception as exc:  # pragma: no cover - defensive (FS walk)
+            logger.warning(
+                "CMIP6 daily discovery failed (%s) — skipping CMIP6 envelope",
+                exc,
+            )
+            return
+
+        if not discovered:
+            logger.warning(
+                "CMIP6 daily: no models found for %s/%s %s — skipping envelope",
+                experiment, table, variable,
+            )
+            return
+
+        self._cmip6_loader = CMIP6NCLoader.for_models(
+            self.config, discovered, root=root,
+        )
+        self._cmip6_models = [m.name for m in discovered]
+        logger.info(
+            "CMIP6 daily envelope: %d model(s) — %s",
+            len(self._cmip6_models), ", ".join(self._cmip6_models),
+        )
 
     # ── Paths ─────────────────────────────────────────────────────────
 
@@ -139,10 +206,11 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         """Directory for per-model percentile NetCDF files (outside figures)."""
         return Path(self.config.output_dir) / "heatwave_hotspots"
 
-    def _nc_path(self, model: str) -> Path:
+    def _nc_path(self, model: str, tag: str = "") -> Path:
         start, end = self.period
         safe = model.replace("/", "_").replace(" ", "_")
-        return self.nc_dir / f"{safe}_percs_{start}_{end}.nc"
+        prefix = f"{tag}_" if tag else ""
+        return self.nc_dir / f"{prefix}{safe}_percs_{start}_{end}.nc"
 
     @staticmethod
     def _grid_signature(lon, lat) -> tuple:
@@ -165,13 +233,29 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         "heatwave_hotspots_pdf",
     ]
 
+    #: Extra figures rendered only when a daily CMIP6 envelope is configured.
+    _CMIP6_FIG_IDS = [
+        "heatwave_hotspots_cmip6_mmm_map",
+        "heatwave_hotspots_cmip6_discrepancy",
+        "heatwave_hotspots_eerie_vs_cmip6",
+    ]
+
+    @property
+    def _expected_fig_ids(self) -> list[str]:
+        ids = list(self._FIG_IDS)
+        if self._cmip6_models:
+            ids += self._CMIP6_FIG_IDS
+        return ids
+
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Execute: compute per model → regrid → trends → plot → save."""
         logger.info("Running diagnostic: %s", self.name)
         saved: list[tuple[Path, Path]] = []
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        if skip_existing and all(self._figure_exists(f) for f in self._FIG_IDS):
+        if skip_existing and all(
+            self._figure_exists(f) for f in self._expected_fig_ids
+        ):
             logger.info("  All heatwave-hotspots figures exist — skipping")
             return saved
 
@@ -191,60 +275,29 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         Returns a dict with per-model common-grid tail-width fields, trends,
         the shared common grid, masks, and per-region series/trends.
         """
-        target_lats: np.ndarray | None = None
-        target_lons: np.ndarray | None = None
-        interp_cache: dict[tuple, Any] = {}
+        self._target_lats = None
+        self._target_lons = None
+        self._interp_cache = {}
 
-        d_common: dict[str, xr.DataArray] = {}        # model → D(year, lat, lon)
-        trend_d: dict[str, xr.DataArray] = {}         # model → D-trend (lat, lon)
-        trend_d_pval: dict[str, xr.DataArray] = {}    # model → D-trend p-value
-        trend_lower: dict[str, xr.DataArray] = {}     # model → P87.5-trend (lat, lon)
-
-        for model in self.config.models:
-            try:
-                percs = self._load_or_compute_percs(model)
-            except (KeyError, FileNotFoundError, ValueError) as exc:
-                logger.warning("  %s: skipping — %s", model, exc)
-                continue
-
-            lon = np.asarray(percs["lon"])
-            lat = np.asarray(percs["lat"])
-            grid_type = self.config.get_grid_type(model, self.domain)
-            if grid_type != "healpix":
-                lon2d, lat2d = np.meshgrid(lon, lat)
-            else:
-                lon2d, lat2d = lon, lat
-
-            grid_key = self._grid_signature(lon2d, lat2d)
-            if grid_key not in interp_cache:
-                logger.info("  %s: building nereus interpolator (%d pts)",
-                            model, np.asarray(lon2d).size)
-                _, interp = nr_regrid_probe(
-                    percs["p99"].isel(year=0).values.ravel(),
-                    np.asarray(lon2d).ravel(), np.asarray(lat2d).ravel(),
-                    self._resolution, self._influence_radius,
-                )
-                interp_cache[grid_key] = interp
-                if target_lats is None:
-                    target_lats = interp.target_lat[:, 0]
-                    target_lons = interp.target_lon[0, :]
-            interp = interp_cache[grid_key]
-
-            d_native = (percs["p99"] - percs["p875"])  # (year, lat, lon)
-            d_reg = self._regrid_stack(d_native, interp, target_lats, target_lons)
-            lower_reg = self._regrid_stack(
-                percs["p875"], interp, target_lats, target_lons,
-            )
-
-            d_common[model] = d_reg
-            trend, pval = self._ols_trend_stats(d_reg)
-            trend_d[model] = trend
-            trend_d_pval[model] = pval
-            trend_lower[model] = linear_trend(lower_reg, dim="year") * 10.0
+        # ERA5 reference + EERIE high-resolution ensemble.
+        d_common, trend_d, trend_d_pval, trend_lower = self._ensemble_fields(
+            list(self.config.models), self.model_loader,
+        )
 
         if not d_common:
             logger.warning("HeatwaveHotspotsDiag: no model data loaded")
             return {"models": [], "ref_model": None}
+
+        # Daily CMIP6 envelope (separate ensemble, separate NetCDF cache).
+        cmip6_d_common, cmip6_trend_d, _c_pval, _c_lower = (
+            self._ensemble_fields(
+                self._cmip6_models, self._cmip6_loader, tag="cmip6",
+                grid_type="latlon",
+            )
+            if self._cmip6_loader is not None else ({}, {}, {}, {})
+        )
+
+        target_lats, target_lons = self._target_lats, self._target_lons
 
         # Shared land mask on the common grid (ERA5 sftlf, else Berkeley mask).
         land_mask = self._common_land_mask(target_lats, target_lons)
@@ -255,10 +308,21 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             ref_model = next(iter(d_common))
         models = [m for m in d_common if m != ref_model]
 
-        # Per-region observed/model trends and bootstrap CIs.
+        # Per-region observed/model trends and bootstrap CIs (+ CMIP6 series).
         regions = self._compute_regions(
             d_common, trend_d, ref_model, models, target_lats, target_lons, areas,
+            cmip6_d_common=cmip6_d_common,
         )
+
+        # CMIP6 spatial aggregates: MMM + min/max envelope of the D-trend.
+        cmip6_mmm_trend = cmip6_env_min = cmip6_env_max = None
+        cmip6_models = list(cmip6_trend_d)
+        if cmip6_models:
+            ens = xr.concat([cmip6_trend_d[m] for m in cmip6_models],
+                            dim="member")
+            cmip6_mmm_trend = ens.mean("member")
+            cmip6_env_min = ens.min("member")
+            cmip6_env_max = ens.max("member")
 
         return {
             "models": models,
@@ -272,13 +336,85 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             "trend_lower": trend_lower,
             "d_common": d_common,
             "regions": regions,
+            "cmip6_models": cmip6_models,
+            "cmip6_label": self._cmip6_label,
+            "cmip6_trend_d": cmip6_trend_d,
+            "cmip6_mmm_trend": cmip6_mmm_trend,
+            "cmip6_env_min": cmip6_env_min,
+            "cmip6_env_max": cmip6_env_max,
         }
+
+    def _ensemble_fields(
+        self, models, loader, *, tag: str = "", grid_type: str | None = None,
+    ) -> tuple[dict, dict, dict, dict]:
+        """Compute regridded tail-width fields + trends for one ensemble.
+
+        Returns ``(d_common, trend_d, trend_d_pval, trend_lower)`` keyed by
+        model.  Populates the shared target grid / interpolator cache on first
+        use.  ``grid_type`` forces the source-grid kind (CMIP6 models are not in
+        ``model_configs`` so the per-model config lookup would misfire — pass
+        ``"latlon"`` for them).
+        """
+        d_common: dict[str, xr.DataArray] = {}        # model → D(year, lat, lon)
+        trend_d: dict[str, xr.DataArray] = {}         # model → D-trend (lat, lon)
+        trend_d_pval: dict[str, xr.DataArray] = {}    # model → D-trend p-value
+        trend_lower: dict[str, xr.DataArray] = {}     # model → P87.5-trend
+
+        for model in models:
+            try:
+                percs = self._load_or_compute_percs(model, loader, tag=tag)
+            except (KeyError, FileNotFoundError, ValueError) as exc:
+                logger.warning("  %s: skipping — %s", model, exc)
+                continue
+
+            lon = np.asarray(percs["lon"])
+            lat = np.asarray(percs["lat"])
+            gtype = grid_type or self.config.get_grid_type(model, self.domain)
+            if gtype != "healpix":
+                lon2d, lat2d = np.meshgrid(lon, lat)
+            else:
+                lon2d, lat2d = lon, lat
+
+            grid_key = self._grid_signature(lon2d, lat2d)
+            if grid_key not in self._interp_cache:
+                logger.info("  %s: building nereus interpolator (%d pts)",
+                            model, np.asarray(lon2d).size)
+                _, interp = nr_regrid_probe(
+                    percs["p99"].isel(year=0).values.ravel(),
+                    np.asarray(lon2d).ravel(), np.asarray(lat2d).ravel(),
+                    self._resolution, self._influence_radius,
+                )
+                self._interp_cache[grid_key] = interp
+                if self._target_lats is None:
+                    self._target_lats = interp.target_lat[:, 0]
+                    self._target_lons = interp.target_lon[0, :]
+            interp = self._interp_cache[grid_key]
+            t_lats, t_lons = self._target_lats, self._target_lons
+
+            d_native = (percs["p99"] - percs["p875"])  # (year, lat, lon)
+            d_reg = self._regrid_stack(d_native, interp, t_lats, t_lons)
+            lower_reg = self._regrid_stack(percs["p875"], interp, t_lats, t_lons)
+
+            d_common[model] = d_reg
+            trend, pval = self._ols_trend_stats(d_reg)
+            trend_d[model] = trend
+            trend_d_pval[model] = pval
+            trend_lower[model] = linear_trend(lower_reg, dim="year") * 10.0
+
+        return d_common, trend_d, trend_d_pval, trend_lower
 
     # ── Per-model percentiles (cached) ─────────────────────────────────
 
-    def _load_or_compute_percs(self, model: str) -> xr.Dataset:
-        """Return Dataset(p99, p875) with dims (year, lat, lon), from NC or fresh."""
-        nc_path = self._nc_path(model)
+    def _load_or_compute_percs(
+        self, model: str, loader=None, *, tag: str = "",
+    ) -> xr.Dataset:
+        """Return Dataset(p99, p875) with dims (year, lat, lon), from NC or fresh.
+
+        ``loader`` defaults to the main EERIE model loader; pass the daily CMIP6
+        loader (with ``tag="cmip6"``) to cache CMIP6 percentiles separately.
+        """
+        loader = loader or self.model_loader
+        nc_path = self._nc_path(model, tag=tag)
         if nc_path.exists():
             logger.info("  %s: loading percentiles from %s", model, nc_path.name)
             ds = xr.open_dataset(nc_path)
@@ -287,11 +423,11 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             logger.info("  %s: NC incomplete — recomputing", model)
 
         logger.info("  %s: computing yearly P99/P87.5 from daily tasmax", model)
-        da = self.model_loader.load_var(
+        da = loader.load_var(
             model, "tasmax", table="day", period=self.period,
         )
         ds = self._compute_percentiles(da)
-        self._save_nc(model, ds)
+        self._save_nc(model, ds, tag=tag)
         return ds
 
     def _compute_percentiles(self, da: xr.DataArray) -> xr.Dataset:
@@ -334,8 +470,8 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             "p875": _stack(p875_list, "p875"),
         })
 
-    def _save_nc(self, model: str, ds: xr.Dataset) -> None:
-        nc_path = self._nc_path(model)
+    def _save_nc(self, model: str, ds: xr.Dataset, tag: str = "") -> None:
+        nc_path = self._nc_path(model, tag=tag)
         nc_path.parent.mkdir(parents=True, exist_ok=True)
         start, end = self.period
         ds = ds.assign_attrs(
@@ -456,8 +592,15 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
 
     def _compute_regions(
         self, d_common, trend_d, ref_model, models, lats, lons, areas,
+        *, cmip6_d_common=None,
     ) -> list[dict]:
-        """Per-region observed trend (+ bootstrap CI) and model-ensemble trends."""
+        """Per-region observed trend (+ bootstrap CI) and model-ensemble trends.
+
+        When ``cmip6_d_common`` is given, also stores the per-CMIP6-model
+        regional series and trends so the envelope can be drawn in the
+        time-series and box-whisker figures.
+        """
+        cmip6_d_common = cmip6_d_common or {}
         land_mask = self._common_land_mask(lats, lons)
         years = np.asarray(d_common[ref_model]["year"], dtype=np.float64)
         rng = np.random.default_rng(0)
@@ -478,6 +621,13 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
                 model_series[m] = s
                 model_trends[m] = self._slope(years, s) * 10.0
 
+            cmip6_series: dict[str, np.ndarray] = {}
+            cmip6_trends: dict[str, float] = {}
+            for m, field in cmip6_d_common.items():
+                s = self._regional_series(field, rmask, land_mask, areas)
+                cmip6_series[m] = s
+                cmip6_trends[m] = self._slope(years, s) * 10.0
+
             out.append({
                 "key": region["key"],
                 "title": region["title"],
@@ -489,6 +639,8 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
                 "obs_ci": (ci_lo * 10.0, ci_hi * 10.0),
                 "model_series": model_series,
                 "model_trends": model_trends,
+                "cmip6_series": cmip6_series,
+                "cmip6_trends": cmip6_trends,
             })
         return out
 
@@ -532,6 +684,11 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             figs.append(self._plot_discrepancy(results))
             figs.append(self._plot_boxwhisker(results))
             figs.append(self._plot_pdf(results))
+        if results.get("cmip6_models"):
+            figs.append(self._plot_cmip6_mmm_map(results))
+            figs.append(self._plot_cmip6_discrepancy(results))
+            if results["models"]:
+                figs.append(self._plot_eerie_vs_cmip6(results))
         return figs
 
     def _masked_obs_trend(self, results):
@@ -629,6 +786,7 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         regions = results["regions"]
         ref = results["ref_model"]
         obs_label = obs_ref_label(self.config, "tasmax")
+        cmip6_label = results.get("cmip6_label", "CMIP6")
         ncols = 5
         nrows = int(np.ceil(len(regions) / ncols))
         fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
@@ -637,10 +795,24 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         for i, region in enumerate(regions):
             ax = axes[i // ncols][i % ncols]
             years = region["years"]
+            # CMIP6 envelope (min/max band + dashed MMM) in the background
+            cmip6_series = region.get("cmip6_series", {})
+            if cmip6_series:
+                arr = np.vstack([cmip6_series[m] for m in cmip6_series])
+                if np.isfinite(arr).any():
+                    with np.errstate(invalid="ignore"):
+                        ax.fill_between(years, np.nanmin(arr, axis=0),
+                                        np.nanmax(arr, axis=0), color="grey",
+                                        alpha=0.25, lw=0, zorder=1,
+                                        label=f"{cmip6_label} range")
+                        ax.plot(years, np.nanmean(arr, axis=0), color="grey",
+                                lw=1.5, ls="--", zorder=2,
+                                label=f"{cmip6_label} MMM")
             # Models
             for m, s in region["model_series"].items():
                 color = self.config.get_model_color(m)
-                ax.plot(years, s, color=color, lw=1.0, alpha=0.8, label=m)
+                ax.plot(years, s, color=color, lw=1.0, alpha=0.8, label=m,
+                        zorder=3)
             # Obs (reference) on top
             ax.plot(years, region["obs_series"], color="tab:red", lw=2.0,
                     label=obs_label, zorder=5)
@@ -671,10 +843,12 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         meta = self._build_metadata(
             title=f"{self.title} — regional tail-width time series",
             figure_id="heatwave_hotspots_regions",
-            models=[ref] + results["models"],
+            models=[ref] + results["models"] + results.get("cmip6_models", []),
             description=(
                 "Area-weighted yearly P99−P87.5 of daily Tx for each region "
-                "(land only); reference reanalysis in red with its fitted trend."
+                "(land only); reference reanalysis in red with its fitted trend, "
+                "EERIE members as coloured lines, and the CMIP6 ensemble as a "
+                "grey min–max band with dashed MMM."
             ),
             period=self.period,
             plot_type="timeseries",
@@ -750,6 +924,8 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         """Fig 3B–K: per-region distribution of model trends vs observed."""
         regions = results["regions"]
         models = results["models"]
+        cmip6_label = results.get("cmip6_label", "CMIP6")
+        obs_label = obs_ref_label(self.config, "tasmax")
         ncols = 5
         nrows = int(np.ceil(len(regions) / ncols))
         fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
@@ -757,6 +933,10 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
 
         for i, region in enumerate(regions):
             ax = axes[i // ncols][i % ncols]
+            ticks: list[float] = []
+            tick_labels: list[str] = []
+
+            # EERIE box + per-member scatter at x=0
             model_vals = np.array(
                 [region["model_trends"][m] for m in models], dtype=float,
             )
@@ -770,15 +950,32 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
                     ax.scatter(0, region["model_trends"][m],
                                color=self.config.get_model_color(m),
                                s=18, zorder=4)
-            # Observed trend + CI
+                ticks.append(0); tick_labels.append("EERIE")
+
+            # CMIP6 envelope box at x=1
+            cmip6_vals = np.array(
+                [v for v in region.get("cmip6_trends", {}).values()],
+                dtype=float,
+            )
+            cmip6_vals = cmip6_vals[np.isfinite(cmip6_vals)]
+            if cmip6_vals.size:
+                ax.boxplot(cmip6_vals, vert=True, widths=0.5,
+                           positions=[1], showfliers=False,
+                           whis=(5, 95), patch_artist=True,
+                           boxprops=dict(facecolor="lightgrey"))
+                ax.scatter(np.ones_like(cmip6_vals), cmip6_vals,
+                           color="grey", s=10, alpha=0.6, zorder=3)
+                ticks.append(1); tick_labels.append(cmip6_label)
+
+            # Observed trend + CI as a horizontal reference band
             ci_lo, ci_hi = region["obs_ci"]
-            ax.errorbar(0.0, region["obs_trend"],
-                        yerr=[[region["obs_trend"] - ci_lo],
-                              [ci_hi - region["obs_trend"]]],
-                        fmt="D", color="tab:red", capsize=4, zorder=5,
-                        label="ERA5")
+            ax.axhspan(ci_lo, ci_hi, color="tab:red", alpha=0.12, zorder=1)
+            ax.axhline(region["obs_trend"], color="tab:red", lw=1.5, ls="--",
+                       zorder=5, label=obs_label)
             ax.axhline(0, color="grey", lw=0.6)
-            ax.set_xticks([])
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(tick_labels, fontsize=8)
+            ax.set_xlim(-0.6, 1.6)
             ax.set_title(f"{chr(98 + i)}) {region['title']}", fontsize=10)
             ax.grid(True, axis="y", alpha=0.3)
             if i % ncols == 0:
@@ -794,11 +991,13 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         meta = self._build_metadata(
             title=f"{self.title} — model vs observed regional trends",
             figure_id="heatwave_hotspots_boxwhisker",
-            models=models,
+            models=models + results.get("cmip6_models", []),
             description=(
                 "Per-region distribution of modelled tail-widening trends "
                 "(box: 25–75 %, whiskers: 5–95 %, scatter: individual models) "
-                "versus the observed trend (red diamond, 2.5–97.5 % bootstrap CI)."
+                "for the EERIE ensemble and the CMIP6 envelope, versus the "
+                f"observed trend ({obs_label}, red dashed line with shaded "
+                "2.5–97.5 % bootstrap CI)."
             ),
             period=self.period,
             plot_type="distribution",
@@ -884,6 +1083,154 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             plot_type="distribution",
             obs_dataset="ERA5_TMINMAX",
             obs_variable="tasmax",
+        )
+        return fig, meta
+
+    # ── CMIP6 comparison maps ──────────────────────────────────────────
+
+    def _render_map(
+        self, field, lats, lons, *, cmap, vmax, title, cblabel, regions,
+        greyed=None,
+    ):
+        """Render a single Robinson trend/difference map (shared layout)."""
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+
+        fig = plt.figure(figsize=(13, 7))
+        ax = plt.axes(projection=ccrs.Robinson(central_longitude=0))
+        ax.set_global()
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
+
+        lon_p = np.where(lons > 180, lons - 360, lons)
+        order = np.argsort(lon_p)
+        lon_s = lon_p[order]
+        pc = ccrs.PlateCarree()
+
+        if greyed is not None:
+            grey = greyed.isel(lon=order).astype(float).where(
+                greyed.isel(lon=order))
+            ax.pcolormesh(lon_s, lats, grey.values, transform=pc, cmap="Greys",
+                          vmin=0, vmax=1.5, shading="auto", zorder=1)
+        mesh = ax.pcolormesh(
+            lon_s, lats, field.isel(lon=order).values, transform=pc,
+            cmap=cmap, vmin=-vmax, vmax=vmax, shading="auto", zorder=2,
+        )
+        for region in regions:
+            self._draw_region_box(ax, region, pc)
+        cb = fig.colorbar(mesh, ax=ax, orientation="horizontal",
+                          shrink=0.6, pad=0.05, extend="both")
+        cb.set_label(cblabel)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    def _plot_cmip6_mmm_map(self, results):
+        """CMIP6 MMM tail-widening trend map (same style as the ERA5 Fig 2A)."""
+        ref = results["ref_model"]
+        lats, lons = results["lat"], results["lon"]
+        land = results["land_mask"]
+        summer_pos = results["trend_lower"][ref] > 0
+        label = results["cmip6_label"]
+
+        field = results["cmip6_mmm_trend"].where(land & summer_pos)
+        greyed = land & ~summer_pos
+        vmax = float(np.nanpercentile(np.abs(field.values), 98)) or 0.5
+        fig = self._render_map(
+            field, lats, lons, cmap="RdBu_r", vmax=vmax,
+            title=(f"{self.title} — {label} MMM extreme-heat tail-widening "
+                   f"({self.period[0]}–{self.period[1]})"),
+            cblabel=(f"Trend in yearly P{_UPPER_Q:g}−P{_LOWER_Q:g} of daily "
+                     f"Tx [°C/decade]"),
+            regions=results["regions"], greyed=greyed,
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — {label} MMM tail-widening trend map",
+            figure_id="heatwave_hotspots_cmip6_mmm_map",
+            models=results["cmip6_models"],
+            description=(
+                f"Multi-model-mean ({label}, {len(results['cmip6_models'])} "
+                "models) linear trend in the yearly P99−P87.5 of daily Tx "
+                "(°C/decade).  Grey: land where the 87.5th-percentile trend is "
+                "negative."
+            ),
+            period=self.period,
+            plot_type="map",
+        )
+        return fig, meta
+
+    def _plot_cmip6_discrepancy(self, results):
+        """Map where ERA5's observed trend falls outside the CMIP6 envelope."""
+        ref = results["ref_model"]
+        lats, lons = results["lat"], results["lon"]
+        land = results["land_mask"]
+        summer_pos = results["trend_lower"][ref] > 0
+        label = results["cmip6_label"]
+        obs_label = obs_ref_label(self.config, "tasmax")
+
+        obs_trend = results["trend_d"][ref]
+        env_max = results["cmip6_env_max"]
+        env_min = results["cmip6_env_min"]
+        disc = xr.where(obs_trend > env_max, obs_trend - env_max,
+                        xr.where(obs_trend < env_min, obs_trend - env_min, 0.0))
+        disc = disc.where(land & summer_pos)
+        vmax = float(np.nanpercentile(np.abs(disc.values), 98)) or 0.5
+        fig = self._render_map(
+            disc, lats, lons, cmap="RdBu_r", vmax=vmax,
+            title=(f"{self.title} — {obs_label} observed trend vs {label} "
+                   f"envelope (red = {label} underestimation)"),
+            cblabel=f"{obs_label} minus {label} envelope [°C/decade]",
+            regions=results["regions"],
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — {obs_label} vs {label} envelope discrepancy",
+            figure_id="heatwave_hotspots_cmip6_discrepancy",
+            models=results["cmip6_models"],
+            description=(
+                f"Difference between the {obs_label} observed tail-widening "
+                f"trend and the {label} ensemble envelope: positive (red) where "
+                f"the observed trend exceeds every {label} model ({label} "
+                "underestimation), negative (blue) where it falls below.  Land "
+                "only; grey-masked region (P87.5 trend < 0) excluded."
+            ),
+            period=self.period,
+            plot_type="map",
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+        )
+        return fig, meta
+
+    def _plot_eerie_vs_cmip6(self, results):
+        """Map of the EERIE ensemble-mean trend minus the CMIP6 MMM (added value)."""
+        ref = results["ref_model"]
+        models = results["models"]
+        lats, lons = results["lat"], results["lon"]
+        land = results["land_mask"]
+        summer_pos = results["trend_lower"][ref] > 0
+        label = results["cmip6_label"]
+
+        eerie_mean = xr.concat(
+            [results["trend_d"][m] for m in models], dim="member",
+        ).mean("member")
+        diff = (eerie_mean - results["cmip6_mmm_trend"]).where(land & summer_pos)
+        vmax = float(np.nanpercentile(np.abs(diff.values), 98)) or 0.5
+        fig = self._render_map(
+            diff, lats, lons, cmap="RdBu_r", vmax=vmax,
+            title=f"{self.title} — EERIE ensemble mean minus {label} MMM",
+            cblabel=f"EERIE mean − {label} MMM tail-widening trend [°C/decade]",
+            regions=results["regions"],
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — EERIE mean minus {label} MMM",
+            figure_id="heatwave_hotspots_eerie_vs_cmip6",
+            models=models + results["cmip6_models"],
+            description=(
+                "Difference between the high-resolution EERIE ensemble-mean "
+                f"tail-widening trend and the coarse {label} MMM (°C/decade).  "
+                "Red: EERIE trend stronger than CMIP6; blue: weaker.  Land only; "
+                "grey-masked region (P87.5 trend < 0) excluded."
+            ),
+            period=self.period,
+            plot_type="map",
         )
         return fig, meta
 
