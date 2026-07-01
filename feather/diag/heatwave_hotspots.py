@@ -828,10 +828,13 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             axes[j // ncols][j % ncols].axis("off")
 
         handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.suptitle(f"{self.title} — regional tail-width time series", y=0.99)
+        # Reserve a band at the bottom for the legend and the top for the
+        # suptitle *before* placing the legend, so tight_layout does not
+        # reclaim the space and overlap the legend onto the bottom row.
+        fig.tight_layout(rect=[0, 0.08, 1, 0.96])
         fig.legend(handles, labels, loc="lower center", ncol=min(6, len(labels)),
-                   fontsize=8, bbox_to_anchor=(0.5, -0.02))
-        fig.suptitle(f"{self.title} — regional tail-width time series", y=1.0)
-        fig.tight_layout()
+                   fontsize=8, bbox_to_anchor=(0.5, 0.0))
 
         stats = {
             r["title"]: {
