@@ -905,3 +905,156 @@ class TestCordexRegionStats:
         assert diag_multi._bars_models_eerie_id("annual", "AFR").startswith(
             "added_value_bars_models_eerie_AFR_"
         )
+
+
+# ── Ocean Added Value page ───────────────────────────────────────────
+
+
+class TestOceanAddedValue:
+    """Unit tests for the ocean AV helpers (pure functions, no real data)."""
+
+    @pytest.fixture
+    def diag(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_ocean_variables_list(self, diag):
+        assert diag._OCEAN_VARIABLES == ["tos", "thetao", "so", "siconc"]
+
+    def test_rsds_excluded_from_atmospheric(self, diag):
+        assert "rsds" not in diag.variables
+
+    def test_ocean_output_dir_is_separate_nav_page(self, diag):
+        d = diag.ocean_output_dir
+        assert d.name == "added_value_ocean"
+        assert d != diag.output_dir
+        assert d.parent == diag.output_dir.parent
+
+    def test_ocean_fig_ids_cover_periods(self, diag):
+        ids = diag._ocean_fig_ids("tos")
+        assert len(ids) == 6  # 3 periods x (ensemble + models)
+        assert any("annual_1990_1990_added_value" in i for i in ids)
+        assert any("_added_value_models" in i for i in ids)
+
+    def test_surface_slice_collapses_depth(self, diag):
+        da = xr.DataArray(
+            np.arange(2 * 3 * 4).reshape(2, 3, 4).astype(float),
+            dims=("lev", "lat", "lon"),
+            coords={"lev": [0.0, 100.0], "lat": [-30, 0, 30],
+                    "lon": [0, 90, 180, 270]},
+        )
+        surf = diag._surface_slice(da)
+        assert "lev" not in surf.dims
+        # Surface = shallowest level (index 0)
+        assert float(surf.isel(lat=0, lon=0)) == 0.0
+
+    def test_surface_slice_noop_without_depth(self, diag):
+        da = _make_latlon(1.0)
+        assert diag._surface_slice(da).dims == da.dims
+
+    def test_to_celsius_from_kelvin_units(self, diag):
+        da = _make_latlon(300.0)
+        da.attrs["units"] = "K"
+        assert float(diag._to_celsius_if_needed(da).isel(lat=0, lon=0)) == \
+            pytest.approx(26.85, abs=1e-2)
+
+    def test_to_celsius_skips_celsius(self, diag):
+        da = _make_latlon(15.0)
+        da.attrs["units"] = "degC"
+        assert float(diag._to_celsius_if_needed(da).isel(lat=0, lon=0)) == 15.0
+
+    def test_to_celsius_heuristic_kelvin(self, diag):
+        da = _make_latlon(290.0)  # no units, magnitude > 150 => Kelvin
+        assert float(diag._to_celsius_if_needed(da).max()) < 100.0
+
+    def test_siconc_percent_to_fraction(self, diag):
+        da = _make_latlon(80.0)  # percent
+        assert float(diag._siconc_to_fraction(da).max()) == pytest.approx(0.8)
+
+    def test_siconc_fraction_unchanged(self, diag):
+        da = _make_latlon(0.8)
+        assert float(diag._siconc_to_fraction(da).max()) == pytest.approx(0.8)
+
+    def test_sa_to_sp_noop_when_not_absolute(self, diag):
+        da = _make_latlon(35.0)
+        out = diag._surface_sa_to_sp(da, "ModelA")  # absolute_salinity False
+        assert float(out.max()) == 35.0
+
+    def test_regrid_scatter_rectilinear(self, diag):
+        src = _make_latlon(
+            5.0, lats=np.arange(-80, 81, 20.0), lons=np.arange(10, 360, 20.0),
+        )
+        tlat = np.arange(-89.5, 90, 1.0)
+        tlon = np.arange(0.5, 360, 1.0)
+        out = diag._regrid_scatter(
+            src, tlat, tlon, 1.0, 1_000_000, {}, method="nearest",
+        )
+        assert out.dims == ("lat", "lon")
+        assert out.shape == (len(tlat), len(tlon))
+        # constant field stays constant where covered
+        assert float(np.nanmax(out.values)) == pytest.approx(5.0, abs=1e-6)
+
+    def test_regrid_scatter_curvilinear_2d_coords(self, diag):
+        ny, nx = 10, 12
+        lat2d = np.tile(np.linspace(-80, 80, ny)[:, None], (1, nx))
+        lon2d = np.tile(np.linspace(0, 340, nx)[None, :], (ny, 1))
+        src = xr.DataArray(
+            np.full((ny, nx), 3.0),
+            dims=("y", "x"),
+            coords={"nav_lat": (("y", "x"), lat2d),
+                    "nav_lon": (("y", "x"), lon2d)},
+        )
+        tlat = np.arange(-89.5, 90, 2.0)
+        tlon = np.arange(0.5, 360, 2.0)
+        out = diag._regrid_scatter(
+            src, tlat, tlon, 2.0, 2_000_000, {}, method="nearest",
+        )
+        assert out.shape == (len(tlat), len(tlon))
+
+
+# ── ERA5-based AV NetCDF persistence (tas/pr secondary obs) ──────────
+
+
+class TestAvNetcdfObsToken:
+    """The ERA5 AV field for tas/pr must be persisted alongside the primary."""
+
+    @pytest.fixture
+    def diag(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+
+    def test_primary_obs_nc_is_token_less(self, diag):
+        # tas primary obs is Berkeley Earth HR → token-less (backward compat)
+        p = diag._nc_path(
+            "tas", "annual", "ensemble_mean", obs_name="BERKELEY_EARTH_HR")
+        assert p.name == "tas_annual_ensemble_mean_av.nc"
+
+    def test_era5_secondary_nc_has_token(self, diag):
+        p = diag._nc_path("tas", "annual", "ensemble_mean", obs_name="ERA5")
+        assert p.name == "tas_annual_ensemble_mean_av_era5.nc"
+
+    def test_era5_primary_var_stays_token_less(self, diag):
+        # For a var whose primary obs IS ERA5 (e.g. psl), no token is added.
+        p = diag._nc_path("psl", "annual", "ensemble_mean", obs_name="ERA5")
+        assert p.name == "psl_annual_ensemble_mean_av.nc"
+
+    def test_compute_saves_era5_nc_for_tas(self, diag):
+        diag._compute_variable("tas")
+        primary = diag._nc_path("tas", "annual", "ensemble_mean")
+        era5 = diag._nc_path("tas", "annual", "ensemble_mean", obs_name="ERA5")
+        assert primary.exists(), "primary AV NetCDF missing"
+        assert era5.exists(), "ERA5-based AV NetCDF missing for tas"

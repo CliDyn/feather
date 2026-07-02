@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from feather.data.variables import get_var
+from feather.data.variables import VARIABLE_REGISTRY, get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.figure_meta import save_figure_with_metadata
 from feather.diag.netcdf_export import sanitize_name
@@ -79,8 +79,9 @@ class AddedValueDiag(DiagnosticBase):
         "pr",
         # Surface heat fluxes
         "hfss", "hfls",
-        # Surface downwelling radiation
-        "rsds", "rlds",
+        # Surface downwelling radiation (rsds / surface downwelling shortwave
+        # intentionally excluded from the ERA5 Added Value variable set)
+        "rlds",
         # Surface net radiation (all-sky + clear-sky)
         "rss", "rls",
         "rsscs", "rlscs",
@@ -153,10 +154,35 @@ class AddedValueDiag(DiagnosticBase):
         """Directory for saved AV NetCDF files."""
         return Path(self.config.output_dir) / "added_value"
 
-    def _nc_path(self, var: str, period: str, ensemble_type: str) -> Path:
-        """Return path for a single AV NetCDF file."""
+    def _obs_nc_token(self, var: str, obs_name: str | None) -> str:
+        """Filename token disambiguating the obs dataset an AV NC is built on.
+
+        The primary obs for a variable (Berkeley Earth for ``tas``, MSWEP for
+        ``pr``, ERA5 for everything else) stays token-less so existing NC
+        filenames are unchanged.  Secondary obs (e.g. ERA5 for ``tas``/``pr``)
+        gets an ``_{suffix}`` token so its AV field is persisted alongside the
+        primary one instead of overwriting it.
+        """
+        if not obs_name:
+            return ""
+        primary = self._OBS_ALT_DATASETS.get(var, "ERA5")
+        if obs_name == primary:
+            return ""
+        return "_" + self._OBS_FIGURE_SUFFIX.get(obs_name, obs_name.lower())
+
+    def _nc_path(
+        self, var: str, period: str, ensemble_type: str,
+        obs_name: str | None = None,
+    ) -> Path:
+        """Return path for a single AV NetCDF file.
+
+        ``obs_name`` selects the obs dataset the AV was computed against; the
+        primary obs is token-less (backward compatible), secondary obs get an
+        obs token (see :meth:`_obs_nc_token`).
+        """
+        obs_tok = self._obs_nc_token(var, obs_name)
         return self.nc_dir / (
-            f"{var}_{period}_{ensemble_type}_av{self._bench_suffix}.nc"
+            f"{var}_{period}_{ensemble_type}_av{obs_tok}{self._bench_suffix}.nc"
         )
 
     def _all_nc_exist(self, var: str) -> bool:
@@ -431,6 +457,12 @@ class AddedValueDiag(DiagnosticBase):
                                 "Bar chart %s failed", eerie_bar_id,
                                 exc_info=True,
                             )
+
+        # ── Ocean Added Value (dedicated nav page) ──────────────────────────
+        try:
+            saved.extend(self._run_ocean(skip_existing=skip_existing))
+        except Exception:
+            logger.warning("Ocean Added Value page failed", exc_info=True)
 
         logger.info(
             "Diagnostic %s complete — %d figure(s)", self.name, len(saved),
@@ -794,7 +826,9 @@ class AddedValueDiag(DiagnosticBase):
         except Exception:  # noqa: BLE001
             cmip6_labels = []
 
-        # Persist the AV NetCDF checkpoint (primary obs, ensemble mean/median).
+        # Persist the AV NetCDF checkpoint for every obs dataset (primary +
+        # secondary).  The primary obs stays token-less; secondary obs (e.g.
+        # ERA5 for tas/pr) get an obs token so their AV fields are stored too.
         nc_meta = {
             "eerie_models": eerie_models_used,
             "n_eerie_models": len(eerie_models_used),
@@ -807,13 +841,17 @@ class AddedValueDiag(DiagnosticBase):
             "units": var_info.units,
             "obs_dataset": primary_obs,
         }
-        for period_key, pdata in av_results.items():
-            for etype in ("ensemble_mean", "ensemble_median"):
-                nc_path = self._nc_path(var, period_key.lower(), etype)
-                if not nc_path.exists():
-                    self._save_av_to_nc(
-                        pdata[etype], var, period_key.lower(), etype, nc_meta,
+        for obs_key, obs_av in av_by_obs.items():
+            for period_key, pdata in obs_av.items():
+                for etype in ("ensemble_mean", "ensemble_median"):
+                    nc_path = self._nc_path(
+                        var, period_key.lower(), etype, obs_name=obs_key,
                     )
+                    if not nc_path.exists():
+                        self._save_av_to_nc(
+                            pdata[etype], var, period_key.lower(), etype,
+                            nc_meta, obs_name=obs_key,
+                        )
         if obs_stats:
             self._save_obs_stats_json(var, obs_stats, nc_meta)
 
@@ -1260,6 +1298,24 @@ class AddedValueDiag(DiagnosticBase):
                     exc_info=True,
                 )
 
+        # Persist secondary-obs AV NetCDFs (e.g. ERA5 for tas/pr).  The
+        # primary-obs NC was already written above; here we store each
+        # remaining obs dataset with its obs token so the ERA5-based AV for
+        # temperature and precipitation is also available on disk.
+        for obs_key, obs_av in av_by_obs.items():
+            if obs_key == primary_obs_name:
+                continue
+            for period_key, pdata in obs_av.items():
+                for etype in ("ensemble_mean", "ensemble_median"):
+                    nc_path = self._nc_path(
+                        var, period_key.lower(), etype, obs_name=obs_key,
+                    )
+                    if not nc_path.exists():
+                        self._save_av_to_nc(
+                            pdata[etype], var, period_key.lower(), etype,
+                            nc_meta, obs_name=obs_key,
+                        )
+
         return {
             "var_info": var_info,
             "av": av_results,
@@ -1620,6 +1676,7 @@ class AddedValueDiag(DiagnosticBase):
         period: str,
         ensemble_type: str,
         meta: dict[str, Any],
+        obs_name: str | None = None,
     ) -> None:
         """Save a single AV field as a CMORized NetCDF file.
 
@@ -1635,8 +1692,14 @@ class AddedValueDiag(DiagnosticBase):
             ``"mean"`` or ``"median"``.
         meta : dict
             Provenance metadata written to variable attributes.
+        obs_name : str, optional
+            Obs dataset the AV was computed against.  Selects the (possibly
+            obs-tokened) filename and the ``reference_dataset`` attribute.
+            Defaults to ``meta["obs_dataset"]``.
         """
-        nc_path = self._nc_path(var, period, ensemble_type)
+        if obs_name is None:
+            obs_name = meta.get("obs_dataset", "ERA5")
+        nc_path = self._nc_path(var, period, ensemble_type, obs_name=obs_name)
         ds = xr.Dataset(
             {
                 "av": xr.DataArray(
@@ -1659,7 +1722,7 @@ class AddedValueDiag(DiagnosticBase):
                         ),
                         "model1": f"{self._bench_name} multi-model mean",
                         "model2": f"{self._project_name} {ensemble_type}",
-                        "reference_dataset": meta.get("obs_dataset", "ERA5"),
+                        "reference_dataset": obs_name,
                         "ensemble_type": ensemble_type,
                         "n_eerie_models": meta["n_eerie_models"],
                         "n_cmip6_models": meta["n_cmip6_models"],
@@ -1968,6 +2031,646 @@ class AddedValueDiag(DiagnosticBase):
         with open(out_path, "w") as fh:
             json.dump(payload, fh, indent=2)
         logger.info("  Saved obs stats JSON: %s", out_path)
+
+    # ======================================================================
+    # Ocean Added Value (separate nav page)
+    # ======================================================================
+    #
+    # The ocean AV page computes the same Dosio (2015) metric for ocean
+    # fields against the ocean observational references used by the ocean
+    # diagnostics: tos vs ESA-CCI, thetao/so (surface) vs EN4, and siconc
+    # vs OSI-SAF.  Unlike the atmospheric AV path (which reuses precomputed
+    # bias NetCDFs), the ocean diagnostics do not persist benchmark bias
+    # fields, so ocean AV is always recomputed from raw model + benchmark
+    # data.  Everything is regridded onto a common 1° global grid, which is
+    # robust across rectilinear, curvilinear (ORCA/tripolar) and polar
+    # (EASE2) source grids.  Figures are written to their own figures
+    # subdirectory so the website surfaces them as a dedicated nav entry.
+
+    #: Ocean variables handled on the dedicated Ocean Added Value page.
+    _OCEAN_VARIABLES: list[str] = ["tos", "thetao", "so", "siconc"]
+
+    #: Ocean variable → observational reference dataset.
+    _OCEAN_OBS: dict[str, str] = {
+        "tos": "ESA_CCI",
+        "thetao": "EN4",
+        "so": "EN4",
+        "siconc": "OSI_SAF",
+    }
+
+    #: Human-readable obs labels for figure text.
+    _OCEAN_OBS_LABEL: dict[str, str] = {
+        "ESA_CCI": "ESA-CCI",
+        "EN4": "EN4 v4.2.2",
+        "OSI_SAF": "OSI-SAF",
+    }
+
+    #: Website nav group for the ocean AV figures (matches the config
+    #: ``group_labels`` entry ``ocean_added_value``).
+    _OCEAN_NAV_GROUP = "ocean_added_value"
+
+    #: Depth-dimension names to collapse to the surface level (index 0).
+    _DEPTH_DIMS = (
+        "lev", "depth", "deptht", "olevel", "lev_2", "z", "nav_lev", "level",
+    )
+
+    #: Common ocean AV grid resolution (degrees).  1° matches the ~nominal
+    #: CMIP6 ocean resolution and keeps the regridding tractable.
+    _OCEAN_RES = 1.0
+
+    @property
+    def ocean_output_dir(self) -> Path:
+        """Figures directory for the ocean AV page (own nav entry)."""
+        return Path(self.config.output_dir) / "figures" / "added_value_ocean"
+
+    def _save_ocean_fig(
+        self, fig, meta: dict, filename: str,
+    ) -> tuple[Path, Path]:
+        """Save an ocean AV figure to its dedicated nav directory."""
+        return save_figure_with_metadata(
+            fig, meta, self.ocean_output_dir, filename,
+        )
+
+    def _ocean_figure_exists(self, figure_id: str) -> bool:
+        """True when the ocean AV figure PNG + JSON exist."""
+        d = self.ocean_output_dir
+        return (d / f"{figure_id}.png").exists() and (
+            d / f"{figure_id}.json"
+        ).exists()
+
+    # -- Ocean helpers ------------------------------------------------------
+
+    @staticmethod
+    def _latlon_names(da: xr.DataArray) -> tuple[str, str]:
+        """Return (lat_name, lon_name) coordinate names for *da*."""
+        lat = next(
+            (c for c in da.coords
+             if str(c).lower() in ("lat", "latitude", "nav_lat", "y")),
+            "lat",
+        )
+        lon = next(
+            (c for c in da.coords
+             if str(c).lower() in ("lon", "longitude", "nav_lon", "x")),
+            "lon",
+        )
+        return lat, lon
+
+    def _surface_slice(self, da: xr.DataArray) -> xr.DataArray:
+        """Collapse any depth dimension to the surface (shallowest) level."""
+        for d in da.dims:
+            if str(d).lower() in self._DEPTH_DIMS:
+                return da.isel({d: 0})
+        return da
+
+    @staticmethod
+    def _to_celsius_if_needed(da: xr.DataArray) -> xr.DataArray:
+        """Convert a temperature field to °C when it is clearly in Kelvin.
+
+        Uses the ``units`` attribute first; falls back to a magnitude
+        heuristic (mean > 150 ⇒ Kelvin) for files with no usable units.
+        """
+        units = str(da.attrs.get("units", "")).strip().lower()
+        if units in ("k", "kelvin"):
+            return da - 273.15
+        if units in ("c", "celsius", "degc", "°c", "degrees_c"):
+            return da
+        try:
+            if float(np.nanmean(np.asarray(da.values))) > 150.0:
+                return da - 273.15
+        except (ValueError, TypeError):
+            pass
+        return da
+
+    @staticmethod
+    def _siconc_to_fraction(da: xr.DataArray) -> xr.DataArray:
+        """Normalise sea-ice concentration to a 0–1 fraction (from %)."""
+        try:
+            if float(np.nanmax(np.asarray(da.values))) > 1.5:
+                return da / 100.0
+        except (ValueError, TypeError):
+            pass
+        return da
+
+    def _surface_sa_to_sp(
+        self, da2d: xr.DataArray, model: str,
+    ) -> xr.DataArray:
+        """Convert surface absolute salinity (SA) → practical salinity (SP).
+
+        No-op for models without ``absolute_salinity: true`` in config.
+        Surface pressure is ~0 dbar, so ``gsw.SP_from_SA(SA, 0, lon, lat)``.
+        """
+        mc = self.config.model_configs.get(model)
+        if not (mc and getattr(mc, "absolute_salinity", False)):
+            return da2d
+        import gsw
+
+        lat_name, lon_name = self._latlon_names(da2d)
+        lat = np.asarray(da2d[lat_name].values)
+        lon = np.asarray(da2d[lon_name].values)
+        if lat.ndim == 1 and lon.ndim == 1:
+            lon2d, lat2d = np.meshgrid(lon, lat)
+        else:
+            lon2d, lat2d = lon, lat
+        sp = gsw.SP_from_SA(np.asarray(da2d.values), 0.0, lon2d, lat2d)
+        return da2d.copy(data=sp)
+
+    def _prep_ocean_field(
+        self, da: xr.DataArray, var: str, *, model: str | None = None,
+    ) -> xr.DataArray:
+        """Surface-slice + unit-normalise an ocean field for AV comparison.
+
+        Applies, per variable: surface slice (thetao/so), K→°C
+        (tos/thetao), SA→SP surface salinity for absolute-salinity models
+        (so), and %→fraction (siconc).
+        """
+        da = self._surface_slice(da)
+        if var in ("tos", "thetao"):
+            da = self._to_celsius_if_needed(da)
+        elif var == "so" and model is not None:
+            da = self._surface_sa_to_sp(da, model)
+        elif var == "siconc":
+            da = self._siconc_to_fraction(da)
+        return da
+
+    def _regrid_scatter(
+        self, da: xr.DataArray,
+        target_lats: np.ndarray, target_lons: np.ndarray,
+        resolution: float, influence_radius: float,
+        cache: dict, method: str = "nearest",
+    ) -> xr.DataArray:
+        """Regrid any 2-D ocean field to the common grid via nereus.
+
+        Treats the source as scattered points, so it works for rectilinear
+        (1-D lat/lon), curvilinear (2-D nav_lat/nav_lon) and polar (EASE2)
+        grids alike.  Longitudes are shifted to −180..180 to avoid a prime
+        meridian gap; the output is rolled back to the 0..360 target grid.
+        """
+        lat_name, lon_name = self._latlon_names(da)
+        lat = np.asarray(da[lat_name].values)
+        lon = np.asarray(da[lon_name].values)
+        data = np.asarray(da.values)
+
+        if (lat.ndim == 1 and lon.ndim == 1 and data.ndim == 2
+                and data.shape == (lat.size, lon.size)):
+            lon2d, lat2d = np.meshgrid(lon, lat)
+        else:
+            lon2d, lat2d = lon, lat
+
+        src_lon = np.where(lon2d > 180, lon2d - 360, lon2d).ravel()
+        src_lat = np.asarray(lat2d).ravel()
+        vals = data.ravel()
+
+        ir = max(influence_radius, 250_000.0)
+        key = (
+            int(vals.shape[0]),
+            round(float(np.nanmin(src_lat)), 3),
+            round(float(np.nanmax(src_lat)), 3),
+        )
+        if key not in cache:
+            _, cache[key] = nr.regrid(
+                vals, lon=src_lon, lat=src_lat,
+                resolution=resolution, method=method,
+                influence_radius=ir, lon_bounds=(-180.0, 180.0),
+                as_xarray=True,
+            )
+        regridded = cache[key](vals)
+        n_roll = regridded.shape[1] // 2
+        regridded = np.roll(regridded, -n_roll, axis=1)
+        return xr.DataArray(
+            regridded, dims=("lat", "lon"),
+            coords={"lat": target_lats, "lon": target_lons},
+        )
+
+    # -- Ocean obs loading (returns fields already on the common grid) ------
+
+    def _ocean_obs_on_target(
+        self, var: str, target_lats, target_lons, resolution,
+        influence_radius, cache,
+    ) -> dict[str, xr.DataArray] | None:
+        """Load the ocean obs reference for *var* as {period: field-on-grid}.
+
+        Returns annual + DJF + JJA climatologies already regridded to the
+        common grid, or ``None`` when the reference dataset is not in config.
+        """
+        obs_name = self._OCEAN_OBS.get(var)
+        if obs_name not in self.config.obs_datasets:
+            logger.warning(
+                "  Ocean obs %s not configured — skipping %s", obs_name, var,
+            )
+            return None
+
+        if var == "tos":
+            native = self._ocean_obs_esa_cci()
+        elif var in ("thetao", "so"):
+            native = self._ocean_obs_en4(var)
+        elif var == "siconc":
+            native = self._ocean_obs_osisaf()
+        else:
+            return None
+
+        if native is None:
+            return None
+
+        out: dict[str, xr.DataArray] = {}
+        for pk, field in native.items():
+            out[pk] = self._regrid_scatter(
+                field, target_lats, target_lons, resolution,
+                influence_radius, cache, method=self._regrid_method,
+            )
+        return out
+
+    def _ocean_obs_esa_cci(self) -> dict[str, xr.DataArray]:
+        """ESA-CCI SST climatologies (annual/DJF/JJA) in °C on native grid."""
+        annual = self.obs_loader.load_esa_cci("timemean") - 273.15
+        ymon = self.obs_loader.load_esa_cci("ymonmean") - 273.15
+        if "time" in ymon.dims:
+            mon = ymon["time.month"]
+            djf = ymon.sel(time=mon.isin([12, 1, 2])).mean("time")
+            jja = ymon.sel(time=mon.isin([6, 7, 8])).mean("time")
+        elif "month" in ymon.dims:
+            djf = ymon.sel(month=[12, 1, 2]).mean("month")
+            jja = ymon.sel(month=[6, 7, 8]).mean("month")
+        else:
+            djf = jja = annual
+        return {"annual": annual, "DJF": djf, "JJA": jja}
+
+    def _ocean_obs_en4(self, var: str) -> dict[str, xr.DataArray]:
+        """EN4 surface T/S climatologies (annual/DJF/JJA) on native grid."""
+        da = self.obs_loader.load_en4(var, period=self.period)
+        da = self._surface_slice(da)
+        if var == "thetao":
+            da = self._to_celsius_if_needed(da)  # EN4 thetao is stored in K
+        annual = climatology(da, self.period)
+        seasonal = seasonal_climatology(da, self.period)
+        out = {"annual": annual}
+        for s in ("DJF", "JJA"):
+            if s in seasonal:
+                out[s] = seasonal[s]
+        return out
+
+    def _ocean_obs_osisaf(self) -> dict[str, xr.DataArray]:
+        """OSI-SAF sea-ice concentration climatologies as 0–1 fractions.
+
+        NH and SH EASE2 fields are returned separately (both on their own
+        curvilinear grids); the caller regrids each to the common grid and
+        they are merged there.  To keep this method's return uniform with
+        the other obs loaders, the hemispheres are pre-merged after a light
+        regrid onto the common grid is *not* possible here (no target yet),
+        so instead we return per-hemisphere climatologies keyed with a
+        hemisphere tag and merge in :meth:`_ocean_obs_on_target`.
+        """
+        # Build annual + seasonal climatologies per hemisphere on the native
+        # EASE2 grid, then stash both so the regrid step can merge them.
+        self._osisaf_hemis = {}
+        for hemi in ("nh", "sh"):
+            ds = self.obs_loader.load_osisaf(hemi, period=self.period)
+            da = self._siconc_to_fraction(ds["ice_conc"])
+            annual = da.mean("time") if "time" in da.dims else da
+            clim = {"annual": annual}
+            if "time" in da.dims:
+                mon = da["time.month"]
+                clim["DJF"] = da.sel(time=mon.isin([12, 1, 2])).mean("time")
+                clim["JJA"] = da.sel(time=mon.isin([6, 7, 8])).mean("time")
+            self._osisaf_hemis[hemi] = clim
+        # Return NH climatologies as the nominal fields; the SH is merged in
+        # via the special-case in _regrid_scatter caller below.
+        return self._osisaf_hemis["nh"]
+
+    # -- Ocean compute ------------------------------------------------------
+
+    def _compute_ocean_variable(self, var: str) -> dict[str, Any] | None:
+        """Recompute Dosio AV for an ocean variable on the common 1° grid."""
+        if not self.cmip6_enabled:
+            logger.warning("No benchmark loader — cannot compute ocean AV %s", var)
+            return None
+
+        var_info = get_var(var)
+        logger.info("Computing ocean Added Value for %s (%s)",
+                    var, var_info.long_name)
+
+        target_lats = np.arange(-89.5, 90.0, self._OCEAN_RES)
+        target_lons = np.arange(0.5, 360.0, self._OCEAN_RES)
+        area = compute_latlon_areas(target_lats, target_lons)
+        influence_radius = self.config.nereus.get("influence_radius", 80_000.0)
+
+        obs_cache: dict = {}
+        obs_fields = self._ocean_obs_on_target(
+            var, target_lats, target_lons, self._OCEAN_RES,
+            influence_radius, obs_cache,
+        )
+        if obs_fields is None:
+            return None
+
+        # OSI-SAF: merge the SH hemisphere onto the (NH) obs fields.
+        if var == "siconc" and getattr(self, "_osisaf_hemis", None):
+            for pk, sh_field in self._osisaf_hemis["sh"].items():
+                if pk not in obs_fields:
+                    continue
+                sh_on_grid = self._regrid_scatter(
+                    sh_field, target_lats, target_lons, self._OCEAN_RES,
+                    influence_radius, obs_cache, method=self._regrid_method,
+                )
+                obs_fields[pk] = obs_fields[pk].combine_first(sh_on_grid)
+            self._osisaf_hemis = {}
+
+        periods = [p for p in ("annual", "DJF", "JJA") if p in obs_fields]
+
+        # -- EERIE members --------------------------------------------------
+        model_cache: dict = {}
+        eerie: dict[str, dict[str, xr.DataArray]] = {p: {} for p in periods}
+        for model in self.config.models:
+            try:
+                da = self._load_model_var(model, var, period=self.period)
+            except (KeyError, FileNotFoundError):
+                logger.warning("  %s not available for %s — skipping", var, model)
+                continue
+            da = self._prep_ocean_field(da, var, model=model)
+            annual = climatology(da, self.period).compute()
+            eerie["annual"][model] = self._regrid_scatter(
+                annual, target_lats, target_lons, self._OCEAN_RES,
+                influence_radius, model_cache, method=self._regrid_method,
+            )
+            seasonal = seasonal_climatology(da, self.period)
+            for s in ("DJF", "JJA"):
+                if s in periods and s in seasonal:
+                    eerie[s][model] = self._regrid_scatter(
+                        seasonal[s].compute(), target_lats, target_lons,
+                        self._OCEAN_RES, influence_radius, model_cache,
+                        method=self._regrid_method,
+                    )
+
+        if not eerie["annual"]:
+            logger.warning("No EERIE models for ocean %s — skipping", var)
+            return None
+        eerie_models = list(eerie["annual"].keys())
+
+        # -- Benchmark members ---------------------------------------------
+        bench_cache: dict = {}
+        bench: dict[str, list[xr.DataArray]] = {p: [] for p in periods}
+        bench_labels: list[str] = []
+        for model, variant in self.cmip6_loader.get_member_pairs():
+            try:
+                da = self.cmip6_loader.load_var_for_model_var(
+                    var, model, variant=variant, period=self.period,
+                )
+            except Exception:  # noqa: BLE001
+                da = None
+            if da is None:
+                continue
+            da = self._prep_ocean_field(da, var)
+            try:
+                bench["annual"].append(self._regrid_scatter(
+                    da, target_lats, target_lons, self._OCEAN_RES,
+                    influence_radius, bench_cache, method=self._regrid_method,
+                ))
+            except Exception:  # noqa: BLE001
+                logger.debug("  benchmark %s/%s regrid failed", model, variant)
+                continue
+            bench_labels.append(f"{model}/{variant}")
+            for s in ("DJF", "JJA"):
+                if s not in periods:
+                    continue
+                try:
+                    da_s = self.cmip6_loader.load_var_for_model_var(
+                        var, model, variant=variant,
+                        period=self.period, season=s,
+                    )
+                except Exception:  # noqa: BLE001
+                    da_s = None
+                if da_s is not None:
+                    bench[s].append(self._regrid_scatter(
+                        self._prep_ocean_field(da_s, var),
+                        target_lats, target_lons, self._OCEAN_RES,
+                        influence_radius, bench_cache,
+                        method=self._regrid_method,
+                    ))
+
+        if not bench["annual"]:
+            logger.warning("No benchmark members for ocean %s — skipping", var)
+            return None
+
+        # -- AV per period --------------------------------------------------
+        av_results: dict[str, dict] = {}
+        for pk in periods:
+            if not eerie[pk] or not bench[pk] or pk not in obs_fields:
+                continue
+            obs_field = obs_fields[pk]
+            e_stack = xr.concat(list(eerie[pk].values()), dim="member")
+            e_mean = e_stack.mean("member")
+            e_median = e_stack.median("member")
+            b_mmm = xr.concat(bench[pk], dim="member").mean("member")
+
+            av_mean = self._compute_av(b_mmm, e_mean, obs_field)
+            av_median = self._compute_av(b_mmm, e_median, obs_field)
+            per_eerie = {
+                m: self._compute_av(b_mmm, f, obs_field)
+                for m, f in eerie[pk].items()
+            }
+            av_results[pk] = {
+                "ensemble_mean": av_mean,
+                "ensemble_median": av_median,
+                "per_eerie_av": per_eerie,
+                "per_cmip6_av": {},
+                "ensemble_mean_domain_av": self._domain_mean_av(av_mean, area),
+                "ensemble_median_domain_av": self._domain_mean_av(av_median, area),
+                "ensemble_mean_frac_positive": self._frac_positive(av_mean, area),
+                "ensemble_median_frac_positive": self._frac_positive(av_median, area),
+            }
+
+        if not av_results:
+            return None
+
+        # -- Persist NC checkpoints ----------------------------------------
+        obs_name = self._OCEAN_OBS.get(var, "")
+        nc_meta = {
+            "eerie_models": eerie_models,
+            "n_eerie_models": len(eerie_models),
+            "cmip6_models": bench_labels,
+            "n_cmip6_models": len(bench_labels),
+            "period_start": self.period[0],
+            "period_end": self.period[1],
+            "variable": var,
+            "long_name": var_info.long_name,
+            "units": var_info.units,
+            "obs_dataset": obs_name,
+        }
+        for pk, pdata in av_results.items():
+            for etype in ("ensemble_mean", "ensemble_median"):
+                nc_path = self._nc_path(
+                    var, pk.lower(), etype, obs_name=obs_name)
+                if not nc_path.exists():
+                    self._save_av_to_nc(
+                        pdata[etype], var, pk.lower(), etype, nc_meta,
+                        obs_name=obs_name,
+                    )
+
+        return {
+            "var_info": var_info,
+            "av": av_results,
+            "av_by_obs": {obs_name: av_results},
+            "obs_dataset_name": obs_name,
+            "obs_stats": {},
+            "n_eerie_models": len(eerie_models),
+            "eerie_models": eerie_models,
+            "n_cmip6_models": len(bench_labels),
+            "cmip6_models": bench_labels,
+        }
+
+    def _ocean_fig_ids(self, var: str) -> list[str]:
+        """All ocean AV figure IDs for a variable (for skip checks)."""
+        ids: list[str] = []
+        for pk in ("annual", "djf", "jja"):
+            base = f"ocean_{var}_{pk}_{self.period[0]}_{self.period[1]}"
+            ids.append(f"{base}_added_value{self._bench_suffix}")
+            ids.append(f"{base}_added_value_models{self._bench_suffix}")
+        return ids
+
+    def _plot_ocean_variable(
+        self, var: str, vr: dict[str, Any],
+    ) -> list[tuple[plt.Figure, dict]]:
+        """Ensemble + per-model AV maps for one ocean variable."""
+        figures: list[tuple[plt.Figure, dict]] = []
+        var_info = vr["var_info"]
+        obs_name = vr.get("obs_dataset_name", "")
+        obs_label = self._OCEAN_OBS_LABEL.get(obs_name, obs_name)
+        av = vr["av"]
+
+        period_labels = [("annual", "Annual"), ("DJF", "DJF"), ("JJA", "JJA")]
+        extra = {
+            "eerie_models": vr["eerie_models"],
+            "cmip6_models": vr["cmip6_models"],
+            "obs_dataset": obs_name,
+            "reference": "Dosio et al. (2015)",
+            "group": self._OCEAN_NAV_GROUP,
+        }
+
+        for period_key, period_label in period_labels:
+            period_data = av.get(period_key)
+            if period_data is None:
+                continue
+            pk_lower = period_key.lower()
+            base = f"ocean_{var}_{pk_lower}_{self.period[0]}_{self.period[1]}"
+
+            # ── Figure 1: ensemble mean + median ──────────────────────────
+            data_dict: dict[str, xr.DataArray] = {}
+            for etype, label in (
+                ("ensemble_mean", f"AV({self._project_name} Ens. Mean)"),
+                ("ensemble_median", f"AV({self._project_name} Ens. Median)"),
+            ):
+                dom = period_data[f"{etype}_domain_av"]
+                frac = period_data[f"{etype}_frac_positive"]
+                data_dict[
+                    f"{label}\ndomain mean={dom:+.3f}, AV>0: {frac:.0%}"
+                ] = period_data[etype]
+
+            fig1, _ = plot_combined_map(
+                data_dict,
+                title=(
+                    f"{var_info.long_name} {period_label} Added Value"
+                    f" — {self._project_name} ensemble vs {self._bench_label}"
+                    f"  (vs {obs_label}, green = {self._project_name} better)"
+                ),
+                cmap=_AV_CMAP, vmin=-1.0, vmax=1.0, units="AV [ ]",
+                land=True, method=self._regrid_method,
+            )
+            meta1 = self._build_metadata(
+                title=(
+                    f"{var_info.long_name} {period_label} Ocean Added Value "
+                    f"({self._project_name} ensemble vs {self._bench_label}, "
+                    f"obs: {obs_label})"
+                ),
+                figure_id=f"{base}_added_value{self._bench_suffix}",
+                models=vr["eerie_models"],
+                variables=[var],
+                description=(
+                    f"Dosio et al. (2015) Added Value for {var_info.long_name} "
+                    f"({period_label}), {self.period[0]}-{self.period[1]}, "
+                    f"surface field vs {obs_label}. AV > 0: {self._project_name} "
+                    f"ensemble reduces squared error over {self._bench_label}. "
+                    f"{self._project_name} n={vr['n_eerie_models']}, "
+                    f"{self._bench_name} n={vr['n_cmip6_models']}."
+                ),
+                plot_type="added_value_map",
+                period=self.period,
+                extra=extra,
+            )
+            figures.append((fig1, meta1))
+
+            # ── Figure 2: individual EERIE model panels ───────────────────
+            per_eerie = period_data.get("per_eerie_av", {})
+            if not per_eerie:
+                continue
+            _area = compute_latlon_areas(
+                next(iter(per_eerie.values()))["lat"].values,
+                next(iter(per_eerie.values()))["lon"].values,
+            )
+            models_dict: dict[str, xr.DataArray] = {}
+            for model_name, av_field in per_eerie.items():
+                dom = self._domain_mean_av(av_field, _area)
+                frac = self._frac_positive(av_field, _area)
+                models_dict[
+                    f"{self._project_name}: {model_name}\n"
+                    f"vs {self._bench_label} — mean={dom:+.3f}, AV>0: {frac:.0%}"
+                ] = av_field
+
+            fig2, _ = plot_combined_map(
+                models_dict,
+                title=(
+                    f"{var_info.long_name} {period_label} Ocean Added Value"
+                    f" — Individual Models  (vs {obs_label}, green = better)"
+                ),
+                cmap=_AV_CMAP, vmin=-1.0, vmax=1.0, units="AV [ ]",
+                land=True, method=self._regrid_method,
+            )
+            meta2 = self._build_metadata(
+                title=(
+                    f"{var_info.long_name} {period_label} Ocean Added Value "
+                    f"— Individual Models (obs: {obs_label})"
+                ),
+                figure_id=f"{base}_added_value_models{self._bench_suffix}",
+                models=vr["eerie_models"],
+                variables=[var],
+                description=(
+                    f"Per-model Dosio et al. (2015) Added Value for "
+                    f"{var_info.long_name} ({period_label}) surface field vs "
+                    f"{obs_label}. Green = model better than {self._bench_label}."
+                ),
+                plot_type="added_value_map",
+                period=self.period,
+                extra=extra,
+            )
+            figures.append((fig2, meta2))
+
+        return figures
+
+    def _run_ocean(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
+        """Compute + plot the ocean Added Value page for the active benchmark."""
+        saved: list[tuple[Path, Path]] = []
+        ocean_vars = [v for v in self._OCEAN_VARIABLES if v in VARIABLE_REGISTRY]
+        for var in ocean_vars:
+            fig_ids = self._ocean_fig_ids(var)
+            if skip_existing and all(
+                self._ocean_figure_exists(fid) for fid in fig_ids
+            ):
+                logger.info("Skipping ocean %s — all figures exist", var)
+                for fid in fig_ids:
+                    saved.append((
+                        self.ocean_output_dir / f"{fid}.png",
+                        self.ocean_output_dir / f"{fid}.json",
+                    ))
+                continue
+            try:
+                vr = self._compute_ocean_variable(var)
+                if vr is None:
+                    continue
+                for fig, meta in self._plot_ocean_variable(var, vr):
+                    saved.append(self._save_ocean_fig(
+                        fig, meta, meta["figure_id"]))
+            except Exception:
+                logger.warning(
+                    "Ocean variable %s failed — skipping", var, exc_info=True,
+                )
+        return saved
 
     # -- Plotting -----------------------------------------------------------
 
