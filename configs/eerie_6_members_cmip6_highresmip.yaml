@@ -222,7 +222,7 @@ nereus:
   ocean_influence_radius: 20000
   method: "linear"
 
-output_dir: "/work/bm1344/AWI/EERIE/output_eerie_6_members_cmip6_highresmip"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_6_members_cmip6"
 
 llm:
   figure_analysis:
