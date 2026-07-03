@@ -512,8 +512,10 @@ class AddedValueDiag(DiagnosticBase):
         "MSWEP": "precipitation_mswep",
         # Ocean references — benchmark-bias NetCDFs written by the ocean
         # diagnostics via feather.diag.ocean_bias (schema-compatible with the
-        # atmospheric bias-map NetCDFs).
+        # atmospheric bias-map NetCDFs).  tos has two references: ESA-CCI
+        # (ocean_sst) and HadISST (sst_hadisst).
         "ESA_CCI": "ocean_sst",
+        "HADISST": "sst_hadisst",
         "EN4": "ocean_en4",
         "OSI_SAF": "sea_ice",
     }

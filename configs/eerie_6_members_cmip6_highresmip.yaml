@@ -166,6 +166,12 @@ obs_datasets:
       analysed_sst: "ESA-CCI-L4_v3.0.1_monthly_1990_2014_sst.nc"
       timemean: "ESA-CCI-L4_v3.0.1_timemean_1990_2014_sst.nc"
       ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
+  # HadISST: coarser (1°) but longer SST record (covers the full 1980–2014
+  # window, unlike ESA-CCI's 1990–2014). Copy the file to a readable path.
+  HADISST:
+    path: "/work/bm1344/a270292"
+    variables:
+      sst: "HadISST_sst.nc"
   OSI_SAF:
     path: "{obs_root}/OSI-SAF/OSI-AQUA"
     variables:

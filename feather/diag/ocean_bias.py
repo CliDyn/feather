@@ -51,9 +51,12 @@ OCEAN_OBS: dict[str, str] = {
     "siconc": "OSI_SAF",
 }
 
-#: Ocean variable → the diagnostic that owns its benchmark-bias NetCDF.
+#: Obs dataset → the diagnostic that owns its benchmark-bias NetCDF.  ``tos``
+#: has two references: ESA-CCI (ocean_sst, 0.05°/1990–2014) and HadISST
+#: (sst_hadisst, 1°/full period), both consumed by the ocean Added Value.
 OCEAN_OBS_DIAG: dict[str, str] = {
     "ESA_CCI": "ocean_sst",
+    "HADISST": "sst_hadisst",
     "EN4": "ocean_en4",
     "OSI_SAF": "sea_ice",
 }
@@ -301,17 +304,18 @@ def _esa_cci_coverage(obs_loader) -> tuple[str, str] | None:
     return (str(t.min())[:4], str(t.max())[:4])
 
 
-def obs_clim_period(obs_loader, config, var: str, period):
+def obs_clim_period(obs_loader, config, var: str, period, obs_name=None):
     """Period the model/benchmark climatology should use to match the obs.
 
-    For ``tos`` the ESA-CCI reference is a *fixed* climatology over the
-    ESA-CCI file's own coverage, so the model/benchmark climatology is aligned
-    to that window (intersected with the configured analysis *period*) to keep
-    the SST bias like-for-like.  For EN4/OSI-SAF variables the obs is sliced to
-    the analysis period already, so *period* is returned unchanged.
+    Only ESA-CCI needs alignment: it is a *fixed* pre-averaged climatology
+    over the ESA-CCI file's own coverage, so the model/benchmark climatology
+    is aligned to that window (∩ analysis *period*).  Every other obs (EN4,
+    OSI-SAF, HadISST) is sliced to the analysis period on load, so *period* is
+    returned unchanged.
     """
     period = (str(period[0]), str(period[1]))
-    if var != "tos":
+    obs_name = obs_name or OCEAN_OBS.get(var)
+    if obs_name != "ESA_CCI":
         return period
     cov = _esa_cci_coverage(obs_loader)
     if not cov:
@@ -320,6 +324,21 @@ def obs_clim_period(obs_loader, config, var: str, period):
     if aligned[0] > aligned[1]:  # no overlap → fall back to config period
         return period
     return aligned
+
+
+def _hadisst_native(obs_loader, period) -> dict[str, xr.DataArray]:
+    """HadISST SST climatologies (annual/DJF/JJA) in °C on the native 1° grid.
+
+    ``ObsLoader.load_hadisst`` returns K with land/ice masked; climatologies
+    are computed over the analysis *period* (HadISST spans the full window).
+    """
+    da = to_celsius_if_needed(obs_loader.load_hadisst(period=period))
+    out = {"annual": climatology(da, period)}
+    seasonal = seasonal_climatology(da, period)
+    for s in ("DJF", "JJA"):
+        if s in seasonal:
+            out[s] = seasonal[s]
+    return out
 
 
 def _en4_native(obs_loader, var: str, period) -> dict[str, xr.DataArray]:
@@ -351,20 +370,29 @@ def _osisaf_native_hemis(obs_loader, period) -> dict[str, dict[str, xr.DataArray
 def load_ocean_obs_on_target(
     obs_loader, config, var: str, period,
     target_lats, target_lons, resolution, influence_radius, cache, method,
+    obs_name=None,
 ) -> dict[str, xr.DataArray] | None:
-    """Load the ocean obs reference for *var* as {period: field-on-grid}."""
-    obs_name = OCEAN_OBS.get(var)
+    """Load the ocean obs reference for *var* as {period: field-on-grid}.
+
+    *obs_name* selects the reference dataset (defaults to ``OCEAN_OBS[var]``);
+    pass it explicitly to evaluate a variable against an alternative obs (e.g.
+    ``tos`` vs ``HADISST`` instead of ``ESA_CCI``).
+    """
+    obs_name = obs_name or OCEAN_OBS.get(var)
     if obs_name not in config.obs_datasets:
         logger.warning("Ocean obs %s not configured — skipping %s", obs_name, var)
         return None
 
-    if var == "tos":
+    if obs_name == "ESA_CCI":
         native = _esa_cci_native(obs_loader, target_res=resolution)
         merged_hemis = None
-    elif var in ("thetao", "so"):
+    elif obs_name == "HADISST":
+        native = _hadisst_native(obs_loader, period)
+        merged_hemis = None
+    elif obs_name == "EN4":
         native = _en4_native(obs_loader, var, period)
         merged_hemis = None
-    elif var == "siconc":
+    elif obs_name == "OSI_SAF":
         hemis = _osisaf_native_hemis(obs_loader, period)
         native = hemis["nh"]
         merged_hemis = hemis
@@ -395,7 +423,7 @@ def load_ocean_obs_on_target(
 
 def compute_ocean_fields(
     diag, var: str, period, method: str = "nearest",
-    *, benchmarks=None, want_individual: bool = False,
+    *, benchmarks=None, want_individual: bool = False, obs_name=None,
 ) -> dict[str, Any] | None:
     """Compute obs/model/ensemble/benchmark ocean fields on the common grid.
 
@@ -406,11 +434,13 @@ def compute_ocean_fields(
 
     *benchmarks* defaults to ``diag.benchmarks`` (all configured); pass an
     explicit list (e.g. a single active benchmark) to restrict it.
+    *obs_name* selects the obs reference (defaults to ``OCEAN_OBS[var]``).
     """
     config = diag.config
     benches = benchmarks if benchmarks is not None else diag.benchmarks
     if not benches:
         return None
+    obs_name = obs_name or OCEAN_OBS.get(var)
 
     res = grid_resolution(config)
     target_lats, target_lons = common_grid(config)
@@ -423,15 +453,16 @@ def compute_ocean_fields(
     obs_fields = load_ocean_obs_on_target(
         diag.obs_loader, config, var, period,
         target_lats, target_lons, res, ir, obs_cache, method,
+        obs_name=obs_name,
     )
     if not obs_fields:
         return None
     periods = [p for p in PERIODS if p in obs_fields]
 
-    # Climatology window for the model/benchmark side.  For tos this is the
-    # ESA-CCI coverage (∩ analysis period) so the SST bias is like-for-like;
-    # for EN4/OSI-SAF variables it is the analysis period unchanged.
-    mperiod = obs_clim_period(diag.obs_loader, config, var, period)
+    # Climatology window for the model/benchmark side.  For ESA-CCI tos this
+    # is the ESA-CCI coverage (∩ analysis period) so the SST bias is
+    # like-for-like; every other obs is sliced to the analysis period.
+    mperiod = obs_clim_period(diag.obs_loader, config, var, period, obs_name)
     if tuple(mperiod) != (str(period[0]), str(period[1])):
         logger.info(
             "  %s: aligning model/benchmark climatology to obs window %s-%s",
@@ -574,18 +605,20 @@ def compute_ocean_fields(
 
 def save_ocean_bias_netcdf(
     diag, var: str, period, method: str = "nearest",
-    *, want_individual: bool = False,
+    *, want_individual: bool = False, obs_name=None,
 ) -> list:
     """Compute and persist ocean benchmark/model/ensemble bias NetCDFs.
 
     Writes to ``{output}/netcdf/{diag.name}/`` in the
     :func:`export_biasmap_netcdf` schema so :class:`AddedValueDiag` can reuse
-    the fields for ocean Added Value.  Returns the list of written paths (may
+    the fields for ocean Added Value.  *obs_name* selects the obs reference
+    (defaults to ``OCEAN_OBS[var]``).  Returns the list of written paths (may
     be empty).  Never raises — failures are logged.
     """
     try:
         results = compute_ocean_fields(
             diag, var, period, method, want_individual=want_individual,
+            obs_name=obs_name,
         )
     except Exception:  # noqa: BLE001
         logger.warning("Ocean bias compute failed for %s", var, exc_info=True)
@@ -612,13 +645,14 @@ def save_ocean_bias_netcdf(
 
 def maybe_export_ocean_bias(
     diag, ocean_vars, *, want_individual: bool = False,
-    skip_existing: bool = True,
+    skip_existing: bool = True, obs_name=None,
 ) -> list:
     """Export ocean benchmark-bias NetCDFs for *ocean_vars*, if applicable.
 
     No-op unless the diagnostic has ``save_netcdf`` on and at least one
     benchmark loader.  Each variable is skipped when its annual/DJF/JJA bias
-    NetCDFs already exist (cheap re-runs).  Never raises.
+    NetCDFs already exist (cheap re-runs).  *obs_name* selects the obs
+    reference (defaults to ``OCEAN_OBS[var]``).  Never raises.
     """
     if not (getattr(diag, "save_netcdf", False)
             and getattr(diag, "benchmarks", None)):
@@ -629,7 +663,8 @@ def maybe_export_ocean_bias(
     nc_dir = diag._netcdf_dir
     written: list = []
     for var in ocean_vars:
-        if OCEAN_OBS.get(var) not in diag.config.obs_datasets:
+        this_obs = obs_name or OCEAN_OBS.get(var)
+        if this_obs not in diag.config.obs_datasets:
             continue
         if skip_existing and all(
             (nc_dir / f"{var}_{pk}_{period[0]}-{period[1]}.nc").exists()
@@ -638,8 +673,10 @@ def maybe_export_ocean_bias(
             logger.info(
                 "Ocean benchmark bias for %s already saved — skipping", var)
             continue
-        logger.info("Saving ocean benchmark bias for %s (%s)", var, diag.name)
+        logger.info("Saving ocean benchmark bias for %s (%s, obs %s)",
+                    var, diag.name, this_obs)
         written += save_ocean_bias_netcdf(
             diag, var, period, method, want_individual=want_individual,
+            obs_name=this_obs,
         )
     return written
