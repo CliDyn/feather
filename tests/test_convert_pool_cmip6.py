@@ -117,3 +117,47 @@ def test_atomic_write_leaves_no_tmp(tmp_path):
     # Overwriting an existing (incomplete) store works
     convert._write_zarr_atomic(_tiny_ds("tos"), store)
     assert convert._store_is_valid(store, "tos")
+
+
+# ── Uniform rechunking (zarr write compatibility) ────────────────────
+
+
+def test_rechunk_uniform_blocks_ragged_time():
+    pytest.importorskip("dask")
+    import numpy as np
+    import xarray as xr
+    ds = xr.Dataset(
+        {"tos": (("time", "x"), np.ones((250, 4)))},
+        coords={"time": np.arange(250)},
+    ).chunk({"time": (4, 1, 7, 238), "x": 4})  # ragged interior time chunks
+    out = convert._rechunk_uniform(ds)
+    tc = out["tos"].chunks[0]
+    assert tc[0] == 120                      # fixed 120-month blocks
+    assert len(set(tc[:-1])) <= 1            # uniform except the final chunk
+
+
+def test_rechunk_uniform_collapses_ragged_space():
+    pytest.importorskip("dask")
+    import numpy as np
+    import xarray as xr
+    ds = xr.Dataset(
+        {"tos": (("time", "cell"), np.ones((5, 100)))},
+        coords={"time": np.arange(5)},
+    ).chunk({"time": 5, "cell": (40, 10, 50)})  # non-uniform interior
+    out = convert._rechunk_uniform(ds)
+    cc = out["tos"].chunks[1]
+    assert len(cc) == 1 and cc[0] == 100      # collapsed to one uniform chunk
+
+
+def test_rechunk_uniform_roundtrips_to_zarr(tmp_path):
+    pytest.importorskip("zarr")
+    pytest.importorskip("dask")
+    import numpy as np
+    import xarray as xr
+    ds = xr.Dataset(
+        {"tos": (("time", "x"), np.ones((30, 4)))},
+        coords={"time": np.arange(30)},
+    ).chunk({"time": (4, 1, 25), "x": 4})     # ragged → would break plain to_zarr
+    store = tmp_path / "rt.zarr"
+    convert._write_zarr_atomic(convert._rechunk_uniform(ds), store)
+    assert convert._store_is_valid(store, "tos")

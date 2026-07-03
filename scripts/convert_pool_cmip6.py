@@ -156,6 +156,9 @@ def _open_and_slice(files, variable, period):
             [str(f) for f in files],
             combine="by_coords",
             chunks="auto",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
             **open_kwargs,
         )
     except Exception as e:  # noqa: BLE001
@@ -183,7 +186,33 @@ def _open_and_slice(files, variable, period):
 
     # Keep only the target variable plus its coordinates/bounds.
     keep = [variable]
-    return ds[keep]
+    return _rechunk_uniform(ds[keep])
+
+
+def _rechunk_uniform(ds):
+    """Rechunk *ds* so every dimension has uniform chunk sizes (zarr-safe).
+
+    Concatenating time-split files with ``open_mfdataset`` yields ragged time
+    chunks (e.g. ``(4, 7, 1, 7, …)``); zarr rejects non-uniform interior
+    chunks, which is what left the earlier ocean stores half-written.  Time is
+    rechunked into fixed blocks (uniform except the final chunk); any other
+    dimension whose chunks are non-uniform is collapsed to a single chunk.
+    """
+    chunks: dict = {}
+    for dim, size in ds.sizes.items():
+        size = int(size)
+        if str(dim).lower() == "time":
+            chunks[dim] = min(size, 120)
+            continue
+        # Detect ragged (non-uniform-interior) chunking on this dimension.
+        dim_chunks = None
+        for var in ds.data_vars.values():
+            if dim in var.dims and var.chunks is not None:
+                dim_chunks = var.chunks[var.dims.index(dim)]
+                break
+        if dim_chunks and len(set(dim_chunks[:-1])) > 1:
+            chunks[dim] = size  # collapse to one uniform chunk
+    return ds.chunk(chunks) if chunks else ds
 
 
 def convert_model(
