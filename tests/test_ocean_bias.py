@@ -166,3 +166,47 @@ class TestObsDiagMap:
         from feather.diag.added_value import AddedValueDiag
         for obs, diag_name in ob.OCEAN_OBS_DIAG.items():
             assert AddedValueDiag._OBS_NETCDF_SOURCE.get(obs) == diag_name
+
+
+# ── ESA-CCI period alignment for tos ─────────────────────────────────
+
+
+class _FakeEsaObs:
+    def load_esa_cci(self, product, period=None):
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        t = pd.date_range("1990-01-01", "2014-12-01", freq="MS")
+        return xr.DataArray(
+            np.ones((len(t), 2, 2)), dims=("time", "lat", "lon"),
+            coords={"time": t, "lat": [0, 1], "lon": [0, 1]},
+        )
+
+
+class TestObsClimPeriod:
+    def test_esa_cci_coverage_from_monthly(self):
+        assert ob._esa_cci_coverage(_FakeEsaObs()) == ("1990", "2014")
+
+    def test_tos_aligned_to_esa_cci_window(self):
+        cfg = SimpleNamespace(nereus={})
+        # config 1980-2014 ∩ ESA-CCI 1990-2014 → 1990-2014
+        assert ob.obs_clim_period(
+            _FakeEsaObs(), cfg, "tos", ("1980", "2014")) == ("1990", "2014")
+
+    def test_non_tos_unchanged(self):
+        cfg = SimpleNamespace(nereus={})
+        obj = object()  # obs loader untouched for non-tos
+        assert ob.obs_clim_period(
+            obj, cfg, "thetao", ("1980", "2014")) == ("1980", "2014")
+        assert ob.obs_clim_period(
+            obj, cfg, "siconc", ("1980", "2014")) == ("1980", "2014")
+
+    def test_tos_fallback_when_coverage_unknown(self):
+        cfg = SimpleNamespace(nereus={})
+
+        class _BadObs:
+            def load_esa_cci(self, *a, **k):
+                raise RuntimeError("no file")
+
+        assert ob.obs_clim_period(
+            _BadObs(), cfg, "tos", ("1980", "2014")) == ("1980", "2014")

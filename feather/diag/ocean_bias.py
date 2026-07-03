@@ -280,6 +280,48 @@ def _esa_cci_native(
     return {pk: _coarsen_rectilinear(v, target_res) for pk, v in out.items()}
 
 
+def _esa_cci_coverage(obs_loader) -> tuple[str, str] | None:
+    """Actual (start_year, end_year) covered by the ESA-CCI monthly SST file.
+
+    The pre-averaged ``timemean``/``ymonmean`` climatologies carry no usable
+    period (their ``time_coverage_*`` attributes report the single collapsed
+    timestamp), so the real window is read from the monthly ``analysed_sst``
+    time axis.  Only the time coordinate is materialised, not the data.
+    Returns ``None`` if the coverage cannot be determined.
+    """
+    try:
+        da = obs_loader.load_esa_cci("analysed_sst")
+    except Exception:  # noqa: BLE001
+        return None
+    if "time" not in getattr(da, "dims", ()):
+        return None
+    t = da["time"].values
+    if t.size == 0:
+        return None
+    return (str(t.min())[:4], str(t.max())[:4])
+
+
+def obs_clim_period(obs_loader, config, var: str, period):
+    """Period the model/benchmark climatology should use to match the obs.
+
+    For ``tos`` the ESA-CCI reference is a *fixed* climatology over the
+    ESA-CCI file's own coverage, so the model/benchmark climatology is aligned
+    to that window (intersected with the configured analysis *period*) to keep
+    the SST bias like-for-like.  For EN4/OSI-SAF variables the obs is sliced to
+    the analysis period already, so *period* is returned unchanged.
+    """
+    period = (str(period[0]), str(period[1]))
+    if var != "tos":
+        return period
+    cov = _esa_cci_coverage(obs_loader)
+    if not cov:
+        return period
+    aligned = (max(period[0], cov[0]), min(period[1], cov[1]))
+    if aligned[0] > aligned[1]:  # no overlap → fall back to config period
+        return period
+    return aligned
+
+
 def _en4_native(obs_loader, var: str, period) -> dict[str, xr.DataArray]:
     da = surface_slice(obs_loader.load_en4(var, period=period))
     if var == "thetao":
@@ -386,19 +428,29 @@ def compute_ocean_fields(
         return None
     periods = [p for p in PERIODS if p in obs_fields]
 
+    # Climatology window for the model/benchmark side.  For tos this is the
+    # ESA-CCI coverage (∩ analysis period) so the SST bias is like-for-like;
+    # for EN4/OSI-SAF variables it is the analysis period unchanged.
+    mperiod = obs_clim_period(diag.obs_loader, config, var, period)
+    if tuple(mperiod) != (str(period[0]), str(period[1])):
+        logger.info(
+            "  %s: aligning model/benchmark climatology to obs window %s-%s",
+            var, mperiod[0], mperiod[1],
+        )
+
     # -- Evaluated models --------------------------------------------------
     model_cache: dict = {}
     models: dict[str, dict] = {}
     ens_regrids: dict[str, list[xr.DataArray]] = {p: [] for p in periods}
     for model in config.models:
         try:
-            da = diag._load_model_var(model, var, period=period)
+            da = diag._load_model_var(model, var, period=mperiod)
         except (KeyError, FileNotFoundError):
             logger.warning("  %s not available for %s — skipping", var, model)
             continue
         da = prep_ocean_field(config, da, var, model=model)
         annual = regrid_scatter(
-            climatology(da, period).compute(), target_lats, target_lons,
+            climatology(da, mperiod).compute(), target_lats, target_lons,
             res, ir, model_cache, method=method,
         )
         entry = {
@@ -408,7 +460,7 @@ def compute_ocean_fields(
             "seasonal_biases": {},
         }
         ens_regrids["annual"].append(annual)
-        seasonal = seasonal_climatology(da, period)
+        seasonal = seasonal_climatology(da, mperiod)
         for s in ("DJF", "JJA"):
             if s in periods and s in seasonal:
                 sr = regrid_scatter(
@@ -450,7 +502,7 @@ def compute_ocean_fields(
             member_label = f"{model}/{variant}"
             try:
                 da = bench.load_var_for_model_var(
-                    var, model, variant=variant, period=period)
+                    var, model, variant=variant, period=mperiod)
             except Exception:  # noqa: BLE001
                 da = None
             if da is None:
@@ -473,7 +525,7 @@ def compute_ocean_fields(
                     continue
                 try:
                     da_s = bench.load_var_for_model_var(
-                        var, model, variant=variant, period=period, season=s)
+                        var, model, variant=variant, period=mperiod, season=s)
                 except Exception:  # noqa: BLE001
                     da_s = None
                 if da_s is None:
