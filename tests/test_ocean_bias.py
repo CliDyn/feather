@@ -91,6 +91,21 @@ class TestRegridScatter:
         assert out.shape == (len(tlat), len(tlon))
         assert float(np.nanmax(out.values)) == pytest.approx(5.0, abs=1e-6)
 
+    def test_squeezes_singleton_time(self):
+        # ESA-CCI timemean carries a length-1 time dim → must be squeezed.
+        lats = np.arange(-80, 81, 20.0)
+        lons = np.arange(10, 360, 20.0)
+        da = xr.DataArray(
+            np.full((1, len(lats), len(lons)), 5.0),
+            dims=("time", "lat", "lon"),
+            coords={"time": [0], "lat": lats, "lon": lons},
+        )
+        tlat = np.arange(-89.5, 90, 1.0)
+        tlon = np.arange(0.5, 360, 1.0)
+        out = ob.regrid_scatter(da, tlat, tlon, 1.0, 1_000_000, {})
+        assert out.shape == (len(tlat), len(tlon))
+        assert float(np.nanmax(out.values)) == pytest.approx(5.0, abs=1e-6)
+
     def test_curvilinear(self):
         ny, nx = 8, 10
         lat2d = np.tile(np.linspace(-70, 70, ny)[:, None], (1, nx))
@@ -104,6 +119,36 @@ class TestRegridScatter:
         tlon = np.arange(1, 360, 2.0)
         out = ob.regrid_scatter(src, tlat, tlon, 2.0, 2_000_000, {})
         assert out.shape == (len(tlat), len(tlon))
+
+
+class TestCoarsen:
+    def test_reduces_fine_rectilinear(self):
+        lats = np.arange(0, 10, 0.05)   # 0.05° source (like ESA-CCI)
+        lons = np.arange(0, 10, 0.05)
+        da = xr.DataArray(
+            np.ones((len(lats), len(lons))), dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        out = ob._coarsen_rectilinear(da, 0.25)  # k = int(0.25/0.05) = 5
+        assert out.sizes["lat"] == len(lats) // 5
+        assert out.sizes["lon"] == len(lons) // 5
+
+    def test_noop_when_source_coarser(self):
+        lats = np.arange(-89.5, 90, 1.0)  # already 1°
+        lons = np.arange(0.5, 360, 1.0)
+        da = xr.DataArray(
+            np.ones((len(lats), len(lons))), dims=("lat", "lon"),
+            coords={"lat": lats, "lon": lons},
+        )
+        assert ob._coarsen_rectilinear(da, 0.25).sizes == da.sizes
+
+    def test_noop_curvilinear(self):
+        da = xr.DataArray(
+            np.ones((4, 4)), dims=("y", "x"),
+            coords={"nav_lat": (("y", "x"), np.zeros((4, 4))),
+                    "nav_lon": (("y", "x"), np.zeros((4, 4)))},
+        )
+        assert ob._coarsen_rectilinear(da, 0.25).sizes == da.sizes
 
 
 class TestExportGuard:

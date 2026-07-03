@@ -193,7 +193,10 @@ def regrid_scatter(
 
     Treats the source as scattered points so it works for rectilinear,
     curvilinear (2-D nav_lat/nav_lon) and polar (EASE2) grids alike.
+    Any singleton non-spatial dimension (e.g. a length-1 ``time`` on the
+    ESA-CCI ``timemean`` field) is dropped first so the data is genuinely 2-D.
     """
+    da = da.squeeze(drop=True)
     lat_name, lon_name = latlon_names(da)
     lat = np.asarray(da[lat_name].values)
     lon = np.asarray(da[lon_name].values)
@@ -233,7 +236,35 @@ def regrid_scatter(
 # -- Observation loading (returns climatologies already on the common grid) --
 
 
-def _esa_cci_native(obs_loader) -> dict[str, xr.DataArray]:
+def _coarsen_rectilinear(da: xr.DataArray, target_res: float) -> xr.DataArray:
+    """Block-average a fine rectilinear field toward *target_res* (degrees).
+
+    Keeps very high-resolution obs (e.g. ESA-CCI at 0.05°, 25.9M cells)
+    tractable for the scattered-point regrid: coarsening to ~the analysis
+    grid resolution avoids building a KDTree over tens of millions of points.
+    No-op for curvilinear grids (lat/lon are 2-D coords, not dims) or when the
+    source is already at/above the target resolution.  NaN (land) cells are
+    skipped by the block mean.
+    """
+    da = da.squeeze(drop=True)
+    lat_name, lon_name = latlon_names(da)
+    if lat_name not in da.dims or lon_name not in da.dims:
+        return da
+    lat = np.asarray(da[lat_name].values)
+    if lat.size < 2:
+        return da
+    src_res = abs(float(lat[1] - lat[0]))
+    if src_res <= 0:
+        return da
+    k = int(target_res / src_res)
+    if k >= 2:
+        da = da.coarsen({lat_name: k, lon_name: k}, boundary="trim").mean()
+    return da
+
+
+def _esa_cci_native(
+    obs_loader, target_res: float = OCEAN_RES,
+) -> dict[str, xr.DataArray]:
     annual = obs_loader.load_esa_cci("timemean") - 273.15
     ymon = obs_loader.load_esa_cci("ymonmean") - 273.15
     if "time" in ymon.dims:
@@ -245,7 +276,8 @@ def _esa_cci_native(obs_loader) -> dict[str, xr.DataArray]:
         jja = ymon.sel(month=[6, 7, 8]).mean("month")
     else:
         djf = jja = annual
-    return {"annual": annual, "DJF": djf, "JJA": jja}
+    out = {"annual": annual, "DJF": djf, "JJA": jja}
+    return {pk: _coarsen_rectilinear(v, target_res) for pk, v in out.items()}
 
 
 def _en4_native(obs_loader, var: str, period) -> dict[str, xr.DataArray]:
@@ -285,7 +317,7 @@ def load_ocean_obs_on_target(
         return None
 
     if var == "tos":
-        native = _esa_cci_native(obs_loader)
+        native = _esa_cci_native(obs_loader, target_res=resolution)
         merged_hemis = None
     elif var in ("thetao", "so"):
         native = _en4_native(obs_loader, var, period)
