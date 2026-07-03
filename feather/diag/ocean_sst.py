@@ -135,7 +135,10 @@ class OceanSST(DiagnosticBase):
         )
 
         # Determine which groups need computation
-        bias_ids = [f"sst_{p}_bias_combined" for p in ("annual", "djf", "jja")]
+        bias_ids = [
+            f"sst_{p}_{suffix}" for p in ("annual", "djf", "jja")
+            for suffix in ("bias_combined", "ens_bias_combined")
+        ]
         need_a = not skip_existing or not all(
             self._figure_exists(f) for f in bias_ids
         )
@@ -187,11 +190,13 @@ class OceanSST(DiagnosticBase):
         # Load shared model data (once)
         model_monthly, model_coords = self._load_model_data()
 
-        # Group A: Bias maps
+        # Group A: Bias maps (per-model + ensemble mean/median)
         if need_a:
             results = self._compute_bias_maps(model_monthly, model_coords)
             self._maybe_export_netcdf(results, "sst_bias")
             for fig, meta in self._plot_bias_maps(results):
+                saved.append(self._save(fig, meta, meta["figure_id"]))
+            for fig, meta in self._plot_ens_bias_maps(results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
         # Group B: Time series
@@ -542,6 +547,30 @@ class OceanSST(DiagnosticBase):
                     "rmse": rmse,
                 }
 
+        # EERIE ensemble mean/median bias (evaluated models only), computed
+        # from the already-regridded model climatologies on the common grid.
+        ensemble: dict[str, dict] = {}
+        eerie = [m for m in model_results if m in self.config.models]
+        for pkey in periods_data:
+            regrids = [
+                model_results[m][pkey]["regrid"]
+                for m in eerie if pkey in model_results[m]
+            ]
+            if not regrids:
+                continue
+            obs_common = periods_data[pkey].get("obs_common")
+            if obs_common is None:
+                continue
+            stack = xr.concat(regrids, dim="member")
+            mean = stack.mean("member")
+            median = stack.median("member")
+            ensemble[pkey] = {
+                "mean_regrid": mean, "median_regrid": median,
+                "mean_bias": mean - obs_common,
+                "median_bias": median - obs_common,
+                "n_members": len(regrids),
+            }
+
         # Benchmark (CMIP6/HighResMIP) MMM bias panel(s), on the same grid.
         if target_lats is not None:
             model_results.update(self._benchmark_bias_maps(
@@ -550,6 +579,7 @@ class OceanSST(DiagnosticBase):
 
         return {
             "models": model_results,
+            "ensemble": ensemble,
             "periods": periods_data,
             "common_area": common_area,
         }
@@ -678,6 +708,68 @@ class OceanSST(DiagnosticBase):
             )
             figures.append((fig, meta))
 
+        return figures
+
+    def _plot_ens_bias_maps(self, results):
+        """Ensemble mean/median bias maps (+ benchmark MMM) per period."""
+        from feather.plot.maps import plot_combined_bias_map
+
+        figures = []
+        periods_data = results["periods"]
+        ensemble = results.get("ensemble", {})
+        benchmarks = [
+            m for m in results["models"] if m not in self.config.models]
+
+        for pkey, plabel in [
+            ("annual", "Annual Mean"), ("djf", "DJF"), ("jja", "JJA"),
+        ]:
+            obs_common = periods_data[pkey].get("obs_common")
+            ens = ensemble.get(pkey)
+            if obs_common is None or ens is None:
+                continue
+
+            bias_dict = {
+                "Ensemble Mean": ens["mean_bias"],
+                "Ensemble Median": ens["median_bias"],
+            }
+            for label in benchmarks:
+                mdata = results["models"][label]
+                if pkey in mdata:
+                    bias_dict[label] = mdata[pkey]["bias"]
+
+            try:
+                import cmocean
+                obs_cmap = cmocean.cm.thermal
+            except ImportError:
+                obs_cmap = "RdYlBu_r"
+
+            fig, _ = plot_combined_bias_map(
+                obs_common, bias_dict,
+                title=f"Sea Surface Temperature {plabel} — Ensemble",
+                obs_title=self._obs_label,
+                cmap=obs_cmap, bias_cmap="RdBu_r", units="°C",
+                land=True, method=self._regrid_method,
+            )
+            meta = self._build_metadata(
+                title=f"SST {plabel} Ensemble Bias",
+                figure_id=f"sst_{pkey}_ens_bias_combined",
+                models=list(self.config.models),
+                description=(
+                    f"{plabel} SST ensemble mean/median bias "
+                    f"(n={ens['n_members']}) and benchmark MMM bias relative "
+                    f"to {self._obs_dataset_name}."
+                ),
+                plot_type="combined_bias_map", period=self.period,
+                obs_dataset=self._obs_dataset_name,
+                summary_statistics={
+                    "ensemble_mean_global_bias": float(_ocean_global_mean(
+                        ens["mean_bias"]).values),
+                    "ensemble_median_global_bias": float(_ocean_global_mean(
+                        ens["median_bias"]).values),
+                    "n_members": ens["n_members"],
+                },
+            )
+            figures.append((fig, meta))
         return figures
 
     # ── Group B: Time series ──────────────────────────────────────────

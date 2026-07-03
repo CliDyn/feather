@@ -205,23 +205,33 @@ class SSTHadISST(OceanSST):
 
     def _compute_cmip6_trends(self, target_lats, target_lons, resolution,
                               influence_radius, loader=None):
-        """Benchmark MMM SST trend on the common grid."""
-        from feather.diag.global_biases import GlobalBiases
+        """Benchmark MMM SST trend on the common grid.
+
+        Uses the curvilinear-safe scattered regrid (CMIP6 ocean grids are
+        often ORCA/tripolar, which the rectilinear GlobalBiases regridder
+        cannot handle).
+        """
+        from feather.diag import ocean_bias
         loader = loader or self.cmip6_loader
         if loader is None or not self.cmip6_enabled:
             return None
+        bench_ir = max(influence_radius, ocean_bias._BENCH_IR_FLOOR)
         fields = []
-        interp_cache: dict = {}
+        cache: dict = {}
         for model, variant in loader.get_member_pairs():
-            da = loader.load_var_for_model_var(
-                "tos", model, variant=variant,
-                period=self.period, time_mean=False)
-            if da is None:
+            try:
+                da = loader.load_var_for_model_var(
+                    "tos", model, variant=variant,
+                    period=self.period, time_mean=False)
+                if da is None:
+                    continue
+                trend = linear_trend(da.compute()) * 10
+                fields.append(ocean_bias.regrid_scatter(
+                    trend, target_lats, target_lons, resolution,
+                    bench_ir, cache, method=self._regrid_method))
+            except Exception:  # noqa: BLE001
+                logger.debug("  benchmark trend %s/%s failed", model, variant)
                 continue
-            trend = linear_trend(da.compute()) * 10
-            fields.append(GlobalBiases._regrid_to_target(
-                trend, target_lats, target_lons, resolution,
-                influence_radius, interp_cache, method=self._regrid_method))
         if not fields:
             return None
         return sum(fields) / len(fields)
@@ -387,29 +397,38 @@ class SSTHadISST(OceanSST):
 
     def _compute_cmip6_taylor_stats(self, obs_annual, obs_seasonal,
                                     obs_lats, obs_lons, obs_area, res, ir):
-        from feather.diag.global_biases import GlobalBiases
+        # Curvilinear-safe regrid (CMIP6 ocean grids are often ORCA/tripolar).
+        from feather.diag import ocean_bias
         if not self.cmip6_enabled:
             return None
-        interp_cache: dict = {}
+        bench_ir = max(ir, ocean_bias._BENCH_IR_FLOOR)
+        cache: dict = {}
         annual_fields = []
         seasonal_fields: dict[str, list] = {
             "DJF": [], "MAM": [], "JJA": [], "SON": []}
         for model, variant in self.cmip6_loader.get_member_pairs():
-            da = self.cmip6_loader.load_var_for_model_var(
-                "tos", model, variant=variant, period=self.period)
-            if da is None:
+            try:
+                da = self.cmip6_loader.load_var_for_model_var(
+                    "tos", model, variant=variant, period=self.period)
+                if da is None:
+                    continue
+                annual_fields.append(ocean_bias.regrid_scatter(
+                    da, obs_lats, obs_lons, res, bench_ir, cache,
+                    method=self._regrid_method))
+            except Exception:  # noqa: BLE001
+                logger.debug("  benchmark Taylor %s/%s failed", model, variant)
                 continue
-            annual_fields.append(GlobalBiases._regrid_to_target(
-                da, obs_lats, obs_lons, res, ir, interp_cache,
-                method=self._regrid_method))
             for s in ("DJF", "MAM", "JJA", "SON"):
-                da_s = self.cmip6_loader.load_var_for_model_var(
-                    "tos", model, variant=variant,
-                    period=self.period, season=s)
-                if da_s is not None:
-                    seasonal_fields[s].append(GlobalBiases._regrid_to_target(
-                        da_s, obs_lats, obs_lons, res, ir, interp_cache,
-                        method=self._regrid_method))
+                try:
+                    da_s = self.cmip6_loader.load_var_for_model_var(
+                        "tos", model, variant=variant,
+                        period=self.period, season=s)
+                    if da_s is not None:
+                        seasonal_fields[s].append(ocean_bias.regrid_scatter(
+                            da_s, obs_lats, obs_lons, res, bench_ir, cache,
+                            method=self._regrid_method))
+                except Exception:  # noqa: BLE001
+                    pass
         if not annual_fields:
             return None
         mmm = xr.concat(annual_fields, dim="member").mean("member")
