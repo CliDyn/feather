@@ -2062,15 +2062,41 @@ class AddedValueDiag(DiagnosticBase):
     #: Ocean variables handled on the dedicated Ocean Added Value page.
     _OCEAN_VARIABLES: list[str] = ["tos", "thetao", "so", "siconc"]
 
-    #: Ocean variable → observational reference dataset.
+    #: Ocean variable → primary observational reference dataset.
     _OCEAN_OBS: dict[str, str] = dict(_ocean_bias.OCEAN_OBS)
+
+    #: Ocean variable → ordered list of obs references (first = primary,
+    #: token-less figures).  ``tos`` has two: ESA-CCI (0.05°, 1990–2014) and
+    #: HadISST (1°, full 1980–2014).  Other vars default to their single obs.
+    _OCEAN_MULTI_OBS: dict[str, list[str]] = {
+        "tos": ["ESA_CCI", "HADISST"],
+    }
 
     #: Human-readable obs labels for figure text.
     _OCEAN_OBS_LABEL: dict[str, str] = {
         "ESA_CCI": "ESA-CCI",
+        "HADISST": "HadISST",
         "EN4": "EN4 v4.2.2",
         "OSI_SAF": "OSI-SAF",
     }
+
+    def _ocean_obs_list(self, var: str) -> list[str]:
+        """Obs references to evaluate *var* against (configured ones only).
+
+        First entry is the primary (token-less figures); the rest are
+        secondary (obs-suffixed).  Filtered to obs present in the config so a
+        HadISST-less config transparently falls back to ESA-CCI only.
+        """
+        wanted = self._OCEAN_MULTI_OBS.get(
+            var, [self._OCEAN_OBS.get(var, "")])
+        return [o for o in wanted if o and o in self.config.obs_datasets]
+
+    def _ocean_fig_suffix(self, var: str, obs_name: str) -> str:
+        """Figure-id/obs token for an ocean obs (primary → ``''``)."""
+        lst = self._ocean_obs_list(var)
+        if not lst or obs_name == lst[0]:
+            return ""
+        return "_" + obs_name.lower()
 
     #: Website nav group for the ocean AV figures (matches the config
     #: ``group_labels`` entry ``ocean_added_value``).
@@ -2131,30 +2157,33 @@ class AddedValueDiag(DiagnosticBase):
 
     # -- Ocean compute ------------------------------------------------------
 
-    def _compute_ocean_variable(self, var: str) -> dict[str, Any] | None:
+    def _compute_ocean_variable(
+        self, var: str, obs_name: str | None = None,
+    ) -> dict[str, Any] | None:
         """Dosio AV for an ocean variable against the active benchmark.
 
-        Fast path: reuse the benchmark-bias NetCDFs written by the ocean
-        diagnostics (ocean_sst / ocean_en4 / sea_ice via
-        :mod:`feather.diag.ocean_bias`).  Falls back to recomputing the fields
-        on the common grid when those NetCDFs are absent.
+        *obs_name* selects the observational reference (defaults to the
+        variable's primary).  Fast path: reuse the benchmark-bias NetCDFs
+        written by the ocean diagnostics (ocean_sst / sst_hadisst / ocean_en4 /
+        sea_ice via :mod:`feather.diag.ocean_bias`).  Falls back to recomputing
+        the fields on the common grid when those NetCDFs are absent.
         """
         if not self.cmip6_enabled:
             logger.warning("No benchmark loader — cannot compute ocean AV %s", var)
             return None
 
-        data = self._ocean_bias_blocks_from_netcdf(var)
+        obs_name = obs_name or self._OCEAN_OBS.get(var, "")
+        data = self._ocean_bias_blocks_from_netcdf(var, obs_name)
         if data is None:
-            data = self._ocean_bias_blocks_from_fields(var)
+            data = self._ocean_bias_blocks_from_fields(var, obs_name)
         if data is None:
             return None
-        return self._ocean_av_from_blocks(var, data)
+        return self._ocean_av_from_blocks(var, data, obs_name)
 
     def _ocean_bias_blocks_from_netcdf(
-        self, var: str,
+        self, var: str, obs_name: str,
     ) -> dict[str, Any] | None:
         """Per-period ocean bias blocks read from the ocean diagnostic's NC."""
-        obs_name = self._OCEAN_OBS.get(var, "")
         if self._OBS_NETCDF_SOURCE.get(obs_name) is None:
             return None
         blocks: dict[str, dict] = {}
@@ -2192,20 +2221,21 @@ class AddedValueDiag(DiagnosticBase):
         }
 
     def _ocean_bias_blocks_from_fields(
-        self, var: str,
+        self, var: str, obs_name: str,
     ) -> dict[str, Any] | None:
         """Per-period ocean bias blocks recomputed via ocean_bias fields."""
         from feather.diag import ocean_bias
 
         var_info = get_var(var)
         logger.info(
-            "Recomputing ocean Added Value fields for %s (%s)",
-            var, var_info.long_name,
+            "Recomputing ocean Added Value fields for %s (%s) vs %s",
+            var, var_info.long_name, obs_name,
         )
         results = ocean_bias.compute_ocean_fields(
             self, var, self.period, self._regrid_method,
             benchmarks=[self.cmip6_loader],
             want_individual=self.cmip6_individual,
+            obs_name=obs_name,
         )
         if not results:
             return None
@@ -2258,11 +2288,11 @@ class AddedValueDiag(DiagnosticBase):
         }
 
     def _ocean_av_from_blocks(
-        self, var: str, data: dict[str, Any],
+        self, var: str, data: dict[str, Any], obs_name: str | None = None,
     ) -> dict[str, Any] | None:
         """Assemble the ocean AV result + persist NC from per-period biases."""
         var_info = get_var(var)
-        obs_name = self._OCEAN_OBS.get(var, "")
+        obs_name = obs_name or self._OCEAN_OBS.get(var, "")
         blocks = data["blocks"]
         eerie_models = data["eerie_models"]
         bench_labels = data["bench_labels"]
@@ -2331,13 +2361,15 @@ class AddedValueDiag(DiagnosticBase):
             "cmip6_models": bench_labels,
         }
 
-    def _ocean_fig_ids(self, var: str) -> list[str]:
-        """All ocean AV figure IDs for a variable (for skip checks)."""
+    def _ocean_fig_ids(self, var: str, obs_name: str) -> list[str]:
+        """All ocean AV figure IDs for a variable/obs (for skip checks)."""
+        obs_suffix = self._ocean_fig_suffix(var, obs_name)
         ids: list[str] = []
         for pk in ("annual", "djf", "jja"):
             base = f"ocean_{var}_{pk}_{self.period[0]}_{self.period[1]}"
-            ids.append(f"{base}_added_value{self._bench_suffix}")
-            ids.append(f"{base}_added_value_models{self._bench_suffix}")
+            ids.append(f"{base}_added_value{obs_suffix}{self._bench_suffix}")
+            ids.append(
+                f"{base}_added_value_models{obs_suffix}{self._bench_suffix}")
         return ids
 
     def _plot_ocean_variable(
@@ -2350,6 +2382,7 @@ class AddedValueDiag(DiagnosticBase):
         obs_label = self._OCEAN_OBS_LABEL.get(obs_name, obs_name)
         av = vr["av"]
 
+        obs_suffix = self._ocean_fig_suffix(var, obs_name)
         period_labels = [("annual", "Annual"), ("DJF", "DJF"), ("JJA", "JJA")]
         extra = {
             "eerie_models": vr["eerie_models"],
@@ -2394,7 +2427,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"({self._project_name} ensemble vs {self._bench_label}, "
                     f"obs: {obs_label})"
                 ),
-                figure_id=f"{base}_added_value{self._bench_suffix}",
+                figure_id=f"{base}_added_value{obs_suffix}{self._bench_suffix}",
                 models=vr["eerie_models"],
                 variables=[var],
                 description=(
@@ -2442,7 +2475,7 @@ class AddedValueDiag(DiagnosticBase):
                     f"{var_info.long_name} {period_label} Ocean Added Value "
                     f"— Individual Models (obs: {obs_label})"
                 ),
-                figure_id=f"{base}_added_value_models{self._bench_suffix}",
+                figure_id=f"{base}_added_value_models{obs_suffix}{self._bench_suffix}",
                 models=vr["eerie_models"],
                 variables=[var],
                 description=(
@@ -2463,28 +2496,32 @@ class AddedValueDiag(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
         ocean_vars = [v for v in self._OCEAN_VARIABLES if v in VARIABLE_REGISTRY]
         for var in ocean_vars:
-            fig_ids = self._ocean_fig_ids(var)
-            if skip_existing and all(
-                self._ocean_figure_exists(fid) for fid in fig_ids
-            ):
-                logger.info("Skipping ocean %s — all figures exist", var)
-                for fid in fig_ids:
-                    saved.append((
-                        self.ocean_output_dir / f"{fid}.png",
-                        self.ocean_output_dir / f"{fid}.json",
-                    ))
-                continue
-            try:
-                vr = self._compute_ocean_variable(var)
-                if vr is None:
+            for obs_name in self._ocean_obs_list(var):
+                fig_ids = self._ocean_fig_ids(var, obs_name)
+                if skip_existing and all(
+                    self._ocean_figure_exists(fid) for fid in fig_ids
+                ):
+                    logger.info(
+                        "Skipping ocean %s vs %s — all figures exist",
+                        var, obs_name)
+                    for fid in fig_ids:
+                        saved.append((
+                            self.ocean_output_dir / f"{fid}.png",
+                            self.ocean_output_dir / f"{fid}.json",
+                        ))
                     continue
-                for fig, meta in self._plot_ocean_variable(var, vr):
-                    saved.append(self._save_ocean_fig(
-                        fig, meta, meta["figure_id"]))
-            except Exception:
-                logger.warning(
-                    "Ocean variable %s failed — skipping", var, exc_info=True,
-                )
+                try:
+                    vr = self._compute_ocean_variable(var, obs_name)
+                    if vr is None:
+                        continue
+                    for fig, meta in self._plot_ocean_variable(var, vr):
+                        saved.append(self._save_ocean_fig(
+                            fig, meta, meta["figure_id"]))
+                except Exception:
+                    logger.warning(
+                        "Ocean %s vs %s failed — skipping",
+                        var, obs_name, exc_info=True,
+                    )
         return saved
 
     # -- Plotting -----------------------------------------------------------

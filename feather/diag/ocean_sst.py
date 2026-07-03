@@ -91,6 +91,14 @@ class OceanSST(DiagnosticBase):
     variables = ["tos"]
     group = "ocean_surface"
 
+    #: Obs labels/keys — overridden by subclasses (e.g. sst_hadisst) to
+    #: evaluate the same SST fields against a different reference dataset.
+    _obs_label = "ESA-CCI"
+    _obs_dataset_name = "ESA-CCI L4 v3.0.1"
+    #: Obs key passed to ocean_bias for the benchmark-bias NetCDF (None →
+    #: OCEAN_OBS["tos"] = ESA_CCI).
+    _ocean_bias_obs = None
+
     def __init__(self, model_loader, obs_loader, config, *,
                  cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
@@ -123,7 +131,7 @@ class OceanSST(DiagnosticBase):
         from feather.diag import ocean_bias
         ocean_bias.maybe_export_ocean_bias(
             self, ["tos"], want_individual=self.cmip6_individual,
-            skip_existing=skip_existing,
+            skip_existing=skip_existing, obs_name=self._ocean_bias_obs,
         )
 
         # Determine which groups need computation
@@ -556,7 +564,7 @@ class OceanSST(DiagnosticBase):
             fig, axes = plot_combined_bias_map(
                 obs_common, bias_dict,
                 title=f"Sea Surface Temperature {plabel}",
-                obs_title="ESA-CCI",
+                obs_title=self._obs_label,
                 cmap=obs_cmap,
                 bias_cmap="RdBu_r",
                 units="\u00b0C",
@@ -570,11 +578,11 @@ class OceanSST(DiagnosticBase):
                 models=all_models,
                 description=(
                     f"{plabel} SST climatology and model biases relative to "
-                    f"ESA-CCI L4 v3.0.1 satellite observations."
+                    f"{self._obs_dataset_name} satellite observations."
                 ),
                 plot_type="combined_bias_map",
                 period=self.period,
-                obs_dataset="ESA-CCI L4 v3.0.1",
+                obs_dataset=self._obs_dataset_name,
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
@@ -632,7 +640,7 @@ class OceanSST(DiagnosticBase):
         if results.get("obs") is not None:
             obs_annual = annual_mean(results["obs"])
             time_vals = _to_plot_time(obs_annual.time.values)
-            ax.plot(time_vals, obs_annual.values, label="ESA-CCI",
+            ax.plot(time_vals, obs_annual.values, label=self._obs_label,
                     color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title("Global Mean Sea Surface Temperature")
@@ -642,20 +650,20 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Global Mean Time Series",
             figure_id="sst_timeseries",
             models=all_models,
             description=(
-                "Global-mean SST time series for DestinE models and ESA-CCI "
+                "Global-mean SST time series for DestinE models and {self._obs_label} "
                 "observations. Monthly values as semi-transparent lines, "
                 "annual means as thick lines. Units: degrees Celsius."
             ),
             plot_type="timeseries",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 
@@ -720,7 +728,7 @@ class OceanSST(DiagnosticBase):
 
         if results.get("obs") is not None:
             obs_cycle = results["obs"]
-            ax.plot(months, obs_cycle.values, marker="s", label="ESA-CCI",
+            ax.plot(months, obs_cycle.values, marker="s", label=self._obs_label,
                     color=OBS_COLOR, linewidth=2)
 
         ax.set_xticks(months)
@@ -732,7 +740,7 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Seasonal Cycle",
@@ -740,11 +748,11 @@ class OceanSST(DiagnosticBase):
             models=all_models,
             description=(
                 "Monthly climatological cycle of global-mean SST for DestinE "
-                "models and ESA-CCI observations. Units: degrees Celsius."
+                "models and {self._obs_label} observations. Units: degrees Celsius."
             ),
             plot_type="seasonal_cycle",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 
@@ -796,7 +804,7 @@ class OceanSST(DiagnosticBase):
             obs_zm = results["obs"]
             lat_name = "lat" if "lat" in obs_zm.coords else "latitude"
             ax.plot(obs_zm.values, obs_zm[lat_name].values,
-                    label="ESA-CCI", color=OBS_COLOR, linewidth=2)
+                    label=self._obs_label, color=OBS_COLOR, linewidth=2)
 
         ax.set_title("SST Zonal Mean")
         ax.set_xlabel("SST (\u00b0C)")
@@ -807,20 +815,20 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Zonal Mean Profile",
             figure_id="sst_zonal_mean",
             models=all_models,
             description=(
-                "Zonal mean SST profile for DestinE models and ESA-CCI "
+                "Zonal mean SST profile for DestinE models and {self._obs_label} "
                 "observations. Latitude on y-axis, SST (degrees Celsius) on "
                 "x-axis."
             ),
             plot_type="zonal_profile",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 

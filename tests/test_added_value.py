@@ -938,10 +938,30 @@ class TestOceanAddedValue:
         assert d.parent == diag.output_dir.parent
 
     def test_ocean_fig_ids_cover_periods(self, diag):
-        ids = diag._ocean_fig_ids("tos")
+        ids = diag._ocean_fig_ids("tos", "ESA_CCI")
         assert len(ids) == 6  # 3 periods x (ensemble + models)
         assert any("annual_1990_1990_added_value" in i for i in ids)
         assert any("_added_value_models" in i for i in ids)
+
+    def test_ocean_multi_obs_tos(self, diag):
+        # tos has two references; ESA-CCI primary (token-less), HadISST suffixed
+        diag.config.obs_datasets = {"ESA_CCI": {}, "HADISST": {}}
+        assert diag._ocean_obs_list("tos") == ["ESA_CCI", "HADISST"]
+        assert diag._ocean_fig_suffix("tos", "ESA_CCI") == ""
+        assert diag._ocean_fig_suffix("tos", "HADISST") == "_hadisst"
+        esa_ids = diag._ocean_fig_ids("tos", "ESA_CCI")
+        had_ids = diag._ocean_fig_ids("tos", "HADISST")
+        assert all("_hadisst" not in i for i in esa_ids)
+        assert all("_hadisst" in i for i in had_ids)
+        assert not set(esa_ids) & set(had_ids)  # no collision
+
+    def test_ocean_multi_obs_fallback_without_hadisst(self, diag):
+        diag.config.obs_datasets = {"ESA_CCI": {}}  # HadISST absent
+        assert diag._ocean_obs_list("tos") == ["ESA_CCI"]
+
+    def test_hadisst_wired_as_tos_av_source(self, diag):
+        assert diag._OBS_NETCDF_SOURCE.get("HADISST") == "sst_hadisst"
+        assert diag._OCEAN_MULTI_OBS["tos"] == ["ESA_CCI", "HADISST"]
 
     def test_surface_slice_collapses_depth(self, diag):
         da = xr.DataArray(

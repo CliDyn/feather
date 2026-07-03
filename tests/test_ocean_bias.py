@@ -210,3 +210,36 @@ class TestObsClimPeriod:
 
         assert ob.obs_clim_period(
             _BadObs(), cfg, "tos", ("1980", "2014")) == ("1980", "2014")
+
+
+# ── HadISST (second tos obs) ─────────────────────────────────────────
+
+
+class _FakeHadObs:
+    def load_hadisst(self, period=None):
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+        t = pd.date_range("1980-01-01", "2014-12-01", freq="MS")
+        return xr.DataArray(
+            np.full((len(t), 3, 4), 288.0), dims=("time", "lat", "lon"),
+            coords={"time": t, "lat": [-30, 0, 30],
+                    "lon": [0, 90, 180, 270]},
+        )
+
+
+class TestHadISST:
+    def test_native_converts_to_celsius(self):
+        out = ob._hadisst_native(_FakeHadObs(), ("1980", "2014"))
+        assert "annual" in out and "DJF" in out and "JJA" in out
+        assert float(out["annual"].max()) == pytest.approx(288.0 - 273.15, abs=1e-3)
+
+    def test_obs_clim_period_hadisst_not_aligned(self):
+        cfg = SimpleNamespace(nereus={})
+        # HadISST spans the full window → model period unchanged.
+        assert ob.obs_clim_period(
+            _FakeHadObs(), cfg, "tos", ("1980", "2014"),
+            obs_name="HADISST") == ("1980", "2014")
+
+    def test_obs_diag_map_has_hadisst(self):
+        assert ob.OCEAN_OBS_DIAG["HADISST"] == "sst_hadisst"
