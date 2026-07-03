@@ -19,5 +19,11 @@ output_*/
 *.png
 *.nc
 
+# Local-only analysis notebooks (kept on disk, not part of feather)
+notebooks/grid_resolution_sensitivity.ipynb
+notebooks/grid_resolution_sensitivity_pr.ipynb
+notebooks/cmip6_mmm_resolution_equivalence.ipynb
+notebooks/cmip6_mmm_resolution_equivalence_pr.ipynb
+
 # OS
 .DS_Store
