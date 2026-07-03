@@ -84,6 +84,13 @@ class SeaIceDiag(DiagnosticBase):
         logger.info("Running diagnostic: %s", self.name)
         saved: list[tuple[Path, Path]] = []
 
+        # Benchmark (CMIP6/HighResMIP) siconc bias NetCDFs for Added Value.
+        from feather.diag import ocean_bias
+        ocean_bias.maybe_export_ocean_bias(
+            self, ["siconc"], want_individual=self.cmip6_individual,
+            skip_existing=skip_existing,
+        )
+
         # Pre-compute model time series (shared across groups A, B, C)
         model_ts = self._compute_model_timeseries()
         obs_ts = self._compute_obs_timeseries()

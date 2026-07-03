@@ -35,6 +35,7 @@ import pandas as pd
 import xarray as xr
 
 from feather.data.variables import VARIABLE_REGISTRY, get_var
+from feather.diag import ocean_bias as _ocean_bias
 from feather.diag.base import DiagnosticBase
 from feather.diag.figure_meta import save_figure_with_metadata
 from feather.diag.netcdf_export import sanitize_name
@@ -509,6 +510,12 @@ class AddedValueDiag(DiagnosticBase):
         "ERA5": "global_biases",
         "BERKELEY_EARTH_HR": "temperature_berkeley",
         "MSWEP": "precipitation_mswep",
+        # Ocean references — benchmark-bias NetCDFs written by the ocean
+        # diagnostics via feather.diag.ocean_bias (schema-compatible with the
+        # atmospheric bias-map NetCDFs).
+        "ESA_CCI": "ocean_sst",
+        "EN4": "ocean_en4",
+        "OSI_SAF": "sea_ice",
     }
 
     #: Period keys as written in the bias-map NetCDF filenames.
@@ -2039,24 +2046,22 @@ class AddedValueDiag(DiagnosticBase):
     # The ocean AV page computes the same Dosio (2015) metric for ocean
     # fields against the ocean observational references used by the ocean
     # diagnostics: tos vs ESA-CCI, thetao/so (surface) vs EN4, and siconc
-    # vs OSI-SAF.  Unlike the atmospheric AV path (which reuses precomputed
-    # bias NetCDFs), the ocean diagnostics do not persist benchmark bias
-    # fields, so ocean AV is always recomputed from raw model + benchmark
-    # data.  Everything is regridded onto a common 1° global grid, which is
-    # robust across rectilinear, curvilinear (ORCA/tripolar) and polar
-    # (EASE2) source grids.  Figures are written to their own figures
-    # subdirectory so the website surfaces them as a dedicated nav entry.
+    # vs OSI-SAF.  It prefers the benchmark/model/ensemble bias NetCDFs the
+    # ocean diagnostics persist via :mod:`feather.diag.ocean_bias`, and falls
+    # back to recomputing those fields on the common grid.  The common grid
+    # resolution follows ``nereus.resolution`` (0.25° in the EERIE configs);
+    # regridding treats every source as scattered points so it is robust
+    # across rectilinear, curvilinear (ORCA/tripolar) and polar (EASE2)
+    # grids.  Figures go to their own figures subdirectory (own nav entry).
+    #
+    # The small unit/grid helpers below delegate to feather.diag.ocean_bias so
+    # the diagnostics and Added Value share a single implementation.
 
     #: Ocean variables handled on the dedicated Ocean Added Value page.
     _OCEAN_VARIABLES: list[str] = ["tos", "thetao", "so", "siconc"]
 
     #: Ocean variable → observational reference dataset.
-    _OCEAN_OBS: dict[str, str] = {
-        "tos": "ESA_CCI",
-        "thetao": "EN4",
-        "so": "EN4",
-        "siconc": "OSI_SAF",
-    }
+    _OCEAN_OBS: dict[str, str] = dict(_ocean_bias.OCEAN_OBS)
 
     #: Human-readable obs labels for figure text.
     _OCEAN_OBS_LABEL: dict[str, str] = {
@@ -2068,15 +2073,6 @@ class AddedValueDiag(DiagnosticBase):
     #: Website nav group for the ocean AV figures (matches the config
     #: ``group_labels`` entry ``ocean_added_value``).
     _OCEAN_NAV_GROUP = "ocean_added_value"
-
-    #: Depth-dimension names to collapse to the surface level (index 0).
-    _DEPTH_DIMS = (
-        "lev", "depth", "deptht", "olevel", "lev_2", "z", "nav_lev", "level",
-    )
-
-    #: Common ocean AV grid resolution (degrees).  1° matches the ~nominal
-    #: CMIP6 ocean resolution and keeps the regridding tractable.
-    _OCEAN_RES = 1.0
 
     @property
     def ocean_output_dir(self) -> Path:
@@ -2098,379 +2094,198 @@ class AddedValueDiag(DiagnosticBase):
             d / f"{figure_id}.json"
         ).exists()
 
-    # -- Ocean helpers ------------------------------------------------------
+    # -- Ocean helpers (delegate to feather.diag.ocean_bias) ----------------
+    # A single shared implementation lives in ocean_bias; these thin wrappers
+    # keep the historical method API used across this class and its tests.
 
     @staticmethod
-    def _latlon_names(da: xr.DataArray) -> tuple[str, str]:
-        """Return (lat_name, lon_name) coordinate names for *da*."""
-        lat = next(
-            (c for c in da.coords
-             if str(c).lower() in ("lat", "latitude", "nav_lat", "y")),
-            "lat",
-        )
-        lon = next(
-            (c for c in da.coords
-             if str(c).lower() in ("lon", "longitude", "nav_lon", "x")),
-            "lon",
-        )
-        return lat, lon
-
-    def _surface_slice(self, da: xr.DataArray) -> xr.DataArray:
-        """Collapse any depth dimension to the surface (shallowest) level."""
-        for d in da.dims:
-            if str(d).lower() in self._DEPTH_DIMS:
-                return da.isel({d: 0})
-        return da
+    def _latlon_names(da):
+        return _ocean_bias.latlon_names(da)
 
     @staticmethod
-    def _to_celsius_if_needed(da: xr.DataArray) -> xr.DataArray:
-        """Convert a temperature field to °C when it is clearly in Kelvin.
-
-        Uses the ``units`` attribute first; falls back to a magnitude
-        heuristic (mean > 150 ⇒ Kelvin) for files with no usable units.
-        """
-        units = str(da.attrs.get("units", "")).strip().lower()
-        if units in ("k", "kelvin"):
-            return da - 273.15
-        if units in ("c", "celsius", "degc", "°c", "degrees_c"):
-            return da
-        try:
-            if float(np.nanmean(np.asarray(da.values))) > 150.0:
-                return da - 273.15
-        except (ValueError, TypeError):
-            pass
-        return da
+    def _surface_slice(da):
+        return _ocean_bias.surface_slice(da)
 
     @staticmethod
-    def _siconc_to_fraction(da: xr.DataArray) -> xr.DataArray:
-        """Normalise sea-ice concentration to a 0–1 fraction (from %)."""
-        try:
-            if float(np.nanmax(np.asarray(da.values))) > 1.5:
-                return da / 100.0
-        except (ValueError, TypeError):
-            pass
-        return da
+    def _to_celsius_if_needed(da):
+        return _ocean_bias.to_celsius_if_needed(da)
 
-    def _surface_sa_to_sp(
-        self, da2d: xr.DataArray, model: str,
-    ) -> xr.DataArray:
-        """Convert surface absolute salinity (SA) → practical salinity (SP).
+    @staticmethod
+    def _siconc_to_fraction(da):
+        return _ocean_bias.siconc_to_fraction(da)
 
-        No-op for models without ``absolute_salinity: true`` in config.
-        Surface pressure is ~0 dbar, so ``gsw.SP_from_SA(SA, 0, lon, lat)``.
-        """
-        mc = self.config.model_configs.get(model)
-        if not (mc and getattr(mc, "absolute_salinity", False)):
-            return da2d
-        import gsw
+    def _surface_sa_to_sp(self, da2d, model):
+        return _ocean_bias.surface_sa_to_sp(self.config, da2d, model)
 
-        lat_name, lon_name = self._latlon_names(da2d)
-        lat = np.asarray(da2d[lat_name].values)
-        lon = np.asarray(da2d[lon_name].values)
-        if lat.ndim == 1 and lon.ndim == 1:
-            lon2d, lat2d = np.meshgrid(lon, lat)
-        else:
-            lon2d, lat2d = lon, lat
-        sp = gsw.SP_from_SA(np.asarray(da2d.values), 0.0, lon2d, lat2d)
-        return da2d.copy(data=sp)
+    def _prep_ocean_field(self, da, var, *, model=None):
+        return _ocean_bias.prep_ocean_field(self.config, da, var, model=model)
 
-    def _prep_ocean_field(
-        self, da: xr.DataArray, var: str, *, model: str | None = None,
-    ) -> xr.DataArray:
-        """Surface-slice + unit-normalise an ocean field for AV comparison.
-
-        Applies, per variable: surface slice (thetao/so), K→°C
-        (tos/thetao), SA→SP surface salinity for absolute-salinity models
-        (so), and %→fraction (siconc).
-        """
-        da = self._surface_slice(da)
-        if var in ("tos", "thetao"):
-            da = self._to_celsius_if_needed(da)
-        elif var == "so" and model is not None:
-            da = self._surface_sa_to_sp(da, model)
-        elif var == "siconc":
-            da = self._siconc_to_fraction(da)
-        return da
-
-    def _regrid_scatter(
-        self, da: xr.DataArray,
-        target_lats: np.ndarray, target_lons: np.ndarray,
-        resolution: float, influence_radius: float,
-        cache: dict, method: str = "nearest",
-    ) -> xr.DataArray:
-        """Regrid any 2-D ocean field to the common grid via nereus.
-
-        Treats the source as scattered points, so it works for rectilinear
-        (1-D lat/lon), curvilinear (2-D nav_lat/nav_lon) and polar (EASE2)
-        grids alike.  Longitudes are shifted to −180..180 to avoid a prime
-        meridian gap; the output is rolled back to the 0..360 target grid.
-        """
-        lat_name, lon_name = self._latlon_names(da)
-        lat = np.asarray(da[lat_name].values)
-        lon = np.asarray(da[lon_name].values)
-        data = np.asarray(da.values)
-
-        if (lat.ndim == 1 and lon.ndim == 1 and data.ndim == 2
-                and data.shape == (lat.size, lon.size)):
-            lon2d, lat2d = np.meshgrid(lon, lat)
-        else:
-            lon2d, lat2d = lon, lat
-
-        src_lon = np.where(lon2d > 180, lon2d - 360, lon2d).ravel()
-        src_lat = np.asarray(lat2d).ravel()
-        vals = data.ravel()
-
-        ir = max(influence_radius, 250_000.0)
-        key = (
-            int(vals.shape[0]),
-            round(float(np.nanmin(src_lat)), 3),
-            round(float(np.nanmax(src_lat)), 3),
+    def _regrid_scatter(self, da, target_lats, target_lons, resolution,
+                        influence_radius, cache, method="nearest"):
+        return _ocean_bias.regrid_scatter(
+            da, target_lats, target_lons, resolution, influence_radius,
+            cache, method=method,
         )
-        if key not in cache:
-            _, cache[key] = nr.regrid(
-                vals, lon=src_lon, lat=src_lat,
-                resolution=resolution, method=method,
-                influence_radius=ir, lon_bounds=(-180.0, 180.0),
-                as_xarray=True,
-            )
-        regridded = cache[key](vals)
-        n_roll = regridded.shape[1] // 2
-        regridded = np.roll(regridded, -n_roll, axis=1)
-        return xr.DataArray(
-            regridded, dims=("lat", "lon"),
-            coords={"lat": target_lats, "lon": target_lons},
-        )
-
-    # -- Ocean obs loading (returns fields already on the common grid) ------
-
-    def _ocean_obs_on_target(
-        self, var: str, target_lats, target_lons, resolution,
-        influence_radius, cache,
-    ) -> dict[str, xr.DataArray] | None:
-        """Load the ocean obs reference for *var* as {period: field-on-grid}.
-
-        Returns annual + DJF + JJA climatologies already regridded to the
-        common grid, or ``None`` when the reference dataset is not in config.
-        """
-        obs_name = self._OCEAN_OBS.get(var)
-        if obs_name not in self.config.obs_datasets:
-            logger.warning(
-                "  Ocean obs %s not configured — skipping %s", obs_name, var,
-            )
-            return None
-
-        if var == "tos":
-            native = self._ocean_obs_esa_cci()
-        elif var in ("thetao", "so"):
-            native = self._ocean_obs_en4(var)
-        elif var == "siconc":
-            native = self._ocean_obs_osisaf()
-        else:
-            return None
-
-        if native is None:
-            return None
-
-        out: dict[str, xr.DataArray] = {}
-        for pk, field in native.items():
-            out[pk] = self._regrid_scatter(
-                field, target_lats, target_lons, resolution,
-                influence_radius, cache, method=self._regrid_method,
-            )
-        return out
-
-    def _ocean_obs_esa_cci(self) -> dict[str, xr.DataArray]:
-        """ESA-CCI SST climatologies (annual/DJF/JJA) in °C on native grid."""
-        annual = self.obs_loader.load_esa_cci("timemean") - 273.15
-        ymon = self.obs_loader.load_esa_cci("ymonmean") - 273.15
-        if "time" in ymon.dims:
-            mon = ymon["time.month"]
-            djf = ymon.sel(time=mon.isin([12, 1, 2])).mean("time")
-            jja = ymon.sel(time=mon.isin([6, 7, 8])).mean("time")
-        elif "month" in ymon.dims:
-            djf = ymon.sel(month=[12, 1, 2]).mean("month")
-            jja = ymon.sel(month=[6, 7, 8]).mean("month")
-        else:
-            djf = jja = annual
-        return {"annual": annual, "DJF": djf, "JJA": jja}
-
-    def _ocean_obs_en4(self, var: str) -> dict[str, xr.DataArray]:
-        """EN4 surface T/S climatologies (annual/DJF/JJA) on native grid."""
-        da = self.obs_loader.load_en4(var, period=self.period)
-        da = self._surface_slice(da)
-        if var == "thetao":
-            da = self._to_celsius_if_needed(da)  # EN4 thetao is stored in K
-        annual = climatology(da, self.period)
-        seasonal = seasonal_climatology(da, self.period)
-        out = {"annual": annual}
-        for s in ("DJF", "JJA"):
-            if s in seasonal:
-                out[s] = seasonal[s]
-        return out
-
-    def _ocean_obs_osisaf(self) -> dict[str, xr.DataArray]:
-        """OSI-SAF sea-ice concentration climatologies as 0–1 fractions.
-
-        NH and SH EASE2 fields are returned separately (both on their own
-        curvilinear grids); the caller regrids each to the common grid and
-        they are merged there.  To keep this method's return uniform with
-        the other obs loaders, the hemispheres are pre-merged after a light
-        regrid onto the common grid is *not* possible here (no target yet),
-        so instead we return per-hemisphere climatologies keyed with a
-        hemisphere tag and merge in :meth:`_ocean_obs_on_target`.
-        """
-        # Build annual + seasonal climatologies per hemisphere on the native
-        # EASE2 grid, then stash both so the regrid step can merge them.
-        self._osisaf_hemis = {}
-        for hemi in ("nh", "sh"):
-            ds = self.obs_loader.load_osisaf(hemi, period=self.period)
-            da = self._siconc_to_fraction(ds["ice_conc"])
-            annual = da.mean("time") if "time" in da.dims else da
-            clim = {"annual": annual}
-            if "time" in da.dims:
-                mon = da["time.month"]
-                clim["DJF"] = da.sel(time=mon.isin([12, 1, 2])).mean("time")
-                clim["JJA"] = da.sel(time=mon.isin([6, 7, 8])).mean("time")
-            self._osisaf_hemis[hemi] = clim
-        # Return NH climatologies as the nominal fields; the SH is merged in
-        # via the special-case in _regrid_scatter caller below.
-        return self._osisaf_hemis["nh"]
 
     # -- Ocean compute ------------------------------------------------------
 
     def _compute_ocean_variable(self, var: str) -> dict[str, Any] | None:
-        """Recompute Dosio AV for an ocean variable on the common 1° grid."""
+        """Dosio AV for an ocean variable against the active benchmark.
+
+        Fast path: reuse the benchmark-bias NetCDFs written by the ocean
+        diagnostics (ocean_sst / ocean_en4 / sea_ice via
+        :mod:`feather.diag.ocean_bias`).  Falls back to recomputing the fields
+        on the common grid when those NetCDFs are absent.
+        """
         if not self.cmip6_enabled:
             logger.warning("No benchmark loader — cannot compute ocean AV %s", var)
             return None
 
-        var_info = get_var(var)
-        logger.info("Computing ocean Added Value for %s (%s)",
-                    var, var_info.long_name)
-
-        target_lats = np.arange(-89.5, 90.0, self._OCEAN_RES)
-        target_lons = np.arange(0.5, 360.0, self._OCEAN_RES)
-        area = compute_latlon_areas(target_lats, target_lons)
-        influence_radius = self.config.nereus.get("influence_radius", 80_000.0)
-
-        obs_cache: dict = {}
-        obs_fields = self._ocean_obs_on_target(
-            var, target_lats, target_lons, self._OCEAN_RES,
-            influence_radius, obs_cache,
-        )
-        if obs_fields is None:
+        data = self._ocean_bias_blocks_from_netcdf(var)
+        if data is None:
+            data = self._ocean_bias_blocks_from_fields(var)
+        if data is None:
             return None
+        return self._ocean_av_from_blocks(var, data)
 
-        # OSI-SAF: merge the SH hemisphere onto the (NH) obs fields.
-        if var == "siconc" and getattr(self, "_osisaf_hemis", None):
-            for pk, sh_field in self._osisaf_hemis["sh"].items():
-                if pk not in obs_fields:
-                    continue
-                sh_on_grid = self._regrid_scatter(
-                    sh_field, target_lats, target_lons, self._OCEAN_RES,
-                    influence_radius, obs_cache, method=self._regrid_method,
-                )
-                obs_fields[pk] = obs_fields[pk].combine_first(sh_on_grid)
-            self._osisaf_hemis = {}
-
-        periods = [p for p in ("annual", "DJF", "JJA") if p in obs_fields]
-
-        # -- EERIE members --------------------------------------------------
-        model_cache: dict = {}
-        eerie: dict[str, dict[str, xr.DataArray]] = {p: {} for p in periods}
-        for model in self.config.models:
-            try:
-                da = self._load_model_var(model, var, period=self.period)
-            except (KeyError, FileNotFoundError):
-                logger.warning("  %s not available for %s — skipping", var, model)
+    def _ocean_bias_blocks_from_netcdf(
+        self, var: str,
+    ) -> dict[str, Any] | None:
+        """Per-period ocean bias blocks read from the ocean diagnostic's NC."""
+        obs_name = self._OCEAN_OBS.get(var, "")
+        if self._OBS_NETCDF_SOURCE.get(obs_name) is None:
+            return None
+        blocks: dict[str, dict] = {}
+        eerie_models: list[str] = []
+        for period_key in self._NC_PERIOD_KEYS:
+            pb = self._read_period_biases(var, obs_name, period_key)
+            if pb is None:
                 continue
-            da = self._prep_ocean_field(da, var, model=model)
-            annual = climatology(da, self.period).compute()
-            eerie["annual"][model] = self._regrid_scatter(
-                annual, target_lats, target_lons, self._OCEAN_RES,
-                influence_radius, model_cache, method=self._regrid_method,
+            indiv = (
+                self._read_individual_biases(var, obs_name, period_key)
+                if self.cmip6_individual else {}
             )
-            seasonal = seasonal_climatology(da, self.period)
-            for s in ("DJF", "JJA"):
-                if s in periods and s in seasonal:
-                    eerie[s][model] = self._regrid_scatter(
-                        seasonal[s].compute(), target_lats, target_lons,
-                        self._OCEAN_RES, influence_radius, model_cache,
-                        method=self._regrid_method,
-                    )
-
-        if not eerie["annual"]:
-            logger.warning("No EERIE models for ocean %s — skipping", var)
+            blocks[period_key] = {
+                "bench_bias": pb["bench"],
+                "ens_mean_bias": pb["ens_mean"],
+                "ens_median_bias": pb["ens_median"],
+                "models": pb["models"],
+                "individual": indiv,
+                "area": pb["area"],
+            }
+            if not eerie_models:
+                eerie_models = list(pb["models"].keys())
+        if not blocks:
             return None
-        eerie_models = list(eerie["annual"].keys())
+        try:
+            bench_labels = [
+                f"{m}/{v}" for m, v in self.cmip6_loader.get_member_pairs()
+            ]
+        except Exception:  # noqa: BLE001
+            bench_labels = []
+        return {
+            "blocks": blocks,
+            "eerie_models": eerie_models,
+            "bench_labels": bench_labels,
+        }
 
-        # -- Benchmark members ---------------------------------------------
-        bench_cache: dict = {}
-        bench: dict[str, list[xr.DataArray]] = {p: [] for p in periods}
-        bench_labels: list[str] = []
-        for model, variant in self.cmip6_loader.get_member_pairs():
-            try:
-                da = self.cmip6_loader.load_var_for_model_var(
-                    var, model, variant=variant, period=self.period,
-                )
-            except Exception:  # noqa: BLE001
-                da = None
-            if da is None:
-                continue
-            da = self._prep_ocean_field(da, var)
-            try:
-                bench["annual"].append(self._regrid_scatter(
-                    da, target_lats, target_lons, self._OCEAN_RES,
-                    influence_radius, bench_cache, method=self._regrid_method,
-                ))
-            except Exception:  # noqa: BLE001
-                logger.debug("  benchmark %s/%s regrid failed", model, variant)
-                continue
-            bench_labels.append(f"{model}/{variant}")
-            for s in ("DJF", "JJA"):
-                if s not in periods:
-                    continue
-                try:
-                    da_s = self.cmip6_loader.load_var_for_model_var(
-                        var, model, variant=variant,
-                        period=self.period, season=s,
-                    )
-                except Exception:  # noqa: BLE001
-                    da_s = None
-                if da_s is not None:
-                    bench[s].append(self._regrid_scatter(
-                        self._prep_ocean_field(da_s, var),
-                        target_lats, target_lons, self._OCEAN_RES,
-                        influence_radius, bench_cache,
-                        method=self._regrid_method,
-                    ))
+    def _ocean_bias_blocks_from_fields(
+        self, var: str,
+    ) -> dict[str, Any] | None:
+        """Per-period ocean bias blocks recomputed via ocean_bias fields."""
+        from feather.diag import ocean_bias
 
-        if not bench["annual"]:
-            logger.warning("No benchmark members for ocean %s — skipping", var)
+        var_info = get_var(var)
+        logger.info(
+            "Recomputing ocean Added Value fields for %s (%s)",
+            var, var_info.long_name,
+        )
+        results = ocean_bias.compute_ocean_fields(
+            self, var, self.period, self._regrid_method,
+            benchmarks=[self.cmip6_loader],
+            want_individual=self.cmip6_individual,
+        )
+        if not results:
+            return None
+        bd = results.get("benchmark_data", {}).get(self._bench_label)
+        if not bd:
             return None
 
-        # -- AV per period --------------------------------------------------
+        models = results.get("models", {})
+        ens_data = results.get("ens_data", {})
+        indiv_all = results.get("benchmark_individual_data", {}).get(
+            self._bench_label, {})
+
+        blocks: dict[str, dict] = {}
+        for pk, pdata in bd.items():
+            ens = ens_data.get(pk, {})
+            if ens.get("mean_bias") is None:
+                continue
+            model_biases: dict[str, xr.DataArray] = {}
+            for m, mdata in models.items():
+                b = (mdata.get("annual_bias") if pk == "annual"
+                     else mdata.get("seasonal_biases", {}).get(pk))
+                if b is not None:
+                    model_biases[m] = b
+            bench_bias = pdata["bias"]
+            blocks[pk] = {
+                "bench_bias": bench_bias,
+                "ens_mean_bias": ens["mean_bias"],
+                "ens_median_bias": ens["median_bias"],
+                "models": model_biases,
+                "individual": {
+                    member: md["bias"]
+                    for member, md in indiv_all.get(pk, {}).items()
+                    if md.get("bias") is not None
+                },
+                "area": compute_latlon_areas(
+                    bench_bias["lat"].values, bench_bias["lon"].values),
+            }
+        if not blocks:
+            return None
+        try:
+            bench_labels = [
+                f"{m}/{v}" for m, v in self.cmip6_loader.get_member_pairs()
+            ]
+        except Exception:  # noqa: BLE001
+            bench_labels = []
+        return {
+            "blocks": blocks,
+            "eerie_models": list(models.keys()),
+            "bench_labels": bench_labels,
+        }
+
+    def _ocean_av_from_blocks(
+        self, var: str, data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Assemble the ocean AV result + persist NC from per-period biases."""
+        var_info = get_var(var)
+        obs_name = self._OCEAN_OBS.get(var, "")
+        blocks = data["blocks"]
+        eerie_models = data["eerie_models"]
+        bench_labels = data["bench_labels"]
+
         av_results: dict[str, dict] = {}
-        for pk in periods:
-            if not eerie[pk] or not bench[pk] or pk not in obs_fields:
-                continue
-            obs_field = obs_fields[pk]
-            e_stack = xr.concat(list(eerie[pk].values()), dim="member")
-            e_mean = e_stack.mean("member")
-            e_median = e_stack.median("member")
-            b_mmm = xr.concat(bench[pk], dim="member").mean("member")
-
-            av_mean = self._compute_av(b_mmm, e_mean, obs_field)
-            av_median = self._compute_av(b_mmm, e_median, obs_field)
+        for pk, blk in blocks.items():
+            bench_bias = blk["bench_bias"]
+            ens_mean_bias = blk["ens_mean_bias"]
+            ens_median_bias = blk["ens_median_bias"]
+            area = blk["area"]
+            av_mean = self._av_from_biases(bench_bias, ens_mean_bias)
+            av_median = self._av_from_biases(bench_bias, ens_median_bias)
             per_eerie = {
-                m: self._compute_av(b_mmm, f, obs_field)
-                for m, f in eerie[pk].items()
+                m: self._av_from_biases(bench_bias, b)
+                for m, b in blk["models"].items()
+            }
+            per_cmip6 = {
+                member: self._av_from_biases(ens_mean_bias, mb)
+                for member, mb in blk.get("individual", {}).items()
             }
             av_results[pk] = {
                 "ensemble_mean": av_mean,
                 "ensemble_median": av_median,
                 "per_eerie_av": per_eerie,
-                "per_cmip6_av": {},
+                "per_cmip6_av": per_cmip6,
                 "ensemble_mean_domain_av": self._domain_mean_av(av_mean, area),
                 "ensemble_median_domain_av": self._domain_mean_av(av_median, area),
                 "ensemble_mean_frac_positive": self._frac_positive(av_mean, area),
@@ -2480,8 +2295,6 @@ class AddedValueDiag(DiagnosticBase):
         if not av_results:
             return None
 
-        # -- Persist NC checkpoints ----------------------------------------
-        obs_name = self._OCEAN_OBS.get(var, "")
         nc_meta = {
             "eerie_models": eerie_models,
             "n_eerie_models": len(eerie_models),

@@ -96,11 +96,12 @@ class OceanEN4(DiagnosticBase):
     group = "ocean_3d"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks,
+                         save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -301,6 +302,13 @@ class OceanEN4(DiagnosticBase):
         logger.info("Running diagnostic: %s", self.name)
         saved: list[tuple[Path, Path]] = []
         out = self.output_dir
+
+        # Benchmark (CMIP6/HighResMIP) surface bias NetCDFs for Added Value.
+        from feather.diag import ocean_bias
+        ocean_bias.maybe_export_ocean_bias(
+            self, [v for v in ("thetao", "so") if v in self.variables],
+            want_individual=self.cmip6_individual, skip_existing=skip_existing,
+        )
 
         # Determine which groups need work
         bias_a_ids = [f"en4_sst_{p}_bias_combined"

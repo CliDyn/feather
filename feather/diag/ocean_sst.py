@@ -92,11 +92,12 @@ class OceanSST(DiagnosticBase):
     group = "ocean_surface"
 
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks,
+                         save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -117,6 +118,13 @@ class OceanSST(DiagnosticBase):
         logger.info("Running diagnostic: %s", self.name)
         saved: list[tuple[Path, Path]] = []
         out = self.output_dir
+
+        # Benchmark (CMIP6/HighResMIP) bias NetCDFs for Added Value reuse.
+        from feather.diag import ocean_bias
+        ocean_bias.maybe_export_ocean_bias(
+            self, ["tos"], want_individual=self.cmip6_individual,
+            skip_existing=skip_existing,
+        )
 
         # Determine which groups need computation
         bias_ids = [f"sst_{p}_bias_combined" for p in ("annual", "djf", "jja")]
