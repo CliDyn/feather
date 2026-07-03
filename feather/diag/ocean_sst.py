@@ -144,6 +144,16 @@ class OceanSST(DiagnosticBase):
             "sst_seasonal_cycle"
         )
         need_d = not skip_existing or not self._figure_exists("sst_zonal_mean")
+        extra_ids = self._extra_figure_ids()
+        need_extra = bool(extra_ids) and (
+            not skip_existing
+            or not all(self._figure_exists(f) for f in extra_ids)
+        )
+        if extra_ids and not need_extra:
+            logger.info("Skipping extra groups -- figures exist")
+            saved.extend([
+                (out / f"{f}.png", out / f"{f}.json") for f in extra_ids
+            ])
 
         # Collect already-existing paths
         if not need_a:
@@ -168,7 +178,7 @@ class OceanSST(DiagnosticBase):
                 out / "sst_zonal_mean.png", out / "sst_zonal_mean.json",
             ))
 
-        if not any([need_a, need_b, need_c, need_d]):
+        if not any([need_a, need_b, need_c, need_d, need_extra]):
             logger.info(
                 "Diagnostic %s complete -- all figures exist", self.name,
             )
@@ -205,10 +215,25 @@ class OceanSST(DiagnosticBase):
             for fig, meta in self._plot_zonal_mean(results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
+        # Extra groups (subclass hook: e.g. sst_hadisst trends + Taylor)
+        if need_extra:
+            saved.extend(self._extra_groups(
+                model_monthly, model_coords, skip_existing))
+
         logger.info(
             "Diagnostic %s complete -- %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    # ── Subclass extension hook (extra figure groups) ─────────────────
+
+    def _extra_figure_ids(self) -> list[str]:
+        """Figure IDs for subclass-added groups (default none)."""
+        return []
+
+    def _extra_groups(self, model_monthly, model_coords, skip_existing):
+        """Compute + plot subclass-added figure groups (default none)."""
+        return []
 
     # ── Abstract interface (thin wrappers for backward compat) ────────
 
@@ -517,11 +542,77 @@ class OceanSST(DiagnosticBase):
                     "rmse": rmse,
                 }
 
+        # Benchmark (CMIP6/HighResMIP) MMM bias panel(s), on the same grid.
+        if target_lats is not None:
+            model_results.update(self._benchmark_bias_maps(
+                target_lats, target_lons, resolution, periods_data,
+                common_area))
+
         return {
             "models": model_results,
             "periods": periods_data,
             "common_area": common_area,
         }
+
+    def _benchmark_bias_maps(self, target_lats, target_lons, resolution,
+                             periods_data, common_area):
+        """Benchmark MMM SST bias per period on the common grid.
+
+        Loads each benchmark (CMIP6/HighResMIP) member's ``tos``, regrids to
+        the figure's common grid via the curvilinear-safe scattered regrid
+        (ORCA/tripolar ocean grids), averages to the MMM, and takes the bias
+        vs the same obs.  Returned as extra entries so ``_plot_bias_maps``
+        renders one panel per benchmark alongside the evaluated models.
+        """
+        from feather.diag import ocean_bias
+        out: dict[str, dict] = {}
+        if not (getattr(self, "benchmarks", None) and self.cmip6_enabled):
+            return out
+        ir = max(self._influence_radius, ocean_bias._BENCH_IR_FLOOR)
+        season_key = {"annual": None, "djf": "DJF", "jja": "JJA"}
+        for bench in self.benchmarks:
+            label = getattr(bench, "label", "CMIP6 MMM")
+            cache: dict = {}
+            members: dict[str, list] = {pk: [] for pk in periods_data}
+            for model, variant in bench.get_member_pairs():
+                for pkey, season in season_key.items():
+                    try:
+                        da = bench.load_var_for_model_var(
+                            "tos", model, variant=variant,
+                            period=self.period, season=season)
+                    except Exception:  # noqa: BLE001
+                        da = None
+                    if da is None:
+                        continue
+                    try:
+                        reg = ocean_bias.regrid_scatter(
+                            ocean_bias.prep_ocean_field(self.config, da, "tos"),
+                            target_lats, target_lons, resolution, ir, cache,
+                            method=self._regrid_method)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    members[pkey].append(reg)
+            if not members.get("annual"):
+                logger.warning(
+                    "No benchmark tos members for %s — SST bias panel skipped "
+                    "(check the ocean zarr cache is complete)", label)
+                continue
+            out[label] = {}
+            for pkey in periods_data:
+                if not members[pkey]:
+                    continue
+                mmm = xr.concat(members[pkey], dim="member").mean("member")
+                bias = mmm - periods_data[pkey]["obs_common"]
+                out[label][pkey] = {
+                    "regrid": mmm, "bias": bias,
+                    "bias_gmean": float(
+                        latlon_global_mean(bias, area=common_area).values),
+                    "rmse": float(np.sqrt(
+                        latlon_global_mean(bias ** 2, area=common_area).values)),
+                }
+            logger.info("  Added %s MMM SST bias panel (%d members)",
+                        label, len(members["annual"]))
+        return out
 
     def _plot_bias_maps(self, results):
         """Plot combined bias maps for annual/DJF/JJA."""

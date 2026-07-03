@@ -251,7 +251,7 @@ Feather provides 24 registered diagnostics across atmosphere, ocean, cryosphere,
 | Diagnostic | Class | Observation | What it produces |
 |---|---|---|---|
 | `ocean_sst` | `OceanSST` | ESA-CCI | SST bias maps, time series, seasonal cycle, zonal mean |
-| `sst_hadisst` | `SSTHadISST` | HadISST | Same SST figures as `ocean_sst` but referenced to HadISST (1°, full 1980–2014 record vs ESA-CCI's 1990–2014) |
+| `sst_hadisst` | `SSTHadISST` | HadISST | SST evaluation vs HadISST (1°, full 1980–2014 record vs ESA-CCI's 1990–2014): bias maps, time series, seasonal cycle, zonal mean, warming-trend maps (global + Arctic/Antarctic), and a Taylor diagram, with CMIP6/HighResMIP overlays |
 | `ocean_en4` | `OceanEN4` | EN4 v4.2.2 | 3D ocean T/S: surface bias maps, Hovmoller diagrams, depth-layer time series |
 
 ### Cryosphere
