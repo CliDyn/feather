@@ -635,6 +635,7 @@ class OceanSST(DiagnosticBase):
                 bias = mmm - periods_data[pkey]["obs_common"]
                 out[label][pkey] = {
                     "regrid": mmm, "bias": bias,
+                    "n_members": len(members[pkey]),
                     "bias_gmean": float(
                         latlon_global_mean(bias, area=common_area).values),
                     "rmse": float(np.sqrt(
@@ -728,14 +729,20 @@ class OceanSST(DiagnosticBase):
             if obs_common is None or ens is None:
                 continue
 
+            # Harmonised panel labels with member counts in bold parentheses,
+            # matching temperature_berkeley / precipitation_mswep.
+            proj = self.config.project.get("name", "Ensemble")
+            n = ens["n_members"]
             bias_dict = {
-                "Ensemble Mean": ens["mean_bias"],
-                "Ensemble Median": ens["median_bias"],
+                rf"{proj} ens. median $\mathbf{{({n})}}$": ens["median_bias"],
+                rf"{proj} ens. mean $\mathbf{{({n})}}$": ens["mean_bias"],
             }
             for label in benchmarks:
                 mdata = results["models"][label]
                 if pkey in mdata:
-                    bias_dict[label] = mdata[pkey]["bias"]
+                    m = mdata[pkey].get("n_members", 0)
+                    panel = rf"{label} $\mathbf{{({m})}}$" if m else label
+                    bias_dict[panel] = mdata[pkey]["bias"]
 
             try:
                 import cmocean
