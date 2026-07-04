@@ -91,12 +91,21 @@ class OceanSST(DiagnosticBase):
     variables = ["tos"]
     group = "ocean_surface"
 
+    #: Obs labels/keys — overridden by subclasses (e.g. sst_hadisst) to
+    #: evaluate the same SST fields against a different reference dataset.
+    _obs_label = "ESA-CCI"
+    _obs_dataset_name = "ESA-CCI L4 v3.0.1"
+    #: Obs key passed to ocean_bias for the benchmark-bias NetCDF (None →
+    #: OCEAN_OBS["tos"] = ESA_CCI).
+    _ocean_bias_obs = None
+
     def __init__(self, model_loader, obs_loader, config, *,
-                 cmip6_loader=None, variables=None,
+                 cmip6_loader=None, benchmarks=None, variables=None,
                  experiment="baseline_hist", period=("1990", "2014"),
                  cmip6_individual=False, save_netcdf=False):
         super().__init__(model_loader, obs_loader, config,
-                         cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks,
+                         save_netcdf=save_netcdf)
         if variables is not None:
             self.variables = list(variables)
         self.experiment = experiment
@@ -118,8 +127,18 @@ class OceanSST(DiagnosticBase):
         saved: list[tuple[Path, Path]] = []
         out = self.output_dir
 
+        # Benchmark (CMIP6/HighResMIP) bias NetCDFs for Added Value reuse.
+        from feather.diag import ocean_bias
+        ocean_bias.maybe_export_ocean_bias(
+            self, ["tos"], want_individual=self.cmip6_individual,
+            skip_existing=skip_existing, obs_name=self._ocean_bias_obs,
+        )
+
         # Determine which groups need computation
-        bias_ids = [f"sst_{p}_bias_combined" for p in ("annual", "djf", "jja")]
+        bias_ids = [
+            f"sst_{p}_{suffix}" for p in ("annual", "djf", "jja")
+            for suffix in ("bias_combined", "ens_bias_combined")
+        ]
         need_a = not skip_existing or not all(
             self._figure_exists(f) for f in bias_ids
         )
@@ -128,6 +147,16 @@ class OceanSST(DiagnosticBase):
             "sst_seasonal_cycle"
         )
         need_d = not skip_existing or not self._figure_exists("sst_zonal_mean")
+        extra_ids = self._extra_figure_ids()
+        need_extra = bool(extra_ids) and (
+            not skip_existing
+            or not all(self._figure_exists(f) for f in extra_ids)
+        )
+        if extra_ids and not need_extra:
+            logger.info("Skipping extra groups -- figures exist")
+            saved.extend([
+                (out / f"{f}.png", out / f"{f}.json") for f in extra_ids
+            ])
 
         # Collect already-existing paths
         if not need_a:
@@ -152,7 +181,7 @@ class OceanSST(DiagnosticBase):
                 out / "sst_zonal_mean.png", out / "sst_zonal_mean.json",
             ))
 
-        if not any([need_a, need_b, need_c, need_d]):
+        if not any([need_a, need_b, need_c, need_d, need_extra]):
             logger.info(
                 "Diagnostic %s complete -- all figures exist", self.name,
             )
@@ -161,11 +190,13 @@ class OceanSST(DiagnosticBase):
         # Load shared model data (once)
         model_monthly, model_coords = self._load_model_data()
 
-        # Group A: Bias maps
+        # Group A: Bias maps (per-model + ensemble mean/median)
         if need_a:
             results = self._compute_bias_maps(model_monthly, model_coords)
             self._maybe_export_netcdf(results, "sst_bias")
             for fig, meta in self._plot_bias_maps(results):
+                saved.append(self._save(fig, meta, meta["figure_id"]))
+            for fig, meta in self._plot_ens_bias_maps(results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
         # Group B: Time series
@@ -189,10 +220,25 @@ class OceanSST(DiagnosticBase):
             for fig, meta in self._plot_zonal_mean(results):
                 saved.append(self._save(fig, meta, meta["figure_id"]))
 
+        # Extra groups (subclass hook: e.g. sst_hadisst trends + Taylor)
+        if need_extra:
+            saved.extend(self._extra_groups(
+                model_monthly, model_coords, skip_existing))
+
         logger.info(
             "Diagnostic %s complete -- %d figure(s)", self.name, len(saved),
         )
         return saved
+
+    # ── Subclass extension hook (extra figure groups) ─────────────────
+
+    def _extra_figure_ids(self) -> list[str]:
+        """Figure IDs for subclass-added groups (default none)."""
+        return []
+
+    def _extra_groups(self, model_monthly, model_coords, skip_existing):
+        """Compute + plot subclass-added figure groups (default none)."""
+        return []
 
     # ── Abstract interface (thin wrappers for backward compat) ────────
 
@@ -501,11 +547,103 @@ class OceanSST(DiagnosticBase):
                     "rmse": rmse,
                 }
 
+        # EERIE ensemble mean/median bias (evaluated models only), computed
+        # from the already-regridded model climatologies on the common grid.
+        ensemble: dict[str, dict] = {}
+        eerie = [m for m in model_results if m in self.config.models]
+        for pkey in periods_data:
+            regrids = [
+                model_results[m][pkey]["regrid"]
+                for m in eerie if pkey in model_results[m]
+            ]
+            if not regrids:
+                continue
+            obs_common = periods_data[pkey].get("obs_common")
+            if obs_common is None:
+                continue
+            stack = xr.concat(regrids, dim="member")
+            mean = stack.mean("member")
+            median = stack.median("member")
+            ensemble[pkey] = {
+                "mean_regrid": mean, "median_regrid": median,
+                "mean_bias": mean - obs_common,
+                "median_bias": median - obs_common,
+                "n_members": len(regrids),
+            }
+
+        # Benchmark (CMIP6/HighResMIP) MMM bias panel(s), on the same grid.
+        if target_lats is not None:
+            model_results.update(self._benchmark_bias_maps(
+                target_lats, target_lons, resolution, periods_data,
+                common_area))
+
         return {
             "models": model_results,
+            "ensemble": ensemble,
             "periods": periods_data,
             "common_area": common_area,
         }
+
+    def _benchmark_bias_maps(self, target_lats, target_lons, resolution,
+                             periods_data, common_area):
+        """Benchmark MMM SST bias per period on the common grid.
+
+        Loads each benchmark (CMIP6/HighResMIP) member's ``tos``, regrids to
+        the figure's common grid via the curvilinear-safe scattered regrid
+        (ORCA/tripolar ocean grids), averages to the MMM, and takes the bias
+        vs the same obs.  Returned as extra entries so ``_plot_bias_maps``
+        renders one panel per benchmark alongside the evaluated models.
+        """
+        from feather.diag import ocean_bias
+        out: dict[str, dict] = {}
+        if not (getattr(self, "benchmarks", None) and self.cmip6_enabled):
+            return out
+        ir = max(self._influence_radius, ocean_bias._BENCH_IR_FLOOR)
+        season_key = {"annual": None, "djf": "DJF", "jja": "JJA"}
+        for bench in self.benchmarks:
+            label = getattr(bench, "label", "CMIP6 MMM")
+            cache: dict = {}
+            members: dict[str, list] = {pk: [] for pk in periods_data}
+            for model, variant in bench.get_member_pairs():
+                for pkey, season in season_key.items():
+                    try:
+                        da = bench.load_var_for_model_var(
+                            "tos", model, variant=variant,
+                            period=self.period, season=season)
+                    except Exception:  # noqa: BLE001
+                        da = None
+                    if da is None:
+                        continue
+                    try:
+                        reg = ocean_bias.regrid_scatter(
+                            ocean_bias.prep_ocean_field(self.config, da, "tos"),
+                            target_lats, target_lons, resolution, ir, cache,
+                            method=self._regrid_method)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    members[pkey].append(reg)
+            if not members.get("annual"):
+                logger.warning(
+                    "No benchmark tos members for %s — SST bias panel skipped "
+                    "(check the ocean zarr cache is complete)", label)
+                continue
+            out[label] = {}
+            for pkey in periods_data:
+                if not members[pkey]:
+                    continue
+                mmm = xr.concat(members[pkey], dim="member").mean("member")
+                bias = mmm - periods_data[pkey]["obs_common"]
+                out[label][pkey] = {
+                    "regrid": mmm, "bias": bias,
+                    "n_members": len(members[pkey]),
+                    "bias_gmean": float(
+                        latlon_global_mean(bias, area=common_area).values),
+                    "rmse": float(np.sqrt(
+                        latlon_global_mean(bias ** 2, area=common_area).values)),
+                }
+            logger.info("  Added %s MMM SST bias panel (%d members)",
+                        label, len(members["annual"]))
+        return out
 
     def _plot_bias_maps(self, results):
         """Plot combined bias maps for annual/DJF/JJA."""
@@ -548,7 +686,7 @@ class OceanSST(DiagnosticBase):
             fig, axes = plot_combined_bias_map(
                 obs_common, bias_dict,
                 title=f"Sea Surface Temperature {plabel}",
-                obs_title="ESA-CCI",
+                obs_title=self._obs_label,
                 cmap=obs_cmap,
                 bias_cmap="RdBu_r",
                 units="\u00b0C",
@@ -562,15 +700,83 @@ class OceanSST(DiagnosticBase):
                 models=all_models,
                 description=(
                     f"{plabel} SST climatology and model biases relative to "
-                    f"ESA-CCI L4 v3.0.1 satellite observations."
+                    f"{self._obs_dataset_name} satellite observations."
                 ),
                 plot_type="combined_bias_map",
                 period=self.period,
-                obs_dataset="ESA-CCI L4 v3.0.1",
+                obs_dataset=self._obs_dataset_name,
                 summary_statistics=summary_stats,
             )
             figures.append((fig, meta))
 
+        return figures
+
+    def _plot_ens_bias_maps(self, results):
+        """Ensemble mean/median bias maps (+ benchmark MMM) per period."""
+        from feather.plot.maps import plot_combined_bias_map
+
+        figures = []
+        periods_data = results["periods"]
+        ensemble = results.get("ensemble", {})
+        benchmarks = [
+            m for m in results["models"] if m not in self.config.models]
+
+        for pkey, plabel in [
+            ("annual", "Annual Mean"), ("djf", "DJF"), ("jja", "JJA"),
+        ]:
+            obs_common = periods_data[pkey].get("obs_common")
+            ens = ensemble.get(pkey)
+            if obs_common is None or ens is None:
+                continue
+
+            # Harmonised panel labels with member counts in bold parentheses,
+            # matching temperature_berkeley / precipitation_mswep.
+            proj = self.config.project.get("name", "Ensemble")
+            n = ens["n_members"]
+            bias_dict = {
+                rf"{proj} ens. median $\mathbf{{({n})}}$": ens["median_bias"],
+                rf"{proj} ens. mean $\mathbf{{({n})}}$": ens["mean_bias"],
+            }
+            for label in benchmarks:
+                mdata = results["models"][label]
+                if pkey in mdata:
+                    m = mdata[pkey].get("n_members", 0)
+                    panel = rf"{label} $\mathbf{{({m})}}$" if m else label
+                    bias_dict[panel] = mdata[pkey]["bias"]
+
+            try:
+                import cmocean
+                obs_cmap = cmocean.cm.thermal
+            except ImportError:
+                obs_cmap = "RdYlBu_r"
+
+            fig, _ = plot_combined_bias_map(
+                obs_common, bias_dict,
+                title=f"Sea Surface Temperature {plabel} — Ensemble",
+                obs_title=self._obs_label,
+                cmap=obs_cmap, bias_cmap="RdBu_r", units="°C",
+                land=True, method=self._regrid_method,
+            )
+            meta = self._build_metadata(
+                title=f"SST {plabel} Ensemble Bias",
+                figure_id=f"sst_{pkey}_ens_bias_combined",
+                models=list(self.config.models),
+                description=(
+                    f"{plabel} SST ensemble mean/median bias "
+                    f"(n={ens['n_members']}) and benchmark MMM bias relative "
+                    f"to {self._obs_dataset_name}."
+                ),
+                plot_type="combined_bias_map", period=self.period,
+                obs_dataset=self._obs_dataset_name,
+                summary_statistics={
+                    "ensemble_mean_global_bias": float(_ocean_global_mean(
+                        ens["mean_bias"]).values),
+                    "ensemble_median_global_bias": float(_ocean_global_mean(
+                        ens["median_bias"]).values),
+                    "n_members": ens["n_members"],
+                },
+            )
+            figures.append((fig, meta))
         return figures
 
     # ── Group B: Time series ──────────────────────────────────────────
@@ -624,7 +830,7 @@ class OceanSST(DiagnosticBase):
         if results.get("obs") is not None:
             obs_annual = annual_mean(results["obs"])
             time_vals = _to_plot_time(obs_annual.time.values)
-            ax.plot(time_vals, obs_annual.values, label="ESA-CCI",
+            ax.plot(time_vals, obs_annual.values, label=self._obs_label,
                     color=OBS_COLOR, linewidth=2.5)
 
         ax.set_title("Global Mean Sea Surface Temperature")
@@ -634,20 +840,20 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Global Mean Time Series",
             figure_id="sst_timeseries",
             models=all_models,
             description=(
-                "Global-mean SST time series for DestinE models and ESA-CCI "
+                "Global-mean SST time series for DestinE models and {self._obs_label} "
                 "observations. Monthly values as semi-transparent lines, "
                 "annual means as thick lines. Units: degrees Celsius."
             ),
             plot_type="timeseries",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 
@@ -712,7 +918,7 @@ class OceanSST(DiagnosticBase):
 
         if results.get("obs") is not None:
             obs_cycle = results["obs"]
-            ax.plot(months, obs_cycle.values, marker="s", label="ESA-CCI",
+            ax.plot(months, obs_cycle.values, marker="s", label=self._obs_label,
                     color=OBS_COLOR, linewidth=2)
 
         ax.set_xticks(months)
@@ -724,7 +930,7 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Seasonal Cycle",
@@ -732,11 +938,11 @@ class OceanSST(DiagnosticBase):
             models=all_models,
             description=(
                 "Monthly climatological cycle of global-mean SST for DestinE "
-                "models and ESA-CCI observations. Units: degrees Celsius."
+                "models and {self._obs_label} observations. Units: degrees Celsius."
             ),
             plot_type="seasonal_cycle",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 
@@ -788,7 +994,7 @@ class OceanSST(DiagnosticBase):
             obs_zm = results["obs"]
             lat_name = "lat" if "lat" in obs_zm.coords else "latitude"
             ax.plot(obs_zm.values, obs_zm[lat_name].values,
-                    label="ESA-CCI", color=OBS_COLOR, linewidth=2)
+                    label=self._obs_label, color=OBS_COLOR, linewidth=2)
 
         ax.set_title("SST Zonal Mean")
         ax.set_xlabel("SST (\u00b0C)")
@@ -799,20 +1005,20 @@ class OceanSST(DiagnosticBase):
         plt.tight_layout()
 
         if results.get("obs") is not None:
-            all_models.append("ESA-CCI")
+            all_models.append(self._obs_label)
 
         meta = self._build_metadata(
             title="SST Zonal Mean Profile",
             figure_id="sst_zonal_mean",
             models=all_models,
             description=(
-                "Zonal mean SST profile for DestinE models and ESA-CCI "
+                "Zonal mean SST profile for DestinE models and {self._obs_label} "
                 "observations. Latitude on y-axis, SST (degrees Celsius) on "
                 "x-axis."
             ),
             plot_type="zonal_profile",
             period=self.period,
-            obs_dataset="ESA-CCI L4 v3.0.1",
+            obs_dataset=self._obs_dataset_name,
         )
         return [(fig, meta)]
 

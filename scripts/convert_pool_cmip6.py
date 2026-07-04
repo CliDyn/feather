@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -38,6 +40,53 @@ from feather.data import pool_discovery as disc
 from feather.data.variables import VARIABLE_REGISTRY
 
 logger = logging.getLogger("convert_pool_cmip6")
+
+
+def _store_is_valid(store: Path, variable: str) -> bool:
+    """True if *store* is a readable zarr store that contains *variable*.
+
+    An interrupted ``to_zarr`` write leaves a directory without the (large)
+    data variable — only the small coordinate arrays land, and consolidated
+    metadata (the final write step) is missing.  The decisive signal is
+    therefore whether *variable* is actually present: this is checked after
+    opening the store either with or without consolidated metadata, so that a
+    complete-but-unconsolidated store is still treated as valid (avoiding an
+    expensive needless reconversion) while a partial store is not.
+    """
+    if not store.exists():
+        return False
+    import warnings
+
+    import xarray as xr
+
+    for consolidated in (True, False):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ds = xr.open_zarr(store, consolidated=consolidated)
+        except Exception:  # noqa: BLE001  (unconsolidated/partial/corrupt)
+            continue
+        try:
+            return variable in ds.data_vars
+        finally:
+            ds.close()
+    return False
+
+
+def _write_zarr_atomic(ds, store: Path) -> None:
+    """Write *ds* to *store* atomically (temp store + rename).
+
+    Guarantees the final ``store`` path only appears once the write has fully
+    completed, so an interrupted/OOM-killed job cannot leave a half-written
+    store that a later run would mistake for done.
+    """
+    tmp = store.with_name(store.name + ".tmp")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    ds.to_zarr(tmp, mode="w", consolidated=True)
+    if store.exists():
+        shutil.rmtree(store)
+    os.replace(tmp, store)  # atomic rename within the same filesystem
 
 DEFAULT_POOL_ROOT = "/pool/data/CMIP6/data"
 
@@ -107,6 +156,9 @@ def _open_and_slice(files, variable, period):
             [str(f) for f in files],
             combine="by_coords",
             chunks="auto",
+            data_vars="minimal",
+            coords="minimal",
+            compat="override",
             **open_kwargs,
         )
     except Exception as e:  # noqa: BLE001
@@ -134,7 +186,33 @@ def _open_and_slice(files, variable, period):
 
     # Keep only the target variable plus its coordinates/bounds.
     keep = [variable]
-    return ds[keep]
+    return _rechunk_uniform(ds[keep])
+
+
+def _rechunk_uniform(ds):
+    """Rechunk *ds* so every dimension has uniform chunk sizes (zarr-safe).
+
+    Concatenating time-split files with ``open_mfdataset`` yields ragged time
+    chunks (e.g. ``(4, 7, 1, 7, …)``); zarr rejects non-uniform interior
+    chunks, which is what left the earlier ocean stores half-written.  Time is
+    rechunked into fixed blocks (uniform except the final chunk); any other
+    dimension whose chunks are non-uniform is collapsed to a single chunk.
+    """
+    chunks: dict = {}
+    for dim, size in ds.sizes.items():
+        size = int(size)
+        if str(dim).lower() == "time":
+            chunks[dim] = min(size, 120)
+            continue
+        # Detect ragged (non-uniform-interior) chunking on this dimension.
+        dim_chunks = None
+        for var in ds.data_vars.values():
+            if dim in var.dims and var.chunks is not None:
+                dim_chunks = var.chunks[var.dims.index(dim)]
+                break
+        if dim_chunks and len(set(dim_chunks[:-1])) > 1:
+            chunks[dim] = size  # collapse to one uniform chunk
+    return ds.chunk(chunks) if chunks else ds
 
 
 def convert_model(
@@ -154,9 +232,11 @@ def convert_model(
     for table, variables in var_tables.items():
         for variable in variables:
             store = out_dir / f"{model}_{experiment}_{member}_{table}_{variable}.zarr"
-            if skip_existing and store.exists():
+            if skip_existing and _store_is_valid(store, variable):
                 logger.debug("    skip existing %s", store.name)
                 continue
+            if store.exists():
+                logger.info("    reconverting incomplete store %s", store.name)
             files = disc.variable_files(exp_dir, member, table, variable)
             if not files:
                 continue
@@ -168,7 +248,7 @@ def convert_model(
             if ds is None:
                 continue
             try:
-                ds.to_zarr(store, mode="w", consolidated=True)
+                _write_zarr_atomic(ds, store)
                 written += 1
             except Exception as e:  # noqa: BLE001
                 logger.warning("    write failed for %s: %s", store.name, e)
@@ -176,7 +256,7 @@ def convert_model(
     # Area weights (no period slice).
     for table, area_var in _AREA_TABLES.items():
         store = out_dir / f"{model}_{experiment}_{member}_{table}_{area_var}.zarr"
-        if skip_existing and store.exists():
+        if skip_existing and _store_is_valid(store, area_var):
             continue
         files = disc.variable_files(exp_dir, member, table, area_var)
         if not files:
@@ -189,7 +269,7 @@ def convert_model(
         if ds is None:
             continue
         try:
-            ds.to_zarr(store, mode="w", consolidated=True)
+            _write_zarr_atomic(ds, store)
             written += 1
         except Exception as e:  # noqa: BLE001
             logger.warning("    write failed for %s: %s", store.name, e)

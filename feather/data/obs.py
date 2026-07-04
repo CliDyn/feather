@@ -579,6 +579,61 @@ class ObsLoader:
 
         return abs_temp + 273.15  # °C → K
 
+    def load_hadisst(self, period=None) -> xr.DataArray:
+        """Load HadISST monthly sea-surface temperature in K.
+
+        HadISST is a 1° global SST reconstruction covering 1870–present (so,
+        unlike ESA-CCI's 1990–2014, it spans the full 1980–2014 analysis
+        window).  Land and ice-covered cells are stored as a large negative
+        fill (~-1000 °C); these are masked to NaN.  Values are returned in
+        Kelvin (the canonical ``tos`` unit) with dims ``lat``/``lon`` and
+        longitudes in 0..360.
+
+        Parameters
+        ----------
+        period : tuple of str, optional
+            (start, end) for time slicing.
+        """
+        ds_cfg = self._config.obs_datasets.get("HADISST")
+        if ds_cfg is None:
+            raise KeyError(
+                "HADISST not configured in obs_datasets. "
+                f"Available: {list(self._config.obs_datasets.keys())}"
+            )
+
+        cache_key = "HADISST/sst"
+        if cache_key not in self._cache:
+            base_path = Path(ds_cfg["path"])
+            variables = ds_cfg.get("variables", {})
+            filename = variables.get("sst") or next(iter(variables.values()))
+            self._cache[cache_key] = xr.open_dataset(
+                base_path / filename, chunks="auto",
+            )
+
+        ds = self._cache[cache_key]
+        var = "sst" if "sst" in ds.data_vars else next(iter(ds.data_vars))
+        da = ds[var]
+
+        # Mask land/ice fill cells (~-1000 °C); keep real SST only.
+        da = da.where(da > -100.0)
+
+        rename = {}
+        if "latitude" in da.dims:
+            rename["latitude"] = "lat"
+        if "longitude" in da.dims:
+            rename["longitude"] = "lon"
+        if rename:
+            da = da.rename(rename)
+
+        # Shift lons −180..180 → 0..360 to match the framework convention.
+        if float(da.lon.min()) < 0:
+            da = da.assign_coords(lon=((da.lon + 360) % 360)).sortby("lon")
+
+        if period is not None and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+
+        return da + 273.15  # °C → K (canonical tos unit)
+
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""
         return list(self._config.obs_datasets.keys())

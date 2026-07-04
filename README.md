@@ -2,7 +2,7 @@
 
 Lightweight climate model evaluation framework supporting multiple high-resolution model sets.
 
-Feather compares high-resolution climate models against observations (ERA5, CERES, EN4, ESA-CCI, OSI-SAF, PIOMAS/GIOMAS, MSWEP, Berkeley Earth) and a CMIP6 multi-model mean. It generates diagnostic figures, LLM-analyzed results, a LaTeX report, and a static web dashboard.
+Feather compares high-resolution climate models against observations (ERA5, CERES, EN4, ESA-CCI, HadISST, OSI-SAF, PIOMAS/GIOMAS, MSWEP, Berkeley Earth) and CMIP6/HighResMIP multi-model means. It generates diagnostic figures, LLM-analyzed results, a LaTeX report, and a static web dashboard.
 
 ## Supported model sets
 
@@ -163,11 +163,28 @@ filename carries the analysis period (e.g. `tas_annual_1980-2014.nc`), and files
 already present are skipped, so the flag is incremental and safe to re-run.
 
 Supported by `global_biases`, `temperature_berkeley`, `precipitation_mswep`,
-`global_trends`, `climate_variability`, `ocean_sst`, `ocean_en4`,
+`global_trends`, `climate_variability`, `ocean_sst`, `sst_hadisst`, `ocean_en4`,
 `radiation_budget`, `sea_ice`, `timeseries`, `seasonal_cycle`, and
 `teleconnections`. The obs-comparison and extremes/classification diagnostics
 write NetCDF as part of their normal operation. A new diagnostic can opt in by
 following the template in `NEW_DIAGNOSTIC_SPEC.md`.
+
+**Ocean Added Value chain.** With `--save-netcdf` (and benchmarks configured),
+the ocean diagnostics also write model/ensemble/benchmark **bias** NetCDFs in
+the shared bias-map schema (`ocean_sst`→`tos` vs ESA-CCI, `sst_hadisst`→`tos`
+vs HadISST, `ocean_en4`→`thetao`/`so` vs EN4, `sea_ice`→`siconc` vs OSI-SAF),
+all regridded to a common grid (`nereus.resolution`). The `added_value`
+diagnostic then reuses these to build the **Ocean Added Value** page — so run
+the ocean diagnostics first, then `added_value` last:
+
+```bash
+CFG=configs/eerie_6_members_cmip6_highresmip.yaml
+# 1) Ocean diagnostics write the benchmark-bias NetCDFs
+feather --config $CFG --steps diagnostics --save-netcdf -v \
+    --diagnostics ocean_sst sst_hadisst ocean_en4 sea_ice
+# 2) Added Value reuses them (also runs the atmospheric AV)
+feather --config $CFG --steps diagnostics --save-netcdf -v --diagnostics added_value
+```
 
 ### Statistical significance tests
 
@@ -234,6 +251,7 @@ Feather provides 24 registered diagnostics across atmosphere, ocean, cryosphere,
 | Diagnostic | Class | Observation | What it produces |
 |---|---|---|---|
 | `ocean_sst` | `OceanSST` | ESA-CCI | SST bias maps, time series, seasonal cycle, zonal mean |
+| `sst_hadisst` | `SSTHadISST` | HadISST | SST evaluation vs HadISST (1°, full 1980–2014 record vs ESA-CCI's 1990–2014): bias maps, time series, seasonal cycle, zonal mean, warming-trend maps (global + Arctic/Antarctic), and a Taylor diagram, with CMIP6/HighResMIP overlays |
 | `ocean_en4` | `OceanEN4` | EN4 v4.2.2 | 3D ocean T/S: surface bias maps, Hovmoller diagrams, depth-layer time series |
 
 ### Cryosphere
@@ -319,7 +337,7 @@ Outputs written to `{output_dir}/climate_classification/` for later regional ana
 
 | Diagnostic | Class | Observation | What it produces |
 |---|---|---|---|
-| `added_value` | `AddedValueDiag` | ERA5 / Berkeley Earth / MSWEP | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6 MMM — ensemble summary maps + per-model panels |
+| `added_value` | `AddedValueDiag` | ERA5 / Berkeley Earth / MSWEP (atmos); ESA-CCI + HadISST / EN4 / OSI-SAF (ocean) | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6/HighResMIP MMM — ensemble summary maps + per-model panels. Includes a dedicated **Ocean Added Value** page (`tos` vs ESA-CCI *and* HadISST, `thetao`/`so` vs EN4, `siconc` vs OSI-SAF) that reuses the ocean diagnostics' benchmark-bias NetCDFs |
 
 **Added Value** (AV) quantifies where the EERIE ensemble outperforms the CMIP6 multi-model mean relative to observations. AV ∈ [-1, 1]: AV > 0 means EERIE reduces squared error vs CMIP6 MMM at that grid point. Two figures per period (annual, DJF, JJA): ensemble mean/median summary and one panel per individual EERIE and CMIP6 model.
 

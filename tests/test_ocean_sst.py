@@ -648,7 +648,8 @@ class TestZonalMean:
 class TestRun:
     def test_run_creates_figures(self, ocean_sst_diag):
         saved = ocean_sst_diag.run(skip_existing=False)
-        assert len(saved) == 6  # 3 bias + 1 ts + 1 seasonal + 1 zonal
+        # 3 per-model bias + 3 ensemble bias + 1 ts + 1 seasonal + 1 zonal
+        assert len(saved) == 9
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -665,6 +666,10 @@ class TestRun:
         assert "sst_timeseries" in stems
         assert "sst_seasonal_cycle" in stems
         assert "sst_zonal_mean" in stems
+        # Ensemble mean/median bias figures
+        assert "sst_annual_ens_bias_combined" in stems
+        assert "sst_djf_ens_bias_combined" in stems
+        assert "sst_jja_ens_bias_combined" in stems
         plt.close("all")
 
     def test_run_metadata_valid_json(self, ocean_sst_diag):
@@ -677,10 +682,10 @@ class TestRun:
     def test_run_skip_existing(self, ocean_sst_diag):
         """Second run with skip_existing should not regenerate."""
         saved1 = ocean_sst_diag.run(skip_existing=False)
-        assert len(saved1) == 6
+        assert len(saved1) == 9
 
         saved2 = ocean_sst_diag.run(skip_existing=True)
-        assert len(saved2) == 6
+        assert len(saved2) == 9
         # All paths should match
         for (p1, j1), (p2, j2) in zip(sorted(saved1), sorted(saved2)):
             assert p1 == p2
@@ -700,7 +705,7 @@ class TestRun:
 
         # Second run should regenerate timeseries but skip others
         saved = ocean_sst_diag.run(skip_existing=True)
-        assert len(saved) == 6
+        assert len(saved) == 9
         assert ts_png.exists()
         plt.close("all")
 
@@ -716,7 +721,7 @@ class TestRun:
         annual_json.unlink()
 
         saved = ocean_sst_diag.run(skip_existing=True)
-        assert len(saved) == 6
+        assert len(saved) == 9
         assert annual_png.exists()
         plt.close("all")
 
@@ -927,7 +932,8 @@ class TestEdgeCases:
             config=config,
         )
         saved = diag.run(skip_existing=False)
-        assert len(saved) == 6
+        # 3 per-model bias + 3 ensemble bias + ts + seasonal + zonal
+        assert len(saved) == 9
         plt.close("all")
 
     def test_to_plot_time_empty(self):

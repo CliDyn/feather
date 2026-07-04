@@ -193,6 +193,13 @@ obs_datasets:
       analysed_sst: "ESA-CCI-L4_v3.0.1_monthly_1990_2014_sst.nc"
       timemean: "ESA-CCI-L4_v3.0.1_timemean_1990_2014_sst.nc"
       ymonmean: "ESA-CCI-L4_v3.0.1_ymonmean_1990_2014_sst.nc"
+  # HadISST: coarser (1°) but longer SST record (covers the full 1980–2014
+  # window, unlike ESA-CCI's 1990–2014). Second tos reference for sst_hadisst
+  # and the ocean Added Value page.
+  HADISST:
+    path: "/work/bm1344/AWI/OBS/hadisst"
+    variables:
+      sst: "HadISST_sst.nc"
   OSI_SAF:
     path: "{obs_root}/OSI-SAF/OSI-AQUA"
     variables:
@@ -249,7 +256,7 @@ nereus:
   ocean_influence_radius: 20000
   method: "linear"
 
-output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_cmip6_highresmip"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_cmip6"
 
 llm:
   figure_analysis:
@@ -274,6 +281,7 @@ website:
   group_order:
     - evaluation
     - regions
+    - ocean_added_value
     - temperature
     - precipitation
     - climate_classification
@@ -285,6 +293,7 @@ website:
   group_labels:
     evaluation: "Global Biases"
     regions: "CORDEX Regions"
+    ocean_added_value: "Ocean Added Value"
     temperature: "Temperature"
     precipitation: "Precipitation"
     climate_classification: "Climate Classification"
