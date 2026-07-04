@@ -768,6 +768,18 @@ class SeaIceDiag(DiagnosticBase):
             )
             if sithick is not None:
                 sithick_nt = sithick.sizes["time"]
+                sithick_npoints = int(sithick.size // sithick_nt)
+                # Some models (e.g. GISS-E2-1-H) publish sithick on a
+                # different grid than siconc/areacello; the area weights
+                # cannot be applied, so skip volume (area/extent are fine).
+                if sithick_npoints != npoints:
+                    logger.warning(
+                        "    sithick grid (%d pts) != concentration/area grid "
+                        "(%d pts) for %s — skipping ice volume",
+                        sithick_npoints, npoints, model,
+                    )
+                    sithick = None
+            if sithick is not None:
                 # Sanitize thickness: NaN → 0, zero fill values.
                 # Fill values (e.g. 1e20) must be zeroed, not clipped to
                 # 100m — that would create absurd ice volume.  Physical
