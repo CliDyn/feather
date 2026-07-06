@@ -167,11 +167,18 @@ class SSTHadISST(OceanSST):
 
         obs_lons_2d, obs_lats_2d = np.meshgrid(
             obs_trend_native.lon.values, obs_trend_native.lat.values)
+        # HadISST (1°, ~111 km) is coarser than the 0.25° common grid, so the
+        # 80 km model influence radius under-fills it (NaN speckle). Match the
+        # radius to ~1.5× the obs cell size.
+        obs_lat_vals = obs_trend_native.lat.values
+        obs_dlat = (abs(float(obs_lat_vals[1] - obs_lat_vals[0]))
+                    if len(obs_lat_vals) > 1 else resolution)
+        obs_ir = max(ir, obs_dlat * 111_000.0 * 1.5)
         if target_lats is None:
             obs_regridded, interp = nr.regrid(
                 obs_trend_native.values.ravel(),
                 lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
-                resolution=resolution, influence_radius=ir,
+                resolution=resolution, influence_radius=obs_ir,
                 lon_bounds=(0.0, 360.0), as_xarray=True,
             )
             target_lats = interp.target_lat[:, 0]
@@ -180,7 +187,7 @@ class SSTHadISST(OceanSST):
             _, interp = nr.regrid(
                 obs_trend_native.values.ravel(),
                 lon=obs_lons_2d.ravel(), lat=obs_lats_2d.ravel(),
-                resolution=resolution, influence_radius=ir,
+                resolution=resolution, influence_radius=obs_ir,
                 lon_bounds=(0.0, 360.0), as_xarray=True,
             )
             obs_regridded = interp(obs_trend_native.values.ravel())

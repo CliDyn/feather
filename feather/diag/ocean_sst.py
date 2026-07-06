@@ -458,13 +458,29 @@ class OceanSST(DiagnosticBase):
                         obs_lons_180, obs_lats,
                     )
 
+                    # Adapt the obs influence radius to the obs grid spacing.
+                    # ocean_influence_radius (~20 km) is tuned for ESA-CCI's
+                    # 0.05° grid; a coarse obs like HadISST (1°, ~111 km) needs
+                    # a radius comparable to its spacing or the regrid leaves
+                    # NaN holes (speckled/striped panel) on the finer common
+                    # grid.  Take the larger of the configured radius and ~1.5×
+                    # the obs cell size in metres.
+                    obs_dlat = (
+                        abs(float(obs_lats[1] - obs_lats[0]))
+                        if len(obs_lats) > 1 else resolution
+                    )
+                    obs_ir = max(
+                        self.ocean_influence_radius,
+                        obs_dlat * 111_000.0 * 1.5,
+                    )
+
                     _, obs_interpolator = nr.regrid(
                         obs_timemean.values.ravel(),
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),
                         resolution=resolution,
                         method=self._regrid_method,
-                        influence_radius=self.ocean_influence_radius,
+                        influence_radius=obs_ir,
                         lon_bounds=(-180.0, 180.0),
                         as_xarray=True,
                     )

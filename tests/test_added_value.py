@@ -828,6 +828,7 @@ class TestCordexRegionStats:
             cmip6_loader=MockCMIP6Loader(synth_cmip6),
             variables=["tas"],
             period=("1990", "1990"),
+            regions=True,
         )
 
     def test_regions_present_in_obs_stats(self, diag_multi):
@@ -905,6 +906,22 @@ class TestCordexRegionStats:
         assert diag_multi._bars_models_eerie_id("annual", "AFR").startswith(
             "added_value_bars_models_eerie_AFR_"
         )
+
+    def test_regions_off_by_default(self, synth_obs, synth_cmip6,
+                                    eerie_config):
+        """Without ``regions=True`` no per-region stats are computed."""
+        from tests.conftest import MockCMIP6Loader
+        diag = AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+        assert diag.regions is False
+        annual = diag.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        assert "regions" not in annual
 
 
 # ── Ocean Added Value page ───────────────────────────────────────────
