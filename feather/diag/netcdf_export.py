@@ -252,12 +252,40 @@ def export_generic_netcdf(
         key = name
         # Strip name to avoid the DataArray's own .name shadowing the key.
         da = da.rename(key)
+
+        # Isolate any dim that collides with an already-present dim whose
+        # coordinate values differ.  Assigning such a field directly would let
+        # xarray silently reindex it onto the existing axis, turning every
+        # non-matching point into NaN — e.g. obs on first-of-month timestamps
+        # merged against models on mid-month timestamps, or a coarse obs lat
+        # grid merged against the finer common grid.  Dims that match exactly
+        # (all models share the same time/lat/lon) stay shared so the file
+        # remains compact and cross-comparable.
+        isolate = {}
+        for d in da.dims:
+            if d not in ds.dims:
+                continue
+            if d in da.coords and d in ds.coords:
+                same = (
+                    ds[d].size == da[d].size
+                    and np.array_equal(ds[d].values, da[d].values)
+                )
+            else:
+                # No coordinate to compare on one side — shareable only when
+                # the lengths line up; otherwise isolate to be safe.
+                same = ds.sizes[d] == da.sizes[d]
+            if not same:
+                isolate[d] = f"{key}__{d}"
+        if isolate:
+            da = da.rename(isolate)
+
         try:
             ds = ds.assign({key: da})
             continue
         except Exception:  # noqa: BLE001 — dim/coord clash with prior field
             pass
-        # Isolate this field's dims so incompatible grids/lengths coexist.
+        # Last resort: fully isolate this field's dims so incompatible
+        # grids/lengths coexist.
         try:
             renamed = {d: f"{key}__{d}" for d in da.dims}
             iso = da.rename(renamed).reset_coords(drop=True)

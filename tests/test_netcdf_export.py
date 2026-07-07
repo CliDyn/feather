@@ -122,6 +122,70 @@ def test_skip_existing(tmp_path):
     assert p.stat().st_mtime_ns == mtime
 
 
+# ── Generic export: coordinate-misalignment isolation ─────────────────
+
+
+def test_generic_export_preserves_misaligned_time_obs(tmp_path):
+    """Obs on a different time axis than models must not be reindexed to NaN.
+
+    Regression: ESA-CCI monthly obs use first-of-month timestamps and cover
+    1990-2014, while models use mid-month timestamps over 1980-2014.  Merging
+    onto a shared ``time`` axis silently turned obs into all-NaN; the exporter
+    must isolate obs onto its own axis instead.
+    """
+    import pandas as pd
+
+    mt = pd.date_range("1980-01-16", "2014-12-16", freq="MS") + pd.Timedelta(
+        days=15)
+    model = xr.DataArray(
+        np.arange(len(mt), dtype=float), dims="time", coords={"time": mt})
+    ot = pd.date_range("1990-01-01", "2014-12-01", freq="MS")
+    obs = xr.DataArray(
+        np.arange(len(ot), dtype=float) + 100, dims="time",
+        coords={"time": ot})
+
+    paths = nx.export_generic_netcdf(
+        tmp_path, "sst_timeseries", {"models": {"A": model}, "obs": obs},
+        ("1980", "2014"), skip_existing=False)
+    ds = xr.open_dataset(paths[0])
+    # Obs preserved in full on its own isolated axis, not NaN-filled.
+    assert int(np.isfinite(ds["obs"].values).sum()) == len(ot)
+    assert "obs__time" in ds.dims
+    # Model keeps the shared time axis and its values.
+    assert int(np.isfinite(ds["models_A"].values).sum()) == len(mt)
+    ds.close()
+
+
+def test_generic_export_preserves_misaligned_lat_obs(tmp_path):
+    """Obs on a finer lat grid than models is isolated, not reindexed away."""
+    ml = np.linspace(-90, 90, 73)
+    ol = np.linspace(-89.9, 89.9, 360)
+    mz = xr.DataArray(np.ones(73), dims="lat", coords={"lat": ml})
+    oz = xr.DataArray(np.ones(360), dims="lat", coords={"lat": ol})
+    paths = nx.export_generic_netcdf(
+        tmp_path, "sst_zonal_mean", {"models": {"A": mz}, "obs": oz},
+        ("1980", "2014"), skip_existing=False)
+    ds = xr.open_dataset(paths[0])
+    assert int(np.isfinite(ds["obs"].values).sum()) == 360
+    assert "obs__lat" in ds.dims
+    ds.close()
+
+
+def test_generic_export_shares_matching_axis(tmp_path):
+    """Fields on identical axes still share one dim (no needless isolation)."""
+    lat = np.linspace(-89, 89, 10)
+    a = xr.DataArray(np.ones(10), dims="lat", coords={"lat": lat})
+    b = xr.DataArray(np.ones(10) * 2, dims="lat", coords={"lat": lat})
+    paths = nx.export_generic_netcdf(
+        tmp_path, "zon", {"models": {"A": a, "B": b}}, ("1980", "2014"),
+        skip_existing=False)
+    ds = xr.open_dataset(paths[0])
+    assert set(ds.dims) == {"lat"}
+    assert int(np.isfinite(ds["models_A"].values).sum()) == 10
+    assert int(np.isfinite(ds["models_B"].values).sum()) == 10
+    ds.close()
+
+
 # ── Individual benchmark-member export ────────────────────────────────
 
 
