@@ -171,6 +171,30 @@ def test_generic_export_preserves_misaligned_lat_obs(tmp_path):
     ds.close()
 
 
+def test_generic_export_handles_packed_nan_obs(tmp_path):
+    """A float/NaN obs carrying inherited int16 packing must still write.
+
+    Regression: HadISST is stored as int16 with scale_factor/_FillValue. The
+    derived (float, NaN-containing) obs kept that encoding, and xarray raised
+    'cannot convert float NaN to integer' on write. The exporter must strip
+    packing encoding so the field is written as float.
+    """
+    lat = np.linspace(-89, 89, 8)
+    obs = xr.DataArray(np.linspace(0, 5, 8), dims="lat", coords={"lat": lat})
+    obs.values[:2] = np.nan
+    obs.encoding = {"dtype": np.dtype("int16"), "_FillValue": -32768,
+                    "scale_factor": 0.01, "add_offset": 0.0}
+    model = xr.DataArray(np.ones(8), dims="lat", coords={"lat": lat})
+
+    paths = nx.export_generic_netcdf(
+        tmp_path, "sst_zonal_mean", {"models": {"A": model}, "obs": obs},
+        ("1980", "2014"), skip_existing=False)
+    ds = xr.open_dataset(paths[0])
+    assert np.issubdtype(ds["obs"].dtype, np.floating)
+    assert int(np.isfinite(ds["obs"].values).sum()) == 6
+    ds.close()
+
+
 def test_generic_export_shares_matching_axis(tmp_path):
     """Fields on identical axes still share one dim (no needless isolation)."""
     lat = np.linspace(-89, 89, 10)

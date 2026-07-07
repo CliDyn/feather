@@ -30,12 +30,23 @@ _SEASONS = ("DJF", "MAM", "JJA", "SON")
 _VALID_ATTR_TYPES = (str, numbers.Number, np.ndarray, np.number, list, tuple, bytes)
 
 
+#: Encoding keys that describe on-disk packing inherited from a source file
+#: (e.g. HadISST stored as int16 with scale_factor/_FillValue). Derived export
+#: fields are floats and may contain NaN, so re-encoding them into an integer
+#: on-disk dtype raises "cannot convert float NaN to integer" — drop these and
+#: let xarray write the in-memory float dtype instead.
+_PACKING_ENCODING_KEYS = (
+    "dtype", "_FillValue", "missing_value", "scale_factor", "add_offset",
+)
+
+
 def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     """Drop attrs whose values can't serialize to NetCDF (e.g. GRIB/earthkit
-    dict attrs like ``_earthkit={'bitsPerValue': 24}``).
+    dict attrs like ``_earthkit={'bitsPerValue': 24}``) and strip inherited
+    integer-packing encoding that breaks float/NaN fields.
 
     Cleans the dataset's own attrs plus every variable's and coordinate's
-    attrs. Mutates *ds* in place and returns it.
+    attrs and encoding. Mutates *ds* in place and returns it.
     """
     def clean(attrs: dict) -> None:
         for k in [k for k, v in attrs.items() if not isinstance(v, _VALID_ATTR_TYPES)]:
@@ -44,6 +55,8 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     clean(ds.attrs)
     for var in ds.variables.values():
         clean(var.attrs)
+        for k in _PACKING_ENCODING_KEYS:
+            var.encoding.pop(k, None)
     return ds
 
 
