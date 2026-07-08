@@ -659,6 +659,18 @@ class AddedValueDiag(DiagnosticBase):
         """Directory of the source diagnostic's bias NetCDFs."""
         return Path(self.config.output_dir) / "netcdf" / diag_name
 
+    def _bias_nc_period(self, var: str, obs_name: str) -> tuple[str, str]:
+        """Filename period of a source bias NetCDF (matches the writer).
+
+        The ocean bias files are labelled with the actual climatology window
+        (obs coverage ∩ analysis period): ESA-CCI tos is 1990-2014, every other
+        obs equals the analysis period.  Mirrors
+        :func:`feather.diag.ocean_bias.obs_clim_period` so the reader targets
+        the same filename the exporter wrote.
+        """
+        return _ocean_bias.obs_clim_period(
+            self.obs_loader, self.config, var, self.period, obs_name)
+
     def _obs_names_for(self, var: str) -> list[str]:
         """Obs datasets to evaluate for *var* (primary first), config-filtered."""
         primary = self._OBS_ALT_DATASETS.get(var, "ERA5")
@@ -686,8 +698,9 @@ class AddedValueDiag(DiagnosticBase):
         diag = self._OBS_NETCDF_SOURCE.get(obs_name)
         if diag is None:
             return None
+        fperiod = self._bias_nc_period(var, obs_name)
         path = self._bias_nc_dir(diag) / (
-            f"{var}_{period_key}_{self.period[0]}-{self.period[1]}.nc"
+            f"{var}_{period_key}_{fperiod[0]}-{fperiod[1]}.nc"
         )
         if not path.exists():
             return None
@@ -726,9 +739,10 @@ class AddedValueDiag(DiagnosticBase):
         diag = self._OBS_NETCDF_SOURCE.get(obs_name)
         if diag is None:
             return {}
+        fperiod = self._bias_nc_period(var, obs_name)
         path = self._bias_nc_dir(diag) / (
             f"{var}_{period_key}_individual_"
-            f"{self.period[0]}-{self.period[1]}.nc"
+            f"{fperiod[0]}-{fperiod[1]}.nc"
         )
         if not path.exists():
             return {}

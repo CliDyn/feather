@@ -228,6 +228,30 @@ def collect_dataarrays(
             )
 
 
+def _data_span_period(fields: dict, fallback) -> tuple[str, str] | None:
+    """Actual ``(start_year, end_year)`` from any 1-D datetime coord in *fields*.
+
+    Reflects the real time span the data covers (e.g. a time series that ends
+    where the model data ends, not the requested window).  Time-collapsed
+    products (climatology/bias maps, month-indexed cycles) carry no datetime
+    axis, so they fall back to *fallback* — the window used to compute them.
+    """
+    starts: list[str] = []
+    ends: list[str] = []
+    for da in fields.values():
+        for coord in da.coords.values():
+            if (coord.ndim == 1 and coord.size
+                    and np.issubdtype(coord.dtype, np.datetime64)):
+                vals = coord.values
+                starts.append(str(np.datetime_as_string(np.min(vals), unit="Y")))
+                ends.append(str(np.datetime_as_string(np.max(vals), unit="Y")))
+    if starts:
+        return (min(starts), max(ends))
+    if fallback is not None:
+        return (str(fallback[0]), str(fallback[1]))
+    return None
+
+
 def export_generic_netcdf(
     netcdf_dir: Path,
     token: str,
@@ -240,25 +264,29 @@ def export_generic_netcdf(
     """Write every per-source DataArray in *results* to a single NetCDF.
 
     Filename is ``{token}_{start}-{end}.nc`` (or ``{token}.nc`` when *period*
-    is None). Fields are merged into one Dataset; any field whose dims clash
-    with an already-added field (different grid/length) gets its dims renamed
-    uniquely so no data is dropped. Existing files are skipped when
-    *skip_existing*.
+    is None and the data carries no time axis). The ``{start}-{end}`` reflects
+    the *actual* data span (derived from the fields' datetime coordinate) when
+    present, else the requested *period* (for time-collapsed maps/cycles).
+    Fields are merged into one Dataset; any field whose dims clash with an
+    already-added field (different grid/length) gets its dims renamed uniquely
+    so no data is dropped. Existing files are skipped when *skip_existing*.
     """
     netcdf_dir = Path(netcdf_dir)
     token = sanitize_name(token)
-    if period is not None:
-        fname = f"{token}_{period[0]}-{period[1]}.nc"
-    else:
-        fname = f"{token}.nc"
-    path = netcdf_dir / fname
-    if skip_existing and path.exists():
-        return [path]
 
     fields: dict = {}
     collect_dataarrays(results, "", fields)
     if not fields:
         return []
+
+    eff_period = _data_span_period(fields, period)
+    if eff_period is not None:
+        fname = f"{token}_{eff_period[0]}-{eff_period[1]}.nc"
+    else:
+        fname = f"{token}.nc"
+    path = netcdf_dir / fname
+    if skip_existing and path.exists():
+        return [path]
 
     ds = xr.Dataset()
     for name, da in fields.items():
@@ -312,9 +340,9 @@ def export_generic_netcdf(
     netcdf_dir.mkdir(parents=True, exist_ok=True)
     ds.attrs.update(
         token=token,
-        period=f"{period[0]}-{period[1]}" if period else "",
-        period_start=str(period[0]) if period else "",
-        period_end=str(period[1]) if period else "",
+        period=f"{eff_period[0]}-{eff_period[1]}" if eff_period else "",
+        period_start=eff_period[0] if eff_period else "",
+        period_end=eff_period[1] if eff_period else "",
         description=(
             "Per-source diagnostic fields (obs, evaluated models, and "
             "benchmark MMMs: CMIP6, HighResMIP) on their analysis grids."

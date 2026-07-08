@@ -627,13 +627,17 @@ def save_ocean_bias_netcdf(
         return []
 
     units = OCEAN_UNITS.get(var, "")
+    # Label the files with the actual climatology window used for the fields.
+    # For ESA-CCI tos this is the obs coverage (∩ analysis period), i.e.
+    # 1990-2014 rather than the config 1980-2014; every other obs is unchanged.
+    fperiod = obs_clim_period(diag.obs_loader, diag.config, var, period, obs_name)
     written = export_biasmap_netcdf(
-        diag._netcdf_dir, var, results, tuple(period), units=units,
+        diag._netcdf_dir, var, results, tuple(fperiod), units=units,
     )
     if want_individual and results.get("benchmark_individual_data"):
         try:
             export_biasmap_individual_netcdf(
-                diag._netcdf_dir, var, results, tuple(period), units=units,
+                diag._netcdf_dir, var, results, tuple(fperiod), units=units,
             )
         except Exception:  # noqa: BLE001
             logger.warning(
@@ -666,8 +670,12 @@ def maybe_export_ocean_bias(
         this_obs = obs_name or OCEAN_OBS.get(var)
         if this_obs not in diag.config.obs_datasets:
             continue
+        # Files are labelled with the actual climatology window (obs coverage
+        # ∩ period; only ESA-CCI differs from the config period).
+        fperiod = obs_clim_period(diag.obs_loader, diag.config, var, period,
+                                  this_obs)
         if skip_existing and all(
-            (nc_dir / f"{var}_{pk}_{period[0]}-{period[1]}.nc").exists()
+            (nc_dir / f"{var}_{pk}_{fperiod[0]}-{fperiod[1]}.nc").exists()
             for pk in PERIODS
         ):
             logger.info(
