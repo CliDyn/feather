@@ -529,6 +529,38 @@ class TestComparisonType:
         )
         assert cfg.get_comparison_type() == "baseline_evaluation"
 
+
+class TestGetSeasons:
+    """Tests for the project.seasons toggle."""
+
+    def _cfg(self, project=None):
+        return FeatherConfig(
+            model_catalogs={}, models=["m"], obs_root="",
+            obs_datasets={}, cmip6={}, dask={}, nereus={},
+            output_dir="/tmp", project=project or {},
+        )
+
+    def test_default_annual_djf_jja(self):
+        assert self._cfg().get_seasons() == ["annual", "DJF", "JJA"]
+
+    def test_all_five(self):
+        cfg = self._cfg(
+            {"seasons": ["annual", "DJF", "MAM", "JJA", "SON"]})
+        assert cfg.get_seasons() == ["annual", "DJF", "MAM", "JJA", "SON"]
+
+    def test_annual_prepended_and_case_insensitive(self):
+        # "annual" omitted and seasons lower-case → still normalised.
+        assert self._cfg({"seasons": ["djf", "son"]}).get_seasons() == [
+            "annual", "DJF", "SON"]
+
+    def test_unknown_season_ignored(self):
+        assert self._cfg({"seasons": ["DJF", "BOGUS", "JJA"]}).get_seasons() == [
+            "annual", "DJF", "JJA"]
+
+    def test_order_preserved(self):
+        assert self._cfg({"seasons": ["SON", "MAM"]}).get_seasons() == [
+            "annual", "SON", "MAM"]
+
     def test_yaml_roundtrip(self):
         cfg_data = {
             "models": {"M": {}},

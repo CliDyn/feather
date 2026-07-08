@@ -82,8 +82,27 @@ OCEAN_RES = 0.25
 #: 0.25° grid keeps their detail instead of being over-smoothed.
 _BENCH_IR_FLOOR = 250_000.0
 
-#: Periods computed (annual + the two solstitial seasons).
+#: Default periods (annual + the two solstitial seasons). The actual set is
+#: config-driven via :func:`periods_for_config` (``project.seasons``).
 PERIODS = ("annual", "DJF", "JJA")
+
+#: Months making up each meteorological season.
+_SEASON_MONTHS = {
+    "DJF": (12, 1, 2), "MAM": (3, 4, 5), "JJA": (6, 7, 8), "SON": (9, 10, 11),
+}
+
+
+def periods_for_config(config) -> list[str]:
+    """Ordered ``['annual', <seasons...>]`` for the ocean bias maps.
+
+    Reads ``config.get_seasons()`` (``project.seasons``) when available,
+    falling back to the default :data:`PERIODS` for configs/objects without
+    the helper (keeps existing behaviour and simple test doubles working).
+    """
+    getter = getattr(config, "get_seasons", None)
+    if callable(getter):
+        return list(getter())
+    return list(PERIODS)
 
 
 def grid_resolution(config) -> float:
@@ -265,21 +284,24 @@ def _coarsen_rectilinear(da: xr.DataArray, target_res: float) -> xr.DataArray:
     return da
 
 
+def _ymon_season(ymon, annual, months) -> xr.DataArray:
+    """Seasonal mean of a monthly climatology (``time`` or ``month`` dim)."""
+    if "time" in ymon.dims:
+        return ymon.sel(
+            time=ymon["time.month"].isin(list(months))).mean("time")
+    if "month" in ymon.dims:
+        return ymon.sel(month=list(months)).mean("month")
+    return annual
+
+
 def _esa_cci_native(
-    obs_loader, target_res: float = OCEAN_RES,
+    obs_loader, target_res: float = OCEAN_RES, seasons=("DJF", "JJA"),
 ) -> dict[str, xr.DataArray]:
     annual = obs_loader.load_esa_cci("timemean") - 273.15
     ymon = obs_loader.load_esa_cci("ymonmean") - 273.15
-    if "time" in ymon.dims:
-        mon = ymon["time.month"]
-        djf = ymon.sel(time=mon.isin([12, 1, 2])).mean("time")
-        jja = ymon.sel(time=mon.isin([6, 7, 8])).mean("time")
-    elif "month" in ymon.dims:
-        djf = ymon.sel(month=[12, 1, 2]).mean("month")
-        jja = ymon.sel(month=[6, 7, 8]).mean("month")
-    else:
-        djf = jja = annual
-    out = {"annual": annual, "DJF": djf, "JJA": jja}
+    out = {"annual": annual}
+    for s in seasons:
+        out[s] = _ymon_season(ymon, annual, _SEASON_MONTHS[s])
     return {pk: _coarsen_rectilinear(v, target_res) for pk, v in out.items()}
 
 
@@ -326,8 +348,9 @@ def obs_clim_period(obs_loader, config, var: str, period, obs_name=None):
     return aligned
 
 
-def _hadisst_native(obs_loader, period) -> dict[str, xr.DataArray]:
-    """HadISST SST climatologies (annual/DJF/JJA) in °C on the native 1° grid.
+def _hadisst_native(obs_loader, period, seasons=("DJF", "JJA")
+                    ) -> dict[str, xr.DataArray]:
+    """HadISST SST climatologies (annual + *seasons*) in °C on the native grid.
 
     ``ObsLoader.load_hadisst`` returns K with land/ice masked; climatologies
     are computed over the analysis *period* (HadISST spans the full window).
@@ -335,25 +358,27 @@ def _hadisst_native(obs_loader, period) -> dict[str, xr.DataArray]:
     da = to_celsius_if_needed(obs_loader.load_hadisst(period=period))
     out = {"annual": climatology(da, period)}
     seasonal = seasonal_climatology(da, period)
-    for s in ("DJF", "JJA"):
+    for s in seasons:
         if s in seasonal:
             out[s] = seasonal[s]
     return out
 
 
-def _en4_native(obs_loader, var: str, period) -> dict[str, xr.DataArray]:
+def _en4_native(obs_loader, var: str, period, seasons=("DJF", "JJA")
+                ) -> dict[str, xr.DataArray]:
     da = surface_slice(obs_loader.load_en4(var, period=period))
     if var == "thetao":
         da = to_celsius_if_needed(da)  # EN4 thetao is stored in K
     out = {"annual": climatology(da, period)}
     seasonal = seasonal_climatology(da, period)
-    for s in ("DJF", "JJA"):
+    for s in seasons:
         if s in seasonal:
             out[s] = seasonal[s]
     return out
 
 
-def _osisaf_native_hemis(obs_loader, period) -> dict[str, dict[str, xr.DataArray]]:
+def _osisaf_native_hemis(obs_loader, period, seasons=("DJF", "JJA")
+                         ) -> dict[str, dict[str, xr.DataArray]]:
     hemis: dict[str, dict[str, xr.DataArray]] = {}
     for hemi in ("nh", "sh"):
         ds = obs_loader.load_osisaf(hemi, period=period)
@@ -361,8 +386,9 @@ def _osisaf_native_hemis(obs_loader, period) -> dict[str, dict[str, xr.DataArray
         clim = {"annual": da.mean("time") if "time" in da.dims else da}
         if "time" in da.dims:
             mon = da["time.month"]
-            clim["DJF"] = da.sel(time=mon.isin([12, 1, 2])).mean("time")
-            clim["JJA"] = da.sel(time=mon.isin([6, 7, 8])).mean("time")
+            for s in seasons:
+                clim[s] = da.sel(
+                    time=mon.isin(list(_SEASON_MONTHS[s]))).mean("time")
         hemis[hemi] = clim
     return hemis
 
@@ -383,17 +409,21 @@ def load_ocean_obs_on_target(
         logger.warning("Ocean obs %s not configured — skipping %s", obs_name, var)
         return None
 
+    # Seasonal subset to compute (config-driven; excludes "annual").
+    seasons = tuple(s for s in periods_for_config(config) if s != "annual")
+
     if obs_name == "ESA_CCI":
-        native = _esa_cci_native(obs_loader, target_res=resolution)
+        native = _esa_cci_native(
+            obs_loader, target_res=resolution, seasons=seasons)
         merged_hemis = None
     elif obs_name == "HADISST":
-        native = _hadisst_native(obs_loader, period)
+        native = _hadisst_native(obs_loader, period, seasons=seasons)
         merged_hemis = None
     elif obs_name == "EN4":
-        native = _en4_native(obs_loader, var, period)
+        native = _en4_native(obs_loader, var, period, seasons=seasons)
         merged_hemis = None
     elif obs_name == "OSI_SAF":
-        hemis = _osisaf_native_hemis(obs_loader, period)
+        hemis = _osisaf_native_hemis(obs_loader, period, seasons=seasons)
         native = hemis["nh"]
         merged_hemis = hemis
     else:
@@ -457,7 +487,8 @@ def compute_ocean_fields(
     )
     if not obs_fields:
         return None
-    periods = [p for p in PERIODS if p in obs_fields]
+    periods = [p for p in periods_for_config(config) if p in obs_fields]
+    seasonal = [p for p in periods if p != "annual"]
 
     # Climatology window for the model/benchmark side.  For ESA-CCI tos this
     # is the ESA-CCI coverage (∩ analysis period) so the SST bias is
@@ -491,11 +522,11 @@ def compute_ocean_fields(
             "seasonal_biases": {},
         }
         ens_regrids["annual"].append(annual)
-        seasonal = seasonal_climatology(da, mperiod)
-        for s in ("DJF", "JJA"):
-            if s in periods and s in seasonal:
+        model_seasonal = seasonal_climatology(da, mperiod)
+        for s in seasonal:
+            if s in model_seasonal:
                 sr = regrid_scatter(
-                    seasonal[s].compute(), target_lats, target_lons,
+                    model_seasonal[s].compute(), target_lats, target_lons,
                     res, ir, model_cache, method=method,
                 )
                 entry["seasonal_regrids"][s] = sr
@@ -551,7 +582,7 @@ def compute_ocean_fields(
             if want_individual:
                 indiv["annual"][member_label] = {
                     "regrid": reg, "bias": reg - obs_fields["annual"]}
-            for s in ("DJF", "JJA"):
+            for s in seasonal:
                 if s not in periods:
                     continue
                 try:
@@ -627,13 +658,17 @@ def save_ocean_bias_netcdf(
         return []
 
     units = OCEAN_UNITS.get(var, "")
+    # Label the files with the actual climatology window used for the fields.
+    # For ESA-CCI tos this is the obs coverage (∩ analysis period), i.e.
+    # 1990-2014 rather than the config 1980-2014; every other obs is unchanged.
+    fperiod = obs_clim_period(diag.obs_loader, diag.config, var, period, obs_name)
     written = export_biasmap_netcdf(
-        diag._netcdf_dir, var, results, tuple(period), units=units,
+        diag._netcdf_dir, var, results, tuple(fperiod), units=units,
     )
     if want_individual and results.get("benchmark_individual_data"):
         try:
             export_biasmap_individual_netcdf(
-                diag._netcdf_dir, var, results, tuple(period), units=units,
+                diag._netcdf_dir, var, results, tuple(fperiod), units=units,
             )
         except Exception:  # noqa: BLE001
             logger.warning(
@@ -666,9 +701,13 @@ def maybe_export_ocean_bias(
         this_obs = obs_name or OCEAN_OBS.get(var)
         if this_obs not in diag.config.obs_datasets:
             continue
+        # Files are labelled with the actual climatology window (obs coverage
+        # ∩ period; only ESA-CCI differs from the config period).
+        fperiod = obs_clim_period(diag.obs_loader, diag.config, var, period,
+                                  this_obs)
         if skip_existing and all(
-            (nc_dir / f"{var}_{pk}_{period[0]}-{period[1]}.nc").exists()
-            for pk in PERIODS
+            (nc_dir / f"{var}_{pk}_{fperiod[0]}-{fperiod[1]}.nc").exists()
+            for pk in periods_for_config(diag.config)
         ):
             logger.info(
                 "Ocean benchmark bias for %s already saved — skipping", var)

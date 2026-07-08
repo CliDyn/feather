@@ -109,6 +109,7 @@ class AddedValueDiag(DiagnosticBase):
         experiment="baseline_hist",
         period=("1990", "2014"),
         cmip6_individual=False,
+        regions=False,
     ):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, benchmarks=benchmarks)
@@ -117,6 +118,10 @@ class AddedValueDiag(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
+        # Per-CORDEX-region Added Value bar charts are opt-in (CLI
+        # ``--added-value-regions``).  When disabled, the per-region category
+        # stats are not computed and the per-region figures are not produced.
+        self.regions = regions
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
         # Cache of CORDEX region masks keyed by grid signature (see
@@ -393,7 +398,8 @@ class AddedValueDiag(DiagnosticBase):
         # ``region=None`` is the global domain (legacy figure IDs); each
         # CORDEX ``-11`` region then gets its own set of bar charts.
         if all_obs_stats:
-            for region in [None, *list_regions()]:
+            region_list = [None, *list_regions()] if self.regions else [None]
+            for region in region_list:
                 # Global charts stay on the main Added Value page (all five
                 # periods, backward-compatible IDs).  Per-region charts go to
                 # their own ``added_value_regions`` figures directory — a
@@ -653,6 +659,18 @@ class AddedValueDiag(DiagnosticBase):
         """Directory of the source diagnostic's bias NetCDFs."""
         return Path(self.config.output_dir) / "netcdf" / diag_name
 
+    def _bias_nc_period(self, var: str, obs_name: str) -> tuple[str, str]:
+        """Filename period of a source bias NetCDF (matches the writer).
+
+        The ocean bias files are labelled with the actual climatology window
+        (obs coverage ∩ analysis period): ESA-CCI tos is 1990-2014, every other
+        obs equals the analysis period.  Mirrors
+        :func:`feather.diag.ocean_bias.obs_clim_period` so the reader targets
+        the same filename the exporter wrote.
+        """
+        return _ocean_bias.obs_clim_period(
+            self.obs_loader, self.config, var, self.period, obs_name)
+
     def _obs_names_for(self, var: str) -> list[str]:
         """Obs datasets to evaluate for *var* (primary first), config-filtered."""
         primary = self._OBS_ALT_DATASETS.get(var, "ERA5")
@@ -680,8 +698,9 @@ class AddedValueDiag(DiagnosticBase):
         diag = self._OBS_NETCDF_SOURCE.get(obs_name)
         if diag is None:
             return None
+        fperiod = self._bias_nc_period(var, obs_name)
         path = self._bias_nc_dir(diag) / (
-            f"{var}_{period_key}_{self.period[0]}-{self.period[1]}.nc"
+            f"{var}_{period_key}_{fperiod[0]}-{fperiod[1]}.nc"
         )
         if not path.exists():
             return None
@@ -720,9 +739,10 @@ class AddedValueDiag(DiagnosticBase):
         diag = self._OBS_NETCDF_SOURCE.get(obs_name)
         if diag is None:
             return {}
+        fperiod = self._bias_nc_period(var, obs_name)
         path = self._bias_nc_dir(diag) / (
             f"{var}_{period_key}_individual_"
-            f"{self.period[0]}-{self.period[1]}.nc"
+            f"{fperiod[0]}-{fperiod[1]}.nc"
         )
         if not path.exists():
             return {}
@@ -1645,9 +1665,10 @@ class AddedValueDiag(DiagnosticBase):
                 for m, av in per_eerie_av.items()
             },
         }
-        block["regions"] = self._regional_stats(
-            av_mean, av_median, av_cmip6, per_eerie_av, area, lat, lon,
-        )
+        if self.regions:
+            block["regions"] = self._regional_stats(
+                av_mean, av_median, av_cmip6, per_eerie_av, area, lat, lon,
+            )
         return block
 
     def _period_stats_block_from_fields(

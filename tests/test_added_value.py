@@ -7,6 +7,7 @@ the MockCMIP6Loader from conftest.py — no real data needed.
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -828,6 +829,7 @@ class TestCordexRegionStats:
             cmip6_loader=MockCMIP6Loader(synth_cmip6),
             variables=["tas"],
             period=("1990", "1990"),
+            regions=True,
         )
 
     def test_regions_present_in_obs_stats(self, diag_multi):
@@ -905,6 +907,22 @@ class TestCordexRegionStats:
         assert diag_multi._bars_models_eerie_id("annual", "AFR").startswith(
             "added_value_bars_models_eerie_AFR_"
         )
+
+    def test_regions_off_by_default(self, synth_obs, synth_cmip6,
+                                    eerie_config):
+        """Without ``regions=True`` no per-region stats are computed."""
+        from tests.conftest import MockCMIP6Loader
+        diag = AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1990", "1990"),
+        )
+        assert diag.regions is False
+        annual = diag.compute()["tas"]["obs_stats"]["ERA5"]["annual"]
+        assert "regions" not in annual
 
 
 # ── Ocean Added Value page ───────────────────────────────────────────
@@ -1078,3 +1096,40 @@ class TestAvNetcdfObsToken:
         era5 = diag._nc_path("tas", "annual", "ensemble_mean", obs_name="ERA5")
         assert primary.exists(), "primary AV NetCDF missing"
         assert era5.exists(), "ERA5-based AV NetCDF missing for tas"
+
+
+class TestBiasNcPeriod:
+    """The AV reader must target the same filename the ocean-bias writer used.
+
+    Ocean bias NetCDFs are labelled with the actual climatology window (obs
+    coverage ∩ analysis period). ESA-CCI tos is 1990-2014; every other obs
+    equals the analysis period. _bias_nc_period must mirror that so ocean
+    Added Value finds the files.
+    """
+
+    @pytest.fixture
+    def diag(self, synth_obs, synth_cmip6, eerie_config):
+        from tests.conftest import MockCMIP6Loader
+        return AddedValueDiag(
+            MockCMORLoader(synth_obs),
+            MockObsLoaderLatlon(synth_obs),
+            eerie_config,
+            cmip6_loader=MockCMIP6Loader(synth_cmip6),
+            variables=["tas"],
+            period=("1980", "2014"),
+        )
+
+    def test_atmospheric_obs_unchanged(self, diag):
+        assert diag._bias_nc_period("tas", "ERA5") == ("1980", "2014")
+
+    def test_hadisst_tos_unchanged(self, diag):
+        assert diag._bias_nc_period("tos", "HADISST") == ("1980", "2014")
+
+    def test_esa_cci_tos_aligned(self, diag):
+        # A fake ESA-CCI monthly series covering 1990-2014 → aligned window.
+        t = pd.date_range("1990-01-01", "2014-12-01", freq="MS")
+        esa = xr.DataArray(
+            np.ones((len(t), 2, 2)), dims=("time", "lat", "lon"),
+            coords={"time": t, "lat": [0, 1], "lon": [0, 1]})
+        diag.obs_loader.load_esa_cci = lambda *a, **k: esa
+        assert diag._bias_nc_period("tos", "ESA_CCI") == ("1990", "2014")

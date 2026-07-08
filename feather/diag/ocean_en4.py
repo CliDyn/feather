@@ -1082,6 +1082,66 @@ class OceanEN4(DiagnosticBase):
 
     # ── Groups G-H: Depth-layer time series ──────────────────────────
 
+    @staticmethod
+    def _volume_mean_layers(da_flat, area, thickness, depth, time_vals,
+                            *, log_ctx=""):
+        """Volume-weighted means for every ``_DEPTH_RANGES`` layer in one pass.
+
+        ``nr.volume_mean`` masks out-of-range levels but still references the
+        full 3D array (``data_arr * volumes`` spans all levels), so computing
+        each depth range with its own ``.compute()`` re-reads the entire field
+        once per range.  Building the lazy results and computing them together
+        (single dask graph) reads the source once and shares the conversion
+        subgraph across ranges — numerically identical, ~N× less I/O.
+        """
+        import dask
+        import nereus as nr
+
+        lazy: dict[str, Any] = {}
+        for dmin, dmax, label in _DEPTH_RANGES:
+            dmax_eff = dmax if dmax is not None else float(depth[-1] + 1)
+            try:
+                lazy[label] = nr.volume_mean(
+                    da_flat, area, thickness, depth,
+                    depth_min=dmin, depth_max=dmax_eff, as_xarray=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "volume_mean setup failed for %s/%s: %s",
+                    log_ctx, label, e)
+        if not lazy:
+            return {}
+
+        labels = list(lazy)
+        try:
+            computed = list(dask.compute(*(lazy[l] for l in labels)))
+        except Exception as e:  # noqa: BLE001
+            # Fall back to per-layer compute so one bad range does not drop
+            # the others (preserves the original robustness).
+            logger.warning(
+                "Batched volume_mean failed for %s (%s); retrying per layer",
+                log_ctx, e)
+            computed = []
+            for l in labels:
+                try:
+                    ts = lazy[l]
+                    computed.append(ts.compute() if hasattr(ts, "compute")
+                                    else ts)
+                except Exception as e2:  # noqa: BLE001
+                    logger.warning("volume_mean failed for %s/%s: %s",
+                                   log_ctx, l, e2)
+                    computed.append(None)
+
+        out: dict[str, xr.DataArray] = {}
+        for label, ts in zip(labels, computed):
+            if ts is None:
+                continue
+            if isinstance(ts, xr.DataArray) and "time" not in ts.dims:
+                ts = xr.DataArray(
+                    ts.values, dims="time", coords={"time": time_vals})
+            out[label] = ts
+        return out
+
     def _compute_depth_timeseries(self, variable, model_3d, model_depths,
                                   model_thickness, en4_data, en4_ds_cache,
                                   model_coords=None):
@@ -1143,30 +1203,12 @@ class OceanEN4(DiagnosticBase):
                 da_flat = da_conv  # HEALPix: already 3D
 
             logger.info("Computing %s depth timeseries (dask)...", model)
-            layer_ts = {}
-
-            for dmin, dmax, label in _DEPTH_RANGES:
-                dmax_eff = dmax if dmax is not None else float(depth[-1] + 1)
-                try:
-                    ts = nr.volume_mean(
-                        da_flat, area, thickness, depth,
-                        depth_min=dmin, depth_max=dmax_eff,
-                        as_xarray=True,
-                    )
-                    if hasattr(ts, "compute"):
-                        ts = ts.compute()
-                    # Assign time coordinate if missing
-                    if isinstance(ts, xr.DataArray) and "time" not in ts.dims:
-                        ts = xr.DataArray(
-                            ts.values, dims="time",
-                            coords={"time": time_vals},
-                        )
-                    layer_ts[label] = ts
-                except Exception as e:
-                    logger.warning(
-                        "volume_mean failed for %s/%s/%s: %s",
-                        model, variable, label, e,
-                    )
+            # All depth ranges computed in one dask pass (reads the 3D field
+            # once instead of once per range — see _volume_mean_layers).
+            layer_ts = self._volume_mean_layers(
+                da_flat, area, thickness, depth, time_vals,
+                log_ctx=f"{model}/{variable}",
+            )
 
             if layer_ts:
                 model_ts[model] = layer_ts
@@ -1212,28 +1254,11 @@ class OceanEN4(DiagnosticBase):
             else:
                 en4_flat = en4_conv
 
-            for dmin, dmax, label in _DEPTH_RANGES:
-                dmax_eff = dmax if dmax is not None else float(
-                    en4_depth[-1] + 1)
-                try:
-                    ts = nr.volume_mean(
-                        en4_flat, en4_area, en4_thick, en4_depth,
-                        depth_min=dmin, depth_max=dmax_eff,
-                        as_xarray=True,
-                    )
-                    if hasattr(ts, "compute"):
-                        ts = ts.compute()
-                    if isinstance(ts, xr.DataArray) and "time" not in ts.dims:
-                        ts = xr.DataArray(
-                            ts.values, dims="time",
-                            coords={"time": en4_conv.time.values},
-                        )
-                    en4_ts[label] = ts
-                except Exception as e:
-                    logger.warning(
-                        "EN4 volume_mean failed for %s/%s: %s",
-                        variable, label, e,
-                    )
+            # All depth ranges in one dask pass (see _volume_mean_layers).
+            en4_ts = self._volume_mean_layers(
+                en4_flat, en4_area, en4_thick, en4_depth,
+                en4_conv.time.values, log_ctx=f"EN4/{variable}",
+            )
 
         return {"models": model_ts, "en4": en4_ts}
 

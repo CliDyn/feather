@@ -243,3 +243,48 @@ class TestHadISST:
 
     def test_obs_diag_map_has_hadisst(self):
         assert ob.OCEAN_OBS_DIAG["HADISST"] == "sst_hadisst"
+
+
+# ── Config-driven seasons (project.seasons) ──────────────────────────
+
+
+class TestSeasons:
+    def test_periods_default(self):
+        cfg = SimpleNamespace()  # no get_seasons → default PERIODS
+        assert ob.periods_for_config(cfg) == list(ob.PERIODS)
+
+    def test_periods_from_config(self):
+        cfg = SimpleNamespace(
+            get_seasons=lambda: ["annual", "DJF", "MAM", "JJA", "SON"])
+        assert ob.periods_for_config(cfg) == [
+            "annual", "DJF", "MAM", "JJA", "SON"]
+
+    def test_hadisst_native_default_seasons(self):
+        out = ob._hadisst_native(_FakeHadObs(), ("1980", "2014"))
+        assert set(out) == {"annual", "DJF", "JJA"}
+
+    def test_hadisst_native_all_seasons(self):
+        out = ob._hadisst_native(
+            _FakeHadObs(), ("1980", "2014"),
+            seasons=("DJF", "MAM", "JJA", "SON"))
+        assert set(out) == {"annual", "DJF", "MAM", "JJA", "SON"}
+
+    def test_esa_cci_native_all_seasons(self):
+        class _FakeEsaYmon:
+            def load_esa_cci(self, product, period=None):
+                import numpy as np
+                import xarray as xr
+                if product == "timemean":
+                    return xr.DataArray(
+                        np.full((2, 2), 288.0), dims=("lat", "lon"),
+                        coords={"lat": [0, 1], "lon": [0, 1]})
+                # ymonmean: 12-month climatology
+                return xr.DataArray(
+                    np.full((12, 2, 2), 288.0), dims=("month", "lat", "lon"),
+                    coords={"month": list(range(1, 13)),
+                            "lat": [0, 1], "lon": [0, 1]})
+
+        out = ob._esa_cci_native(
+            _FakeEsaYmon(), target_res=1.0,
+            seasons=("DJF", "MAM", "JJA", "SON"))
+        assert set(out) == {"annual", "DJF", "MAM", "JJA", "SON"}

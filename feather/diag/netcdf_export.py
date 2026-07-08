@@ -30,12 +30,23 @@ _SEASONS = ("DJF", "MAM", "JJA", "SON")
 _VALID_ATTR_TYPES = (str, numbers.Number, np.ndarray, np.number, list, tuple, bytes)
 
 
+#: Encoding keys that describe on-disk packing inherited from a source file
+#: (e.g. HadISST stored as int16 with scale_factor/_FillValue). Derived export
+#: fields are floats and may contain NaN, so re-encoding them into an integer
+#: on-disk dtype raises "cannot convert float NaN to integer" — drop these and
+#: let xarray write the in-memory float dtype instead.
+_PACKING_ENCODING_KEYS = (
+    "dtype", "_FillValue", "missing_value", "scale_factor", "add_offset",
+)
+
+
 def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     """Drop attrs whose values can't serialize to NetCDF (e.g. GRIB/earthkit
-    dict attrs like ``_earthkit={'bitsPerValue': 24}``).
+    dict attrs like ``_earthkit={'bitsPerValue': 24}``) and strip inherited
+    integer-packing encoding that breaks float/NaN fields.
 
     Cleans the dataset's own attrs plus every variable's and coordinate's
-    attrs. Mutates *ds* in place and returns it.
+    attrs and encoding. Mutates *ds* in place and returns it.
     """
     def clean(attrs: dict) -> None:
         for k in [k for k, v in attrs.items() if not isinstance(v, _VALID_ATTR_TYPES)]:
@@ -44,6 +55,8 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     clean(ds.attrs)
     for var in ds.variables.values():
         clean(var.attrs)
+        for k in _PACKING_ENCODING_KEYS:
+            var.encoding.pop(k, None)
     return ds
 
 
@@ -215,6 +228,30 @@ def collect_dataarrays(
             )
 
 
+def _data_span_period(fields: dict, fallback) -> tuple[str, str] | None:
+    """Actual ``(start_year, end_year)`` from any 1-D datetime coord in *fields*.
+
+    Reflects the real time span the data covers (e.g. a time series that ends
+    where the model data ends, not the requested window).  Time-collapsed
+    products (climatology/bias maps, month-indexed cycles) carry no datetime
+    axis, so they fall back to *fallback* — the window used to compute them.
+    """
+    starts: list[str] = []
+    ends: list[str] = []
+    for da in fields.values():
+        for coord in da.coords.values():
+            if (coord.ndim == 1 and coord.size
+                    and np.issubdtype(coord.dtype, np.datetime64)):
+                vals = coord.values
+                starts.append(str(np.datetime_as_string(np.min(vals), unit="Y")))
+                ends.append(str(np.datetime_as_string(np.max(vals), unit="Y")))
+    if starts:
+        return (min(starts), max(ends))
+    if fallback is not None:
+        return (str(fallback[0]), str(fallback[1]))
+    return None
+
+
 def export_generic_netcdf(
     netcdf_dir: Path,
     token: str,
@@ -227,37 +264,69 @@ def export_generic_netcdf(
     """Write every per-source DataArray in *results* to a single NetCDF.
 
     Filename is ``{token}_{start}-{end}.nc`` (or ``{token}.nc`` when *period*
-    is None). Fields are merged into one Dataset; any field whose dims clash
-    with an already-added field (different grid/length) gets its dims renamed
-    uniquely so no data is dropped. Existing files are skipped when
-    *skip_existing*.
+    is None and the data carries no time axis). The ``{start}-{end}`` reflects
+    the *actual* data span (derived from the fields' datetime coordinate) when
+    present, else the requested *period* (for time-collapsed maps/cycles).
+    Fields are merged into one Dataset; any field whose dims clash with an
+    already-added field (different grid/length) gets its dims renamed uniquely
+    so no data is dropped. Existing files are skipped when *skip_existing*.
     """
     netcdf_dir = Path(netcdf_dir)
     token = sanitize_name(token)
-    if period is not None:
-        fname = f"{token}_{period[0]}-{period[1]}.nc"
-    else:
-        fname = f"{token}.nc"
-    path = netcdf_dir / fname
-    if skip_existing and path.exists():
-        return [path]
 
     fields: dict = {}
     collect_dataarrays(results, "", fields)
     if not fields:
         return []
 
+    eff_period = _data_span_period(fields, period)
+    if eff_period is not None:
+        fname = f"{token}_{eff_period[0]}-{eff_period[1]}.nc"
+    else:
+        fname = f"{token}.nc"
+    path = netcdf_dir / fname
+    if skip_existing and path.exists():
+        return [path]
+
     ds = xr.Dataset()
     for name, da in fields.items():
         key = name
         # Strip name to avoid the DataArray's own .name shadowing the key.
         da = da.rename(key)
+
+        # Isolate any dim that collides with an already-present dim whose
+        # coordinate values differ.  Assigning such a field directly would let
+        # xarray silently reindex it onto the existing axis, turning every
+        # non-matching point into NaN — e.g. obs on first-of-month timestamps
+        # merged against models on mid-month timestamps, or a coarse obs lat
+        # grid merged against the finer common grid.  Dims that match exactly
+        # (all models share the same time/lat/lon) stay shared so the file
+        # remains compact and cross-comparable.
+        isolate = {}
+        for d in da.dims:
+            if d not in ds.dims:
+                continue
+            if d in da.coords and d in ds.coords:
+                same = (
+                    ds[d].size == da[d].size
+                    and np.array_equal(ds[d].values, da[d].values)
+                )
+            else:
+                # No coordinate to compare on one side — shareable only when
+                # the lengths line up; otherwise isolate to be safe.
+                same = ds.sizes[d] == da.sizes[d]
+            if not same:
+                isolate[d] = f"{key}__{d}"
+        if isolate:
+            da = da.rename(isolate)
+
         try:
             ds = ds.assign({key: da})
             continue
         except Exception:  # noqa: BLE001 — dim/coord clash with prior field
             pass
-        # Isolate this field's dims so incompatible grids/lengths coexist.
+        # Last resort: fully isolate this field's dims so incompatible
+        # grids/lengths coexist.
         try:
             renamed = {d: f"{key}__{d}" for d in da.dims}
             iso = da.rename(renamed).reset_coords(drop=True)
@@ -271,9 +340,9 @@ def export_generic_netcdf(
     netcdf_dir.mkdir(parents=True, exist_ok=True)
     ds.attrs.update(
         token=token,
-        period=f"{period[0]}-{period[1]}" if period else "",
-        period_start=str(period[0]) if period else "",
-        period_end=str(period[1]) if period else "",
+        period=f"{eff_period[0]}-{eff_period[1]}" if eff_period else "",
+        period_start=eff_period[0] if eff_period else "",
+        period_end=eff_period[1] if eff_period else "",
         description=(
             "Per-source diagnostic fields (obs, evaluated models, and "
             "benchmark MMMs: CMIP6, HighResMIP) on their analysis grids."

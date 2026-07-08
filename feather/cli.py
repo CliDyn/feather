@@ -77,6 +77,13 @@ def main(argv: list[str] | None = None):
         help="Plot individual CMIP6 model biases (plus MMM) instead of MMM only",
     )
     parser.add_argument(
+        "--added-value-regions",
+        action="store_true",
+        help="Compute and plot per-CORDEX-region Added Value bar charts "
+             "(added_value diagnostic). Off by default: only the global-domain "
+             "Added Value figures are produced.",
+    )
+    parser.add_argument(
         "--benchmarks",
         nargs="+",
         default=None,
@@ -202,6 +209,7 @@ def main(argv: list[str] | None = None):
         skip_existing=not args.no_skip_existing,
         compile_pdf=args.compile_pdf,
         cmip6_individual=args.cmip6_individual,
+        added_value_regions=args.added_value_regions,
         benchmarks=args.benchmarks,
         save_netcdf=args.save_netcdf,
         individual_netcdf_only=args.individual_netcdf_only,

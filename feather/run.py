@@ -26,6 +26,7 @@ def run_pipeline(
     skip_existing: bool = True,
     compile_pdf: bool = False,
     cmip6_individual: bool = False,
+    added_value_regions: bool = False,
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
@@ -94,6 +95,7 @@ def run_pipeline(
             experiment=experiment,
             period=period,
             cmip6_individual=cmip6_individual,
+            added_value_regions=added_value_regions,
             benchmarks=benchmarks,
             save_netcdf=save_netcdf,
             individual_netcdf_only=individual_netcdf_only,
@@ -142,6 +144,7 @@ def _run_diagnostics(
     experiment: str = "baseline_hist",
     period: tuple[str, str] = ("1990", "2014"),
     cmip6_individual: bool = False,
+    added_value_regions: bool = False,
     benchmarks: list[str] | None = None,
     save_netcdf: bool = False,
     individual_netcdf_only: bool = False,
@@ -241,6 +244,9 @@ def _run_diagnostics(
             kwargs["period"] = config.get_timeseries_period()
         if cmip6_individual and "cmip6_individual" in sig.parameters:
             kwargs["cmip6_individual"] = True
+        # Per-CORDEX-region Added Value bars are opt-in.
+        if added_value_regions and "regions" in sig.parameters:
+            kwargs["regions"] = True
         # Ensemble-only mode (plot just the ensemble bias figures).
         if ensemble_only and "ensemble_only" in sig.parameters:
             kwargs["ensemble_only"] = True
