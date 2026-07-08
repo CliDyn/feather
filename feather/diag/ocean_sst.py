@@ -34,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 _K_TO_C = 273.15
 
+#: Months making up each meteorological season (for obs seasonal means).
+_SEASON_MONTHS = {
+    "DJF": (12, 1, 2), "MAM": (3, 4, 5), "JJA": (6, 7, 8), "SON": (9, 10, 11),
+}
+#: Human-readable panel/period labels keyed by lowercase period key.
+_SEASON_LABEL = {
+    "annual": "Annual Mean", "djf": "DJF", "mam": "MAM",
+    "jja": "JJA", "son": "SON",
+}
+
 
 def _to_celsius(da):
     """Convert Kelvin DataArray to Celsius."""
@@ -121,6 +131,15 @@ class OceanSST(DiagnosticBase):
 
     # ── Orchestration (per-figure-group incremental) ──────────────────
 
+    def _season_pkeys(self) -> list[str]:
+        """Lowercase period keys for the configured seasons (annual first)."""
+        return [s.lower() for s in self.config.get_seasons()]
+
+    def _season_plot_list(self) -> list[tuple[str, str]]:
+        """Ordered ``(period_key, panel_label)`` for the configured seasons."""
+        return [(pk, _SEASON_LABEL.get(pk, pk.upper()))
+                for pk in self._season_pkeys()]
+
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Execute per-figure-group: compute -> plot -> save."""
         logger.info("Running diagnostic: %s", self.name)
@@ -136,7 +155,7 @@ class OceanSST(DiagnosticBase):
 
         # Determine which groups need computation
         bias_ids = [
-            f"sst_{p}_{suffix}" for p in ("annual", "djf", "jja")
+            f"sst_{p}_{suffix}" for p in self._season_pkeys()
             for suffix in ("bias_combined", "ens_bias_combined")
         ]
         need_a = not skip_existing or not all(
@@ -342,23 +361,23 @@ class OceanSST(DiagnosticBase):
                 float(np.nanmin(obs_timemean.values)),
             )
 
-        # Compute DJF/JJA obs from monthly climatology
-        # ymonmean has month dimension (1-12)
-        if "time" in obs_ymonmean.dims:
-            # Group by month for seasonal extraction
-            obs_djf = obs_ymonmean.sel(
-                time=obs_ymonmean["time.month"].isin([12, 1, 2])
-            ).mean("time")
-            obs_jja = obs_ymonmean.sel(
-                time=obs_ymonmean["time.month"].isin([6, 7, 8])
-            ).mean("time")
-        elif "month" in obs_ymonmean.dims:
-            obs_djf = obs_ymonmean.sel(month=[12, 1, 2]).mean("month")
-            obs_jja = obs_ymonmean.sel(month=[6, 7, 8]).mean("month")
-        else:
-            # Squeeze single-time
-            obs_djf = obs_timemean
-            obs_jja = obs_timemean
+        # Configured seasonal breakdown (annual + subset of DJF/MAM/JJA/SON).
+        seasons = self.config.get_seasons()
+        seasonal_keys = [s for s in seasons if s != "annual"]
+
+        # Obs per configured season from the monthly climatology (month dim
+        # 1-12, or a "time" axis of monthly means).
+        periods_data: dict[str, dict] = {"annual": {"obs": obs_timemean}}
+        for s in seasonal_keys:
+            months = list(_SEASON_MONTHS[s])
+            if "time" in obs_ymonmean.dims:
+                obs_s = obs_ymonmean.sel(
+                    time=obs_ymonmean["time.month"].isin(months)).mean("time")
+            elif "month" in obs_ymonmean.dims:
+                obs_s = obs_ymonmean.sel(month=months).mean("month")
+            else:
+                obs_s = obs_timemean
+            periods_data[s.lower()] = {"obs": obs_s}
 
         resolution = self.config.nereus.get("resolution", 0.25)
 
@@ -370,12 +389,6 @@ class OceanSST(DiagnosticBase):
         common_area = None
         n_roll = 0
 
-        # Results per period
-        periods_data = {
-            "annual": {"obs": obs_timemean},
-            "djf": {"obs": obs_djf},
-            "jja": {"obs": obs_jja},
-        }
         model_results = {}
 
         for model in model_monthly:
@@ -396,19 +409,15 @@ class OceanSST(DiagnosticBase):
                 regrid_lon > 180, regrid_lon - 360, regrid_lon,
             )
 
-            # Compute model climatologies
+            # Compute model climatologies (annual + each configured season).
             model_clim_annual = climatology(da, self.period).compute()
             model_seasonal = seasonal_climatology(da, self.period)
-            model_djf = (
-                model_seasonal["DJF"].compute()
-                if "DJF" in model_seasonal
-                else model_clim_annual
-            )
-            model_jja = (
-                model_seasonal["JJA"].compute()
-                if "JJA" in model_seasonal
-                else model_clim_annual
-            )
+            model_fields = {"annual": model_clim_annual}
+            for s in seasonal_keys:
+                model_fields[s.lower()] = (
+                    model_seasonal[s].compute()
+                    if s in model_seasonal else model_clim_annual
+                )
 
             # Build/reuse interpolator keyed by source grid size.
             # Use the regular influence_radius for model data — the
@@ -504,38 +513,18 @@ class OceanSST(DiagnosticBase):
 
             model_interpolator = _model_interp_cache[n_src]
 
-            # Regrid model to common grid (roll from -180..180 to 0..360)
-            annual_regrid = xr.DataArray(
-                np.roll(
-                    model_interpolator(model_clim_annual.values.ravel()),
-                    -n_roll, axis=1,
-                ),
-                dims=("lat", "lon"),
-                coords={"lat": target_lats, "lon": target_lons},
-            )
-            djf_regrid = xr.DataArray(
-                np.roll(
-                    model_interpolator(model_djf.values.ravel()),
-                    -n_roll, axis=1,
-                ),
-                dims=("lat", "lon"),
-                coords={"lat": target_lats, "lon": target_lons},
-            )
-            jja_regrid = xr.DataArray(
-                np.roll(
-                    model_interpolator(model_jja.values.ravel()),
-                    -n_roll, axis=1,
-                ),
-                dims=("lat", "lon"),
-                coords={"lat": target_lats, "lon": target_lons},
-            )
-
+            # Regrid model to common grid (roll from -180..180 to 0..360) for
+            # each configured period.
             model_results[model] = {}
-            for pkey, regrid in [
-                ("annual", annual_regrid),
-                ("djf", djf_regrid),
-                ("jja", jja_regrid),
-            ]:
+            for pkey, field in model_fields.items():
+                regrid = xr.DataArray(
+                    np.roll(
+                        model_interpolator(field.values.ravel()),
+                        -n_roll, axis=1,
+                    ),
+                    dims=("lat", "lon"),
+                    coords={"lat": target_lats, "lon": target_lons},
+                )
                 obs_common = periods_data[pkey]["obs_common"]
                 bias = regrid - obs_common
                 bias_vals = bias.values[np.isfinite(bias.values)]
@@ -615,7 +604,11 @@ class OceanSST(DiagnosticBase):
         if not (getattr(self, "benchmarks", None) and self.cmip6_enabled):
             return out
         ir = max(self._influence_radius, ocean_bias._BENCH_IR_FLOOR)
-        season_key = {"annual": None, "djf": "DJF", "jja": "JJA"}
+        # period key → benchmark season arg (annual → None; seasons → CMOR name)
+        season_key = {
+            pk: (None if pk == "annual" else pk.upper())
+            for pk in periods_data
+        }
         for bench in self.benchmarks:
             label = getattr(bench, "label", "CMIP6 MMM")
             cache: dict = {}
@@ -662,18 +655,14 @@ class OceanSST(DiagnosticBase):
         return out
 
     def _plot_bias_maps(self, results):
-        """Plot combined bias maps for annual/DJF/JJA."""
+        """Plot combined bias maps for each configured season."""
         from feather.plot.maps import plot_combined_bias_map
 
         figures = []
         periods_data = results["periods"]
 
-        for pkey, plabel in [
-            ("annual", "Annual Mean"),
-            ("djf", "DJF"),
-            ("jja", "JJA"),
-        ]:
-            obs_common = periods_data[pkey].get("obs_common")
+        for pkey, plabel in self._season_plot_list():
+            obs_common = periods_data.get(pkey, {}).get("obs_common")
             if obs_common is None:
                 continue
 
@@ -737,10 +726,8 @@ class OceanSST(DiagnosticBase):
         benchmarks = [
             m for m in results["models"] if m not in self.config.models]
 
-        for pkey, plabel in [
-            ("annual", "Annual Mean"), ("djf", "DJF"), ("jja", "JJA"),
-        ]:
-            obs_common = periods_data[pkey].get("obs_common")
+        for pkey, plabel in self._season_plot_list():
+            obs_common = periods_data.get(pkey, {}).get("obs_common")
             ens = ensemble.get(pkey)
             if obs_common is None or ens is None:
                 continue

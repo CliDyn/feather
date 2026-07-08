@@ -1,9 +1,12 @@
 """YAML configuration loading."""
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # Default palette for models without explicit colors
 _DEFAULT_PALETTE = [
@@ -161,6 +164,38 @@ class FeatherConfig:
         if period and len(period) == 2:
             return (str(period[0]), str(period[1]))
         return ("1990", "2014")
+
+    #: Canonical seasonal keys (match ``util.temporal.seasonal_climatology``).
+    _VALID_SEASONS = ("DJF", "MAM", "JJA", "SON")
+
+    def get_seasons(self) -> list[str]:
+        """Ordered seasonal breakdown for the bias-map diagnostics.
+
+        Returns ``"annual"`` first, followed by the requested meteorological
+        seasons (subset/order of ``DJF, MAM, JJA, SON``).  Configured via
+        ``project.seasons`` (case-insensitive, ``"annual"`` optional); defaults
+        to ``["annual", "DJF", "JJA"]`` so existing configs are unchanged.
+        Unknown entries are ignored with a warning.
+        """
+        raw = self.project.get("seasons")
+        if not raw:
+            return ["annual", "DJF", "JJA"]
+        canon = {s.upper(): s for s in self._VALID_SEASONS}
+        seasons: list[str] = []
+        for entry in raw:
+            key = str(entry).strip()
+            if key.lower() == "annual":
+                continue  # always emitted first, handled below
+            up = key.upper()
+            if up in canon and canon[up] not in seasons:
+                seasons.append(canon[up])
+            elif up not in canon:
+                logger.warning(
+                    "Ignoring unknown season %r in project.seasons "
+                    "(valid: annual, %s)",
+                    entry, ", ".join(self._VALID_SEASONS),
+                )
+        return ["annual", *seasons]
 
     def get_experiment(self) -> str:
         """Return the default experiment from project config.

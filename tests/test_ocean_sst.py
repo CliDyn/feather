@@ -366,6 +366,32 @@ class TestBiasMaps:
         gmean = results["models"]["ifs-fesom"]["annual"]["bias_gmean"]
         assert isinstance(gmean, float)
 
+    def test_default_seasons_exclude_mam_son(self, ocean_sst_diag):
+        model_monthly, model_coords = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_bias_maps(
+            model_monthly, model_coords,
+        )
+        assert "mam" not in results["periods"]
+        assert "son" not in results["periods"]
+
+    def test_configured_seasons_add_mam_son(self, ocean_sst_diag):
+        # Opt into all five periods via project.seasons.
+        ocean_sst_diag.config.project = {
+            "seasons": ["annual", "DJF", "MAM", "JJA", "SON"]}
+        model_monthly, model_coords = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_bias_maps(
+            model_monthly, model_coords,
+        )
+        for pkey in ("annual", "djf", "mam", "jja", "son"):
+            assert pkey in results["periods"]
+            assert "obs_common" in results["periods"][pkey]
+            assert pkey in results["models"]["ifs-fesom"]
+        # Figures are produced for every configured season (2 per season:
+        # per-model + ensemble). Ensemble needs ≥1 evaluated model.
+        plot_ids = {
+            m["figure_id"] for _, m in ocean_sst_diag._plot_bias_maps(results)}
+        assert {"sst_mam_bias_combined", "sst_son_bias_combined"} <= plot_ids
+
     def test_bias_reasonable_magnitude(self, ocean_sst_diag):
         """Bias should be within reasonable range (< 20K for synth data)."""
         model_monthly, model_coords = ocean_sst_diag._load_model_data()
