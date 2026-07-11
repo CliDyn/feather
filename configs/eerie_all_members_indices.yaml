@@ -101,75 +101,105 @@ models:
 
   IFS-FESOM2-SR:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#1f77b4"
 
   IFS-FESOM2-SR-r2:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "kerchunk_parquet"
     data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#5aabdf"
 
   IFS-FESOM2-SR-r3:
     institution: AWI
+    ensemble: EERIE
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
     data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#9fcfe8"
 
+  # ── IFS-NEMO-ER ────────────────────────────────────────────────────────
   IFS-NEMO-ER:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#ff7f0e"
+    absolute_salinity: true
 
   IFS-NEMO-ER-r2:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1975
     variant: r2i1p1f1
-    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#e07b00"
+    absolute_salinity: true
 
   IFS-NEMO-ER-r3:
     institution: BSC
+    ensemble: EERIE
     experiment: hist-1975
     variant: r3i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#a85800"
+    absolute_salinity: true
 
+  # ── ICON-ESM-ER ────────────────────────────────────────────────────────
   ICON-ESM-ER:
     institution: MPI-M
+    ensemble: EERIE
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#2ca02c"
 
+  # ── HadGEM3-GC5 ───────────────────────────────────────────────────────
   HadGEM3-GC5:
     institution: MOHC
+    ensemble: EERIE
     experiment: eerie-historical
     variant: r1i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
     grid_label: "gr1"
     grids:
       sfc: latlon
+      o2d: latlon
+      o3d: latlon
     color: "#d62728"
 
 obs_root: "/work/bm1344/AWI/OBS"
@@ -199,7 +229,7 @@ nereus:
   influence_radius: 80000
   method: "linear"
 
-output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_indices"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_indices_only"
 
 llm:
   figure_analysis:

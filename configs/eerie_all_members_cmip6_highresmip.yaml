@@ -22,11 +22,12 @@ project:
   description: "EERIE Ensemble evaluation vs CMIP6 + HighResMIP benchmarks"
   experiment: "hist-1950"
   period: ["1980", "2014"]
+  seasons: [annual, DJF, MAM, JJA, SON]
   resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"
   comparison_description: >-
     EERIE ensemble (3 members IFS-FESOM2-SR, 3 members IFS-NEMO-ER, ICON-ESM-ER,
-    HadGEM3-GC5) evaluated against two benchmark ensembles: the full CMIP6
+    HadGEM3-GC5) with option to be evaluated against one or two benchmark ensembles: the full CMIP6
     historical multi-model mean and the HighResMIP hist-1950 multi-model mean,
     each computed from one member per model.
 
