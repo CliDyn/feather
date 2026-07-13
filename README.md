@@ -233,7 +233,7 @@ print(result)
 
 ## Available diagnostics
 
-Feather provides 24 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
+Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere, extremes, cross-domain evaluation, and model intercomparison:
 
 ### Atmosphere
 
@@ -269,6 +269,7 @@ Feather provides 24 registered diagnostics across atmosphere, ocean, cryosphere,
 | `heatwave` | `HeatwaveDiag` | Berkeley Earth Land TMAX | Five TX90 heatwave indices (HWN, HWF, HWD, HWM, HWA): climatological maps + annual time series; TMAX bias map |
 | `heatwave_change` | `HeatwaveChangeDiag` | Berkeley Earth Land TMAX | Climate change signal in five TX90 heatwave indices under SSP2-4.5: [Reference \| Future \| Change] maps per model per index, land-mean time series hist+SSP stitched, mean Tmax bias map |
 | `heatwave_hotspots` | `HeatwaveHotspotsDiag` | ERA5 (derived daily tasmax) | Extreme-heat tail-widening (trend in yearly 99th − 87.5th percentile of daily tasmax, °C/decade): global trend maps per model with significance stippling and region boxes, regional box-and-whisker, PDF/CDF discrepancy panels (PNAS Fig 2–4) |
+| `temp_extremes_change` | `TempExtremesChangeDiag` | — (model change signal) | Climate change signal in mean daily `tasmin` **and** `tasmax` under SSP2-4.5, annual + four seasons (DJF/MAM/JJA/SON): [Reference \| Future \| Change] maps per model + stitched global-mean time series, per variable |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -294,6 +295,12 @@ The **Heatwave Climate Change Signal** (`heatwave_change`) compares all five TX9
 - **Group C** — Mean daily Tmax bias map vs Berkeley Earth Land TMAX over the reference period (skipped when BE data is unavailable).
 
 Configuration lives under `project.climate_change` (see `configs/eerie_climchange_hw.yaml`). Each model declares its hist/future data source (`cmor` or `kerchunk_native`). Land masking is applied per-model using the Berkeley Earth land mask. Per-model NC checkpoints written to `{output_dir}/heatwave_change/`.
+
+The **Daily Tmin/Tmax Climate Change Signal** (`temp_extremes_change`) compares the mean of daily minimum (`tasmin`) and maximum (`tasmax`) temperature between a historical reference period (default `project.period`) and a future period (default 2031–2050) under SSP2-4.5. Unlike the index-count `*_change` diagnostics it maps the raw Tmin/Tmax fields themselves, **globally (land + ocean)**, for the annual mean and each of the four seasons. Per variable it produces six figures:
+- **Change map panels** (`{var}_{season}_change_panels`, ×5: annual + DJF/MAM/JJA/SON) — one row per model × three columns [Reference | Future | Change (Future − Reference)]. `cmocean.thermal` for the absolute °C climatology columns; diverging `RdBu_r` for the change column (ΔK ≡ Δ°C). Models with no SSP data in the future window show a placeholder.
+- **Global-mean time series** (`{var}_change_timeseries`) — historical global-mean annual series joined to SSP2-4.5 at 2015, with reference and future windows shaded and the 2015 boundary marked.
+
+It reuses the multi-backend loader factory of the other `*_change` diagnostics, so a model can mix CMOR and kerchunk-native segments. To avoid re-reading the daily archive, each model persists its annual- and seasonal-mean series (`year, lat, lon`) as NetCDF checkpoints `{output_dir}/temp_extremes_change/{model}_{var}_{hist,ssp}_{start}_{end}.nc`. Configuration lives under `project.climate_change` (see `configs/eerie_all_members_indices.yaml`).
 
 The **Heatwave Hotspots diagnostic** (`heatwave_hotspots`) reproduces Figures 2–4 of Sambartusek, Kornhuber et al. (2024, PNAS, [doi:10.1073/pnas.2411258121](https://www.pnas.org/doi/10.1073/pnas.2411258121)) — "A global emergence of regional heatwave hotspots". The core metric is **tail-widening**: at each land grid point and each year it computes the 99th and 87.5th percentiles of *daily* tasmax, forms the yearly tail width `D = P99 − P87.5`, and takes the linear trend of `D` over the analysis period (°C/decade). A positive trend means the hot tail is widening faster than the bulk of the warm-season distribution — the heatwave-hotspot signature. All fields are regridded to a common 0.25° grid (per-grid interpolator cache), land-masked (>25 %), and masked grey where the P87.5 trend is negative. Five figures are produced:
 
@@ -507,6 +514,17 @@ wrapper `scripts/convert_pool_cmip6.sh`) and configured with `models: auto`, so
 ensemble membership is **discovered at runtime from the cache** — see
 `configs/eerie_all_members_cmip6_highresmip.yaml`.
 
+**Daily cache (`day` table).** The monthly converter deliberately skips the huge
+`day` table. A companion pair — `scripts/convert_pool_cmip6_daily.py` (SLURM wrapper
+`scripts/convert_pool_cmip6_daily.sh`) — builds a **daily** zarr cache of `tas`,
+`tasmax`, `tasmin` and `pr` (+ `areacella`) for the daily extremes / Tmin/Tmax-change
+diagnostics. It reuses the monthly converter's I/O helpers (atomic, resumable,
+calendar-aware) and writes stores named `{model}_{experiment}_{member}_day_{var}.zarr`
+into a dedicated cache dir (default `/work/bk1580/cmip6_zarr`); the experiment is
+encoded in the filename so `historical` (reference) and `ssp245` (SSP2-4.5 future)
+coexist. Run `sbatch scripts/convert_pool_cmip6_daily.sh` for both experiments (or
+`… historical` / `… ssp245`), and preview with `bash scripts/convert_pool_cmip6_daily.sh both --dry-run`.
+
 **Selection rule.** A model contributes to a benchmark MMM for a variable only when
 its converted store:
 1. is **non-empty** (the conversion actually wrote the field);
@@ -615,6 +633,7 @@ output/
     heatwave/
     heatwave_change/
     heatwave_hotspots/
+    temp_extremes_change/
   tropical_nights/                    # NC checkpoints (outside figures tree)
     {model}_tropical_nights_tn20_{start}_{end}.nc
   tropical_nights_change/             # NC checkpoints (outside figures tree)
@@ -627,6 +646,11 @@ output/
     {model}_hw_ssp_{start}_{end}.nc
   heatwave_hotspots/                  # NC checkpoints (outside figures tree)
     {model}_percs_{start}_{end}.nc
+  temp_extremes_change/               # NC checkpoints (outside figures tree)
+    {model}_tasmin_hist_{start}_{end}.nc
+    {model}_tasmin_ssp_{start}_{end}.nc
+    {model}_tasmax_hist_{start}_{end}.nc
+    {model}_tasmax_ssp_{start}_{end}.nc
   analysis/                         # LLM analysis (Gemini)
     global_biases/
       tas_annual_bias_combined_analysis.json
@@ -696,6 +720,7 @@ feather/
     heatwave.py           # Heatwave Indices (TX90: HWN, HWF, HWD, HWM, HWA)
     heatwave_change.py    # Heatwave climate change signal (SSP2-4.5)
     heatwave_hotspots.py  # Heatwave hotspots — extreme-heat tail-widening (PNAS Fig 2–4)
+    temp_extremes_change.py # Daily Tmin/Tmax climate change signal (SSP2-4.5, annual + seasons)
   llm/
     analyzer.py          # FigureAnalyzer (Gemini, comparison-type aware)
     schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
