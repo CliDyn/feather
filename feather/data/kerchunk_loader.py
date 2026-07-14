@@ -140,6 +140,13 @@ _OCEAN_FILL_THRESHOLD = -1e30
 # Atmos fill value
 _ATMOS_FILL_VALUE = 9999.0
 
+# Standard IFS regridded 0.25° grid (gr025): 721 lats × 1440 lons, flattened
+# row-major north-first (lat 90→-90; lon per row 0→179.75 then -180→-0.25).
+# Some "batched" reference stores omit the lat/lon coordinate arrays, so the
+# grid is reconstructed from the flat ``value`` dimension length.
+_GR025_NLAT = 721
+_GR025_NLON = 1440
+
 
 class KerchunkParquetLoader:
     """Load model data from parquet-format kerchunk reference stores.
@@ -253,6 +260,18 @@ class KerchunkParquetLoader:
     def _load_atmos2d_var(self, model: str, variable: str) -> xr.DataArray:
         kname, scale = _ATMOS2D[variable]
         ds = self._open_store(model, "atmos2d")
+
+        # Batched gr025 publishes the average-type 2-D fields daily only.
+        # When the opened atmos2d store has sub-monthly cadence, load it
+        # lazily and resample to monthly (avoids materialising the full daily
+        # archive).  Cadence is read from the dataset itself so this works
+        # regardless of the store filename.
+        if self._is_submonthly(ds):
+            return self._load_atmos2d_flat_lazy(
+                model, variable, kname, scale, "atmos2d",
+                resample_monthly=True,
+            )
+
         raw = ds[kname]
 
         # Replace GRIB fill value (exact equality: 9999.0 is the GRIB sentinel,
@@ -546,19 +565,47 @@ class KerchunkParquetLoader:
         # where the global root is the CMOR tree, not the kerchunk base).
         root = Path(mc.data_root) if (mc and mc.data_root) else self._root
         base = root / variant
+        # A data_root may already point at the member/version directory (e.g.
+        # the intake-catalogue layout ``…/hist-1950/v20240304`` which has no
+        # ``{variant}`` level).  Detect that and use ``root`` directly.
+        if not self._has_store_layout(base) and self._has_store_layout(root):
+            base = root
 
-        if store_type == "atmos2d":
-            p = base / "atmos" / "gr025" / "2D_monthly_0.25deg_atmos_avg.parq"
+        # "Batched" layout: flat files ``{domain}_{grid}_{...}.parq`` directly
+        # under the version dir, with no ``atmos/gr025/`` sub-tree (e.g.
+        # ``…/kerchunks_pp_batched/…/atmos_gr025_2D_daily_avg.parq``).  At
+        # gr025 the average-type 2-D fields (incl. radiation) are published
+        # only daily here — the loader resamples them to monthly on read.
+        if not (base / "atmos").is_dir() and list(base.glob("atmos_gr025_2D_*.parq")):
+            p = self._batched_store_path(base, store_type)
+        elif store_type == "atmos2d":
+            p = self._pick_store_file(
+                base / "atmos" / "gr025",
+                ["2D_monthly_0.25deg_atmos_avg.parq", "2D_monthly_avg.parq"],
+                "2D_monthly*avg.parq",
+            )
         elif store_type == "atmos2d_daily_min":
-            p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_min.parq"
+            p = self._pick_store_file(
+                base / "atmos" / "gr025",
+                ["2D_daily_0.25deg_atmos_min.parq", "2D_daily_min.parq"],
+                "2D_daily*min.parq",
+            )
         elif store_type == "atmos2d_daily_max":
-            p = base / "atmos" / "gr025" / "2D_daily_0.25deg_atmos_max.parq"
+            p = self._pick_store_file(
+                base / "atmos" / "gr025",
+                ["2D_daily_0.25deg_atmos_max.parq", "2D_daily_max.parq"],
+                "2D_daily*max.parq",
+            )
         elif store_type == "atmos2d_native_daily_min":
             p = base / "atmos" / "native" / "2D_daily_native_atmos_min.parq"
         elif store_type == "atmos2d_native_daily_max":
             p = base / "atmos" / "native" / "2D_daily_native_atmos_max.parq"
         elif store_type == "atmos3d":
-            p = base / "atmos" / "gr025" / "3D_monthly_0.25deg_atmos_avg.parq"
+            p = self._pick_store_file(
+                base / "atmos" / "gr025",
+                ["3D_monthly_0.25deg_atmos_avg.parq", "3D_monthly_avg.parq"],
+                "3D_monthly*avg.parq",
+            )
         elif store_type == "ocean2d":
             ocean_dir = base / "ocean" / "gr025"
             matches = sorted(ocean_dir.glob("2D_daily_avg*.parq"))
@@ -574,9 +621,187 @@ class KerchunkParquetLoader:
             raise FileNotFoundError(f"Kerchunk store not found: {p}")
         return p
 
+    @staticmethod
+    def _has_store_layout(directory: Path) -> bool:
+        """True if *directory* looks like a parquet store base.
+
+        Recognises both the ``atmos/gr025/…`` sub-tree layout (r2/r3, intake)
+        and the flat ``atmos_gr025_2D_*.parq`` batched layout.
+        """
+        return (directory / "atmos").is_dir() or bool(
+            list(directory.glob("atmos_gr025_2D_*.parq"))
+        )
+
+    def _batched_store_path(self, base: Path, store_type: str) -> Path:
+        """Resolve a flat-layout ('batched') parquet store file.
+
+        The average-type 2-D atmos fields are daily-only at gr025 in this
+        layout; the monthly-average name is tried first for forward
+        compatibility, then the daily-average store (which the loader
+        resamples to monthly).
+        """
+        gr = "atmos_gr025_2D"
+        if store_type == "atmos2d":
+            return self._pick_store_file(
+                base, [f"{gr}_monthly_avg.parq", f"{gr}_daily_avg.parq"],
+                f"{gr}_*avg.parq",
+            )
+        if store_type == "atmos2d_daily_min":
+            return self._pick_store_file(
+                base, [f"{gr}_daily_min.parq"], f"{gr}_daily_min.parq",
+            )
+        if store_type == "atmos2d_daily_max":
+            return self._pick_store_file(
+                base, [f"{gr}_daily_max.parq"], f"{gr}_daily_max.parq",
+            )
+        if store_type == "atmos3d":
+            return self._pick_store_file(
+                base, ["atmos_gr025_3D_monthly_avg.parq",
+                       "atmos_gr025_3D_daily_avg.parq"],
+                "atmos_gr025_3D_*avg.parq",
+            )
+        raise FileNotFoundError(
+            f"store_type {store_type!r} not available in batched layout at {base}"
+        )
+
+    @staticmethod
+    def _pick_store_file(directory: Path, candidates: list[str],
+                         glob_pattern: str) -> Path:
+        """Resolve a parquet store file tolerant of naming conventions.
+
+        Tries each explicit *candidate* filename in *directory* first (the
+        ``…_0.25deg_atmos_…`` kerchunk convention used by the r2/r3 stores),
+        then falls back to *glob_pattern* to accommodate the intake-catalogue
+        layout (e.g. ``2D_monthly_avg.parq``).  Raises ``FileNotFoundError``
+        if nothing matches.
+        """
+        for name in candidates:
+            p = directory / name
+            if p.exists():
+                return p
+        # ``*_slk.parq`` are tape/HSM sidecar reference stores — never the
+        # primary disk store — so exclude them from the glob fallback.
+        matches = [
+            m for m in sorted(directory.glob(glob_pattern))
+            if not m.name.endswith("_slk.parq")
+        ]
+        if matches:
+            return matches[0]
+        raise FileNotFoundError(
+            f"No kerchunk store matching {candidates} or {glob_pattern!r} "
+            f"in {directory}"
+        )
+
     # ------------------------------------------------------------------
     # Grid reshaping helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_submonthly(ds: xr.Dataset) -> bool:
+        """True if the dataset's time axis has sub-monthly (e.g. daily) cadence.
+
+        Uses the median spacing between the first few timestamps so the check
+        is cheap and independent of the store filename.  Monthly stores
+        (~28–31 day spacing) return False; daily stores (~1 day) return True.
+        """
+        if "time" not in ds.dims and "time" not in ds.coords:
+            return False
+        t = np.asarray(ds["time"].values)
+        if t.size < 2:
+            return False
+        deltas = np.diff(t[: min(t.size, 8)])
+        try:
+            med_days = float(np.median(deltas) / np.timedelta64(1, "D"))
+        except (TypeError, ValueError):
+            # Non-datetime (e.g. cftime) — fall back to treating as monthly.
+            return False
+        return med_days < 20.0
+
+    @staticmethod
+    def _reconstruct_gr025_flat(n_value: int) -> tuple[np.ndarray, np.ndarray]:
+        """Rebuild the flat (lat, lon) coordinate arrays for the gr025 grid.
+
+        Used when a reference store omits ``lat``/``lon`` (the batched
+        layout).  Returns row-major north-first arrays matching the stored
+        ``value`` ordering: lat 90→-90 repeated per row; lon per row
+        0→179.75 then -180→-0.25.  Raises ``ValueError`` if *n_value* is not
+        the expected 721×1440.
+        """
+        if n_value != _GR025_NLAT * _GR025_NLON:
+            raise ValueError(
+                f"Cannot reconstruct gr025 grid: value dim {n_value} "
+                f"!= {_GR025_NLAT}×{_GR025_NLON}"
+            )
+        lat_row = 90.0 - 0.25 * np.arange(_GR025_NLAT)
+        lon_row = ((0.25 * np.arange(_GR025_NLON) + 180.0) % 360.0) - 180.0
+        lat_flat = np.repeat(lat_row, _GR025_NLON)
+        lon_flat = np.tile(lon_row, _GR025_NLAT)
+        return lat_flat, lon_flat
+
+    def _atmos_flat_coords(self, ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
+        """Return flat ``(lat, lon)`` arrays for an atmos store.
+
+        Uses the store's own ``lat``/``lon`` when present, otherwise
+        reconstructs the standard gr025 grid from the ``value`` dim length.
+        """
+        if "lat" in ds and "lon" in ds:
+            return ds["lat"].values, ds["lon"].values
+        n_value = int(ds.sizes["value"])
+        return self._reconstruct_gr025_flat(n_value)
+
+    def _load_atmos2d_flat_lazy(
+        self,
+        model: str,
+        variable: str,
+        kname: str,
+        scale: float,
+        store_type: str,
+        *,
+        resample_monthly: bool = False,
+    ) -> xr.DataArray:
+        """Lazily load a flat ``(time, value)`` atmos-2D field to (time, lat, lon).
+
+        Keeps the array dask-backed throughout (no ``.values``) so daily
+        full-period stores are never materialised.  Grid coordinates come
+        from the store or are reconstructed (batched layout).  When
+        *resample_monthly* is True the daily series is averaged to monthly
+        means — used for the batched gr025 average store, whose radiation
+        fields are published daily only.
+        """
+        import dask.array as dsa
+
+        ds = self._open_store(model, store_type)
+        raw = ds[kname]
+
+        lat_flat, lon_flat = self._atmos_flat_coords(ds)
+        n_lat, n_lon = self._detect_grid_shape(lat_flat)
+        lat_1d = lat_flat.reshape(n_lat, n_lon)[:, 0]
+        lon_1d = lon_flat.reshape(n_lat, n_lon)[0, :]
+        lon_1d = np.where(lon_1d < 0, lon_1d + 360.0, lon_1d)
+        lat_sort = np.argsort(lat_1d)
+        lon_sort = np.argsort(lon_1d)
+        lat_1d = lat_1d[lat_sort]
+        lon_1d = lon_1d[lon_sort]
+
+        data = raw.data.astype(np.float32)  # stays lazy
+        data = dsa.where(data == _ATMOS_FILL_VALUE, np.nan, data)
+        if scale != 1.0:
+            data = data * np.float32(scale)
+
+        n_time = data.shape[0]
+        data = data.reshape(n_time, n_lat, n_lon)
+        data = data[:, lat_sort, :][:, :, lon_sort]
+
+        da = xr.DataArray(
+            data,
+            dims=["time", "lat", "lon"],
+            coords={"time": ds["time"].values, "lat": lat_1d, "lon": lon_1d},
+            name=variable,
+            attrs={"units": raw.attrs.get("units", ""), "long_name": variable},
+        )
+        if resample_monthly:
+            da = da.resample(time="MS").mean(skipna=True)
+        return da
 
     @staticmethod
     def _detect_grid_shape(lat_flat: np.ndarray) -> tuple[int, int]:
@@ -615,8 +840,7 @@ class KerchunkParquetLoader:
             raise FileNotFoundError(
                 f"No atmos store found for {model!r} to derive grid coordinates"
             )
-        lat_flat = ds["lat"].values
-        lon_flat = ds["lon"].values
+        lat_flat, lon_flat = self._atmos_flat_coords(ds)
 
         n_lat, n_lon = self._detect_grid_shape(lat_flat)
         lat_2d = lat_flat.reshape(n_lat, n_lon)

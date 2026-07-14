@@ -177,6 +177,10 @@ class RadiationBudget(DiagnosticBase):
         self.period = period
         self.cmip6_individual = cmip6_individual
         self._regrid_method = self.config.nereus.get("method", "nearest")
+        # Per-model supplementary radiation loaders (built lazily), used when
+        # a model's primary backend lacks radiation fluxes.  None = no
+        # supplementary source configured for that model.
+        self._rad_fallback_cache: dict[str, Any] = {}
 
     # ── CMOR net-radiation derivation ─────────────────────────────────
 
@@ -218,30 +222,87 @@ class RadiationBudget(DiagnosticBase):
             pass
 
         # 2) Attempt derivation from CMOR components
-        if self.config.get_data_source_type() != "cmor":
-            raise KeyError(f"{var} not available for {model}")
+        if (self.config.get_data_source_type() == "cmor"
+                and var in _CMOR_NET_DERIVATIONS):
+            component_names, formula = _CMOR_NET_DERIVATIONS[var]
+            try:
+                components = [
+                    self._load_model_var(
+                        model, comp_var, period=period, time_mean=time_mean,
+                    )
+                    for comp_var in component_names
+                ]
+                result = formula(*components)
+                result.name = var
+                logger.debug(
+                    "Derived %s for %s from components %s",
+                    var, model, component_names,
+                )
+                return result
+            except (KeyError, FileNotFoundError):
+                # Components absent (e.g. IFS-FESOM r1's CMOR tree publishes
+                # only downward fluxes) — fall through to a supplementary
+                # source if one is configured.
+                pass
 
-        if var not in _CMOR_NET_DERIVATIONS:
-            raise FileNotFoundError(
-                f"{var} not in CMOR derivation table for {model}"
-            )
+        # 3) Supplementary radiation source (e.g. a kerchunk-parquet store for
+        #    a CMOR member whose tree omits the net radiation fluxes).
+        fallback = self._radiation_fallback_loader(model)
+        if fallback is not None:
+            try:
+                da = fallback.load_var(
+                    model, var, period=period, time_mean=time_mean,
+                )
+                logger.debug(
+                    "Loaded %s for %s from supplementary radiation source",
+                    var, model,
+                )
+                return da
+            except (KeyError, FileNotFoundError):
+                pass
 
-        component_names, formula = _CMOR_NET_DERIVATIONS[var]
-        components = []
-        for comp_var in component_names:
-            # Let FileNotFoundError propagate if a component is missing
-            da = self._load_model_var(
-                model, comp_var, period=period, time_mean=time_mean,
-            )
-            components.append(da)
-
-        result = formula(*components)
-        result.name = var
-        logger.debug(
-            "Derived %s for %s from components %s",
-            var, model, component_names,
+        raise FileNotFoundError(
+            f"{var} not available for {model} (primary backend + fallback)"
         )
-        return result
+
+    def _radiation_fallback_loader(self, model: str):
+        """Return a supplementary loader for *model*'s radiation, or None.
+
+        Built from the model's ``radiation_source`` config entry (currently
+        only ``kerchunk_parquet``).  The loader is constructed against a thin
+        config shim so the model's primary ``ModelConfig`` (variant, data_root,
+        data_source_type) is left untouched.  Cached per model.
+        """
+        if model in self._rad_fallback_cache:
+            return self._rad_fallback_cache[model]
+
+        loader = None
+        mc = self.config.model_configs.get(model)
+        rad = getattr(mc, "radiation_source", None) if mc else None
+        if rad and rad.get("type") == "kerchunk_parquet":
+            from types import SimpleNamespace
+
+            from feather.data.kerchunk_loader import KerchunkParquetLoader
+
+            data_root = rad.get("data_root", "")
+            # The loader reads only variant/data_root/data_source_type from the
+            # model config, so a lightweight namespace shim suffices (and keeps
+            # the model's real ModelConfig untouched).  An empty variant lets
+            # the loader's ``root / variant`` collapse to ``root`` when the
+            # store layout has no variant level.
+            shim_mc = SimpleNamespace(
+                variant=rad.get("variant", ""),
+                data_root=data_root,
+                data_source_type="kerchunk_parquet",
+            )
+            shim_cfg = SimpleNamespace(
+                data_source={"type": "kerchunk_parquet", "root": data_root},
+                model_configs={model: shim_mc},
+            )
+            loader = KerchunkParquetLoader(shim_cfg)
+
+        self._rad_fallback_cache[model] = loader
+        return loader
 
     # ── Orchestration (per-figure-group incremental) ──────────────────
 
@@ -436,7 +497,10 @@ class RadiationBudget(DiagnosticBase):
     def _model_global_mean_clim(self, model: str, var: str) -> float | None:
         """Load model var, compute climatology, then global mean."""
         try:
-            da = self._load_model_radiation_var(model, var)
+            # Slice to the analysis window at load time so daily supplementary
+            # stores (e.g. the batched gr025 radiation store) are not read in
+            # full; climatology re-slices the same window (result identical).
+            da = self._load_model_radiation_var(model, var, period=self.period)
         except (KeyError, FileNotFoundError):
             logger.warning("  %s not available for %s", var, model)
             return None
@@ -557,6 +621,20 @@ class RadiationBudget(DiagnosticBase):
             all_models.append("CERES")
         all_models.extend(results.get("benchmarks", {}).keys())
 
+        # Per-source colour map: config colours for evaluated models, obs
+        # colour for CERES, and each benchmark's configured colour.  This
+        # replaces the name-pattern fallback (which only knew the legacy
+        # DestinE names and rendered every EERIE member the same grey).
+        color_map: dict[str, str] = {
+            model: self.config.get_model_color(model)
+            for model in results["models"]
+        }
+        if results.get("obs"):
+            color_map["CERES"] = OBS_COLOR
+        for bench in self.benchmarks:
+            label = getattr(bench, "label", "CMIP6 MMM")
+            color_map[label] = getattr(bench, "color", None) or CMIP6_COLOR
+
         # Two-panel figure: full budget (left) + TOA Net zoom (right)
         fig, (ax_main, ax_zoom) = plt.subplots(
             1, 2, figsize=(16, 6),
@@ -565,7 +643,7 @@ class RadiationBudget(DiagnosticBase):
 
         # Left panel: full budget bars
         plot_budget_bars(budget_data, title="Global Mean Radiation Budget",
-                         ax=ax_main)
+                         ax=ax_main, colors=color_map)
 
         # Right panel: zoomed TOA Net
         toa_net_data = budget_data.get("TOA Net", {})
@@ -573,7 +651,9 @@ class RadiationBudget(DiagnosticBase):
             from feather.plot.lines import _budget_bar_color
             sources = list(toa_net_data.keys())
             values = [toa_net_data[s] for s in sources]
-            colors = [_budget_bar_color(s) for s in sources]
+            colors = [
+                color_map.get(s) or _budget_bar_color(s) for s in sources
+            ]
             x = np.arange(len(sources))
             ax_zoom.bar(x, values, color=colors, width=0.6)
             ax_zoom.set_xticks(x)
@@ -624,7 +704,14 @@ class RadiationBudget(DiagnosticBase):
             lw_ts = self._model_global_mean_ts(model, "rlt")
 
             if t2m_ts is not None and sw_ts is not None and lw_ts is not None:
-                # Align times before adding
+                # Normalise time to first-of-month before aligning: for models
+                # with a radiation fallback source (e.g. IFS-FESOM r1), tas comes
+                # from CMOR (mid-month stamps) while rst/rlt come from the parquet
+                # store (month-start stamps), so join="inner" on the raw stamps
+                # would yield an empty intersection.
+                t2m_ts = self._snap_month_start(t2m_ts)
+                sw_ts = self._snap_month_start(sw_ts)
+                lw_ts = self._snap_month_start(lw_ts)
                 t2m_ts, sw_ts, lw_ts = xr.align(t2m_ts, sw_ts, lw_ts, join="inner")
                 toa_net_ts = sw_ts + lw_ts
                 model_data[model] = {
@@ -653,6 +740,25 @@ class RadiationBudget(DiagnosticBase):
         except (KeyError, FileNotFoundError):
             return None
         return self._model_global_mean(da, model).compute()
+
+    @staticmethod
+    def _snap_month_start(da: xr.DataArray | None) -> xr.DataArray | None:
+        """Snap a monthly time axis to first-of-month datetime64 stamps.
+
+        Normalises across data sources with differing monthly-stamp
+        conventions (CMOR mid-month vs. parquet month-start, cftime vs.
+        datetime64) so that ``xr.align(..., join="inner")`` matches on the
+        (year, month) pair rather than the exact timestamp.
+        """
+        if da is None or "time" not in da.coords:
+            return da
+        years = np.asarray(da["time"].dt.year.values)
+        months = np.asarray(da["time"].dt.month.values)
+        new_times = np.array(
+            [np.datetime64(f"{int(y):04d}-{int(m):02d}-01") for y, m in zip(years, months)],
+            dtype="datetime64[ns]",
+        )
+        return da.assign_coords(time=new_times)
 
     def _compute_gregory_obs(self) -> dict[str, Any] | None:
         """Compute obs data for Gregory plot (CERES TOA + ERA5 T2m)."""
@@ -1177,7 +1283,20 @@ class RadiationBudget(DiagnosticBase):
             if (self.config.get_data_source_type() == "cmor"
                     and first_var in _CMOR_NET_DERIVATIONS):
                 coord_var = _CMOR_NET_DERIVATIONS[first_var][0][0]
-            lon, lat = self._load_model_coords(model, coord_var)
+            try:
+                lon, lat = self._load_model_coords(model, coord_var)
+            except (KeyError, FileNotFoundError):
+                # Primary backend lacks the coord var (e.g. r1's CMOR tree has
+                # no rsdt).  When the model_clim came from a supplementary
+                # radiation source, take its grid so data and coords match.
+                fb = self._radiation_fallback_loader(model)
+                if fb is None:
+                    logger.warning(
+                        "  %s: no coords for %s bias map — skipping",
+                        model, dq_key,
+                    )
+                    continue
+                lon, lat = fb.load_coords(model, first_var)
 
             # For latlon grids, meshgrid 1D coord arrays to per-pixel arrays
             grid_type = self.config.get_grid_type(model, self.domain)

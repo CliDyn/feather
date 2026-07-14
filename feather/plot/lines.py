@@ -141,7 +141,7 @@ def plot_zonal_profile(lats, model_values, obs_values=None, *,
 
 
 def plot_budget_bars(budget_data, *, title="Radiation Budget",
-                     ylabel="W/m\u00b2", ax=None):
+                     ylabel="W/m\u00b2", ax=None, colors=None):
     """Grouped bar chart of radiation budget components.
 
     Parameters
@@ -156,11 +156,15 @@ def plot_budget_bars(budget_data, *, title="Radiation Budget",
         Y-axis label.
     ax : matplotlib.axes.Axes, optional
         Existing axes.
+    colors : dict[str, str], optional
+        Explicit source-label → colour map (e.g. per-model config colours).
+        Falls back to :func:`_budget_bar_color` for any source not present.
 
     Returns
     -------
     fig, ax
     """
+    colors = colors or {}
     if not budget_data:
         fig, ax_ = plt.subplots(figsize=(12, 6))
         ax_.set_title(title)
@@ -189,7 +193,7 @@ def plot_budget_bars(budget_data, *, title="Radiation Budget",
     for i, src in enumerate(all_sources):
         values = [budget_data[comp].get(src, 0.0) for comp in components]
         offset = (i - n_bars / 2 + 0.5) * bar_width
-        color = _budget_bar_color(src)
+        color = colors.get(src) or _budget_bar_color(src)
         ax.bar(x + offset, values, bar_width, label=src, color=color)
 
     ax.set_xticks(x)

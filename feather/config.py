@@ -49,6 +49,12 @@ class ModelConfig:
     data_source_type: str = ""
     catalog_key: str = ""
     member: int = 1
+    # Supplementary per-variable source used as a fallback when the primary
+    # backend lacks a variable (e.g. a CMOR member whose tree omits radiation
+    # fluxes, sourced instead from a kerchunk-parquet store).  Dict with keys
+    # ``type`` (currently only ``"kerchunk_parquet"``), ``data_root`` (dir that
+    # directly contains ``atmos/gr025/…``) and optional ``variant``.
+    radiation_source: dict = field(default_factory=dict)
     # Regional / CMIP5 / CMIP6-tree fields
     gcm: str = ""            # driving GCM directory name (CORDEX) or GCM name
     rcm: str = ""            # regional model directory name (CORDEX)
@@ -385,6 +391,7 @@ def _build_model_configs(
             data_source_type=cfg.get("data_source_type", ""),
             catalog_key=cfg.get("catalog_key", ""),
             member=cfg.get("member", 1),
+            radiation_source=cfg.get("radiation_source", {}),
             gcm=cfg.get("gcm", ""),
             rcm=cfg.get("rcm", ""),
             rcm_version=cfg.get("rcm_version", ""),
