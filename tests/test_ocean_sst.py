@@ -537,6 +537,69 @@ class TestTimeseries:
         results = diag._compute_timeseries(model_monthly)
         assert results["obs"] is None
 
+    def test_compute_timeseries_benchmark_ensemble_keys(self, ocean_sst_diag):
+        """New keys for benchmark MMM + ensemble stats are present."""
+        model_monthly, _ = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_timeseries(model_monthly)
+        assert "benchmarks_ts" in results
+        assert "ens_mean" in results
+        assert "ens_median" in results
+        # CMIP6 disabled in the fixture -> no benchmarks
+        assert results["benchmarks_ts"] == []
+        # single model -> ensemble stats are None
+        assert results["ens_mean"] is None
+        assert results["ens_median"] is None
+
+    def test_compute_ensemble_stats_single(self):
+        """A single-member dict yields (None, None)."""
+        ts = xr.DataArray(
+            np.arange(12.0), dims="time",
+            coords={"time": np.arange(12)},
+        )
+        mean, median = OceanSST._compute_ensemble_stats({"a": ts})
+        assert mean is None and median is None
+
+    def test_compute_ensemble_stats_multi(self):
+        """Two members give per-timestep mean/median across members."""
+        t = np.arange(12)
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None and median is not None
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
+        np.testing.assert_allclose(median.values, np.full(12, 2.0))
+
+    def test_plot_timeseries_with_benchmark_and_ensemble(self, ocean_sst_diag):
+        """Plot renders benchmark MMM/envelope + ensemble mean/median."""
+        model_monthly, _ = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_timeseries(model_monthly)
+
+        ts = next(iter(results["models"].values()))
+        base = ts.reset_coords(drop=True)
+        results["ens_mean"] = base
+        results["ens_median"] = base
+        results["benchmarks_ts"] = [{
+            "label": "CMIP6 MMM",
+            "color": "#888888",
+            "ts": base,
+            "info": {"n_members": 3},
+            "env_min": base - 0.5,
+            "env_max": base + 0.5,
+            "individual": {},
+        }]
+
+        figures = ocean_sst_diag._plot_timeseries(results)
+        assert len(figures) == 1
+        fig, meta = figures[0]
+        assert isinstance(fig, plt.Figure)
+        assert "CMIP6 MMM" in meta["models"]
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert any("CMIP6 MMM" in lbl for lbl in labels)
+        assert any("min–max" in lbl for lbl in labels)
+        assert any("ensemble mean" in lbl for lbl in labels)
+        assert any("ensemble median" in lbl for lbl in labels)
+        plt.close(fig)
+
 
 # ── Group C: Seasonal cycle ──────────────────────────────────────────
 

@@ -18,7 +18,7 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import OBS_COLOR
+from feather.plot.styles import ENS_COLOR, OBS_COLOR
 from feather.util.spatial import (
     latlon_global_mean,
     zonal_mean,
@@ -785,7 +785,14 @@ class OceanSST(DiagnosticBase):
     # ── Group B: Time series ──────────────────────────────────────────
 
     def _compute_timeseries(self, model_monthly):
-        """Compute global-mean SST time series for models and obs."""
+        """Compute global-mean SST time series for models and obs.
+
+        In addition to the per-model and obs series, this derives the
+        evaluated-ensemble mean/median and the benchmark (CMIP6/HighResMIP)
+        MMM series with a min/max envelope band across benchmark members.
+        CMIP6 ``tos`` is stored in °C (CMOR convention), matching the °C
+        model/obs series, so no unit conversion is applied to benchmarks.
+        """
         logger.info("Computing SST time series...")
         model_ts = {}
 
@@ -801,14 +808,69 @@ class OceanSST(DiagnosticBase):
         except (KeyError, FileNotFoundError, AttributeError) as e:
             logger.warning("ESA-CCI monthly time series failed: %s", e)
 
-        return {"models": model_ts, "obs": obs_ts}
+        # Benchmark (CMIP6/HighResMIP) MMM series + min/max envelope band.
+        benchmarks_ts = self._benchmark_timeseries(
+            "tos", period=self.period,
+            return_individual=self.cmip6_individual,
+        )
+
+        # Evaluated-ensemble mean/median across the model series.
+        ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
+
+        return {
+            "models": model_ts,
+            "obs": obs_ts,
+            "benchmarks_ts": benchmarks_ts,
+            "ens_mean": ens_mean,
+            "ens_median": ens_median,
+        }
+
+    @staticmethod
+    def _compute_ensemble_stats(model_ts):
+        """Ensemble mean/median across the evaluated model time series.
+
+        Aligns on the inner time union so models of differing lengths are
+        reduced to their common period before averaging.  Returns
+        ``(None, None)`` when fewer than 2 models are present.
+        """
+        series = list(model_ts.values())
+        if len(series) < 2:
+            return None, None
+        # Drop non-dimension scalar coords (e.g. depth) that some models
+        # carry and others don't — otherwise xr.concat raises on mismatch.
+        series = [s.reset_coords(drop=True) for s in series]
+        aligned = xr.align(*series, join="inner")
+        stacked = xr.concat(list(aligned), dim="member")
+        return stacked.mean("member"), stacked.median("member")
 
     def _plot_timeseries(self, results):
-        """Plot SST global-mean time series."""
+        """Plot SST global-mean time series.
+
+        Layering (back to front): benchmark min/max envelope band + MMM
+        (dashed) \u2192 evaluated models \u2192 ensemble median (dashed) / mean (solid)
+        \u2192 observations.  All series are in \u00b0C.
+        """
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = []
+        benchmarks = results.get("benchmarks_ts", []) or []
+        n_eerie = len(results["models"])
 
-        # Monthly semi-transparent background
+        # --- Monthly pass (background, washed-out) ---
+
+        # Benchmark envelope band + MMM (dashed)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            emin, emax = bench.get("env_min"), bench.get("env_max")
+            if emin is not None and emax is not None:
+                t = _to_plot_time(emin.time.values)
+                ax.fill_between(t, emin.values, emax.values,
+                                color=b_color, alpha=0.12, lw=0)
+            b_ts = bench["ts"]
+            t = _to_plot_time(b_ts.time.values)
+            ax.plot(t, b_ts.values, color=b_color, alpha=0.3,
+                    linewidth=0.7, linestyle="--")
+
+        # DestinE model monthly
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
@@ -821,7 +883,28 @@ class OceanSST(DiagnosticBase):
             ax.plot(time_vals, obs_ts.values, color=OBS_COLOR, alpha=0.3,
                     linewidth=0.7)
 
-        # Annual thick foreground
+        # --- Annual pass (foreground, thick with labels) ---
+
+        # Benchmark min/max envelope + MMM (dashed)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            b_label = bench["label"]
+            n_mmm = bench["info"].get("n_members", 0)
+            emin, emax = bench.get("env_min"), bench.get("env_max")
+            if emin is not None and emax is not None:
+                amin, amax = annual_mean(emin), annual_mean(emax)
+                band = b_label[:-4] if b_label.endswith(" MMM") else b_label
+                t = _to_plot_time(amin.time.values)
+                ax.fill_between(t, amin.values, amax.values, color=b_color,
+                                alpha=0.25, lw=0,
+                                label=f"{band} min\u2013max ({n_mmm})")
+            b_annual = annual_mean(bench["ts"])
+            t = _to_plot_time(b_annual.time.values)
+            ax.plot(t, b_annual.values, label=f"{b_label} ({n_mmm})",
+                    color=b_color, linewidth=2.0, linestyle="--")
+            all_models.append(b_label)
+
+        # DestinE model annual
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
@@ -829,6 +912,21 @@ class OceanSST(DiagnosticBase):
             ax.plot(time_vals, ts_annual.values, label=model, color=color,
                     linewidth=2.0)
             all_models.append(model)
+
+        # Ensemble median (dashed) / mean (solid)
+        proj = self.config.project.get("name", "Ensemble")
+        if results.get("ens_median") is not None:
+            ens_med_annual = annual_mean(results["ens_median"])
+            t = _to_plot_time(ens_med_annual.time.values)
+            ax.plot(t, ens_med_annual.values, color=ENS_COLOR,
+                    linewidth=2.5, linestyle="--",
+                    label=f"{proj} ensemble median ({n_eerie})")
+        if results.get("ens_mean") is not None:
+            ens_mean_annual = annual_mean(results["ens_mean"])
+            t = _to_plot_time(ens_mean_annual.time.values)
+            ax.plot(t, ens_mean_annual.values, color=ENS_COLOR,
+                    linewidth=2.5,
+                    label=f"{proj} ensemble mean ({n_eerie})")
 
         if results.get("obs") is not None:
             obs_annual = annual_mean(results["obs"])
@@ -838,7 +936,7 @@ class OceanSST(DiagnosticBase):
 
         ax.set_title("Global Mean Sea Surface Temperature")
         ax.set_ylabel("SST (\u00b0C)")
-        ax.legend()
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -850,13 +948,17 @@ class OceanSST(DiagnosticBase):
             figure_id="sst_timeseries",
             models=all_models,
             description=(
-                "Global-mean SST time series for DestinE models and {self._obs_label} "
-                "observations. Monthly values as semi-transparent lines, "
-                "annual means as thick lines. Units: degrees Celsius."
+                f"Global-mean SST time series for models, benchmark MMM "
+                f"(with min\u2013max envelope), ensemble mean/median, and "
+                f"{self._obs_label} observations. Monthly values as "
+                f"semi-transparent lines, annual means as thick lines. "
+                f"Units: degrees Celsius."
             ),
             plot_type="timeseries",
             period=self.period,
             obs_dataset=self._obs_dataset_name,
+            benchmark_info=self._benchmark_meta_from_list(
+                benchmarks) or None,
         )
         return [(fig, meta)]
 
