@@ -1201,6 +1201,60 @@ class TestCMORDerivation:
         assert len(da.time) == 6
 
 
+class TestRadiationFallbackSource:
+    """Supplementary per-model radiation source (e.g. kerchunk parquet)."""
+
+    def test_no_radiation_source_returns_none(
+        self, cmor_model_loader, rad_obs_loader, cmor_rad_config,
+    ):
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        assert diag._radiation_fallback_loader("ICON-ESM-ER") is None
+
+    def test_radiation_source_builds_cached_loader(
+        self, cmor_model_loader, rad_obs_loader, cmor_rad_config, tmp_path,
+    ):
+        from feather.data.kerchunk_loader import KerchunkParquetLoader
+
+        mc = cmor_rad_config.model_configs["ICON-ESM-ER"]
+        mc.radiation_source = {
+            "type": "kerchunk_parquet", "data_root": str(tmp_path),
+        }
+        diag = RadiationBudget(cmor_model_loader, rad_obs_loader, cmor_rad_config)
+        fb = diag._radiation_fallback_loader("ICON-ESM-ER")
+        assert isinstance(fb, KerchunkParquetLoader)
+        # Cached: same instance on subsequent calls.
+        assert diag._radiation_fallback_loader("ICON-ESM-ER") is fb
+
+    def test_radiation_source_used_when_cmor_derivation_fails(
+        self, rad_obs_loader, cmor_rad_config, monkeypatch,
+    ):
+        """When CMOR lacks the components, rst comes from the fallback loader."""
+        # CMOR loader has no radiation components at all → tiers 1 & 2 fail.
+        empty_loader = MockCMORModelLoader({})
+        mc = cmor_rad_config.model_configs["ICON-ESM-ER"]
+        mc.radiation_source = {"type": "kerchunk_parquet", "data_root": "/x"}
+        diag = RadiationBudget(empty_loader, rad_obs_loader, cmor_rad_config)
+
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        time = xr.date_range("1990-01", periods=3, freq="MS")
+        sentinel = xr.DataArray(
+            np.full((3, len(lats), len(lons)), 240.0),
+            dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+            name="rst",
+        )
+
+        class _FB:
+            def load_var(self, model, variable, *, period=None, time_mean=False):
+                assert variable == "rst"
+                return sentinel
+
+        monkeypatch.setattr(diag, "_radiation_fallback_loader", lambda m: _FB())
+        da = diag._load_model_radiation_var("ICON-ESM-ER", "rst")
+        np.testing.assert_allclose(da.values, 240.0)
+
+
 class TestCMORBudgetIntegration:
     """Integration tests for full budget pipeline with CMOR derivation."""
 

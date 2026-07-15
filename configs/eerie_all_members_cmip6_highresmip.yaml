@@ -49,6 +49,16 @@ models:
       o2d: latlon
       o3d: latlon
     color: "#1f77b4"
+    # r1's CMOR tree publishes only downward radiation (rsds/rlds) — no TOA
+    # or net surface fluxes.  Source the net radiation from the full-period
+    # (1950–2014) batched kerchunk-parquet store instead.  It is a flat-file
+    # layout with daily-only gr025 average fields (the loader resamples them
+    # to monthly and reconstructs the gr025 grid, which the store omits).
+    # Used only as a fallback by the radiation_budget diagnostic; every other
+    # variable (incl. 3D ocean) still comes from CMOR.
+    radiation_source:
+      type: kerchunk_parquet
+      data_root: "/work/bm1344/DKRZ/kerchunks_pp_batched/IFS-FESOM2/hist-1950/v20240304"
 
   IFS-FESOM2-SR-r2:
     institution: AWI

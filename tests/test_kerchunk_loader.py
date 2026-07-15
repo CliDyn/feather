@@ -668,3 +668,132 @@ class TestAtmos2DDailyMin:
         lon, lat = loader._get_atmos_grid("IFS-FESOM2-SR")
         assert lon.ndim == 1
         assert lat.ndim == 1
+
+
+# ── Full-period supplementary radiation source (batched layout) ───────────
+
+
+def _touch_parq(directory, names):
+    """Create empty ``.parq`` store *directories* (kerchunk parquet stores)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / name).mkdir()
+
+
+class TestGr025GridReconstruction:
+    """Reconstructing the gr025 grid when a store omits lat/lon (batched)."""
+
+    def test_reconstruct_shapes_and_bounds(self):
+        lat, lon = KerchunkParquetLoader._reconstruct_gr025_flat(721 * 1440)
+        assert lat.shape == (721 * 1440,)
+        assert lon.shape == (721 * 1440,)
+        # Row-major north-first: first row all 90, last row all -90.
+        assert lat[0] == 90.0 and lat[-1] == -90.0
+        assert np.unique(lat).size == 721
+        assert np.unique(lon).size == 1440
+        # lon per row: 0, 0.25, … 179.75, then -180 … -0.25
+        assert lon[0] == 0.0
+        assert np.isclose(lon[1], 0.25)
+        assert lon.min() == -180.0 and np.isclose(lon.max(), 179.75)
+
+    def test_reconstruct_wrong_size_raises(self):
+        with pytest.raises(ValueError, match="reconstruct gr025"):
+            KerchunkParquetLoader._reconstruct_gr025_flat(12345)
+
+    def test_flat_coords_prefers_store_latlon(self, tmp_path):
+        loader = KerchunkParquetLoader(_make_config(tmp_path))
+        ds = _make_atmos2d_store()  # has lat/lon
+        lat, lon = loader._atmos_flat_coords(ds)
+        np.testing.assert_array_equal(lat, ds["lat"].values)
+        np.testing.assert_array_equal(lon, ds["lon"].values)
+
+    def test_flat_coords_reconstructs_when_absent(self, tmp_path):
+        loader = KerchunkParquetLoader(_make_config(tmp_path))
+        ds = xr.Dataset(
+            {"v": (("time", "value"), np.zeros((1, 721 * 1440), dtype=np.float32))},
+            coords={"time": xr.date_range("1980-01", periods=1, freq="MS")},
+        )
+        lat, lon = loader._atmos_flat_coords(ds)
+        assert lat.shape == (721 * 1440,) and lon.shape == (721 * 1440,)
+        assert lat[0] == 90.0
+
+
+class TestSubmonthlyDetection:
+    def test_monthly_is_not_submonthly(self):
+        ds = xr.Dataset(coords={"time": xr.date_range("1980-01", periods=6, freq="MS")})
+        assert KerchunkParquetLoader._is_submonthly(ds) is False
+
+    def test_daily_is_submonthly(self):
+        ds = xr.Dataset(coords={"time": xr.date_range("1980-01-01", periods=40, freq="D")})
+        assert KerchunkParquetLoader._is_submonthly(ds) is True
+
+    def test_single_timestep_not_submonthly(self):
+        ds = xr.Dataset(coords={"time": xr.date_range("1980-01-01", periods=1, freq="D")})
+        assert KerchunkParquetLoader._is_submonthly(ds) is False
+
+
+class TestStoreLayoutResolution:
+    """Path resolution across the sub-tree, intake, and batched layouts."""
+
+    def test_has_store_layout_subtree(self, tmp_path):
+        base = tmp_path / "r1i1p1f1"
+        (base / "atmos" / "gr025").mkdir(parents=True)
+        assert KerchunkParquetLoader._has_store_layout(base) is True
+
+    def test_has_store_layout_batched(self, tmp_path):
+        base = tmp_path / "v20240304"
+        _touch_parq(base, ["atmos_gr025_2D_daily_avg.parq"])
+        assert KerchunkParquetLoader._has_store_layout(base) is True
+
+    def test_has_store_layout_empty(self, tmp_path):
+        assert KerchunkParquetLoader._has_store_layout(tmp_path) is False
+
+    def test_intake_filename_fallback(self, tmp_path):
+        """data_root pointing at a version dir with atmos/gr025/2D_monthly_avg.parq."""
+        version = tmp_path / "v20240304"
+        _touch_parq(version / "atmos" / "gr025", ["2D_monthly_avg.parq"])
+        config = _make_config(tmp_path, variant="")
+        config.model_configs["IFS-FESOM2-SR"].data_root = str(version)
+        loader = KerchunkParquetLoader(config)
+        p = loader._store_path("IFS-FESOM2-SR", "atmos2d")
+        assert p.name == "2D_monthly_avg.parq"
+
+    def test_batched_atmos2d_resolves_daily_avg(self, tmp_path):
+        version = tmp_path / "v20240304"
+        _touch_parq(version, [
+            "atmos_gr025_2D_daily_avg.parq",
+            "atmos_gr025_2D_daily_avg_slk.parq",   # tape sidecar, must be ignored
+            "atmos_gr025_2D_daily_min.parq",
+        ])
+        config = _make_config(tmp_path, variant="")
+        config.model_configs["IFS-FESOM2-SR"].data_root = str(version)
+        loader = KerchunkParquetLoader(config)
+        p = loader._store_path("IFS-FESOM2-SR", "atmos2d")
+        assert p.name == "atmos_gr025_2D_daily_avg.parq"
+
+    def test_batched_prefers_monthly_avg_when_present(self, tmp_path):
+        version = tmp_path / "v20240304"
+        _touch_parq(version, [
+            "atmos_gr025_2D_monthly_avg.parq",
+            "atmos_gr025_2D_daily_avg.parq",
+        ])
+        config = _make_config(tmp_path, variant="")
+        config.model_configs["IFS-FESOM2-SR"].data_root = str(version)
+        loader = KerchunkParquetLoader(config)
+        p = loader._store_path("IFS-FESOM2-SR", "atmos2d")
+        assert p.name == "atmos_gr025_2D_monthly_avg.parq"
+
+    def test_batched_daily_min_max(self, tmp_path):
+        version = tmp_path / "v20240304"
+        _touch_parq(version, [
+            "atmos_gr025_2D_daily_avg.parq",
+            "atmos_gr025_2D_daily_min.parq",
+            "atmos_gr025_2D_daily_max.parq",
+        ])
+        config = _make_config(tmp_path, variant="")
+        config.model_configs["IFS-FESOM2-SR"].data_root = str(version)
+        loader = KerchunkParquetLoader(config)
+        assert loader._store_path("IFS-FESOM2-SR", "atmos2d_daily_min").name \
+            == "atmos_gr025_2D_daily_min.parq"
+        assert loader._store_path("IFS-FESOM2-SR", "atmos2d_daily_max").name \
+            == "atmos_gr025_2D_daily_max.parq"
