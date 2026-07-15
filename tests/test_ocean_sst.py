@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -568,6 +569,35 @@ class TestTimeseries:
         assert mean is not None and median is not None
         np.testing.assert_allclose(mean.values, np.full(12, 2.0))
         np.testing.assert_allclose(median.values, np.full(12, 2.0))
+
+    def test_compute_ensemble_stats_mixed_day_of_month(self):
+        """Members with differing mid-month days still align by month.
+
+        Previously the inner join found no common timestamps (empty time)
+        and ``annual_mean`` raised; normalising to first-of-month fixes it.
+        """
+        a_t = pd.date_range("2000-01-15", periods=12, freq="MS") + \
+            pd.Timedelta(days=14)     # 15th of each month
+        b_t = pd.date_range("2000-01-16", periods=12, freq="MS") + \
+            pd.Timedelta(days=15)     # 16th of each month
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": a_t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": b_t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None and median is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
+
+    def test_compute_ensemble_stats_mixed_calendar(self):
+        """A 360-day cftime member aligns with a datetime64 member by month."""
+        cftime = pytest.importorskip("cftime")
+        std_t = pd.to_datetime([f"2000-{m:02d}-16" for m in range(1, 13)])
+        cf_t = [cftime.Datetime360Day(2000, m, 16) for m in range(1, 13)]
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": std_t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": cf_t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
 
     def test_plot_timeseries_with_benchmark_and_ensemble(self, ocean_sst_diag):
         """Plot renders benchmark MMM/envelope + ensemble mean/median."""

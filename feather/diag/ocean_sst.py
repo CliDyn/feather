@@ -50,6 +50,34 @@ def _to_celsius(da):
     return da - _K_TO_C
 
 
+def _normalize_monthly_time(da):
+    """Normalise a time series' ``time`` coord to first-of-month timestamps.
+
+    Different models use different calendars (360_day, noleap, standard) with
+    differing mid-month day conventions, so identical months carry different
+    raw timestamps and an inner join finds no overlap.  Mapping every step to
+    ``YYYY-MM-01`` pandas timestamps makes members on any calendar align by
+    month.  Returns ``None`` if the series has no usable time axis.
+    """
+    if "time" not in getattr(da, "dims", ()):
+        return da
+    try:
+        times = da.time.values
+        if len(times) == 0:
+            return None
+        t0 = times[0]
+        if hasattr(t0, "year") and not isinstance(t0, np.datetime64):
+            new_times = pd.to_datetime(
+                [f"{t.year:04d}-{t.month:02d}-01" for t in times]
+            )
+        else:
+            new_times = pd.to_datetime(times).to_period("M").to_timestamp()
+        return da.assign_coords(time=new_times)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to normalize time coordinate: %s", e)
+        return None
+
+
 def _needs_celsius_conversion(da, model_src: str) -> bool:
     """Return True if *da* needs K→°C conversion before comparison.
 
@@ -829,17 +857,32 @@ class OceanSST(DiagnosticBase):
     def _compute_ensemble_stats(model_ts):
         """Ensemble mean/median across the evaluated model time series.
 
-        Aligns on the inner time union so models of differing lengths are
-        reduced to their common period before averaging.  Returns
-        ``(None, None)`` when fewer than 2 models are present.
+        Time coordinates are first normalised to first-of-month timestamps so
+        members on different calendars (e.g. HadGEM3's 360-day cftime vs the
+        IFS models' ``datetime64``) and differing mid-month day conventions
+        still overlap.  Series are then aligned on the inner time union so
+        models of differing lengths are reduced to their common period before
+        averaging.  Returns ``(None, None)`` when fewer than 2 members remain
+        or the members share no common month.
         """
         series = list(model_ts.values())
         if len(series) < 2:
             return None, None
         # Drop non-dimension scalar coords (e.g. depth) that some models
         # carry and others don't — otherwise xr.concat raises on mismatch.
-        series = [s.reset_coords(drop=True) for s in series]
+        series = [
+            _normalize_monthly_time(s.reset_coords(drop=True)) for s in series
+        ]
+        series = [s for s in series if s is not None]
+        if len(series) < 2:
+            return None, None
         aligned = xr.align(*series, join="inner")
+        if aligned[0].sizes.get("time", 0) == 0:
+            logger.warning(
+                "Ensemble members share no common month — "
+                "skipping SST ensemble mean/median",
+            )
+            return None, None
         stacked = xr.concat(list(aligned), dim="member")
         return stacked.mean("member"), stacked.median("member")
 
