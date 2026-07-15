@@ -107,6 +107,50 @@ def _ocean_global_mean(da):
     return da.weighted(weights).mean([lat_name, _lon_name(da)])
 
 
+def _ocean_grid_global_mean(da, area=None):
+    """Grid-agnostic area-weighted global mean over a field's spatial dims.
+
+    Works for rectilinear (``lat``/``lon``), curvilinear (2-D ``latitude`` on
+    ``j``/``i``) and unstructured (``ncells``) ocean grids alike — whatever
+    dimensions remain after ``time``.  Weights come from *area* (``areacello``)
+    when its shape matches the field's spatial grid; otherwise cos-lat weights
+    are derived from the latitude coordinate.  NaN weights (common in
+    ``areacello``) are zeroed so ``weighted().mean()`` does not raise, and NaN
+    (land) data cells are excluded via ``skipna``.  Returns ``None`` if no
+    usable weights can be built.
+    """
+    from feather.diag.ocean_bias import latlon_names
+
+    spatial = [d for d in da.dims if d != "time"]
+    if not spatial:
+        return None
+    spatial_shape = tuple(da.sizes[d] for d in spatial)
+
+    weights = None
+    if area is not None:
+        av = np.nan_to_num(np.asarray(area.values), nan=0.0)
+        if av.shape == spatial_shape:
+            weights = xr.DataArray(av, dims=spatial)
+
+    if weights is None:
+        lat_name, _ = latlon_names(da)
+        if lat_name in da.coords:
+            cosw = np.nan_to_num(
+                np.cos(np.deg2rad(np.asarray(da[lat_name].values))), nan=0.0,
+            )
+            if cosw.shape == spatial_shape:
+                weights = xr.DataArray(cosw, dims=spatial)
+            elif cosw.ndim == 1:
+                for d in spatial:
+                    if da.sizes[d] == cosw.size:
+                        weights = xr.DataArray(cosw, dims=(d,))
+                        break
+
+    if weights is None:
+        return None
+    return da.weighted(weights).mean(spatial, skipna=True)
+
+
 def _lon_name(da):
     """Return the longitude dimension name."""
     return "lon" if "lon" in da.dims else "longitude"
@@ -818,8 +862,8 @@ class OceanSST(DiagnosticBase):
         In addition to the per-model and obs series, this derives the
         evaluated-ensemble mean/median and the benchmark (CMIP6/HighResMIP)
         MMM series with a min/max envelope band across benchmark members.
-        CMIP6 ``tos`` is stored in °C (CMOR convention), matching the °C
-        model/obs series, so no unit conversion is applied to benchmarks.
+        Benchmark ``tos`` is normalised to °C (via ``prep_ocean_field``) to
+        match the °C model/obs series.
         """
         logger.info("Computing SST time series...")
         model_ts = {}
@@ -837,10 +881,10 @@ class OceanSST(DiagnosticBase):
             logger.warning("ESA-CCI monthly time series failed: %s", e)
 
         # Benchmark (CMIP6/HighResMIP) MMM series + min/max envelope band.
-        benchmarks_ts = self._benchmark_timeseries(
-            "tos", period=self.period,
-            return_individual=self.cmip6_individual,
-        )
+        # Uses an ocean-aware, grid-agnostic global mean (areacello-weighted
+        # with a cos-lat fallback) so curvilinear ORCA/tripolar/ICON grids —
+        # the majority of CMIP6 ocean models — are included, not skipped.
+        benchmarks_ts = self._benchmark_ocean_timeseries()
 
         # Evaluated-ensemble mean/median across the model series.
         ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
@@ -852,6 +896,76 @@ class OceanSST(DiagnosticBase):
             "ens_mean": ens_mean,
             "ens_median": ens_median,
         }
+
+    # ── Ocean-aware benchmark global-mean time series ─────────────────
+
+    def _benchmark_ocean_timeseries(self) -> list[dict]:
+        """Per-benchmark global-mean ``tos`` MMM series + min/max envelope.
+
+        Mirrors :meth:`DiagnosticBase._benchmark_timeseries` but computes each
+        member's global mean with :func:`_ocean_grid_global_mean`, which weights
+        by ``areacello`` (falling back to cos-lat) over whatever spatial dims a
+        model uses.  This keeps curvilinear ocean grids — which the rectilinear
+        base helper drops — in the ensemble.  Member time axes are normalised to
+        first-of-month so mixed calendars still align.
+        """
+        from feather.diag.ocean_bias import prep_ocean_field
+        from feather.plot.styles import benchmark_color
+
+        if not (getattr(self, "benchmarks", None) and self.cmip6_enabled):
+            return []
+
+        out: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            label = getattr(bench, "label", "CMIP6 MMM")
+            series: dict[str, Any] = {}
+            for model, variant in bench.get_member_pairs():
+                try:
+                    da = bench.load_var(
+                        "tos", model, table="Omon",
+                        period=self.period, time_mean=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    da = None
+                if da is None or "time" not in getattr(da, "dims", ()):
+                    continue
+                try:
+                    da = prep_ocean_field(self.config, da, "tos")
+                    area = bench.load_area(model, variant=variant, table="Omon")
+                    ts = _ocean_grid_global_mean(da, area)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "    Skipping %s for benchmark tos: %s", model, e)
+                    continue
+                if ts is None:
+                    continue
+                ts = _normalize_monthly_time(ts.compute())
+                if ts is not None:
+                    series[model] = ts.reset_coords(drop=True)
+
+            if not series:
+                logger.warning(
+                    "No benchmark tos members for %s — MMM series skipped",
+                    label)
+                continue
+
+            aligned = xr.align(*series.values(), join="outer")
+            mmm = xr.concat(aligned, dim="member").mean("member", skipna=True)
+            env_min, env_max = self._envelope_from_series(series)
+            logger.info(
+                "  %s tos MMM time series: %d members, %d timesteps",
+                label, len(series), len(mmm.time))
+            out.append({
+                "label": label,
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "ts": mmm,
+                "info": {"n_members": len(series),
+                         "models_used": list(series)},
+                "env_min": env_min,
+                "env_max": env_max,
+                "individual": dict(series) if self.cmip6_individual else {},
+            })
+        return out
 
     @staticmethod
     def _compute_ensemble_stats(model_ts):
