@@ -110,6 +110,46 @@ def annual_mean(da: xr.DataArray) -> xr.DataArray:
     return da.resample(time="YE").mean()
 
 
+def normalize_monthly_time(da: xr.DataArray) -> xr.DataArray | None:
+    """Normalise a series' ``time`` coord to first-of-month timestamps.
+
+    Different models use different calendars (360_day, noleap, standard) with
+    differing mid-month day conventions, so identical months carry different
+    raw timestamps and an inner join across members finds no overlap.  Mapping
+    every step to ``YYYY-MM-01`` pandas timestamps makes members on any
+    calendar align by month.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Data with a ``time`` dimension (returned unchanged if it has none).
+
+    Returns
+    -------
+    xr.DataArray or None
+        ``da`` with a normalised ``time`` coordinate, or ``None`` if the series
+        has no usable time axis.
+    """
+    import pandas as pd
+
+    if "time" not in getattr(da, "dims", ()):
+        return da
+    try:
+        times = da.time.values
+        if len(times) == 0:
+            return None
+        t0 = times[0]
+        if hasattr(t0, "year") and not isinstance(t0, np.datetime64):
+            new_times = pd.to_datetime(
+                [f"{t.year:04d}-{t.month:02d}-01" for t in times]
+            )
+        else:
+            new_times = pd.to_datetime(times).to_period("M").to_timestamp()
+        return da.assign_coords(time=new_times)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def linear_trend(da: xr.DataArray, dim: str = "time") -> xr.DataArray:
     """Per-grid-point linear trend in original units per year.
 

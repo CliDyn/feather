@@ -615,6 +615,53 @@ class TestTimeseriesEnsemble:
         assert mean is None
         assert median is None
 
+    def test_compute_ensemble_stats_mixed_calendar(self):
+        """A 360-day cftime member aligns with a datetime64 member by month.
+
+        Regression for the HadGEM3 360-day crash: the raw inner join found no
+        common timestamps (empty time) and ``annual_mean`` raised
+        ``__resample_dim__ must not be empty``.
+        """
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        cftime = pytest.importorskip("cftime")
+        std_t = pd.to_datetime([f"2000-{m:02d}-16" for m in range(1, 13)])
+        cf_t = [cftime.Datetime360Day(2000, m, 16) for m in range(1, 13)]
+        ts1 = xr.DataArray(np.ones(12) * 290.0, dims=["time"],
+                           coords={"time": std_t})
+        ts2 = xr.DataArray(np.ones(12) * 292.0, dims=["time"],
+                           coords={"time": cf_t})
+
+        mean, median = TimeseriesDiag._compute_ensemble_stats(
+            {"m1": ts1, "m2": ts2}
+        )
+
+        assert mean is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, 291.0)
+
+    def test_compute_ensemble_stats_mixed_day_of_month(self):
+        """Members with differing mid-month days still align by month."""
+        import numpy as np
+        import pandas as pd
+        import xarray as xr
+
+        t1 = pd.to_datetime([f"2000-{m:02d}-15" for m in range(1, 13)])
+        t2 = pd.to_datetime([f"2000-{m:02d}-16" for m in range(1, 13)])
+        ts1 = xr.DataArray(np.zeros(12), dims=["time"], coords={"time": t1})
+        ts2 = xr.DataArray(np.full(12, 4.0), dims=["time"],
+                           coords={"time": t2})
+
+        mean, _ = TimeseriesDiag._compute_ensemble_stats(
+            {"m1": ts1, "m2": ts2}
+        )
+
+        assert mean is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, 2.0)
+
     def test_plot_ensemble_lines_in_legend(self, mock_multi_model_loader,
                                             mock_obs_loader, multi_model_config):
         """Plot legend includes '<project> ensemble mean' and median."""
