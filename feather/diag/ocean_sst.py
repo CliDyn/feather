@@ -18,7 +18,7 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.styles import OBS_COLOR
+from feather.plot.styles import ENS_COLOR, OBS_COLOR
 from feather.util.spatial import (
     latlon_global_mean,
     zonal_mean,
@@ -50,6 +50,34 @@ def _to_celsius(da):
     return da - _K_TO_C
 
 
+def _normalize_monthly_time(da):
+    """Normalise a time series' ``time`` coord to first-of-month timestamps.
+
+    Different models use different calendars (360_day, noleap, standard) with
+    differing mid-month day conventions, so identical months carry different
+    raw timestamps and an inner join finds no overlap.  Mapping every step to
+    ``YYYY-MM-01`` pandas timestamps makes members on any calendar align by
+    month.  Returns ``None`` if the series has no usable time axis.
+    """
+    if "time" not in getattr(da, "dims", ()):
+        return da
+    try:
+        times = da.time.values
+        if len(times) == 0:
+            return None
+        t0 = times[0]
+        if hasattr(t0, "year") and not isinstance(t0, np.datetime64):
+            new_times = pd.to_datetime(
+                [f"{t.year:04d}-{t.month:02d}-01" for t in times]
+            )
+        else:
+            new_times = pd.to_datetime(times).to_period("M").to_timestamp()
+        return da.assign_coords(time=new_times)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to normalize time coordinate: %s", e)
+        return None
+
+
 def _needs_celsius_conversion(da, model_src: str) -> bool:
     """Return True if *da* needs K→°C conversion before comparison.
 
@@ -77,6 +105,50 @@ def _ocean_global_mean(da):
     lat_name = "lat" if "lat" in da.dims else "latitude"
     weights = np.cos(np.deg2rad(da[lat_name]))
     return da.weighted(weights).mean([lat_name, _lon_name(da)])
+
+
+def _ocean_grid_global_mean(da, area=None):
+    """Grid-agnostic area-weighted global mean over a field's spatial dims.
+
+    Works for rectilinear (``lat``/``lon``), curvilinear (2-D ``latitude`` on
+    ``j``/``i``) and unstructured (``ncells``) ocean grids alike — whatever
+    dimensions remain after ``time``.  Weights come from *area* (``areacello``)
+    when its shape matches the field's spatial grid; otherwise cos-lat weights
+    are derived from the latitude coordinate.  NaN weights (common in
+    ``areacello``) are zeroed so ``weighted().mean()`` does not raise, and NaN
+    (land) data cells are excluded via ``skipna``.  Returns ``None`` if no
+    usable weights can be built.
+    """
+    from feather.diag.ocean_bias import latlon_names
+
+    spatial = [d for d in da.dims if d != "time"]
+    if not spatial:
+        return None
+    spatial_shape = tuple(da.sizes[d] for d in spatial)
+
+    weights = None
+    if area is not None:
+        av = np.nan_to_num(np.asarray(area.values), nan=0.0)
+        if av.shape == spatial_shape:
+            weights = xr.DataArray(av, dims=spatial)
+
+    if weights is None:
+        lat_name, _ = latlon_names(da)
+        if lat_name in da.coords:
+            cosw = np.nan_to_num(
+                np.cos(np.deg2rad(np.asarray(da[lat_name].values))), nan=0.0,
+            )
+            if cosw.shape == spatial_shape:
+                weights = xr.DataArray(cosw, dims=spatial)
+            elif cosw.ndim == 1:
+                for d in spatial:
+                    if da.sizes[d] == cosw.size:
+                        weights = xr.DataArray(cosw, dims=(d,))
+                        break
+
+    if weights is None:
+        return None
+    return da.weighted(weights).mean(spatial, skipna=True)
 
 
 def _lon_name(da):
@@ -785,7 +857,14 @@ class OceanSST(DiagnosticBase):
     # ── Group B: Time series ──────────────────────────────────────────
 
     def _compute_timeseries(self, model_monthly):
-        """Compute global-mean SST time series for models and obs."""
+        """Compute global-mean SST time series for models and obs.
+
+        In addition to the per-model and obs series, this derives the
+        evaluated-ensemble mean/median and the benchmark (CMIP6/HighResMIP)
+        MMM series with a min/max envelope band across benchmark members.
+        Benchmark ``tos`` is normalised to °C (via ``prep_ocean_field``) to
+        match the °C model/obs series.
+        """
         logger.info("Computing SST time series...")
         model_ts = {}
 
@@ -801,14 +880,154 @@ class OceanSST(DiagnosticBase):
         except (KeyError, FileNotFoundError, AttributeError) as e:
             logger.warning("ESA-CCI monthly time series failed: %s", e)
 
-        return {"models": model_ts, "obs": obs_ts}
+        # Benchmark (CMIP6/HighResMIP) MMM series + min/max envelope band.
+        # Uses an ocean-aware, grid-agnostic global mean (areacello-weighted
+        # with a cos-lat fallback) so curvilinear ORCA/tripolar/ICON grids —
+        # the majority of CMIP6 ocean models — are included, not skipped.
+        benchmarks_ts = self._benchmark_ocean_timeseries()
+
+        # Evaluated-ensemble mean/median across the model series.
+        ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
+
+        return {
+            "models": model_ts,
+            "obs": obs_ts,
+            "benchmarks_ts": benchmarks_ts,
+            "ens_mean": ens_mean,
+            "ens_median": ens_median,
+        }
+
+    # ── Ocean-aware benchmark global-mean time series ─────────────────
+
+    def _benchmark_ocean_timeseries(self) -> list[dict]:
+        """Per-benchmark global-mean ``tos`` MMM series + min/max envelope.
+
+        Mirrors :meth:`DiagnosticBase._benchmark_timeseries` but computes each
+        member's global mean with :func:`_ocean_grid_global_mean`, which weights
+        by ``areacello`` (falling back to cos-lat) over whatever spatial dims a
+        model uses.  This keeps curvilinear ocean grids — which the rectilinear
+        base helper drops — in the ensemble.  Member time axes are normalised to
+        first-of-month so mixed calendars still align.
+        """
+        from feather.diag.ocean_bias import prep_ocean_field
+        from feather.plot.styles import benchmark_color
+
+        if not (getattr(self, "benchmarks", None) and self.cmip6_enabled):
+            return []
+
+        out: list[dict] = []
+        for i, bench in enumerate(self.benchmarks):
+            label = getattr(bench, "label", "CMIP6 MMM")
+            series: dict[str, Any] = {}
+            for model, variant in bench.get_member_pairs():
+                try:
+                    da = bench.load_var(
+                        "tos", model, table="Omon",
+                        period=self.period, time_mean=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    da = None
+                if da is None or "time" not in getattr(da, "dims", ()):
+                    continue
+                try:
+                    da = prep_ocean_field(self.config, da, "tos")
+                    area = bench.load_area(model, variant=variant, table="Omon")
+                    ts = _ocean_grid_global_mean(da, area)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "    Skipping %s for benchmark tos: %s", model, e)
+                    continue
+                if ts is None:
+                    continue
+                ts = _normalize_monthly_time(ts.compute())
+                if ts is not None:
+                    series[model] = ts.reset_coords(drop=True)
+
+            if not series:
+                logger.warning(
+                    "No benchmark tos members for %s — MMM series skipped",
+                    label)
+                continue
+
+            aligned = xr.align(*series.values(), join="outer")
+            mmm = xr.concat(aligned, dim="member").mean("member", skipna=True)
+            env_min, env_max = self._envelope_from_series(series)
+            logger.info(
+                "  %s tos MMM time series: %d members, %d timesteps",
+                label, len(series), len(mmm.time))
+            out.append({
+                "label": label,
+                "color": getattr(bench, "color", None) or benchmark_color(i),
+                "ts": mmm,
+                "info": {"n_members": len(series),
+                         "models_used": list(series)},
+                "env_min": env_min,
+                "env_max": env_max,
+                "individual": dict(series) if self.cmip6_individual else {},
+            })
+        return out
+
+    @staticmethod
+    def _compute_ensemble_stats(model_ts):
+        """Ensemble mean/median across the evaluated model time series.
+
+        Time coordinates are first normalised to first-of-month timestamps so
+        members on different calendars (e.g. HadGEM3's 360-day cftime vs the
+        IFS models' ``datetime64``) and differing mid-month day conventions
+        still overlap.  Series are then aligned on the inner time union so
+        models of differing lengths are reduced to their common period before
+        averaging.  Returns ``(None, None)`` when fewer than 2 members remain
+        or the members share no common month.
+        """
+        series = list(model_ts.values())
+        if len(series) < 2:
+            return None, None
+        # Drop non-dimension scalar coords (e.g. depth) that some models
+        # carry and others don't — otherwise xr.concat raises on mismatch.
+        series = [
+            _normalize_monthly_time(s.reset_coords(drop=True)) for s in series
+        ]
+        series = [s for s in series if s is not None]
+        if len(series) < 2:
+            return None, None
+        aligned = xr.align(*series, join="inner")
+        if aligned[0].sizes.get("time", 0) == 0:
+            logger.warning(
+                "Ensemble members share no common month — "
+                "skipping SST ensemble mean/median",
+            )
+            return None, None
+        stacked = xr.concat(list(aligned), dim="member")
+        return stacked.mean("member"), stacked.median("member")
 
     def _plot_timeseries(self, results):
-        """Plot SST global-mean time series."""
+        """Plot SST global-mean time series.
+
+        Layering (back to front): benchmark min/max envelope band + MMM
+        (dashed) \u2192 evaluated models \u2192 ensemble median (dashed) / mean (solid)
+        \u2192 observations.  All series are in \u00b0C.
+        """
         fig, ax = plt.subplots(figsize=(12, 5))
         all_models = []
+        benchmarks = results.get("benchmarks_ts", []) or []
+        n_eerie = len(results["models"])
 
-        # Monthly semi-transparent background
+        # --- Monthly pass (background, washed-out) ---
+
+        # Benchmark envelope band + MMM (dashed)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            emin, emax = bench.get("env_min"), bench.get("env_max")
+            if emin is not None and emax is not None:
+                t = _to_plot_time(emin.time.values)
+                ax.fill_between(t, emin.values, emax.values,
+                                color=b_color, alpha=0.12, lw=0)
+            b_ts = bench["ts"]
+            t = _to_plot_time(b_ts.time.values)
+            ax.plot(t, b_ts.values, color=b_color, alpha=0.3,
+                    linewidth=0.7, linestyle="--")
+
+        # DestinE model monthly
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             time_vals = _to_plot_time(ts.time.values)
@@ -821,7 +1040,28 @@ class OceanSST(DiagnosticBase):
             ax.plot(time_vals, obs_ts.values, color=OBS_COLOR, alpha=0.3,
                     linewidth=0.7)
 
-        # Annual thick foreground
+        # --- Annual pass (foreground, thick with labels) ---
+
+        # Benchmark min/max envelope + MMM (dashed)
+        for bench in benchmarks:
+            b_color = bench["color"]
+            b_label = bench["label"]
+            n_mmm = bench["info"].get("n_members", 0)
+            emin, emax = bench.get("env_min"), bench.get("env_max")
+            if emin is not None and emax is not None:
+                amin, amax = annual_mean(emin), annual_mean(emax)
+                band = b_label[:-4] if b_label.endswith(" MMM") else b_label
+                t = _to_plot_time(amin.time.values)
+                ax.fill_between(t, amin.values, amax.values, color=b_color,
+                                alpha=0.25, lw=0,
+                                label=f"{band} min\u2013max ({n_mmm})")
+            b_annual = annual_mean(bench["ts"])
+            t = _to_plot_time(b_annual.time.values)
+            ax.plot(t, b_annual.values, label=f"{b_label} ({n_mmm})",
+                    color=b_color, linewidth=2.0, linestyle="--")
+            all_models.append(b_label)
+
+        # DestinE model annual
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
@@ -829,6 +1069,21 @@ class OceanSST(DiagnosticBase):
             ax.plot(time_vals, ts_annual.values, label=model, color=color,
                     linewidth=2.0)
             all_models.append(model)
+
+        # Ensemble median (dashed) / mean (solid)
+        proj = self.config.project.get("name", "Ensemble")
+        if results.get("ens_median") is not None:
+            ens_med_annual = annual_mean(results["ens_median"])
+            t = _to_plot_time(ens_med_annual.time.values)
+            ax.plot(t, ens_med_annual.values, color=ENS_COLOR,
+                    linewidth=2.5, linestyle="--",
+                    label=f"{proj} ensemble median ({n_eerie})")
+        if results.get("ens_mean") is not None:
+            ens_mean_annual = annual_mean(results["ens_mean"])
+            t = _to_plot_time(ens_mean_annual.time.values)
+            ax.plot(t, ens_mean_annual.values, color=ENS_COLOR,
+                    linewidth=2.5,
+                    label=f"{proj} ensemble mean ({n_eerie})")
 
         if results.get("obs") is not None:
             obs_annual = annual_mean(results["obs"])
@@ -838,7 +1093,7 @@ class OceanSST(DiagnosticBase):
 
         ax.set_title("Global Mean Sea Surface Temperature")
         ax.set_ylabel("SST (\u00b0C)")
-        ax.legend()
+        ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -850,13 +1105,17 @@ class OceanSST(DiagnosticBase):
             figure_id="sst_timeseries",
             models=all_models,
             description=(
-                "Global-mean SST time series for DestinE models and {self._obs_label} "
-                "observations. Monthly values as semi-transparent lines, "
-                "annual means as thick lines. Units: degrees Celsius."
+                f"Global-mean SST time series for models, benchmark MMM "
+                f"(with min\u2013max envelope), ensemble mean/median, and "
+                f"{self._obs_label} observations. Monthly values as "
+                f"semi-transparent lines, annual means as thick lines. "
+                f"Units: degrees Celsius."
             ),
             plot_type="timeseries",
             period=self.period,
             obs_dataset=self._obs_dataset_name,
+            benchmark_info=self._benchmark_meta_from_list(
+                benchmarks) or None,
         )
         return [(fig, meta)]
 

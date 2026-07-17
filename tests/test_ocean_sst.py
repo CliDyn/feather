@@ -7,12 +7,19 @@ from unittest.mock import MagicMock, patch
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
 from feather.config import FeatherConfig
 from feather.data.loader import DataLoader
-from feather.diag.ocean_sst import OceanSST, _K_TO_C, _ocean_global_mean, _to_celsius
+from feather.diag.ocean_sst import (
+    OceanSST,
+    _K_TO_C,
+    _ocean_global_mean,
+    _ocean_grid_global_mean,
+    _to_celsius,
+)
 
 matplotlib.use("Agg")
 
@@ -131,6 +138,44 @@ class MockOceanModelLoader:
     @staticmethod
     def make_key(experiment, model, domain, member=1):
         return DataLoader.make_key(experiment, model, domain, member)
+
+
+class _FakeOceanBenchmark:
+    """Minimal benchmark loader yielding curvilinear-grid tos members.
+
+    Two members on a (time, j, i) grid with a 2-D ``latitude`` coordinate and
+    an ``areacello`` field — the shape the rectilinear base helper cannot
+    reduce.  Member A is a constant 10 °C, member B a constant 20 °C.
+    """
+
+    label = "CMIP6 MMM"
+    color = "#7f7f7f"
+
+    def __init__(self):
+        nj, ni, nt = 4, 5, 12
+        lat2d = np.linspace(-60, 60, nj)[:, None] * np.ones((1, ni))
+        self._lat = lat2d
+        self._area = np.ones((nj, ni)) * 1.0e10
+        t = pd.date_range("2000-01-16", periods=nt, freq="MS")
+        self._nt, self._nj, self._ni, self._t = nt, nj, ni, t
+
+    def get_member_pairs(self):
+        return [("MODEL-A", "r1i1p1f1"), ("MODEL-B", "r1i1p1f1")]
+
+    def load_var(self, var, model, table=None, period=None, time_mean=False):
+        val = 10.0 if model == "MODEL-A" else 20.0
+        data = np.full((self._nt, self._nj, self._ni), val)
+        return xr.DataArray(
+            data, dims=("time", "j", "i"),
+            coords={
+                "time": self._t,
+                "latitude": (("j", "i"), self._lat),
+            },
+            attrs={"units": "degC"},
+        )
+
+    def load_area(self, model, variant=None, table=None):
+        return xr.DataArray(self._area, dims=("j", "i"))
 
 
 class MockEsaCciObsLoader:
@@ -256,6 +301,66 @@ class TestHelpers:
         )
         result = _ocean_global_mean(da)
         np.testing.assert_allclose(float(result.values), 15.0)
+
+    def test_grid_global_mean_areacello_rectilinear(self):
+        """areacello-weighted mean over (time, lat, lon)."""
+        lats = np.array([-30.0, 30.0])
+        lons = np.array([0.0, 180.0])
+        data = np.array([[[10.0, 10.0], [20.0, 20.0]]])  # (1, 2, 2)
+        da = xr.DataArray(
+            data, dims=("time", "lat", "lon"),
+            coords={"time": [0], "lat": lats, "lon": lons},
+        )
+        # Equal areas -> plain mean = 15
+        area = xr.DataArray(np.ones((2, 2)), dims=("lat", "lon"))
+        out = _ocean_grid_global_mean(da, area)
+        np.testing.assert_allclose(out.values, [15.0])
+
+    def test_grid_global_mean_curvilinear(self):
+        """Weighted mean over a (time, j, i) curvilinear grid."""
+        lat2d = np.array([[-30.0, -30.0], [30.0, 30.0]])
+        data = np.array([[[10.0, 10.0], [20.0, 20.0]]])  # (1, 2, 2)
+        da = xr.DataArray(
+            data, dims=("time", "j", "i"),
+            coords={"time": [0], "latitude": (("j", "i"), lat2d)},
+        )
+        area = xr.DataArray(np.ones((2, 2)), dims=("j", "i"))
+        out = _ocean_grid_global_mean(da, area)
+        np.testing.assert_allclose(out.values, [15.0])
+
+    def test_grid_global_mean_nan_area_zeroed(self):
+        """NaN weights are zeroed (no ValueError) and excluded."""
+        lat2d = np.array([[-30.0, -30.0], [30.0, 30.0]])
+        data = np.array([[[10.0, 999.0], [20.0, 999.0]]])
+        da = xr.DataArray(
+            data, dims=("time", "j", "i"),
+            coords={"time": [0], "latitude": (("j", "i"), lat2d)},
+        )
+        # Second column has NaN area -> dropped; mean of col0 = 15
+        area = xr.DataArray(
+            np.array([[1.0, np.nan], [1.0, np.nan]]), dims=("j", "i"))
+        out = _ocean_grid_global_mean(da, area)
+        np.testing.assert_allclose(out.values, [15.0])
+
+    def test_grid_global_mean_coslat_fallback(self):
+        """Falls back to cos-lat when area shape does not match."""
+        lats = np.array([-30.0, 30.0])
+        lons = np.array([0.0, 180.0])
+        da = xr.DataArray(
+            np.full((1, 2, 2), 12.0), dims=("time", "lat", "lon"),
+            coords={"time": [0], "lat": lats, "lon": lons},
+        )
+        # Wrong-shape area -> ignored; cos-lat weights -> uniform field = 12
+        out = _ocean_grid_global_mean(da, xr.DataArray(np.ones((9, 9))))
+        np.testing.assert_allclose(out.values, [12.0])
+
+    def test_grid_global_mean_no_weights_returns_none(self):
+        """No area and no latitude coord -> None."""
+        da = xr.DataArray(
+            np.ones((1, 3)), dims=("time", "ncells"),
+            coords={"time": [0]},
+        )
+        assert _ocean_grid_global_mean(da, None) is None
 
 
 # ── Class attributes ────────────────────────────────────────────────
@@ -536,6 +641,126 @@ class TestTimeseries:
         model_monthly, _ = diag._load_model_data()
         results = diag._compute_timeseries(model_monthly)
         assert results["obs"] is None
+
+    def test_compute_timeseries_benchmark_ensemble_keys(self, ocean_sst_diag):
+        """New keys for benchmark MMM + ensemble stats are present."""
+        model_monthly, _ = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_timeseries(model_monthly)
+        assert "benchmarks_ts" in results
+        assert "ens_mean" in results
+        assert "ens_median" in results
+        # CMIP6 disabled in the fixture -> no benchmarks
+        assert results["benchmarks_ts"] == []
+        # single model -> ensemble stats are None
+        assert results["ens_mean"] is None
+        assert results["ens_median"] is None
+
+    def test_ocean_benchmark_timeseries_no_benchmarks(self, ocean_sst_diag):
+        """Without benchmarks the ocean-aware helper returns an empty list."""
+        assert ocean_sst_diag._benchmark_ocean_timeseries() == []
+
+    def test_ocean_benchmark_timeseries_curvilinear(
+        self, mock_ocean_model_loader, mock_esa_cci_obs_loader,
+        ocean_sst_config,
+    ):
+        """A curvilinear-grid benchmark member is included in the MMM."""
+        bench = _FakeOceanBenchmark()
+        diag = OceanSST(
+            model_loader=mock_ocean_model_loader,
+            obs_loader=mock_esa_cci_obs_loader,
+            config=ocean_sst_config,
+            benchmarks=[bench],
+            period=("2000", "2000"),
+        )
+        out = diag._benchmark_ocean_timeseries()
+        assert len(out) == 1
+        entry = out[0]
+        assert entry["label"] == "CMIP6 MMM"
+        assert entry["info"]["n_members"] == 2
+        assert "time" in entry["ts"].dims
+        # Members are constant 10 °C and 20 °C -> MMM 15, envelope [10, 20]
+        np.testing.assert_allclose(entry["ts"].values, 15.0, atol=1e-6)
+        np.testing.assert_allclose(entry["env_min"].values, 10.0, atol=1e-6)
+        np.testing.assert_allclose(entry["env_max"].values, 20.0, atol=1e-6)
+
+    def test_compute_ensemble_stats_single(self):
+        """A single-member dict yields (None, None)."""
+        ts = xr.DataArray(
+            np.arange(12.0), dims="time",
+            coords={"time": np.arange(12)},
+        )
+        mean, median = OceanSST._compute_ensemble_stats({"a": ts})
+        assert mean is None and median is None
+
+    def test_compute_ensemble_stats_multi(self):
+        """Two members give per-timestep mean/median across members."""
+        t = np.arange(12)
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None and median is not None
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
+        np.testing.assert_allclose(median.values, np.full(12, 2.0))
+
+    def test_compute_ensemble_stats_mixed_day_of_month(self):
+        """Members with differing mid-month days still align by month.
+
+        Previously the inner join found no common timestamps (empty time)
+        and ``annual_mean`` raised; normalising to first-of-month fixes it.
+        """
+        a_t = pd.date_range("2000-01-15", periods=12, freq="MS") + \
+            pd.Timedelta(days=14)     # 15th of each month
+        b_t = pd.date_range("2000-01-16", periods=12, freq="MS") + \
+            pd.Timedelta(days=15)     # 16th of each month
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": a_t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": b_t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None and median is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
+
+    def test_compute_ensemble_stats_mixed_calendar(self):
+        """A 360-day cftime member aligns with a datetime64 member by month."""
+        cftime = pytest.importorskip("cftime")
+        std_t = pd.to_datetime([f"2000-{m:02d}-16" for m in range(1, 13)])
+        cf_t = [cftime.Datetime360Day(2000, m, 16) for m in range(1, 13)]
+        a = xr.DataArray(np.zeros(12), dims="time", coords={"time": std_t})
+        b = xr.DataArray(np.full(12, 4.0), dims="time", coords={"time": cf_t})
+        mean, median = OceanSST._compute_ensemble_stats({"a": a, "b": b})
+        assert mean is not None
+        assert mean.sizes["time"] == 12
+        np.testing.assert_allclose(mean.values, np.full(12, 2.0))
+
+    def test_plot_timeseries_with_benchmark_and_ensemble(self, ocean_sst_diag):
+        """Plot renders benchmark MMM/envelope + ensemble mean/median."""
+        model_monthly, _ = ocean_sst_diag._load_model_data()
+        results = ocean_sst_diag._compute_timeseries(model_monthly)
+
+        ts = next(iter(results["models"].values()))
+        base = ts.reset_coords(drop=True)
+        results["ens_mean"] = base
+        results["ens_median"] = base
+        results["benchmarks_ts"] = [{
+            "label": "CMIP6 MMM",
+            "color": "#888888",
+            "ts": base,
+            "info": {"n_members": 3},
+            "env_min": base - 0.5,
+            "env_max": base + 0.5,
+            "individual": {},
+        }]
+
+        figures = ocean_sst_diag._plot_timeseries(results)
+        assert len(figures) == 1
+        fig, meta = figures[0]
+        assert isinstance(fig, plt.Figure)
+        assert "CMIP6 MMM" in meta["models"]
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert any("CMIP6 MMM" in lbl for lbl in labels)
+        assert any("min–max" in lbl for lbl in labels)
+        assert any("ensemble mean" in lbl for lbl in labels)
+        assert any("ensemble median" in lbl for lbl in labels)
+        plt.close(fig)
 
 
 # ── Group C: Seasonal cycle ──────────────────────────────────────────
