@@ -21,7 +21,7 @@ from feather.plot.styles import (
     benchmark_color as _benchmark_color,
 )
 from feather.util.spatial import latlon_global_mean
-from feather.util.temporal import annual_mean
+from feather.util.temporal import annual_mean, normalize_monthly_time
 
 logger = logging.getLogger(__name__)
 
@@ -291,8 +291,12 @@ class TimeseriesDiag(DiagnosticBase):
     ) -> tuple["xr.DataArray | None", "xr.DataArray | None"]:
         """Compute ensemble mean and median across available model time series.
 
-        Uses the inner time union so models with different lengths are
-        aligned to their common period before averaging.
+        Time coordinates are first normalised to first-of-month timestamps so
+        members on different calendars (e.g. HadGEM3's 360-day cftime vs other
+        models' ``datetime64``) and differing mid-month day conventions still
+        overlap.  Series are then aligned on the inner time union so models
+        with different lengths are reduced to their common period before
+        averaging.
 
         Parameters
         ----------
@@ -302,7 +306,8 @@ class TimeseriesDiag(DiagnosticBase):
         Returns
         -------
         ens_mean, ens_median : DataArray or None
-            Returns ``None`` for both when fewer than 2 models are present.
+            Returns ``None`` for both when fewer than 2 members remain or the
+            members share no common month.
         """
         import xarray as xr
 
@@ -313,10 +318,22 @@ class TimeseriesDiag(DiagnosticBase):
         # Drop non-dimension scalar coords (e.g. ``height`` on tas, ``depth``
         # on ocean vars) that some models carry and others don't — otherwise
         # xr.concat with the default coords="different" raises when the coord
-        # is not present in every member.
-        series = [s.reset_coords(drop=True) for s in series]
+        # is not present in every member.  Normalise calendars to first-of-
+        # month so mixed-calendar members (360-day vs datetime64) still align.
+        series = [
+            normalize_monthly_time(s.reset_coords(drop=True)) for s in series
+        ]
+        series = [s for s in series if s is not None]
+        if len(series) < 2:
+            return None, None
 
         aligned = xr.align(*series, join="inner")
+        if aligned[0].sizes.get("time", 0) == 0:
+            logger.warning(
+                "Ensemble members share no common month — "
+                "skipping ensemble mean/median",
+            )
+            return None, None
         stacked = xr.concat(list(aligned), dim="member")
         return stacked.mean("member"), stacked.median("member")
 
