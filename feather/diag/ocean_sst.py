@@ -27,6 +27,7 @@ from feather.util.temporal import (
     annual_mean,
     climatology,
     monthly_climatology,
+    normalize_monthly_time,
     seasonal_climatology,
 )
 
@@ -48,34 +49,6 @@ _SEASON_LABEL = {
 def _to_celsius(da):
     """Convert Kelvin DataArray to Celsius."""
     return da - _K_TO_C
-
-
-def _normalize_monthly_time(da):
-    """Normalise a time series' ``time`` coord to first-of-month timestamps.
-
-    Different models use different calendars (360_day, noleap, standard) with
-    differing mid-month day conventions, so identical months carry different
-    raw timestamps and an inner join finds no overlap.  Mapping every step to
-    ``YYYY-MM-01`` pandas timestamps makes members on any calendar align by
-    month.  Returns ``None`` if the series has no usable time axis.
-    """
-    if "time" not in getattr(da, "dims", ()):
-        return da
-    try:
-        times = da.time.values
-        if len(times) == 0:
-            return None
-        t0 = times[0]
-        if hasattr(t0, "year") and not isinstance(t0, np.datetime64):
-            new_times = pd.to_datetime(
-                [f"{t.year:04d}-{t.month:02d}-01" for t in times]
-            )
-        else:
-            new_times = pd.to_datetime(times).to_period("M").to_timestamp()
-        return da.assign_coords(time=new_times)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Failed to normalize time coordinate: %s", e)
-        return None
 
 
 def _needs_celsius_conversion(da, model_src: str) -> bool:
@@ -939,7 +912,7 @@ class OceanSST(DiagnosticBase):
                     continue
                 if ts is None:
                     continue
-                ts = _normalize_monthly_time(ts.compute())
+                ts = normalize_monthly_time(ts.compute())
                 if ts is not None:
                     series[model] = ts.reset_coords(drop=True)
 
@@ -985,7 +958,7 @@ class OceanSST(DiagnosticBase):
         # Drop non-dimension scalar coords (e.g. depth) that some models
         # carry and others don't — otherwise xr.concat raises on mismatch.
         series = [
-            _normalize_monthly_time(s.reset_coords(drop=True)) for s in series
+            normalize_monthly_time(s.reset_coords(drop=True)) for s in series
         ]
         series = [s for s in series if s is not None]
         if len(series) < 2:

@@ -3,6 +3,9 @@
 import numpy as np
 import xarray as xr
 
+import pandas as pd
+import pytest
+
 from feather.util.temporal import (
     annual_mean,
     anomaly,
@@ -11,8 +14,38 @@ from feather.util.temporal import (
     detrend,
     linear_trend,
     monthly_climatology,
+    normalize_monthly_time,
     seasonal_climatology,
 )
+
+
+class TestNormalizeMonthlyTime:
+    def test_datetime64_maps_to_first_of_month(self):
+        t = pd.to_datetime([f"2000-{m:02d}-16" for m in range(1, 13)])
+        da = xr.DataArray(np.arange(12.0), dims="time", coords={"time": t})
+        out = normalize_monthly_time(da)
+        assert list(pd.to_datetime(out.time.values).day) == [1] * 12
+        assert list(pd.to_datetime(out.time.values).month) == list(range(1, 13))
+
+    def test_cftime_360day_maps_to_first_of_month(self):
+        cftime = pytest.importorskip("cftime")
+        t = [cftime.Datetime360Day(2000, m, 16) for m in range(1, 13)]
+        da = xr.DataArray(np.arange(12.0), dims="time", coords={"time": t})
+        out = normalize_monthly_time(da)
+        days = pd.to_datetime(out.time.values)
+        assert list(days.day) == [1] * 12
+        assert list(days.month) == list(range(1, 13))
+
+    def test_no_time_dim_returns_unchanged(self):
+        da = xr.DataArray([1.0, 2.0], dims="x")
+        assert normalize_monthly_time(da) is da
+
+    def test_empty_time_returns_none(self):
+        da = xr.DataArray(
+            np.array([]), dims="time",
+            coords={"time": np.array([], dtype="datetime64[ns]")},
+        )
+        assert normalize_monthly_time(da) is None
 
 
 def _make_timeseries(n_years=3):
