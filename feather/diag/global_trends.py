@@ -16,7 +16,7 @@ import xarray as xr
 from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
-from feather.plot.maps import plot_combined_bias_map
+from feather.plot.maps import plot_combined_bias_map, plot_combined_map
 from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import annual_mean, linear_trend, seasonal_annual_mean
 
@@ -103,8 +103,9 @@ class GlobalTrends(DiagnosticBase):
 
         for var in self.variables:
             figure_ids = [
-                f"{var}_{p}_trend_combined"
+                f"{var}_{p}_trend_{suffix}"
                 for p in ["annual", "djf", "mam", "jja", "son"]
+                for suffix in ["combined", "fields"]
             ]
             if skip_existing and all(
                 self._figure_exists(fid) for fid in figure_ids
@@ -839,15 +840,22 @@ class GlobalTrends(DiagnosticBase):
 
         trend_units = f"{var_info.units}/decade"
 
+        obs_label = f"{var_info.obs_dataset} Observed Trend"
+
         for period_key, period_label in periods:
-            # Build ordered trend difference dict
+            # Build ordered trend difference dict + absolute trend dict.
+            # trend_diff_dict feeds the "combined" (bias) figure; field_dict
+            # feeds the "fields" figure showing each absolute trend field
+            # (obs + models + benchmarks) on a shared symmetric colorbar.
             trend_diff_dict = {}
+            field_dict = {}
             summary_stats = {}
             all_models = []
 
             for model, mdata in vr["models"].items():
                 if period_key == "annual":
                     diff_field = mdata["annual_trend_diff"]
+                    field_val = mdata["annual_regrid"]
                     summary_stats[model] = {
                         "global_mean_trend": mdata["global_mean_trend"],
                         "global_mean_trend_diff": mdata[
@@ -857,9 +865,12 @@ class GlobalTrends(DiagnosticBase):
                     }
                 else:
                     diff_field = mdata["seasonal_trend_diffs"].get(period_key)
+                    field_val = mdata["seasonal_regrids"].get(period_key)
                     if diff_field is None:
                         continue
                 trend_diff_dict[model] = diff_field
+                if field_val is not None:
+                    field_dict[model] = field_val
                 all_models.append(model)
 
             # Add each benchmark MMM (CMIP6, HighResMIP, …) if available
@@ -868,6 +879,7 @@ class GlobalTrends(DiagnosticBase):
                     continue
                 c_data = b_data[period_key]
                 trend_diff_dict[b_label] = c_data["trend_diff"]
+                field_dict[b_label] = c_data["regrid"]
                 all_models.append(b_label)
                 summary_stats[b_label] = {
                     "global_mean_trend_diff": c_data["trend_diff_gmean"],
@@ -880,6 +892,7 @@ class GlobalTrends(DiagnosticBase):
                     cmip6_individual_data[period_key].items()
                 ):
                     trend_diff_dict[label] = c_data["trend_diff"]
+                    field_dict[label] = c_data["regrid"]
                     all_models.append(label)
                     summary_stats[label] = {
                         "global_mean_trend_diff": c_data[
@@ -912,7 +925,7 @@ class GlobalTrends(DiagnosticBase):
             fig, axes = plot_combined_bias_map(
                 obs_period, trend_diff_dict,
                 title=f"{var_info.long_name} {period_label} Trend",
-                obs_title="ERA5 Observed Trend",
+                obs_title=obs_label,
                 cmap=field_cmap,
                 bias_cmap=diff_cmap,
                 vmin=p_cb.get("vmin"),
@@ -945,5 +958,44 @@ class GlobalTrends(DiagnosticBase):
                 extra={"units": trend_units},
             )
             figures.append((fig, meta))
+
+            # --- Second figure: absolute trend fields (obs + models) ---
+            # Observed trend first, then each model / benchmark trend, all
+            # on the same symmetric colorbar as the field panels.
+            fields_ordered = {obs_label: obs_period, **field_dict}
+            field_vmin = p_cb.get("vmin")
+            field_vmax = p_cb.get("vmax")
+            fig_f, _ = plot_combined_map(
+                fields_ordered,
+                title=f"{var_info.long_name} {period_label} Trend",
+                cmap=field_cmap,
+                vmin=field_vmin,
+                vmax=field_vmax,
+                units=trend_units,
+                method=self._regrid_method,
+            )
+
+            meta_f = self._build_metadata(
+                title=(
+                    f"{var_info.long_name} {period_label} Trend Fields"
+                ),
+                figure_id=f"{var}_{period_key.lower()}_trend_fields",
+                models=all_models,
+                variables=[var],
+                description=(
+                    f"{period_label} linear trend maps ({trend_units}) for "
+                    f"{var_info.long_name} over {self.period[0]}-"
+                    f"{self.period[1]} — observed trend and simulated trend "
+                    f"fields on a shared colorbar (no differencing)."
+                ),
+                plot_type="combined_trend_map",
+                period=self.period,
+                cmip6_info=cmip6_info or None,
+                benchmark_info=self._benchmark_meta_from_info(
+                    vr.get("benchmark_info")) or None,
+                summary_statistics=summary_stats,
+                extra={"units": trend_units},
+            )
+            figures.append((fig_f, meta_f))
 
         return figures

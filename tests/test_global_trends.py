@@ -624,14 +624,14 @@ class TestGlobalTrendsPlot:
 
     def test_five_figures_per_variable(self, mock_model_loader,
                                         mock_obs_loader, minimal_config):
-        """Produces 5 figures: annual, DJF, MAM, JJA, SON."""
+        """Produces 10 figures: 2 per period (combined + fields)."""
         diag = GlobalTrends(
             mock_model_loader, mock_obs_loader, minimal_config,
             variables=["tas"],
         )
         vr = self._make_mock_result()
         figures = diag._plot_variable("tas", vr)
-        assert len(figures) == 5
+        assert len(figures) == 10
         plt.close("all")
 
     def test_metadata_diagnostic_name(self, mock_model_loader,
@@ -710,10 +710,10 @@ class TestGlobalTrendsPlot:
         )
         vr = self._make_mock_result()
         figures = diag._plot_variable("tas", vr)
-        # Find annual figure
+        # Find annual (combined) figure
         annual_figs = [
             (fig, meta) for fig, meta in figures
-            if "annual" in meta["figure_id"]
+            if meta["figure_id"] == "tas_annual_trend_combined"
         ]
         assert len(annual_figs) == 1
         _, meta = annual_figs[0]
@@ -771,7 +771,7 @@ class TestGlobalTrendsPlot:
         vr = self._make_mock_result()
         results = {"tas": vr}
         figures = diag.plot(results)
-        assert len(figures) == 5
+        assert len(figures) == 10
         plt.close("all")
 
     def test_no_figures_when_empty_dict(self, mock_model_loader,
@@ -856,7 +856,7 @@ class TestGlobalTrendsRun:
         """run() creates PNG + JSON files (full real run)."""
         diag = self._make_diag(minimal_config)
         saved = diag.run(skip_existing=False)
-        assert len(saved) == 5
+        assert len(saved) == 10
         for png_path, json_path in saved:
             assert png_path.exists()
             assert json_path.exists()
@@ -869,14 +869,15 @@ class TestGlobalTrendsRun:
         out_dir = diag.output_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         for p in ["annual", "djf", "mam", "jja", "son"]:
-            fid = f"tas_{p}_trend_combined"
-            (out_dir / f"{fid}.png").write_bytes(b"png")
-            (out_dir / f"{fid}.json").write_text('{"diagnostic_name":"global_trends"}')
+            for suffix in ["combined", "fields"]:
+                fid = f"tas_{p}_trend_{suffix}"
+                (out_dir / f"{fid}.png").write_bytes(b"png")
+                (out_dir / f"{fid}.json").write_text('{"diagnostic_name":"global_trends"}')
 
         with patch.object(diag, "_compute_variable") as mock_compute:
             saved = diag.run(skip_existing=True)
             mock_compute.assert_not_called()  # skipped!
-        assert len(saved) == 5
+        assert len(saved) == 10
 
     def test_run_regenerates_partial(self, minimal_config):
         """run() regenerates when only some figures exist."""
@@ -1302,7 +1303,7 @@ class TestGlobalTrendsEndToEnd:
         results = diag.compute()
         figures = diag.plot(results)
 
-        assert len(figures) == 5
+        assert len(figures) == 10
         for fig, meta in figures:
             assert isinstance(fig, plt.Figure)
             assert meta["diagnostic_name"] == "global_trends"
