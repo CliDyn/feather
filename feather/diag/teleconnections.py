@@ -467,6 +467,13 @@ class TeleconnectionDiag(DiagnosticBase):
                     mode_def.obs_dataset, mode_def.obs_variable,
                     period=self.period,
                 )
+                # HadISST flags land/sea-ice cells with sentinel fill values
+                # (e.g. -1000.0, -1e30). Mask any non-physical SST to NaN so
+                # they cannot corrupt box means or the PDO North-Pacific EOF
+                # (EOF drops non-finite columns; box means skip NaN). The
+                # window is generous enough to cover either °C (~[-2, 40]) or
+                # K (~[270, 313]) storage while excluding the fill sentinels.
+                da = da.where((da > -100.0) & (da < 1000.0))
             else:
                 da = self._load_obs_var(var, self.period)
         else:
