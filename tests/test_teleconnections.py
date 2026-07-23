@@ -173,6 +173,17 @@ class MultiVarObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
+    def load(self, dataset, variable, period=None):
+        # Mirror ObsLoader.load for the obs-override path (e.g. the SST
+        # teleconnection modes request ERA5 "sst", which maps to tos here).
+        key = "tos" if variable == "sst" else variable
+        if key not in self._datasets:
+            raise KeyError(f"No obs for {key}")
+        da = self._datasets[key]
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
 
 # ── Mode registry tests ──────────────────────────────────────────────
 
@@ -221,6 +232,20 @@ class TestModeRegistry:
         m = _MODE_REGISTRY["qbo"]
         assert m.method == "zonal_mean"
         assert m.pressure_level == 50.0
+
+    def test_sst_modes_use_era5_obs_override(self):
+        """SST modes read ERA5 sst (full record) rather than ESA-CCI."""
+        for name in ("enso", "iod", "pdo"):
+            m = _MODE_REGISTRY[name]
+            assert m.obs_dataset == "ERA5"
+            assert m.obs_variable == "sst"
+
+    def test_non_sst_modes_have_no_obs_override(self):
+        """SLP/wind modes fall back to the registry default obs."""
+        for name in ("nao", "sam", "ao", "qbo"):
+            m = _MODE_REGISTRY[name]
+            assert m.obs_dataset is None
+            assert m.obs_variable is None
 
 
 # ── ENSO computation tests ──────────────────────────────────────────

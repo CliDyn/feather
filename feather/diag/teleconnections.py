@@ -45,6 +45,12 @@ class ModeDefinition:
     variable: str          # CMOR variable name
     method: str            # "box_mean", "box_diff", "eof", "zonal_mean"
     domain: str            # "sfc", "o2d", "pl"
+    # Optional obs override: load the reference field directly from this
+    # obs dataset/variable instead of the registry default for ``variable``.
+    # Used for SST modes (ENSO/IOD/PDO) to pick ERA5 SST (full 1940-2024
+    # record) rather than ESA-CCI, whose file only spans 1990-2014.
+    obs_dataset: str | None = None
+    obs_variable: str | None = None
     # Box regions: {name: (lon_min, lon_max, lat_min, lat_max)}
     boxes: dict = field(default_factory=dict)
     # EOF region
@@ -83,6 +89,7 @@ _register_mode(ModeDefinition(
     boxes={"nino34": (190, 240, -5, 5)},  # 170W-120W = 190-240 in 0-360
     typical_period="3-7 years",
     seasonal_peak="DJF",
+    obs_dataset="ERA5", obs_variable="sst",  # full 1940-2024 record
 ))
 
 # NAO: EOF1 of SLP over North Atlantic
@@ -147,6 +154,7 @@ _register_mode(ModeDefinition(
     },
     typical_period="2-4 years",
     seasonal_peak="SON",
+    obs_dataset="ERA5", obs_variable="sst",  # full 1940-2024 record
 ))
 
 # PDO: EOF1 of N. Pacific SST with global-mean SST removed
@@ -163,6 +171,7 @@ _register_mode(ModeDefinition(
     sign_point=(45, 200),  # Central N. Pacific — negative for PDO+
     plot_projection="np",
     plot_extent=(-180, 180, 15, 90),
+    obs_dataset="ERA5", obs_variable="sst",  # full 1940-2024 record
 ))
 
 # QBO: Equatorial zonal-mean zonal wind at 50 hPa
@@ -446,7 +455,15 @@ class TeleconnectionDiag(DiagnosticBase):
             return self._data_cache[cache_key]
 
         if source == "obs":
-            da = self._load_obs_var(var, self.period)
+            if mode_def.obs_dataset is not None:
+                # Explicit obs override (e.g. ERA5 SST for the SST modes,
+                # which covers the full analysis window unlike ESA-CCI).
+                da = self.obs_loader.load(
+                    mode_def.obs_dataset, mode_def.obs_variable,
+                    period=self.period,
+                )
+            else:
+                da = self._load_obs_var(var, self.period)
         else:
             da = self._load_model_var(model, var, period=self.period)
             if "time" in da.dims and self.period:
