@@ -602,6 +602,7 @@ class DiagnosticBase(ABC):
         period: tuple[str, str] | None = None,
         return_individual: bool = False,
         loader: Any = None,
+        field_hook: Any = None,
     ) -> tuple[Any, dict[str, Any]]:
         """Compute CMIP6 ensemble-mean global-mean monthly time series.
 
@@ -618,6 +619,10 @@ class DiagnosticBase(ABC):
         return_individual : bool, optional
             When True, ``info["individual_series"]`` contains a dict
             mapping model name → aligned individual time series.
+        field_hook : callable, optional
+            Applied to each member field before the global mean is taken.
+            Lets a diagnostic restrict the benchmark members to the same
+            domain as its reference (e.g. land-only for Berkeley Earth).
 
         Returns
         -------
@@ -655,6 +660,8 @@ class DiagnosticBase(ABC):
             )
             if da is None:
                 continue
+            if field_hook is not None:
+                da = field_hook(da)
 
             area = loader.load_area(
                 model, table=vinfo.cmip6_table or "Amon",
@@ -701,6 +708,7 @@ class DiagnosticBase(ABC):
         var: str,
         period: tuple[str, str] | None = None,
         return_individual: bool | None = None,
+        field_hook: Any = None,
     ) -> list[dict]:
         """Per-benchmark global-mean MMM time series (CMIP6, HighResMIP, …).
 
@@ -727,6 +735,7 @@ class DiagnosticBase(ABC):
             ts, info = self._cmip6_global_mean_timeseries(
                 var, period=period,
                 return_individual=True, loader=bench,
+                field_hook=field_hook,
             )
             if ts is None:
                 continue
