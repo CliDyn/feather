@@ -173,6 +173,17 @@ class MultiVarObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
+    def load(self, dataset, variable, period=None):
+        # Mirror ObsLoader.load for the obs-override path (e.g. the SST
+        # teleconnection modes request HadISST "sst", which maps to tos here).
+        key = "tos" if variable == "sst" else variable
+        if key not in self._datasets:
+            raise KeyError(f"No obs for {key}")
+        da = self._datasets[key]
+        if period and "time" in da.dims:
+            da = da.sel(time=slice(period[0], period[1]))
+        return da
+
 
 # ── Mode registry tests ──────────────────────────────────────────────
 
@@ -221,6 +232,22 @@ class TestModeRegistry:
         m = _MODE_REGISTRY["qbo"]
         assert m.method == "zonal_mean"
         assert m.pressure_level == 50.0
+
+    def test_sst_modes_use_hadisst_obs_override(self):
+        """SST modes read HadISST sst (full record) rather than ESA-CCI."""
+        for name in ("enso", "iod", "pdo"):
+            m = _MODE_REGISTRY[name]
+            assert m.obs_dataset == "HADISST"
+            assert m.obs_variable == "sst"
+            assert m.obs_label == "HadISST"
+
+    def test_non_sst_modes_have_no_obs_override(self):
+        """SLP/wind modes fall back to the registry default obs (ERA5)."""
+        for name in ("nao", "sam", "ao", "qbo"):
+            m = _MODE_REGISTRY[name]
+            assert m.obs_dataset is None
+            assert m.obs_variable is None
+            assert m.obs_label == "ERA5"
 
 
 # ── ENSO computation tests ──────────────────────────────────────────
@@ -1003,6 +1030,37 @@ class TestBoxWrapping:
 
 class TestObsLonNorm:
     """Test that obs data with -180..180 lons is normalised to 0..360."""
+
+    def test_sst_override_masks_fill_values(self, teleconnection_config):
+        """HadISST land/ice sentinels are masked to NaN in the obs override."""
+        lats = np.arange(-87.5, 90, 5.0)
+        lons = np.arange(2.5, 360, 5.0)
+        nt = 48
+        time = xr.date_range("1990-01", periods=nt, freq="MS")
+        rng = np.random.default_rng(7)
+        # Physical SST in Kelvin plus a couple of HadISST fill sentinels.
+        data = 290.0 + rng.standard_normal((nt, len(lats), len(lons)))
+        data[:, 0, 0] = -1000.0   # land sentinel
+        data[:, 1, 1] = -1.0e30   # missing sentinel
+        da = xr.DataArray(
+            data, dims=("time", "lat", "lon"),
+            coords={"time": time, "lat": lats, "lon": lons},
+        )
+
+        model_loader = MultiVarModelLoader({"tos": _make_sst_field()})
+        obs_loader = MultiVarObsLoader({"tos": da})
+        diag = TeleconnectionDiag(
+            model_loader, obs_loader, teleconnection_config,
+        )
+        mode_def = _MODE_REGISTRY["enso"]  # uses HadISST obs override
+        loaded = diag._load_field(mode_def, None, source="obs")
+
+        assert bool(np.isnan(loaded.isel(lat=0, lon=0)).all())
+        assert bool(np.isnan(loaded.isel(lat=1, lon=1)).all())
+        # Physical values survive and no sentinel leaks through.
+        assert float(loaded.min()) > -100.0
+        assert float(loaded.max()) < 1000.0
+        assert int(loaded.notnull().sum()) > 0
 
     def test_obs_lons_normalised(self, teleconnection_config):
         """Obs with -180..180 lons should be shifted to 0..360 in _load_field."""
