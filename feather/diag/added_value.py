@@ -31,10 +31,10 @@ import cmocean
 import matplotlib.pyplot as plt
 import nereus as nr
 import numpy as np
-import pandas as pd
 import xarray as xr
 
 from feather.data.variables import VARIABLE_REGISTRY, get_var
+from feather.diag import _berkeley
 from feather.diag import ocean_bias as _ocean_bias
 from feather.diag.base import DiagnosticBase
 from feather.diag.figure_meta import save_figure_with_metadata
@@ -124,6 +124,10 @@ class AddedValueDiag(DiagnosticBase):
         self.regions = regions
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
+        # Berkeley Earth's ocean values are SST, not 2 m air temperature, so
+        # the tas reference is restricted to land unless configured otherwise.
+        self.berkeley_land_only = _berkeley.land_only_enabled(self.config)
+        self.berkeley_land_threshold = _berkeley.land_threshold(self.config)
         # Cache of CORDEX region masks keyed by grid signature (see
         # ``_region_masks``); reused across periods/etypes/models for a grid.
         self._region_mask_cache: dict[tuple, dict[str, np.ndarray]] = {}
@@ -580,52 +584,20 @@ class AddedValueDiag(DiagnosticBase):
         The file stores monthly anomalies (°C re 1951-1980) plus a separate
         ``climatology`` array (12 × lat × lon, °C).
         Absolute temperature = anomaly + climatology[month_of_year].
-        Time is encoded as decimal years; this method converts it to proper
-        datetime coordinates before slicing.
+        Time is encoded as decimal years; the shared helper converts it to
+        proper datetime coordinates before slicing.
         Returns a DataArray in Kelvin with dims (time, lat, lon),
         lons 0..360.
+
+        Over the ocean the Land+Ocean product reports SST rather than 2 m
+        air temperature, so by default the field is masked to land — the
+        ocean cells become NaN and drop out of the AV computation.
         """
-        ds_cfg = self.config.obs_datasets["BERKELEY_EARTH_HR"]
-        filepath = Path(ds_cfg["path"]) / ds_cfg["variables"]["temperature"]
-        ds_full = xr.open_dataset(filepath, chunks="auto")
-
-        # Convert decimal-year time → DatetimeIndex
-        dec_years = ds_full["time"].values
-        years = dec_years.astype(int)
-        months = np.floor((dec_years - years) * 12).astype(int) + 1
-        months = np.clip(months, 1, 12)
-        datetimes = pd.to_datetime(
-            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        return _berkeley.load_berkeley_hr(
+            self.config, "BERKELEY_EARTH_HR", period,
+            land_only=self.berkeley_land_only,
+            threshold=self.berkeley_land_threshold,
         )
-        ds_full = ds_full.assign_coords(time=datetimes)
-
-        start, end = period
-        anom = ds_full["temperature"].sel(time=slice(start, end))
-        clim = ds_full["climatology"]  # (month_number, latitude, longitude)
-
-        month_idx = anom.time.dt.month.values - 1  # 0-based
-        clim_np = clim.values  # (12, nlat, nlon)
-        clim_matched = clim_np[month_idx]
-        abs_temp = anom + xr.DataArray(
-            clim_matched, dims=anom.dims, coords=anom.coords,
-        )
-
-        # Rename dims latitude/longitude → lat/lon
-        rename = {}
-        if "latitude" in abs_temp.dims:
-            rename["latitude"] = "lat"
-        if "longitude" in abs_temp.dims:
-            rename["longitude"] = "lon"
-        if rename:
-            abs_temp = abs_temp.rename(rename)
-
-        # Shift −180..180 → 0..360
-        if float(abs_temp.lon.min()) < 0:
-            abs_temp = abs_temp.assign_coords(
-                lon=((abs_temp.lon + 360) % 360),
-            ).sortby("lon")
-
-        return abs_temp + 273.15  # degC → K
 
     def _load_mswep_for_av(self, period: tuple[str, str]) -> xr.DataArray:
         """Load MSWEP v2.8 precipitation for the AV reference.
@@ -1461,12 +1433,23 @@ class AddedValueDiag(DiagnosticBase):
         """
         sq1 = (m1.values - ref.values) ** 2
         sq2 = (m2.values - ref.values) ** 2
+        return xr.DataArray(
+            AddedValueDiag._av_ratio(sq1, sq2), dims=m1.dims, coords=m1.coords,
+        )
+
+    @staticmethod
+    def _av_ratio(sq1: np.ndarray, sq2: np.ndarray) -> np.ndarray:
+        """``(sq1 − sq2) / max(sq1, sq2)``, NaN-preserving.
+
+        Cells where either squared error is undefined (e.g. ocean under the
+        land-only Berkeley reference) stay NaN rather than collapsing to
+        0.0, which would otherwise read as a genuine "neither model is
+        better" result and drag the domain-mean AV toward zero.
+        """
         denom = np.maximum(sq1, sq2)
         with np.errstate(invalid="ignore", divide="ignore"):
             av_vals = np.where(denom > 0, (sq1 - sq2) / denom, 0.0)
-        return xr.DataArray(
-            av_vals, dims=m1.dims, coords=m1.coords,
-        )
+        return np.where(np.isfinite(sq1) & np.isfinite(sq2), av_vals, np.nan)
 
     @staticmethod
     def _av_from_biases(
@@ -1482,10 +1465,10 @@ class AddedValueDiag(DiagnosticBase):
         """
         sq1 = np.asarray(bias1.values) ** 2
         sq2 = np.asarray(bias2.values) ** 2
-        denom = np.maximum(sq1, sq2)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            av_vals = np.where(denom > 0, (sq1 - sq2) / denom, 0.0)
-        return xr.DataArray(av_vals, dims=bias1.dims, coords=bias1.coords)
+        return xr.DataArray(
+            AddedValueDiag._av_ratio(sq1, sq2),
+            dims=bias1.dims, coords=bias1.coords,
+        )
 
     @staticmethod
     def _domain_mean_av(

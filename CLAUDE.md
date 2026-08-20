@@ -503,7 +503,9 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Taylor diagram: `plot_taylor_diagram()` in `plot/lines.py`, polar axes with `theta=arccos(corr)`, `r=std_ratio`, CRMS contour circles
 - Statistics: area-weighted pattern correlation, normalised STD ratio, RMSE, regional mean bias
 - CMIP6 trends: regrid each model individually to common grid, then average (never `xr.align()` on native grids)
+- **Land-only by default**: Berkeley Earth Land+Ocean reports **SST over the ocean**, not 2 m air temperature, so a global cell-by-cell comparison against model `tas` is not like-for-like (worst over sea ice and western boundary currents). `feather/diag/_berkeley.py` masks the obs with the file's own `land_mask` (land fraction >= `project.berkeley_land_threshold`, default 0.5) and masks the model side with the model's own `sftlf` (>50 %) where published, falling back to the Berkeley `land_mask` sampled onto the model grid. ERA5 overlay, benchmark (CMIP6/HighResMIP) series and benchmark trend maps are masked to the same domain — the benchmark series via the new `field_hook` argument on `DiagnosticBase._benchmark_timeseries` / `_cmip6_global_mean_timeseries`. Disable with `project.berkeley_land_only: false`. Only applies when `BERKELEY_EARTH_HR` is configured (the legacy 1 deg file carries no land mask). Obs labels gain "(land)".
 - 81 dedicated tests in `tests/test_temperature_berkeley.py`
+- 34 dedicated tests in `tests/test_berkeley_land_only.py` (shared loader, masking helpers, both diagnostics)
 
 ### TeleconnectionDiag diagnostic
 - 13th diagnostic: large-scale climate variability modes (ENSO, NAO, SAM, AO, IOD, PDO, QBO)
@@ -616,6 +618,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - EERIE models regridded with per-grid interpolator cache (same pattern as GlobalBiases)
 - CMIP6 models regridded via `_regrid_to_target()` with 250 km floor on influence_radius
 - `_compute_av(m1, m2, ref)`: static, handles denom=0 via `np.errstate` + `np.where`
+- **Land-only `tas` reference**: the Berkeley Earth reference is land-masked (see `temperature_berkeley` above), so ocean cells are NaN. `_compute_av`/`_av_from_biases` now share `_av_ratio()`, which **preserves NaN** instead of collapsing undefined cells to 0.0 — a fake "neither model is better" value that would drag the domain-mean AV toward zero.
 - 24 dedicated tests in `tests/test_added_value.py`
 
 ### LLM analysis
