@@ -112,6 +112,7 @@ feather/                     # Package root
 |------|---------|
 | `configs/default.yaml` | DestinE configuration (legacy list format) |
 | `configs/eerie.yaml` | EERIE Ensemble configuration (structured dict format) |
+| `configs/eerie_10_mems_cmip6.yaml` | EERIE 10-member set (= `eerie_all_members_cmip6_highresmip.yaml` + ICON-ESM-ER r2/r3 via `icon_kerchunk`) |
 | `configs/eerie_psl.yaml` | EERIE Ensemble + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
@@ -124,6 +125,7 @@ feather/                     # Package root
 | `feather/data/cmor_loader.py` | CMORLoader — load from CMOR directory tree (EERIE etc.) |
 | `feather/data/netcdf_loader.py` | NetCDFLoader — load per-year NetCDF on HEALPix grid |
 | `feather/data/grib_loader.py` | GRIBLoader — load GRIB files on regular lat/lon grid |
+| `feather/data/icon_kerchunk_loader.py` | ICONKerchunkLoader — load ICON-ESM-ER r2/r3 from gr025 kerchunk stores |
 | `feather/data/composite_loader.py` | CompositeModelLoader — multi-source per-model routing |
 | `feather/diag/base.py` | Base class — grid-agnostic helpers (`_load_model_var`, `_model_global_mean`) |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
@@ -650,6 +652,21 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Variable mapping: CMOR → GRIB short name via `_GRIB_VAR_MAP` (e.g., `tas → 2t`, `pr → tp`)
 - Grid: regular lat/lon, standard `(time, latitude, longitude)` dims
 - Config: `configs/tco_grib.yaml`, also used as secondary backend in `configs/ifs_fesom_combined.yaml`
+
+### ICONKerchunkLoader
+- `feather/data/icon_kerchunk_loader.py`: loads ICON-ESM-ER hist-1950 members **r2/r3**, which the EERIE CMOR tree does not publish (only r1 is CMOR'd)
+- Source: kerchunk parquet reference stores under `/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618/{2,3}/` (the intake catalogues at `/work/bm1344/DKRZ/intake/disk/phase2-model-output/icon-esm-er/hist-1950/r{2,3}i1p1f1/` point at these; the loader reads them directly, bypassing intake)
+- Reads only the two gr025 monthly stores: `erc2023_{atmos,ocean}_native_2d_monthly_mean_remap025.parq`
+- Config: per-model `data_source_type: "icon_kerchunk"`, `data_root` = the version dir, `member` = store sub-directory (`2` → r2i1p1f1, `3` → r3i1p1f1) → routed via `CompositeModelLoader`
+- Grid already matches CMOR output: 0.25° lat/lon, lat −90→90 (721), lon 0→359.75 (1440), monthly 1975-02 → 2014-12. No regridding or reordering
+- **Distinct from `KerchunkParquetLoader`** (IFS-FESOM2 r2/r3): that one handles a flat `value` dim, GRIB short names and 9999 fill; the ICON stores are rectilinear with near-CMOR names, so the two share nothing
+- **Fill-value gotcha**: the ocean stores declare a zarr-level `fill_value: 0.0` alongside the real `missing_value: -9e33`. Letting xarray mask automatically turns every genuine zero (open-water `conc`, `hi`) into NaN. Stores are opened with `mask_and_scale=False` and masked explicitly on the `-1e30` sentinel
+- Conversions to CMOR conventions: `clt` and `conc` fraction → % (×100); `hfls`/`hfss` ICON down-positive → CMOR up-positive (×−1). Radiation components (`rlut`, `rsut`, `rsds`, `rlus`, …) are already CMOR-signed and pass through. `to`/`so` are already °C/PSU — ICON is not a TEOS-10 model, so no `absolute_salinity`
+- Singleton `height`/`height_2`/`height_3`/`lev`/`depth` dims are squeezed; `sfcwind` → `sfcWind`, `hur` → `hurs`, `hus2m` → `huss`
+- **Deliberately not provided**: net radiation (`rss`/`rls`/`rst`/`rlt` + clear-sky) is *not* derived from the up/down components, even though the store has them — `CMORLoader` does not derive them for ICON r1 either, and deriving here would put r2/r3 into radiation panels r1 is absent from, skewing ensemble statistics. Deriving nets belongs in `CMORLoader` so r1 gains them at the same time
+- **Not available**: 3-D ocean (r2 has no model-level store; r3's covers only 90 months) and 3-D atmosphere → `ocean_en4` and the `teleconnections` QBO mode skip these members via the usual `KeyError` path
+- Ocean/sea-ice archive gaps (atmosphere is complete): r2 missing 1996-02..06, r3 missing 1982-08..12 and 1993-04..1994-03
+- 57 dedicated tests in `tests/test_icon_kerchunk_loader.py`, plus `TestEerie10MembersConfig` in `tests/test_composite_loader.py`
 
 ### CompositeModelLoader
 - `feather/data/composite_loader.py`: routes `load_var()` and `load_coords()` to the correct backend per model

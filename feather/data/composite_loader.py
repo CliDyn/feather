@@ -128,6 +128,10 @@ class CompositeModelLoader:
             from feather.data.kerchunk_loader import KerchunkParquetLoader
             return KerchunkParquetLoader(self._config)
 
+        if src_type == "icon_kerchunk":
+            from feather.data.icon_kerchunk_loader import ICONKerchunkLoader
+            return ICONKerchunkLoader(self._config)
+
         if src_type == "cordex":
             from feather.data.cordex_loader import CORDEXLoader
             return CORDEXLoader(self._config)

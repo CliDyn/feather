@@ -368,3 +368,89 @@ class TestCombinedConfig:
         # Global settings
         assert cfg.get_period() == ("1990", "2014")
         assert cfg.get_experiment() == "baseline_hist"
+
+
+class TestEerie10MembersConfig:
+    """configs/eerie_10_mems_cmip6.yaml — 8-member EERIE set plus ICON r2/r3.
+
+    ICON r2/r3 have no CMOR tree, so they route to the ``icon_kerchunk``
+    backend while the other eight models stay on their own backends.
+    """
+
+    @pytest.fixture
+    def cfg(self):
+        from feather.config import FeatherConfig
+        return FeatherConfig.from_yaml("configs/eerie_10_mems_cmip6.yaml")
+
+    def test_has_ten_models(self, cfg):
+        assert len(cfg.models) == 10
+
+    def test_three_icon_members(self, cfg):
+        icon = [m for m in cfg.models if m.startswith("ICON-ESM-ER")]
+        assert icon == ["ICON-ESM-ER", "ICON-ESM-ER-r2", "ICON-ESM-ER-r3"]
+
+    def test_icon_r1_stays_on_cmor(self, cfg):
+        assert cfg.get_model_data_source_type("ICON-ESM-ER") == "cmor"
+
+    @pytest.mark.parametrize("model", ["ICON-ESM-ER-r2", "ICON-ESM-ER-r3"])
+    def test_new_members_use_icon_kerchunk(self, cfg, model):
+        assert cfg.get_model_data_source_type(model) == "icon_kerchunk"
+
+    @pytest.mark.parametrize("model,member", [("ICON-ESM-ER-r2", 2),
+                                              ("ICON-ESM-ER-r3", 3)])
+    def test_member_index_selects_store_dir(self, cfg, model, member):
+        assert cfg.model_configs[model].member == member
+
+    @pytest.mark.parametrize("model,variant", [("ICON-ESM-ER-r2", "r2i1p1f1"),
+                                               ("ICON-ESM-ER-r3", "r3i1p1f1")])
+    def test_variant_labels(self, cfg, model, variant):
+        assert cfg.model_configs[model].variant == variant
+
+    def test_all_icon_members_share_ensemble_label(self, cfg):
+        labels = {cfg.model_configs[m].ensemble
+                  for m in cfg.models if m.startswith("ICON-ESM-ER")}
+        assert labels == {"EERIE"}
+
+    def test_model_colors_unique(self, cfg):
+        colors = [cfg.get_model_color(m) for m in cfg.models]
+        assert len(set(colors)) == len(colors)
+
+    def test_is_multi_source(self, cfg):
+        assert cfg.is_multi_source() is True
+
+    def test_output_dir_distinct_from_base_config(self, cfg):
+        from feather.config import FeatherConfig
+        base = FeatherConfig.from_yaml(
+            "configs/eerie_all_members_cmip6_highresmip.yaml")
+        assert cfg.output_dir != base.output_dir
+
+    def test_period_and_experiment_unchanged(self, cfg):
+        assert cfg.get_period() == ("1980", "2014")
+        assert cfg.get_experiment() == "hist-1950"
+
+    def test_benchmarks_preserved(self, cfg):
+        names = [b["name"] for b in cfg.benchmarks]
+        assert names == ["CMIP6", "HighResMIP"]
+
+    def test_only_icon_members_added_vs_base(self, cfg):
+        from feather.config import FeatherConfig
+        base = FeatherConfig.from_yaml(
+            "configs/eerie_all_members_cmip6_highresmip.yaml")
+        assert set(cfg.models) - set(base.models) == {
+            "ICON-ESM-ER-r2", "ICON-ESM-ER-r3"}
+        assert set(base.models) - set(cfg.models) == set()
+
+    def test_composite_loader_routes_new_members(self, cfg):
+        from feather.data.composite_loader import CompositeModelLoader
+        from feather.data.icon_kerchunk_loader import ICONKerchunkLoader
+
+        loader = CompositeModelLoader(cfg)
+        for model in ("ICON-ESM-ER-r2", "ICON-ESM-ER-r3"):
+            assert isinstance(loader._get_backend(model), ICONKerchunkLoader)
+
+    def test_icon_members_share_one_backend_instance(self, cfg):
+        from feather.data.composite_loader import CompositeModelLoader
+
+        loader = CompositeModelLoader(cfg)
+        assert (loader._get_backend("ICON-ESM-ER-r2")
+                is loader._get_backend("ICON-ESM-ER-r3"))
