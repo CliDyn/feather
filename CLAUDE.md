@@ -721,7 +721,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - `added_value` evaluates `pr` against MSWEP, so it honours `nereus.precip_resolution` too. Without that its target would be the MSWEP native 0.1° — a 6.48M→6.48M conservative build, far beyond the measured 51 min / 13.6 GB case.
 - `climate_variability` remaps a *standard deviation* field. Area-conservative is the correct area-averaging operator for it, but "conservation" there is not budget conservation in the physical sense.
 - Not converted: `precip_obs_comparison` coarsens MSWEP 0.1° → ERA5 0.25° with `xr.DataArray.interp` (bilinear), a separate mechanism from nereus. Still a candidate.
-- 54 dedicated tests in `tests/test_conservative_regrid.py`
+- 61 dedicated tests in `tests/test_conservative_regrid.py`
 
 ### Precipitation common-grid resolution
 - `precipitation_mswep` historically built its common grid at the MSWEP native 0.1°, forcing every model to be *refined* onto it regardless of model resolution.

@@ -11,6 +11,7 @@ Feather compares high-resolution climate models against observations (ERA5, CERE
 | **DestinE** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
 | **EERIE Ensemble** | IFS-FESOM2-SR, IFS-NEMO-ER, ICON-ESM-ER, HadGEM3-GC5 | ~10-20 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR directory tree |
 | **EERIE multi-member** | IFS-FESOM2-SR (r1–r3), IFS-NEMO-ER (r1–r3), ICON-ESM-ER, HadGEM3-GC5 | ~10-20 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR + kerchunk parquet |
+| **EERIE 10-member** | IFS-FESOM2-SR (r1–r3), IFS-NEMO-ER (r1–r3), ICON-ESM-ER (r1–r3), HadGEM3-GC5 | ~10-20 km atm, ~5-10 km ocean | 0.25° lat/lon | CMOR + kerchunk parquet + ICON kerchunk |
 | **IFS-FESOM T319** | IFS-FESOM (T319) | ~60 km | HEALPix | per-year NetCDF |
 | **DestinE GRIB** | IFS-FESOM TCO399/TCO319 | ~25-35 km | lat/lon | GRIB files |
 | **TerraDT** | IFS-FESOM, IFS-NEMO, ICON | ~5 km | HEALPix | intake catalogs |
@@ -42,11 +43,19 @@ pip install -e .
 
 See `environment.yml` for the full list of dependencies. Key packages that are best installed via conda-forge: `cartopy`, `healpy`, `netcdf4`, `eccodes`, `cfgrib`.
 
-**nereus** must be installed directly from GitHub (not available on PyPI/conda-forge):
+**nereus** must be installed directly from GitHub, from `main` rather than a tag:
 
 ```bash
-pip install git+https://github.com/koldunovn/nereus.git@0.4.1
+pip install git+https://github.com/koldunovn/nereus.git@main
 ```
+
+`main` is required for `method="conservative"`, which feather uses to remap flux and precipitation fields (see [Regridding](#regridding)). It was merged upstream after the `0.4.1` tag and is **not** in the PyPI release. The version string was not bumped, so an installed nereus reports `0.4.1` either way — feather therefore probes the capability at runtime rather than checking the version, and warns and falls back to point interpolation if it is missing. To upgrade an existing environment:
+
+```bash
+pip install --no-deps --force-reinstall git+https://github.com/koldunovn/nereus.git@main
+```
+
+`--no-deps` avoids disturbing conda-installed packages; all of nereus's dependencies (including `shapely>=2.0`, now required) are already present in a working feather environment.
 
 After installation, the `feather` command is available.
 
@@ -73,6 +82,9 @@ feather --config configs/eerie_ifsnemo_members.yaml -v
 
 # EERIE — all 8 members (3×IFS-FESOM2-SR + 3×IFS-NEMO-ER + ICON-ESM-ER + HadGEM3-GC5)
 feather --config configs/eerie_all_members.yaml -v
+
+# EERIE — 10 members (as above + ICON-ESM-ER r2/r3), CMIP6 + HighResMIP benchmarks
+feather --config configs/eerie_10_mems_cmip6.yaml -v
 
 # EERIE Tropical Nights climate change signal (SSP2-4.5)
 feather --config configs/eerie_climchange_tn.yaml \
@@ -574,7 +586,7 @@ ensemble automatically once their stores are rebuilt.
 
 ## Data backends
 
-Feather supports six data loading backends:
+Feather supports seven data loading backends:
 
 | Backend | Class | Config type | Grid |
 |---------|-------|------------|------|
@@ -583,6 +595,7 @@ Feather supports six data loading backends:
 | Per-year NetCDF | `NetCDFLoader` | `netcdf_healpix` | HEALPix (NetCDF) |
 | GRIB files | `GRIBLoader` | `grib` | regular lat/lon (GRIB) |
 | Kerchunk parquet reference stores | `KerchunkParquetLoader` | `kerchunk_parquet` | regular lat/lon (via fsspec) |
+| ICON kerchunk stores | `ICONKerchunkLoader` | `icon_kerchunk` | regular 0.25° lat/lon (via fsspec) |
 | Multi-source | `CompositeModelLoader` | mixed | per-model |
 
 `KerchunkParquetLoader` reads IFS-FESOM2 ensemble members stored as kerchunk parquet reference files pointing to raw GRIB/FESOM output. Two store layouts are supported:
@@ -591,12 +604,113 @@ Feather supports six data loading backends:
 
 Requires `kerchunk`, `fastparquet`, and `fsspec` in the Python environment.
 
+`ICONKerchunkLoader` reads the ICON-ESM-ER hist-1950 members **r2/r3**, which the EERIE CMOR tree does not publish (only r1 is CMOR'd). They exist as intake catalogues over kerchunk reference stores; the loader reads those stores directly. Despite the name overlap it shares nothing with `KerchunkParquetLoader` — the ICON stores are already rectilinear `(time, lat, lon)` on the standard 0.25° grid with near-CMOR variable names. Used by `eerie_10_mems_cmip6.yaml` via `data_source_type: icon_kerchunk` plus `member: 2` / `member: 3`. Note these members have no usable 3-D ocean or atmosphere, so `ocean_en4` and the teleconnections QBO mode skip them.
+
 The `CompositeModelLoader` automatically routes `load_var()` calls to the correct backend per model based on `data_source_type` in the model config.
+
+## Regridding
+
+Diagnostics that build bias maps put every model, observation and benchmark
+onto a common lat/lon grid with [nereus](https://github.com/koldunovn/nereus).
+Two settings govern how.
+
+### Interpolation method
+
+`nereus.method` (default `nearest`) sets the scheme for **state variables** —
+temperature, pressure, wind, cloud cover, SST, sea ice. `linear` is
+recommended and used by the shipped configs.
+
+Flux and precipitation fields are handled differently. Point-interpolation
+schemes do not preserve an area integral: a target cell takes the value of one
+source point (`nearest`) or a distance-weighted blend (`linear`) instead of the
+area-weighted mean of the source cells it covers. Coarsening precipitation that
+way biases the domain total **and** reports point values as box means, which
+overstates extremes. So `pr`, `hfss`, `hfls` and the radiation fields are
+remapped **area-conservatively**.
+
+Coarsening a spiky precipitation-like field from 0.5° to 2°:
+
+| method | integral error | reported maximum |
+|--------|---------------|------------------|
+| `nearest` | +0.649 % | 50.1 |
+| `idw` | −0.487 % | 18.3 |
+| `linear` | −0.011 % | 37.9 |
+| **`conservative`** | **+0.004 %** | **11.4** |
+
+On a smooth field all four agree to ~0.01 %, so this only matters for
+intermittent fields — precipitation above all.
+
+```yaml
+nereus:
+  method: "linear"                  # state variables
+  conservative_fluxes: true         # default; false restores point interpolation
+  conservative_max_points: 8000000  # cost guard, see below
+```
+
+Classification is registry-driven (`is_flux_variable()` in
+`feather/data/variables.py`), keyed on variable `group`, so a flux variable
+added later is picked up automatically.
+
+### Cost guard
+
+Conservative weights come from a spherical Voronoi tessellation plus polygon
+overlap, far costlier than a KD-tree. Measured onto a 0.25° target
+(1,036,800 cells), single core:
+
+| source points | weight build | apply |
+|---------------|-------------|-------|
+| 4,050 | 220 s | 0.07 s |
+| 1,039,682 (a 0.25° model) | 905 s (15 min) | 0.01 s |
+| 6,480,000 (MSWEP 0.1°) | 3,073 s (51 min), peak RSS 13.6 GB | 0.18 s |
+
+Even a tiny source costs 220 s, because the fixed cost is set by the *target*
+tessellation. Applying cached weights is free, so the cost is **one-off per
+source grid** and amortises across every variable, season and period.
+
+`conservative_max_points` budgets **source + target together**; over budget,
+feather warns and falls back to `nereus.method`. Per-dimension limits cannot
+distinguish 6.5M→1M (affordable) from 6.5M→6.5M (not).
+
+Two practical consequences:
+
+- **The budget must clear the observation grid, not just the models.** MSWEP is
+  0.1° = 6,480,000 points. At the 2,000,000 default, the MSWEP→0.25°
+  *coarsening* — the step that most needs conserving — silently falls back
+  while the near-identity 0.25°→0.25° model regrid gets conservative treatment,
+  i.e. exactly backwards. `eerie_10_mems_cmip6.yaml` sets 8,000,000 for this
+  reason.
+- **The 13.6 GB peak is in the main process**, not a dask worker, so
+  `dask.memory_limit` does not bound it. Request at least 32 GB for a job that
+  builds conservative weights at this scale.
+
+Still excluded at any sane budget: anything onto a 0.1° common grid (6.48M
+target cells on its own) and DestinE nside=1024 sources (12.6M points). DestinE
+precipitation therefore uses `linear`.
+
+### Precipitation common grid
+
+`precipitation_mswep` historically built its common grid at the MSWEP native
+0.1°, refining every model onto it regardless of the model's own resolution.
+`nereus.precip_resolution` now sets it (unset → obs native, the original
+behaviour):
+
+```yaml
+nereus:
+  precip_resolution: 0.25   # EERIE: models are 0.25 deg
+  # precip_resolution: 0.1  # DestinE: runs are ~5 km, finer than the obs
+```
+
+At 0.25° the models are compared like with like and MSWEP is coarsened
+conservatively onto them, rather than the models being refined onto the obs
+grid. `added_value` evaluates `pr` against MSWEP too and honours the same key.
+
+This is deliberately *not* `nereus.resolution`: every shipped config declares
+that as 0.25, so it cannot distinguish the two cases.
 
 ## Adding a new model set
 
 1. Create a config YAML using the structured format (see `configs/eerie.yaml` as template)
-2. Set `data_source.type` to one of: `"cmor"`, `"destine_catalog"`, `"netcdf_healpix"`, `"grib"`
+2. Set `data_source.type` to one of: `"cmor"`, `"destine_catalog"`, `"netcdf_healpix"`, `"grib"`, `"kerchunk_parquet"`, `"icon_kerchunk"`
 3. Define `models` as a dict with per-model `institution`, `experiment`, `variant`, `grids`, `color`
 4. Set `project.name`, `project.period`, `project.experiment`, `project.resolution`
 5. Optionally set `project.comparison_type` for LLM prompt framing
@@ -785,7 +899,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-1880 tests across 41 test files.
+2483 tests across 63 test files (2468 unit + 15 integration).
 
 ## Requirements
 
