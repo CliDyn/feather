@@ -374,7 +374,18 @@ class PrecipitationMSWEP(DiagnosticBase):
 
         obs_lats = obs_clim.lat.values
         obs_lons = obs_clim.lon.values
-        obs_res = abs(float(obs_lats[1] - obs_lats[0]))
+        # Common-grid resolution.  Defaults to the MSWEP native grid (0.1°)
+        # but is overridable via ``nereus.precip_resolution`` so an
+        # evaluation whose models are coarser than the obs (EERIE at 0.25°)
+        # can build the common grid at the model resolution instead of
+        # refining every model onto a finer obs grid.
+        obs_native_res = abs(float(obs_lats[1] - obs_lats[0]))
+        obs_res = self.config.get_precip_resolution(obs_native_res)
+        if obs_res != obs_native_res:
+            logger.info(
+                "  Common grid at %.3f° (MSWEP native %.3f°)",
+                obs_res, obs_native_res,
+            )
 
         # Cache nereus interpolator per source grid signature
         _interp_cache: dict[tuple, Any] = {}
@@ -416,6 +427,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                     lon=np.asarray(lon).ravel(),
                     lat=np.asarray(lat).ravel(),
                     resolution=obs_res,
+                    method=self._regrid_method_for("pr", n_src, resolution=obs_res),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -435,6 +447,9 @@ class PrecipitationMSWEP(DiagnosticBase):
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
+                        method=self._regrid_method_for(
+                            "pr", obs_lons_2d.size, resolution=obs_res,
+                        ),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -1608,7 +1623,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             regridded = GlobalBiases._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for("pr", resolution=resolution),
             )
             annual_fields.append(regridded)
             models_used.append(label)
@@ -1622,7 +1637,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                     s_regridded = GlobalBiases._regrid_to_target(
                         da_s, target_lats, target_lons,
                         resolution, influence_radius, cmip6_interp_cache,
-                        method=self._regrid_method,
+                        method=self._regrid_method_for("pr", resolution=resolution),
                     )
                     seasonal_fields[season].append(s_regridded)
 
@@ -1703,7 +1718,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             cmip6_common = GlobalBiases._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for("pr", resolution=resolution),
             )
             cmip6_bias = cmip6_common - obs_clim_common
             bias_gmean = float(
@@ -1726,7 +1741,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                 cmip6_s = GlobalBiases._regrid_to_target(
                     da_s, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
-                    method=self._regrid_method,
+                    method=self._regrid_method_for("pr", resolution=resolution),
                 )
                 cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
                 cmip6_individual_data.setdefault(season, {})[label] = {

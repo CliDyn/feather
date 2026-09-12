@@ -384,6 +384,122 @@ class DiagnosticBase(ABC):
             "end_value": float(vf[-1]),
         }
 
+    # ------------------------------------------------------------------
+    # Regridding method selection
+    # ------------------------------------------------------------------
+
+    #: Cached result of the nereus conservative-support probe.
+    _CONSERVATIVE_SUPPORTED: bool | None = None
+
+    @classmethod
+    def _conservative_available(cls) -> bool:
+        """Whether the installed nereus exposes ``method="conservative"``.
+
+        Probed once and cached.  The upstream release that added it did not
+        bump ``nereus.__version__`` (still 0.4.1), so the capability has to
+        be detected rather than inferred from a version number.
+        """
+        # Cache on DiagnosticBase, not on ``cls``: the answer is a property
+        # of the installed nereus, not of the subclass that asked first.
+        # Writing to ``cls`` would give every subclass its own copy.
+        if DiagnosticBase._CONSERVATIVE_SUPPORTED is None:
+            try:
+                import typing
+
+                import nereus as nr
+
+                ann = typing.get_type_hints(
+                    nr.RegridInterpolator, include_extras=False,
+                ).get("method")
+                DiagnosticBase._CONSERVATIVE_SUPPORTED = (
+                    "conservative" in typing.get_args(ann)
+                )
+            except Exception:
+                DiagnosticBase._CONSERVATIVE_SUPPORTED = False
+        return DiagnosticBase._CONSERVATIVE_SUPPORTED
+
+    def _regrid_method_for(
+        self, variable: str, n_source: int | None = None,
+        *, is_flux: bool | None = None, resolution: float | None = None,
+    ) -> str:
+        """Return the nereus regridding method to use for *variable*.
+
+        Flux and precipitation fields are remapped area-conservatively so
+        the domain integral is preserved; everything else keeps the
+        configured ``nereus.method``.  Falls back to that method (with a
+        warning) when nereus lacks conservative support or when the source
+        grid exceeds ``nereus.conservative_max_points`` — building
+        conservative weights is far costlier than a KD-tree, so an
+        unguarded 12.6M-point HEALPix source would stall the run.
+
+        Parameters
+        ----------
+        variable : str
+            CMOR variable name.
+        n_source : int, optional
+            Number of source grid points.  When given, the size guard
+            applies; when omitted, only availability is checked.
+        is_flux : bool, optional
+            Force the flux/non-flux decision instead of looking *variable*
+            up in the registry.  Needed where the field is keyed by a
+            derived-quantity name rather than a CMOR variable (e.g. the
+            radiation-budget quantities, which are all fluxes).
+        resolution : float, optional
+            Target grid resolution in degrees.  Weight-building cost grows
+            with the *target* cell count as well as the source, so the same
+            guard is applied to the implied target size.  A 0.1° target is
+            6.5M cells and is slow even from a small source.
+        """
+        from feather.data.variables import is_flux_variable
+
+        default = self._regrid_method_default
+        flux = is_flux_variable(variable) if is_flux is None else is_flux
+        if not flux:
+            return default
+        if not self.config.use_conservative_fluxes():
+            return default
+
+        if not self._conservative_available():
+            logger.warning(
+                "Conservative remapping requested for %s but this nereus "
+                "build does not support it — falling back to %r. Install "
+                "nereus from main (github.com/koldunovn/nereus).",
+                variable, default,
+            )
+            return default
+
+        max_points = self.config.get_conservative_max_points()
+
+        n_target = None
+        if resolution is not None and resolution > 0:
+            n_target = int(round(360.0 / resolution)) * int(
+                round(180.0 / resolution))
+
+        # Cost is driven by source and target together (a spherical Voronoi
+        # tessellation on each side, then polygon overlap), so budget their
+        # sum when both are known rather than checking each in isolation —
+        # 6.5M source onto a 1M target is affordable, 6.5M onto 6.5M is not,
+        # and per-dimension limits cannot tell those apart.
+        budget = sum(x for x in (n_source, n_target) if x is not None)
+        if budget > max_points:
+            logger.warning(
+                "Conservative remapping for %s needs source=%s + target=%s "
+                "= %d points (> nereus.conservative_max_points=%d) — "
+                "falling back to %r.",
+                variable,
+                f"{n_source:,}" if n_source is not None else "?",
+                f"{n_target:,}" if n_target is not None else "?",
+                budget, max_points, default,
+            )
+            return default
+
+        return "conservative"
+
+    @property
+    def _regrid_method_default(self) -> str:
+        """The configured non-flux regridding method (``nereus.method``)."""
+        return self.config.nereus.get("method", "nearest")
+
     def _load_model_var(
         self,
         model: str,

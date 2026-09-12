@@ -343,6 +343,7 @@ class GlobalBiases(DiagnosticBase):
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -362,6 +363,9 @@ class GlobalBiases(DiagnosticBase):
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
+                        method=self._regrid_method_for(
+                            var, obs_lons_2d.size, resolution=obs_res,
+                        ),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -705,7 +709,7 @@ class GlobalBiases(DiagnosticBase):
             regridded = self._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             annual_fields.append(regridded)
             models_used.append(label)
@@ -719,7 +723,7 @@ class GlobalBiases(DiagnosticBase):
                     s_regridded = self._regrid_to_target(
                         da_s, target_lats, target_lons,
                         resolution, influence_radius, cmip6_interp_cache,
-                        method=self._regrid_method,
+                        method=self._regrid_method_for(var, resolution=resolution),
                     )
                     seasonal_fields[season].append(s_regridded)
 
@@ -891,7 +895,7 @@ class GlobalBiases(DiagnosticBase):
             cmip6_common = self._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             cmip6_bias = cmip6_common - obs_clim_common
             bias_gmean = float(
@@ -931,7 +935,7 @@ class GlobalBiases(DiagnosticBase):
                 cmip6_s = self._regrid_to_target(
                     da_s, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
-                    method=self._regrid_method,
+                    method=self._regrid_method_for(var, resolution=resolution),
                 )
                 cmip6_s_bias = cmip6_s - obs_seasonal_common[season]
                 s_t, s_p = spatial_ttest(

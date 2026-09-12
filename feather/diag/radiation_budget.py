@@ -1309,6 +1309,7 @@ class RadiationBudget(DiagnosticBase):
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
+                    method=self._regrid_method_for(dq_key, n_src, is_flux=True, resolution=obs_res),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -1526,7 +1527,9 @@ class RadiationBudget(DiagnosticBase):
             regridded = self._regrid_to_target(
                 derived, target_lats, target_lons,
                 obs_res, cmip6_influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(
+                    dq_key, is_flux=True, resolution=obs_res,
+                ),
             )
             regridded_fields.append(regridded)
 

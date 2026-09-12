@@ -485,3 +485,44 @@ def list_vars(domain: str = None, group: str = None) -> list[VarInfo]:
     if group is not None:
         result = [v for v in result if v.group == group]
     return result
+
+
+# ---------------------------------------------------------------------------
+# Conserved-flux classification (regridding)
+# ---------------------------------------------------------------------------
+
+#: Registry groups whose variables are per-area fluxes or fluxes of mass.
+#: Remapping these with a point-interpolation scheme (nearest/linear) does not
+#: preserve the area integral: a target cell takes the value of one source
+#: point (or a distance-weighted blend) rather than the area-weighted mean of
+#: the source cells it covers.  Coarsening precipitation that way both biases
+#: the domain total and reports point values as box means, which badly
+#: overstates extremes.  Area-conservative remapping is the correct scheme.
+#:
+#: Membership is by group so that any flux variable added to the registry
+#: later is picked up automatically.
+_FLUX_GROUPS = frozenset({"precipitation", "surface_fluxes", "radiation"})
+
+#: Variables that are conserved fluxes but do not sit in a flux group.
+_EXTRA_FLUX_VARS = frozenset({"evspsbl", "prc", "prsn", "hfds"})
+
+#: Variables in a flux group that should NOT be treated as conserved fluxes.
+_FLUX_EXCLUDE: frozenset[str] = frozenset()
+
+
+def is_flux_variable(name: str) -> bool:
+    """True if *name* is a flux/precipitation variable that must be conserved.
+
+    Used to choose an area-conservative remapping method instead of a
+    point-interpolation one.  Unknown variables return ``False`` — the
+    caller falls back to its configured default method.
+    """
+    if name in _EXTRA_FLUX_VARS:
+        return True
+    try:
+        vinfo = get_var(name)
+    except KeyError:
+        return False
+    if vinfo.name in _FLUX_EXCLUDE:
+        return False
+    return vinfo.group in _FLUX_GROUPS

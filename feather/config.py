@@ -252,6 +252,47 @@ class FeatherConfig:
         """
         return self.project.get("comparison_description", "")
 
+    def use_conservative_fluxes(self) -> bool:
+        """Whether flux/precipitation fields use area-conservative remapping.
+
+        Point-interpolation schemes (nearest/linear) do not preserve an area
+        integral, so coarsening precipitation or a radiative flux with them
+        both biases the domain total and reports point values as box means.
+        ``nereus.method`` still governs every non-flux variable.
+
+        Requires a nereus build with ``method="conservative"``; falls back
+        with a warning when unavailable.  Set ``nereus.conservative_fluxes:
+        false`` to disable.
+        """
+        return bool(self.nereus.get("conservative_fluxes", True))
+
+    def get_conservative_max_points(self) -> int:
+        """Source-grid size above which conservative remapping is skipped.
+
+        Building conservative weights needs a spherical Voronoi tessellation
+        and polygon overlaps, which is far costlier than a KD-tree and grows
+        with source size.  Above this many source points the diagnostics fall
+        back to ``nereus.method`` with a warning rather than stall (e.g.
+        DestinE nside=1024 is 12.6M points).  Set
+        ``nereus.conservative_max_points`` to raise or lower the guard.
+        """
+        return int(self.nereus.get("conservative_max_points", 2_000_000))
+
+    def get_precip_resolution(self, default: float) -> float:
+        """Common-grid resolution (degrees) for the precipitation diagnostic.
+
+        ``precipitation_mswep`` historically built its common grid at the
+        MSWEP native 0.1°, which forces every model to be *refined* onto it.
+        Evaluations whose models are coarser than the obs want a common grid
+        at the model resolution instead (e.g. 0.25° for EERIE), while ~5 km
+        DestinE runs are better served by the finer 0.1° grid.
+
+        Returns ``nereus.precip_resolution`` when set, else *default* (the
+        obs native resolution, preserving the original behaviour).
+        """
+        value = self.nereus.get("precip_resolution")
+        return float(value) if value is not None else float(default)
+
     def get_data_source_type(self) -> str:
         """Return global data source type.
 

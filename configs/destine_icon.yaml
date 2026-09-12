@@ -128,6 +128,9 @@ nereus:
   influence_radius: 80000
   ocean_influence_radius: 20000
   method: "linear"
+  # Common grid for `precipitation_mswep`.  DestinE runs are ~5 km, finer
+  # than MSWEP, so the common grid stays at the MSWEP native 0.1°.
+  precip_resolution: 0.1
 
 output_dir: "./output_icon"
 

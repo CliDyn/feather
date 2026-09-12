@@ -930,6 +930,12 @@ class AddedValueDiag(DiagnosticBase):
         obs_lats = obs_clim[lat_name].values
         obs_lons = obs_clim[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
+        # `pr` is evaluated against MSWEP (0.1°).  Use the same common-grid
+        # override as `precipitation_mswep` so both diagnostics compare on
+        # the same grid — and so the target stays 1.04M cells at 0.25°
+        # rather than 6.48M, which conservative remapping cannot afford.
+        if var == "pr":
+            obs_res = self.config.get_precip_resolution(obs_res)
 
         # -- EERIE models ---------------------------------------------------
         _interp_cache: dict[int, Any] = {}
@@ -989,6 +995,7 @@ class AddedValueDiag(DiagnosticBase):
                     data_for_regrid,
                     lon=lon_1d, lat=lat_1d,
                     resolution=obs_res,
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -1004,6 +1011,7 @@ class AddedValueDiag(DiagnosticBase):
                         obs_clim.values,  # 2-D
                         lon=obs_lons, lat=obs_lats,
                         resolution=obs_res,
+                        method=self._regrid_method_for(var, obs_clim.values.size, resolution=obs_res),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -1088,7 +1096,7 @@ class AddedValueDiag(DiagnosticBase):
             regridded = self._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             cmip6_annual_fields.append(regridded * unit_factor)
             cmip6_models_used.append(label)
@@ -1102,7 +1110,7 @@ class AddedValueDiag(DiagnosticBase):
                     s_r = self._regrid_to_target(
                         da_s, target_lats, target_lons,
                         resolution, influence_radius, cmip6_interp_cache,
-                        method=self._regrid_method,
+                        method=self._regrid_method_for(var, resolution=resolution),
                     )
                     cmip6_seasonal_fields[season].append(s_r * unit_factor)
                     cmip6_seasonal_models[season].append(label)

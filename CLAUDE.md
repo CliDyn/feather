@@ -695,6 +695,40 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **Extended timeseries**: `project.timeseries_period` (e.g. `["1990", "2050"]`) lets the `timeseries` diagnostic plot each model to its native end while all other diagnostics use `project.period`. `run.py` passes `config.get_timeseries_period()` only to the `timeseries` diagnostic; obs/CMIP6 truncate to their own availability.
 - Gotcha: ssp370 variant labels can differ from historical (e.g. CanESM5 ssp370 is `r1i1p2f1`, not `r1i1p1f1`); the configured variant must exist for **both** experiments or the model drops back to historical-only.
 
+### Conservative remapping of fluxes and precipitation
+- Point-interpolation schemes (`nearest`/`linear`) do **not** preserve an area integral. Coarsening precipitation or a radiative flux with them biases the domain total *and* reports point values as box means, badly overstating extremes. Flux fields are therefore remapped area-conservatively.
+- **Requires nereus from `main`** — `method="conservative"` was added in PR #12 (merged 2026-08-19) but is **not in the 0.4.1 PyPI release**, and `nereus.__version__` was not bumped, so it reads `0.4.1` either way. Install with `pip install --no-deps --force-reinstall git+https://github.com/koldunovn/nereus@main`. All its deps (incl. `shapely>=2.0`, now a hard requirement) are already in the `feather` env.
+- Capability is **probed at runtime**, never inferred from the version: `DiagnosticBase._conservative_available()` inspects the `method` Literal on `nr.RegridInterpolator`. Result cached on `DiagnosticBase` (not `cls`, or every subclass gets its own copy). Missing support → warn + fall back to `nereus.method`.
+- `feather/data/variables.py:is_flux_variable()` classifies by registry `group` (`precipitation`, `surface_fluxes`, `radiation`) plus `_EXTRA_FLUX_VARS` (`evspsbl`, `prc`, `prsn`, `hfds`). Group-based so new flux variables are picked up automatically. Covers `pr`, `hfss`, `hfls`, `rsds`, `rlds`, `rss`, `rls`, `rsscs`, `rlscs`, `rst`, `rlt`, `rstcs`, `rltcs` — and nothing else.
+- `DiagnosticBase._regrid_method_for(var, n_source=None, *, is_flux=None)` picks the method. `is_flux=True` forces it where the field is keyed by a derived-quantity name instead of a CMOR variable (`radiation_budget` uses `dq_key`).
+- Wired into the **regrid** call sites of `global_biases`, `precipitation_mswep`, `added_value`, `global_trends`, `climate_variability`, `radiation_budget`. **Plotting** call sites (`plot_combined_map`/`plot_combined_bias_map`, which pass `method=` to `nr.plot` for display rasterisation) deliberately keep `self._regrid_method` — conservative there is meaningless and slow.
+- Config: `nereus.conservative_fluxes` (default `true`) and `nereus.conservative_max_points` (default 2,000,000). Building conservative weights needs a spherical Voronoi tessellation + polygon overlaps and is far costlier than a KD-tree.
+- `conservative_max_points` budgets **source + target together** (pass `resolution=` at call sites so the target side is counted). Per-dimension limits cannot distinguish 6.5M→1M (affordable) from 6.5M→6.5M (not); the sum can. Over budget → warn + fall back to `nereus.method`.
+- **Measured cost** (onto a 0.25° target = 1,036,800 cells, one core): there is a large fixed cost set by the *target* tessellation, plus a source term.
+
+  | source pts | weight build | apply |
+  |---|---|---|
+  | 4,050 | 220 s | 0.07 s |
+  | 16,200 | 258 s | 0.01 s |
+  | 64,800 | 333 s | 0.01 s |
+  | 259,200 | 497 s | 0.01 s |
+  | 1,039,682 | **905 s (15 min)** | 0.01 s |
+  | 6,480,000 (MSWEP 0.1°) | **3,073 s (51 min)**, peak RSS **13.6 GB** | 0.18 s |
+
+  Applying cached weights is free (~0.01 s), so the cost is one-off **per source grid** and amortises across every variable, season and period. This is what makes the per-grid `_interp_cache` load-bearing rather than just an optimisation. The 13.6 GB peak is in the *main* process (not a dask worker), so size the job's memory accordingly — `dask.memory_limit` does not bound it.
+- **`conservative_max_points` must clear the obs grid, not just the models.** MSWEP is 0.1° = **6,480,000 points**; with the 2M default the MSWEP→0.25° *coarsening* — the step that most needs conserving — silently falls back to linear while the near-identity 0.25°→0.25° model regrid gets conservative, i.e. exactly backwards. `configs/eerie_10_mems_cmip6.yaml` therefore sets `conservative_max_points: 8000000`.
+- Still excluded by the budget: anything onto a **0.1° common grid** (6.48M target cells alone) and **DestinE nside=1024 sources** (12.6M points). So DestinE precipitation uses `linear`. Raise the limit to override, but measure that grid first — extrapolating from smaller grids understates the fixed target cost badly (a 4,050-point source still costs 220 s onto a 0.25° target).
+- `added_value` evaluates `pr` against MSWEP, so it honours `nereus.precip_resolution` too. Without that its target would be the MSWEP native 0.1° — a 6.48M→6.48M conservative build, far beyond the measured 51 min / 13.6 GB case.
+- `climate_variability` remaps a *standard deviation* field. Area-conservative is the correct area-averaging operator for it, but "conservation" there is not budget conservation in the physical sense.
+- Not converted: `precip_obs_comparison` coarsens MSWEP 0.1° → ERA5 0.25° with `xr.DataArray.interp` (bilinear), a separate mechanism from nereus. Still a candidate.
+- 54 dedicated tests in `tests/test_conservative_regrid.py`
+
+### Precipitation common-grid resolution
+- `precipitation_mswep` historically built its common grid at the MSWEP native 0.1°, forcing every model to be *refined* onto it regardless of model resolution.
+- `nereus.precip_resolution` now sets it; unset → obs native (original behaviour). `FeatherConfig.get_precip_resolution(default)`.
+- **EERIE configs use 0.25°** (models are 0.25°, so this compares like with like and coarsens MSWEP conservatively rather than refining models). **DestinE configs use 0.1°** (runs are ~5 km, finer than the obs).
+- Note this is deliberately *not* `nereus.resolution` — every config declares that as 0.25, so it cannot distinguish the two cases.
+
 ### Per-grid interpolator cache
 - When models have different grid sizes (e.g., nside=1024 vs nside=128, or different lat/lon resolutions), each grid needs its own nereus interpolator
 - `_interp_cache: dict[int, Any]` caches interpolators keyed by `n_src` (number of source points)

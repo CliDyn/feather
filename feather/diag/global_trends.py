@@ -233,6 +233,7 @@ class GlobalTrends(DiagnosticBase):
                     model_annual_trend.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -252,6 +253,7 @@ class GlobalTrends(DiagnosticBase):
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
+                        method=self._regrid_method_for(var, obs_lons_2d.size, resolution=obs_res),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -460,7 +462,7 @@ class GlobalTrends(DiagnosticBase):
             regridded = self._regrid_to_target(
                 model_trend, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             annual_trends.append(regridded)
             models_used.append(label)
@@ -476,7 +478,7 @@ class GlobalTrends(DiagnosticBase):
                 s_regridded = self._regrid_to_target(
                     s_trend, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
-                    method=self._regrid_method,
+                    method=self._regrid_method_for(var, resolution=resolution),
                 )
                 seasonal_trends[season].append(s_regridded)
 
@@ -572,7 +574,7 @@ class GlobalTrends(DiagnosticBase):
             regridded = self._regrid_to_target(
                 model_trend, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             trend_diff = regridded - obs_trend_common
             rmse = float(np.sqrt(
@@ -602,7 +604,7 @@ class GlobalTrends(DiagnosticBase):
                 s_regridded = self._regrid_to_target(
                     s_trend, target_lats, target_lons,
                     resolution, influence_radius, cmip6_interp_cache,
-                    method=self._regrid_method,
+                    method=self._regrid_method_for(var, resolution=resolution),
                 )
                 if season not in obs_seasonal_trends_common:
                     continue
