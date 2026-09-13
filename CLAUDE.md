@@ -721,7 +721,9 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - `added_value` evaluates `pr` against MSWEP, so it honours `nereus.precip_resolution` too. Without that its target would be the MSWEP native 0.1° — a 6.48M→6.48M conservative build, far beyond the measured 51 min / 13.6 GB case.
 - `climate_variability` remaps a *standard deviation* field. Area-conservative is the correct area-averaging operator for it, but "conservation" there is not budget conservation in the physical sense.
 - Not converted: `precip_obs_comparison` coarsens MSWEP 0.1° → ERA5 0.25° with `xr.DataArray.interp` (bilinear), a separate mechanism from nereus. Still a candidate.
-- 61 dedicated tests in `tests/test_conservative_regrid.py`
+- **Pole-inclusive grids break conservative remapping** without a workaround. A regular lat/lon grid spanning −90→90 collapses every longitude to one point at each pole, handing `scipy.spatial.SphericalVoronoi` 1440 duplicate generators per pole: `ValueError: … Duplicate generators present`. EERIE CMOR, the ICON kerchunk stores and ERA5 are all 721×1440 spanning ±90, so this hits essentially every model and obs grid (MSWEP, at −89.95→89.95, is a rare exception). `feather/util/regrid.py:regrid()` is a drop-in for `nr.regrid` that collapses coincident source points first and averages data over each group (`DedupedInterpolator` does the collapse on each call, so cached interpolators keep taking full-length arrays). It delegates unchanged for every non-conservative method, and is used at all 23 regrid call sites in the six flux diagnostics. This is a consumer-side workaround; the durable fix is for nereus to deduplicate generators itself.
+- Beware when benchmarking: `linspace(-89.75, 89.75)` avoids the poles and will not reproduce the failure — the real grids include them.
+- 61 dedicated tests in `tests/test_conservative_regrid.py`, 17 in `tests/test_regrid_dedupe.py`
 
 ### Precipitation common-grid resolution
 - `precipitation_mswep` historically built its common grid at the MSWEP native 0.1°, forcing every model to be *refined* onto it regardless of model resolution.

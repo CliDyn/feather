@@ -23,6 +23,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
 from feather.plot.styles import OBS_COLOR
+from feather.util.regrid import regrid as fregrid
 from feather.util.spatial import (
     compute_latlon_areas,
     latlon_global_mean,
@@ -422,7 +423,7 @@ class PrecipitationMSWEP(DiagnosticBase):
             if grid_key not in _interp_cache:
                 logger.info("  Building nereus interpolator (grid size %d)...",
                             n_src)
-                annual_regrid, interp = nr.regrid(
+                annual_regrid, interp = fregrid(
                     model_clim.values.ravel(),
                     lon=np.asarray(lon).ravel(),
                     lat=np.asarray(lat).ravel(),
@@ -442,7 +443,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                     obs_lons_2d, obs_lats_2d = np.meshgrid(
                         obs_lons, obs_lats,
                     )
-                    _, obs_interp = nr.regrid(
+                    _, obs_interp = fregrid(
                         obs_clim.values.ravel(),
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),

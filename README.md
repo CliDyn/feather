@@ -667,6 +667,17 @@ Even a tiny source costs 220 s, because the fixed cost is set by the *target*
 tessellation. Applying cached weights is free, so the cost is **one-off per
 source grid** and amortises across every variable, season and period.
 
+### Pole-inclusive grids
+
+A regular lat/lon grid spanning −90→90 collapses every longitude to a single
+point at each pole, which `scipy.spatial.SphericalVoronoi` rejects as
+duplicate generators. Since the EERIE, ICON and ERA5 grids are all 721×1440
+spanning ±90, feather routes conservative remapping through
+`feather/util/regrid.py`, which merges coincident source points (averaging
+their values) before building weights. This is transparent — nothing in the
+configs or diagnostics changes — but it is a consumer-side workaround, and
+the durable fix belongs in nereus.
+
 `conservative_max_points` budgets **source + target together**; over budget,
 feather warns and falls back to `nereus.method`. Per-dimension limits cannot
 distinguish 6.5M→1M (affordable) from 6.5M→6.5M (not).
