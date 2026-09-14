@@ -421,6 +421,7 @@ class DiagnosticBase(ABC):
     def _regrid_method_for(
         self, variable: str, n_source: int | None = None,
         *, is_flux: bool | None = None, resolution: float | None = None,
+        default: str | None = None,
     ) -> str:
         """Return the nereus regridding method to use for *variable*.
 
@@ -449,10 +450,22 @@ class DiagnosticBase(ABC):
             with the *target* cell count as well as the source, so the same
             guard is applied to the implied target size.  A 0.1° target is
             6.5M cells and is slow even from a small source.
+        default : str, optional
+            Method to use for non-flux variables, and the fallback when
+            conservative is unavailable or over budget.  Defaults to
+            ``nereus.method``.
+
+            Call sites that historically did **not** pass ``method=`` must
+            pass ``default="nearest"`` to preserve their behaviour: the
+            model and obs regrids are nearest-neighbour by design
+            (``nereus.method`` governs benchmark regridding only), and
+            switching them to ``"linear"`` triangulates a 0-360 longitude
+            grid, leaving a one-cell NaN stripe at the prime meridian.
         """
         from feather.data.variables import is_flux_variable
 
-        default = self._regrid_method_default
+        if default is None:
+            default = self._regrid_method_default
         flux = is_flux_variable(variable) if is_flux is None else is_flux
         if not flux:
             return default

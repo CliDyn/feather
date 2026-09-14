@@ -428,7 +428,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                     lon=np.asarray(lon).ravel(),
                     lat=np.asarray(lat).ravel(),
                     resolution=obs_res,
-                    method=self._regrid_method_for("pr", n_src, resolution=obs_res),
+                    method=self._regrid_method_for("pr", n_src, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -449,7 +449,7 @@ class PrecipitationMSWEP(DiagnosticBase):
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
                         method=self._regrid_method_for(
-                            "pr", obs_lons_2d.size, resolution=obs_res,
+                            "pr", obs_lons_2d.size, resolution=obs_res, default="nearest",
                         ),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),

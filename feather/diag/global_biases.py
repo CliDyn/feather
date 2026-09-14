@@ -344,7 +344,7 @@ class GlobalBiases(DiagnosticBase):
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
-                    method=self._regrid_method_for(var, n_src, resolution=obs_res),
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -365,7 +365,7 @@ class GlobalBiases(DiagnosticBase):
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
                         method=self._regrid_method_for(
-                            var, obs_lons_2d.size, resolution=obs_res,
+                            var, obs_lons_2d.size, resolution=obs_res, default="nearest",
                         ),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),

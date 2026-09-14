@@ -996,7 +996,7 @@ class AddedValueDiag(DiagnosticBase):
                     data_for_regrid,
                     lon=lon_1d, lat=lat_1d,
                     resolution=obs_res,
-                    method=self._regrid_method_for(var, n_src, resolution=obs_res),
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -1012,7 +1012,7 @@ class AddedValueDiag(DiagnosticBase):
                         obs_clim.values,  # 2-D
                         lon=obs_lons, lat=obs_lats,
                         resolution=obs_res,
-                        method=self._regrid_method_for(var, obs_clim.values.size, resolution=obs_res),
+                        method=self._regrid_method_for(var, obs_clim.values.size, resolution=obs_res, default="nearest"),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,

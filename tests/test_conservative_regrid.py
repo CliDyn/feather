@@ -167,6 +167,42 @@ class TestMethodChooser:
         assert probe._regrid_method_for(
             "pr", 12_582_912, resolution=0.25) == "linear"
 
+    def test_default_overrides_nereus_method_for_non_flux(self, tmp_path):
+        """Model/obs regrids are nearest by design, not nereus.method."""
+        p = _probe(tmp_path, method="linear")
+        assert p._regrid_method_for("tas", default="nearest") == "nearest"
+
+    def test_default_does_not_affect_flux(self, tmp_path):
+        p = _probe(tmp_path, method="linear")
+        assert p._regrid_method_for("pr", default="nearest") == "conservative"
+
+    def test_default_is_the_fallback_when_over_budget(self, tmp_path):
+        """Falling back must land on the call site's default, not nereus.method."""
+        p = _probe(tmp_path, method="linear", conservative_max_points=1000)
+        assert p._regrid_method_for("pr", 5000, default="nearest") == "nearest"
+
+    def test_omitting_default_keeps_nereus_method(self, tmp_path):
+        """Benchmark regrids keep honouring nereus.method."""
+        p = _probe(tmp_path, method="linear")
+        assert p._regrid_method_for("tas") == "linear"
+
+    def test_model_obs_sites_never_triangulate_non_flux(self):
+        """Regression: 'linear' on a 0-360 grid leaves a NaN stripe at lon 0.
+
+        The model and obs regrids historically passed no method= at all
+        (nearest). Routing them through nereus.method silently switched every
+        non-flux variable to Delaunay interpolation, which cannot close the
+        0/360 seam and left a one-cell white line down the prime meridian in
+        clt/psl/uas/vas bias maps.
+        """
+        cfg = FeatherConfig.from_yaml("configs/eerie_10_mems_cmip6.yaml")
+        probe = _Probe(None, None, cfg)
+        assert cfg.nereus["method"] == "linear"
+        for var in ["tas", "clt", "psl", "uas", "vas", "tos"]:
+            got = probe._regrid_method_for(
+                var, 1_038_240, resolution=0.25, default="nearest")
+            assert got == "nearest", f"{var} would triangulate: {got}"
+
     def test_is_flux_override_forces_conservative(self, tmp_path):
         """Derived-quantity keys aren't registry names."""
         p = _probe(tmp_path)

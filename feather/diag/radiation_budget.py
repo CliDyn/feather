@@ -1310,7 +1310,7 @@ class RadiationBudget(DiagnosticBase):
                     model_clim.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
-                    method=self._regrid_method_for(dq_key, n_src, is_flux=True, resolution=obs_res),
+                    method=self._regrid_method_for(dq_key, n_src, is_flux=True, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
