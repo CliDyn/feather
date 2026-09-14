@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from feather.util.regrid import (
+    _MERGE_RADIUS,
     DedupedInterpolator,
     collapse_values,
     dedupe_points,
@@ -73,12 +74,79 @@ class TestDedupePoints:
         lon_u, _, inv = dedupe_points(lon, lat)
         assert inv is not None and lon_u.size == 2
 
+    def test_near_duplicates_are_merged(self):
+        """Regression: scipy rejects *near*-coincident points, not just exact.
+
+        A CMIP6 curvilinear grid whose pole points sit a nanodegree off ±90
+        with slightly different longitudes passed exact matching but tripped
+        SphericalVoronoi, killing Group A mid-run.
+        """
+        lat = np.linspace(-90.0, 90.0, 37)
+        lon = np.linspace(0.0, 350.0, 36)
+        lo, la = np.meshgrid(lon, lat)
+        lo, la = lo.ravel().copy(), la.ravel().copy()
+        pole = np.isclose(np.abs(la), 90.0)
+        la[pole] = np.sign(la[pole]) * (90.0 - 1e-9)
+        lo[pole] += np.linspace(0.0, 1e-7, pole.sum())
+
+        _, _, inv = dedupe_points(lo, la)
+        assert inv is not None, "near-duplicate pole points were not merged"
+
+    @pytest.mark.parametrize("offset_deg,should_merge", [
+        (1e-9, True),     # ~0.1 mm apart — scipy rejects, must merge
+        (1e-2, False),    # ~1 km apart — genuinely distinct, must keep
+    ])
+    def test_merge_threshold_matches_scipy(self, offset_deg, should_merge):
+        lon = np.array([0.0, offset_deg, 90.0])
+        lat = np.array([0.0, 0.0, 0.0])
+        _, _, inv = dedupe_points(lon, lat)
+        assert (inv is not None) is should_merge
+
+    def test_merge_radius_matches_scipy_default(self):
+        """Our radius must not be tighter than what scipy rejects."""
+        import inspect
+
+        from scipy.spatial import SphericalVoronoi
+
+        sig = inspect.signature(SphericalVoronoi.__init__)
+        assert _MERGE_RADIUS >= sig.parameters["threshold"].default
+
     def test_distinct_nearby_points_kept(self):
         """A 0.25° spacing must never be merged."""
         lon = np.array([0.0, 0.25, 0.5])
         lat = np.array([45.0, 45.0, 45.0])
         _, _, inv = dedupe_points(lon, lat)
         assert inv is None
+
+
+class TestScipyAcceptsResult:
+    """The invariant that matters: SphericalVoronoi must never reject our output."""
+
+    @staticmethod
+    def _xyz(lon, lat):
+        la, lo = np.deg2rad(lat), np.deg2rad(lon)
+        c = np.cos(la)
+        return np.stack([c * np.cos(lo), c * np.sin(lo), np.sin(la)], axis=1)
+
+    @pytest.mark.parametrize("make", ["exact", "near", "clean"])
+    def test_no_residual_pairs_within_threshold(self, make):
+        from scipy.spatial import SphericalVoronoi, cKDTree
+
+        lat = np.linspace(-90.0, 90.0, 37)
+        lon = np.linspace(0.0, 350.0, 36)
+        lo, la = np.meshgrid(lon, lat)
+        lo, la = lo.ravel().copy(), la.ravel().copy()
+        if make == "near":
+            pole = np.isclose(np.abs(la), 90.0)
+            la[pole] = np.sign(la[pole]) * (90.0 - 1e-9)
+            lo[pole] += np.linspace(0.0, 1e-7, pole.sum())
+        elif make == "clean":
+            la = np.clip(la, -89.0, 89.0)
+
+        lo_u, la_u, _ = dedupe_points(lo, la)
+        xyz = self._xyz(lo_u, la_u)
+        assert not cKDTree(xyz).query_pairs(_MERGE_RADIUS)
+        SphericalVoronoi(xyz, radius=1.0)   # must not raise
 
 
 # ── Value collapsing ─────────────────────────────────────────────────────

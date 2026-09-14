@@ -31,10 +31,20 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-#: Rounding applied to unit-sphere coordinates when detecting coincident
-#: points.  1e-9 of a unit radius is ~6 mm on Earth — far below any real
-#: grid spacing, so only genuinely coincident points are merged.
-_COORD_DECIMALS = 9
+#: Merge radius on the unit sphere, in units of the sphere radius.
+#:
+#: This must match what ``scipy.spatial.SphericalVoronoi`` itself rejects.
+#: Its constructor raises ``Duplicate generators present`` when
+#: ``cKDTree(points).query_pairs(threshold * radius)`` finds anything, with
+#: ``threshold`` defaulting to 1e-6 — so *near*-coincident points fail too,
+#: not only exact duplicates.  Merging on exact equality is therefore not
+#: enough: a curvilinear ocean grid can carry points a few metres apart that
+#: scipy rejects but exact matching keeps.
+#:
+#: 1e-6 of a unit radius is ~6.4 m on Earth, orders of magnitude below any
+#: climate grid spacing (0.25° ≈ 27 km), so this never merges cells that are
+#: meaningfully distinct.
+_MERGE_RADIUS = 1e-6
 
 
 def dedupe_points(
@@ -54,32 +64,49 @@ def dedupe_points(
         when nothing was duplicated (the common case — callers can then skip
         the collapse entirely).
     """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
     lon = np.asarray(lon).ravel()
     lat = np.asarray(lat).ravel()
 
     lat_r = np.deg2rad(lat)
     lon_r = np.deg2rad(lon)
     cos_lat = np.cos(lat_r)
-    key = np.round(
-        np.stack(
-            [cos_lat * np.cos(lon_r), cos_lat * np.sin(lon_r), np.sin(lat_r)],
-            axis=1,
-        ),
-        decimals=_COORD_DECIMALS,
+    xyz = np.stack(
+        [cos_lat * np.cos(lon_r), cos_lat * np.sin(lon_r), np.sin(lat_r)],
+        axis=1,
     )
 
-    _, index, inverse = np.unique(
-        key, axis=0, return_index=True, return_inverse=True,
-    )
-    if index.size == lon.size:
+    # Points within the merge radius of each other, grouped transitively:
+    # connected components guarantee that no two *surviving* representatives
+    # are within the radius, which is exactly scipy's acceptance condition.
+    pairs = cKDTree(xyz).query_pairs(_MERGE_RADIUS, output_type="ndarray")
+    if pairs.size == 0:
         return lon, lat, None
+
+    n = lon.size
+    graph = coo_matrix(
+        (np.ones(pairs.shape[0], dtype=np.int8), (pairs[:, 0], pairs[:, 1])),
+        shape=(n, n),
+    )
+    n_groups, inverse = connected_components(graph, directed=False)
+    if n_groups == n:
+        return lon, lat, None
+
+    # One representative per group: its first member.
+    index = np.empty(n_groups, dtype=np.intp)
+    order = np.argsort(inverse, kind="stable")
+    first = order[np.concatenate(([True], np.diff(inverse[order]) != 0))]
+    index[inverse[first]] = first
 
     logger.info(
         "Collapsed %d coincident source points (%d → %d) for conservative "
         "remapping — a pole-inclusive grid duplicates every longitude at ±90°",
-        lon.size - index.size, lon.size, index.size,
+        n - n_groups, n, n_groups,
     )
-    return lon[index], lat[index], inverse.ravel()
+    return lon[index], lat[index], inverse
 
 
 def collapse_values(data: np.ndarray, inverse: np.ndarray) -> np.ndarray:
