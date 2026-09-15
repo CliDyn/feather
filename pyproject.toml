@@ -18,7 +18,7 @@ dependencies = [
     "intake",
     "intake-xarray",
     "healpy",
-    "nereus",
+    "nereus",   # install from git; see environment.yml (0.4.1 on PyPI lacks conservative remapping)
     "pyyaml",
     "netcdf4",
     "zarr",

@@ -41,6 +41,7 @@ from feather.diag.figure_meta import save_figure_with_metadata
 from feather.diag.netcdf_export import sanitize_name
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_map
+from feather.util.regrid import regrid as fregrid
 from feather.util.regions import get_region, list_regions, region_mask
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import climatology, seasonal_climatology
@@ -930,6 +931,12 @@ class AddedValueDiag(DiagnosticBase):
         obs_lats = obs_clim[lat_name].values
         obs_lons = obs_clim[lon_name].values
         obs_res = abs(float(obs_lats[1] - obs_lats[0]))
+        # `pr` is evaluated against MSWEP (0.1°).  Use the same common-grid
+        # override as `precipitation_mswep` so both diagnostics compare on
+        # the same grid — and so the target stays 1.04M cells at 0.25°
+        # rather than 6.48M, which conservative remapping cannot afford.
+        if var == "pr":
+            obs_res = self.config.get_precip_resolution(obs_res)
 
         # -- EERIE models ---------------------------------------------------
         _interp_cache: dict[int, Any] = {}
@@ -985,10 +992,11 @@ class AddedValueDiag(DiagnosticBase):
                 logger.info(
                     "  Building nereus interpolator (grid size %d)...", n_src,
                 )
-                annual_regrid, interp = nr.regrid(
+                annual_regrid, interp = fregrid(
                     data_for_regrid,
                     lon=lon_1d, lat=lat_1d,
                     resolution=obs_res,
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -1000,10 +1008,11 @@ class AddedValueDiag(DiagnosticBase):
                     target_lons = interp.target_lon[0, :]
 
                     # Regrid obs to common grid (once) — obs is always lat/lon
-                    _, obs_interp = nr.regrid(
+                    _, obs_interp = fregrid(
                         obs_clim.values,  # 2-D
                         lon=obs_lons, lat=obs_lats,
                         resolution=obs_res,
+                        method=self._regrid_method_for(var, obs_clim.values.size, resolution=obs_res, default="nearest"),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -1088,7 +1097,7 @@ class AddedValueDiag(DiagnosticBase):
             regridded = self._regrid_to_target(
                 da, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             cmip6_annual_fields.append(regridded * unit_factor)
             cmip6_models_used.append(label)
@@ -1102,7 +1111,7 @@ class AddedValueDiag(DiagnosticBase):
                     s_r = self._regrid_to_target(
                         da_s, target_lats, target_lons,
                         resolution, influence_radius, cmip6_interp_cache,
-                        method=self._regrid_method,
+                        method=self._regrid_method_for(var, resolution=resolution),
                     )
                     cmip6_seasonal_fields[season].append(s_r * unit_factor)
                     cmip6_seasonal_models[season].append(label)
@@ -1796,7 +1805,7 @@ class AddedValueDiag(DiagnosticBase):
             src_lon = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
             grid_key = ("unstructured", int(data.shape[0]))
             if grid_key not in interp_cache:
-                _, interp_cache[grid_key] = nr.regrid(
+                _, interp_cache[grid_key] = fregrid(
                     data, lon=src_lon, lat=lat_arr,
                     resolution=resolution, method=method,
                     influence_radius=ir, lon_bounds=(-180.0, 180.0),
@@ -1817,7 +1826,7 @@ class AddedValueDiag(DiagnosticBase):
         grid_key = (len(lat_arr), len(lon_arr))
         if grid_key not in interp_cache:
             lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
-            _, interp_cache[grid_key] = nr.regrid(
+            _, interp_cache[grid_key] = fregrid(
                 da.values[:, sort_idx].ravel(),
                 lon=lon_2d.ravel(), lat=lat_2d.ravel(),
                 resolution=resolution,
@@ -1860,13 +1869,13 @@ class AddedValueDiag(DiagnosticBase):
         obs_lons = obs_da[lon_name].values
 
         # Use the common (target) grid resolution, not the source resolution.
-        # nr.regrid() defines its output grid from this parameter; using the
+        # fregrid() defines its output grid from this parameter; using the
         # source's own resolution would create a mismatched grid when the
         # secondary obs is coarser than the primary obs (e.g. ERA5 at 0.25°
         # vs MSWEP common grid at 0.1°).
         target_res = abs(float(target_lats[1] - target_lats[0]))
 
-        _, interp = nr.regrid(
+        _, interp = fregrid(
             obs_da.values,
             lon=obs_lons, lat=obs_lats,
             resolution=target_res,

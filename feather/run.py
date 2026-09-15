@@ -339,6 +339,10 @@ def _create_model_loader(config: FeatherConfig):
         from feather.data.kerchunk_loader import KerchunkParquetLoader
         return KerchunkParquetLoader(config)
 
+    if config.get_data_source_type() == "icon_kerchunk":
+        from feather.data.icon_kerchunk_loader import ICONKerchunkLoader
+        return ICONKerchunkLoader(config)
+
     if config.get_data_source_type() == "cordex":
         from feather.data.cordex_loader import CORDEXLoader
         return CORDEXLoader(config)

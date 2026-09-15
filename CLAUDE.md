@@ -112,6 +112,7 @@ feather/                     # Package root
 |------|---------|
 | `configs/default.yaml` | DestinE configuration (legacy list format) |
 | `configs/eerie.yaml` | EERIE Ensemble configuration (structured dict format) |
+| `configs/eerie_10_mems_cmip6.yaml` | EERIE 10-member set (= `eerie_all_members_cmip6_highresmip.yaml` + ICON-ESM-ER r2/r3 via `icon_kerchunk`) |
 | `configs/eerie_psl.yaml` | EERIE Ensemble + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
@@ -124,6 +125,7 @@ feather/                     # Package root
 | `feather/data/cmor_loader.py` | CMORLoader — load from CMOR directory tree (EERIE etc.) |
 | `feather/data/netcdf_loader.py` | NetCDFLoader — load per-year NetCDF on HEALPix grid |
 | `feather/data/grib_loader.py` | GRIBLoader — load GRIB files on regular lat/lon grid |
+| `feather/data/icon_kerchunk_loader.py` | ICONKerchunkLoader — load ICON-ESM-ER r2/r3 from gr025 kerchunk stores |
 | `feather/data/composite_loader.py` | CompositeModelLoader — multi-source per-model routing |
 | `feather/diag/base.py` | Base class — grid-agnostic helpers (`_load_model_var`, `_model_global_mean`) |
 | `feather/diag/registry.py` | `@register` decorator for diagnostic auto-discovery |
@@ -651,6 +653,21 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Grid: regular lat/lon, standard `(time, latitude, longitude)` dims
 - Config: `configs/tco_grib.yaml`, also used as secondary backend in `configs/ifs_fesom_combined.yaml`
 
+### ICONKerchunkLoader
+- `feather/data/icon_kerchunk_loader.py`: loads ICON-ESM-ER hist-1950 members **r2/r3**, which the EERIE CMOR tree does not publish (only r1 is CMOR'd)
+- Source: kerchunk parquet reference stores under `/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618/{2,3}/` (the intake catalogues at `/work/bm1344/DKRZ/intake/disk/phase2-model-output/icon-esm-er/hist-1950/r{2,3}i1p1f1/` point at these; the loader reads them directly, bypassing intake)
+- Reads only the two gr025 monthly stores: `erc2023_{atmos,ocean}_native_2d_monthly_mean_remap025.parq`
+- Config: per-model `data_source_type: "icon_kerchunk"`, `data_root` = the version dir, `member` = store sub-directory (`2` → r2i1p1f1, `3` → r3i1p1f1) → routed via `CompositeModelLoader`
+- Grid already matches CMOR output: 0.25° lat/lon, lat −90→90 (721), lon 0→359.75 (1440), monthly 1975-02 → 2014-12. No regridding or reordering
+- **Distinct from `KerchunkParquetLoader`** (IFS-FESOM2 r2/r3): that one handles a flat `value` dim, GRIB short names and 9999 fill; the ICON stores are rectilinear with near-CMOR names, so the two share nothing
+- **Fill-value gotcha**: the ocean stores declare a zarr-level `fill_value: 0.0` alongside the real `missing_value: -9e33`. Letting xarray mask automatically turns every genuine zero (open-water `conc`, `hi`) into NaN. Stores are opened with `mask_and_scale=False` and masked explicitly on the `-1e30` sentinel
+- Conversions to CMOR conventions: `clt` and `conc` fraction → % (×100); `hfls`/`hfss` ICON down-positive → CMOR up-positive (×−1). Radiation components (`rlut`, `rsut`, `rsds`, `rlus`, …) are already CMOR-signed and pass through. `to`/`so` are already °C/PSU — ICON is not a TEOS-10 model, so no `absolute_salinity`
+- Singleton `height`/`height_2`/`height_3`/`lev`/`depth` dims are squeezed; `sfcwind` → `sfcWind`, `hur` → `hurs`, `hus2m` → `huss`
+- **Deliberately not provided**: net radiation (`rss`/`rls`/`rst`/`rlt` + clear-sky) is *not* derived from the up/down components, even though the store has them — `CMORLoader` does not derive them for ICON r1 either, and deriving here would put r2/r3 into radiation panels r1 is absent from, skewing ensemble statistics. Deriving nets belongs in `CMORLoader` so r1 gains them at the same time
+- **Not available**: 3-D ocean (r2 has no model-level store; r3's covers only 90 months) and 3-D atmosphere → `ocean_en4` and the `teleconnections` QBO mode skip these members via the usual `KeyError` path
+- Ocean/sea-ice archive gaps (atmosphere is complete): r2 missing 1996-02..06, r3 missing 1982-08..12 and 1993-04..1994-03
+- 57 dedicated tests in `tests/test_icon_kerchunk_loader.py`, plus `TestEerie10MembersConfig` in `tests/test_composite_loader.py`
+
 ### CompositeModelLoader
 - `feather/data/composite_loader.py`: routes `load_var()` and `load_coords()` to the correct backend per model
 - Triggered when `config.is_multi_source()` returns `True` (models have different `data_source_type`)
@@ -677,6 +694,45 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **CMIP6 is stitched symmetrically**: `cmip6.experiments: ["historical", "ssp370"]` → `CMIP6Loader._open_stitched()` concatenates per `(model, variant)`, falling back to historical-only when a model lacks `ssp370` for its configured variant. `_zarr_path()` takes an `experiment` arg (default `"historical"`, so legacy behavior is unchanged).
 - **Extended timeseries**: `project.timeseries_period` (e.g. `["1990", "2050"]`) lets the `timeseries` diagnostic plot each model to its native end while all other diagnostics use `project.period`. `run.py` passes `config.get_timeseries_period()` only to the `timeseries` diagnostic; obs/CMIP6 truncate to their own availability.
 - Gotcha: ssp370 variant labels can differ from historical (e.g. CanESM5 ssp370 is `r1i1p2f1`, not `r1i1p1f1`); the configured variant must exist for **both** experiments or the model drops back to historical-only.
+
+### Conservative remapping of fluxes and precipitation
+- Point-interpolation schemes (`nearest`/`linear`) do **not** preserve an area integral. Coarsening precipitation or a radiative flux with them biases the domain total *and* reports point values as box means, badly overstating extremes. Flux fields are therefore remapped area-conservatively.
+- **Requires nereus from `main`** — `method="conservative"` was added in PR #12 (merged 2026-08-19) but is **not in the 0.4.1 PyPI release**, and `nereus.__version__` was not bumped, so it reads `0.4.1` either way. Install with `pip install --no-deps --force-reinstall git+https://github.com/koldunovn/nereus@main`. All its deps (incl. `shapely>=2.0`, now a hard requirement) are already in the `feather` env.
+- Capability is **probed at runtime**, never inferred from the version: `DiagnosticBase._conservative_available()` inspects the `method` Literal on `nr.RegridInterpolator`. Result cached on `DiagnosticBase` (not `cls`, or every subclass gets its own copy). Missing support → warn + fall back to `nereus.method`.
+- `feather/data/variables.py:is_flux_variable()` classifies by registry `group` (`precipitation`, `surface_fluxes`, `radiation`) plus `_EXTRA_FLUX_VARS` (`evspsbl`, `prc`, `prsn`, `hfds`). Group-based so new flux variables are picked up automatically. Covers `pr`, `hfss`, `hfls`, `rsds`, `rlds`, `rss`, `rls`, `rsscs`, `rlscs`, `rst`, `rlt`, `rstcs`, `rltcs` — and nothing else.
+- `DiagnosticBase._regrid_method_for(var, n_source=None, *, is_flux=None, resolution=None, default=None)` picks the method. **`default=` is not cosmetic**: the model and obs regrids historically passed no `method=` at all, i.e. nearest, and `nereus.method` was documented as governing benchmark regridding only. Those 13 call sites must pass `default="nearest"`. Routing them through `nereus.method` instead switches every non-flux variable to Delaunay interpolation, which cannot close the 0/360 longitude seam and leaves a one-cell NaN stripe rendering as a white line down the prime meridian (seen in clt/psl/uas/vas bias maps; `_regrid_to_target` avoids it for benchmarks by converting to −180..180 first, which the model/obs path does not do). `is_flux=True` forces it where the field is keyed by a derived-quantity name instead of a CMOR variable (`radiation_budget` uses `dq_key`).
+- Wired into the **regrid** call sites of `global_biases`, `precipitation_mswep`, `added_value`, `global_trends`, `climate_variability`, `radiation_budget`. **Plotting** call sites (`plot_combined_map`/`plot_combined_bias_map`, which pass `method=` to `nr.plot` for display rasterisation) deliberately keep `self._regrid_method` — conservative there is meaningless and slow.
+- Config: `nereus.conservative_fluxes` (default `true`) and `nereus.conservative_max_points` (default 2,000,000). Building conservative weights needs a spherical Voronoi tessellation + polygon overlaps and is far costlier than a KD-tree.
+- `conservative_max_points` budgets **source + target together** (pass `resolution=` at call sites so the target side is counted). Per-dimension limits cannot distinguish 6.5M→1M (affordable) from 6.5M→6.5M (not); the sum can. Over budget → warn + fall back to `nereus.method`.
+- **Measured cost** (onto a 0.25° target = 1,036,800 cells, one core): there is a large fixed cost set by the *target* tessellation, plus a source term.
+
+  | source pts | weight build | apply |
+  |---|---|---|
+  | 4,050 | 220 s | 0.07 s |
+  | 16,200 | 258 s | 0.01 s |
+  | 64,800 | 333 s | 0.01 s |
+  | 259,200 | 497 s | 0.01 s |
+  | 1,039,682 | **905 s (15 min)** | 0.01 s |
+  | 6,480,000 (MSWEP 0.1°) | **3,073 s (51 min)**, peak RSS **13.6 GB** | 0.18 s |
+
+  Applying cached weights is free (~0.01 s), so the cost is one-off **per source grid** and amortises across every variable, season and period. This is what makes the per-grid `_interp_cache` load-bearing rather than just an optimisation. The 13.6 GB peak is in the *main* process (not a dask worker), so size the job's memory accordingly — `dask.memory_limit` does not bound it.
+- **`conservative_max_points` must clear the obs grid, not just the models.** MSWEP is 0.1° = **6,480,000 points**; with the 2M default the MSWEP→0.25° *coarsening* — the step that most needs conserving — silently falls back to linear while the near-identity 0.25°→0.25° model regrid gets conservative, i.e. exactly backwards. `configs/eerie_10_mems_cmip6.yaml` therefore sets `conservative_max_points: 8000000`.
+- Still excluded by the budget: anything onto a **0.1° common grid** (6.48M target cells alone) and **DestinE nside=1024 sources** (12.6M points). So DestinE precipitation uses `linear`. Raise the limit to override, but measure that grid first — extrapolating from smaller grids understates the fixed target cost badly (a 4,050-point source still costs 220 s onto a 0.25° target).
+- `added_value` evaluates `pr` against MSWEP, so it honours `nereus.precip_resolution` too. Without that its target would be the MSWEP native 0.1° — a 6.48M→6.48M conservative build, far beyond the measured 51 min / 13.6 GB case.
+- `climate_variability` remaps a *standard deviation* field. Area-conservative is the correct area-averaging operator for it, but "conservation" there is not budget conservation in the physical sense.
+- Not converted: `precip_obs_comparison` coarsens MSWEP 0.1° → ERA5 0.25° with `xr.DataArray.interp` (bilinear), a separate mechanism from nereus. Still a candidate.
+- **Pole-inclusive grids break conservative remapping** without a workaround. A regular lat/lon grid spanning −90→90 collapses every longitude to one point at each pole, handing `scipy.spatial.SphericalVoronoi` 1440 duplicate generators per pole: `ValueError: … Duplicate generators present`. EERIE CMOR, the ICON kerchunk stores and ERA5 are all 721×1440 spanning ±90, so this hits essentially every model and obs grid (MSWEP, at −89.95→89.95, is a rare exception). `feather/util/regrid.py:regrid()` is a drop-in for `nr.regrid` that collapses coincident source points first and averages data over each group. **The merge must use scipy's own threshold, not exact equality**: `SphericalVoronoi` rejects any pair within `threshold * radius` (default 1e-6 ≈ 6.4 m on Earth), so a curvilinear CMIP6 grid with pole points a nanodegree apart passes exact matching and still trips scipy. Points within `_MERGE_RADIUS` are grouped transitively via `cKDTree.query_pairs` + `connected_components`, which guarantees no surviving pair is within the threshold. Cost is ~1 s at 1M points, ~6 s at 6.5M — negligible beside the weight build (`DedupedInterpolator` does the collapse on each call, so cached interpolators keep taking full-length arrays). It delegates unchanged for every non-conservative method, and is used at all 23 regrid call sites in the six flux diagnostics. This is a consumer-side workaround; the durable fix is for nereus to deduplicate generators itself.
+- Beware when benchmarking: `linspace(-89.75, 89.75)` avoids the poles and will not reproduce the failure — the real grids include them.
+- **The general (non-pole) merge is insurance, not dead code.** A scan of all 329 unique benchmark grids found coincident points away from the poles on **82 grids across 30 models** — every one an unstructured/curvilinear ocean grid (Ofx 23, Omon 31, SImon 28; 24-13,088 points each, median 1,888), the tripolar/ORCA fold. **Zero rectilinear atmosphere grids** were flagged. Since every flux variable feather currently evaluates is `Amon` (rectilinear), those ocean grids are not on the conservative path today — but they would be the moment an ocean flux such as `hfds` is evaluated. Upstream's `_split_pole_cell` handles poles only, so this merge is what would cover them.
+- 13 CMIP6 `SImon` grids publish lat/lon as the netCDF fill value (9.97e36). `cKDTree.query_pairs` on those returns hundreds of millions of "coincident" pairs and exhausts memory, so `dedupe_points` skips any grid with non-finite or out-of-range coordinates and warns.
+- `nereus.conservative_fluxes` accepts `true` (default), `false`, or **`require`** — the last turns the silent fallback into a `RuntimeError`. Worth setting for production runs: the capability cannot be read from `nereus.__version__` (upstream did not bump it), so a stale environment yields *different numbers* rather than an obvious failure.
+- 69 dedicated tests in `tests/test_conservative_regrid.py`, 27 in `tests/test_regrid_dedupe.py`
+
+### Precipitation common-grid resolution
+- `precipitation_mswep` historically built its common grid at the MSWEP native 0.1°, forcing every model to be *refined* onto it regardless of model resolution.
+- `nereus.precip_resolution` now sets it; unset → obs native (original behaviour). `FeatherConfig.get_precip_resolution(default)`.
+- **EERIE configs use 0.25°** (models are 0.25°, so this compares like with like and coarsens MSWEP conservatively rather than refining models). **DestinE configs use 0.1°** (runs are ~5 km, finer than the obs).
+- Note this is deliberately *not* `nereus.resolution` — every config declares that as 0.25, so it cannot distinguish the two cases.
 
 ### Per-grid interpolator cache
 - When models have different grid sizes (e.g., nside=1024 vs nside=128, or different lat/lon resolutions), each grid needs its own nereus interpolator
