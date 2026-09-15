@@ -473,12 +473,19 @@ class DiagnosticBase(ABC):
             return default
 
         if not self._conservative_available():
-            logger.warning(
-                "Conservative remapping requested for %s but this nereus "
-                "build does not support it — falling back to %r. Install "
-                "nereus from main (github.com/koldunovn/nereus).",
-                variable, default,
+            msg = (
+                f"Conservative remapping requested for {variable!r} but this "
+                f"nereus build does not support it. Install nereus from a "
+                f"build with method='conservative' (see environment.yml; the "
+                f"0.4.1 PyPI release does not have it, and reports the same "
+                f"version as builds that do)."
             )
+            if self.config.require_conservative_fluxes():
+                raise RuntimeError(
+                    msg + " nereus.conservative_fluxes is set to 'require', "
+                    "so this is fatal rather than falling back."
+                )
+            logger.warning("%s Falling back to %r.", msg, default)
             return default
 
         max_points = self.config.get_conservative_max_points()

@@ -262,9 +262,22 @@ class FeatherConfig:
 
         Requires a nereus build with ``method="conservative"``; falls back
         with a warning when unavailable.  Set ``nereus.conservative_fluxes:
-        false`` to disable.
+        false`` to disable, or ``require`` to fail instead of falling back
+        (see :meth:`require_conservative_fluxes`).
         """
-        return bool(self.nereus.get("conservative_fluxes", True))
+        return self.nereus.get("conservative_fluxes", True) is not False
+
+    def require_conservative_fluxes(self) -> bool:
+        """Whether a missing conservative capability should be fatal.
+
+        ``nereus.conservative_fluxes: require`` turns the silent fallback
+        into an error at the first flux regrid.  Worth setting for
+        production runs: the capability cannot be inferred from
+        ``nereus.__version__`` (upstream did not bump it), so an environment
+        rebuilt from a stale pin produces *different numbers* rather than an
+        obvious failure, and the warning is easy to miss in a long log.
+        """
+        return str(self.nereus.get("conservative_fluxes", True)).lower() == "require"
 
     def get_conservative_max_points(self) -> int:
         """Source-grid size above which conservative remapping is skipped.

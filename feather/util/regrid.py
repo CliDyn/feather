@@ -82,6 +82,20 @@ def dedupe_points(
     # Points within the merge radius of each other, grouped transitively:
     # connected components guarantee that no two *surviving* representatives
     # are within the radius, which is exactly scipy's acceptance condition.
+    # Coordinates outside the valid range are fill values, not locations.
+    # Several CMIP6 SImon grids publish lat/lon as 9.97e36; feeding those to
+    # cKDTree yields hundreds of millions of "coincident" pairs and exhausts
+    # memory. They cannot be deduplicated meaningfully, so leave the grid
+    # alone and let the caller deal with it.
+    finite = np.isfinite(lat) & np.isfinite(lon) & (np.abs(lat) <= 90.0)
+    if not finite.all():
+        logger.warning(
+            "%d of %d source points have invalid coordinates (fill values?) "
+            "— skipping coincident-point merging for this grid",
+            int((~finite).sum()), finite.size,
+        )
+        return lon, lat, None
+
     pairs = cKDTree(xyz).query_pairs(_MERGE_RADIUS, output_type="ndarray")
     if pairs.size == 0:
         return lon, lat, None

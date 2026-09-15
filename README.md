@@ -643,9 +643,22 @@ intermittent fields — precipitation above all.
 ```yaml
 nereus:
   method: "linear"                  # state variables
-  conservative_fluxes: true         # default; false restores point interpolation
+  conservative_fluxes: true         # true | false | require (see below)
   conservative_max_points: 8000000  # cost guard, see below
 ```
+
+`conservative_fluxes` takes three values:
+
+| value | behaviour |
+|-------|-----------|
+| `true` (default) | use conservative for fluxes; warn and fall back if unavailable |
+| `false` | point interpolation everywhere |
+| `require` | **fail** rather than fall back |
+
+Prefer `require` for production runs. The capability cannot be read from
+`nereus.__version__` — upstream did not bump it — so an environment built from a
+stale pin silently produces *different numbers* instead of an obvious failure,
+and the warning is easy to lose in a long log.
 
 Classification is registry-driven (`is_flux_variable()` in
 `feather/data/variables.py`), keyed on variable `group`, so a flux variable

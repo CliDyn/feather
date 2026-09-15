@@ -176,6 +176,34 @@ class TestCollapseValues:
         assert out.shape == (4, 2)
 
 
+class TestInvalidCoordinates:
+    """Several CMIP6 SImon grids publish lat/lon as the netCDF fill value.
+
+    Feeding 9.97e36 to cKDTree yields hundreds of millions of "coincident"
+    pairs and exhausts memory, so such grids are left alone.
+    """
+
+    def test_fill_valued_latitudes_skip_merging(self):
+        lon = np.array([0.0, 10.0, 20.0, 30.0])
+        lat = np.array([0.0, 10.0, 9.969209968386869e36, 30.0])
+        lon_u, lat_u, inv = dedupe_points(lon, lat)
+        assert inv is None
+        assert lon_u.size == lon.size
+
+    def test_nan_coordinates_skip_merging(self):
+        lon = np.array([0.0, 10.0, np.nan])
+        lat = np.array([0.0, 10.0, 20.0])
+        _, _, inv = dedupe_points(lon, lat)
+        assert inv is None
+
+    def test_valid_grid_with_duplicates_still_merges(self):
+        """The guard must not disable merging on well-formed grids."""
+        lon = np.array([0.0, 0.0, 90.0])
+        lat = np.array([10.0, 10.0, 10.0])
+        _, _, inv = dedupe_points(lon, lat)
+        assert inv is not None
+
+
 # ── The wrapper ──────────────────────────────────────────────────────────
 
 

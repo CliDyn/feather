@@ -224,6 +224,58 @@ class TestMethodChooser:
 # ── Config plumbing ──────────────────────────────────────────────────────
 
 
+class TestRequireMode:
+    """`conservative_fluxes: require` makes a missing capability fatal.
+
+    The capability cannot be read from nereus.__version__ (upstream did not
+    bump it), so a stale environment silently produces *different numbers*
+    rather than failing. Production runs can opt into an error instead.
+    """
+
+    def test_require_implies_enabled(self, tmp_path):
+        cfg = _cfg(tmp_path, conservative_fluxes="require")
+        assert cfg.use_conservative_fluxes() is True
+        assert cfg.require_conservative_fluxes() is True
+
+    def test_true_is_not_require(self, tmp_path):
+        cfg = _cfg(tmp_path, conservative_fluxes=True)
+        assert cfg.use_conservative_fluxes() is True
+        assert cfg.require_conservative_fluxes() is False
+
+    def test_false_disables_and_does_not_require(self, tmp_path):
+        cfg = _cfg(tmp_path, conservative_fluxes=False)
+        assert cfg.use_conservative_fluxes() is False
+        assert cfg.require_conservative_fluxes() is False
+
+    def test_default_is_enabled_not_required(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert cfg.use_conservative_fluxes() is True
+        assert cfg.require_conservative_fluxes() is False
+
+    def test_require_raises_when_unavailable(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(DiagnosticBase, "_CONSERVATIVE_SUPPORTED", False)
+        probe = _probe(tmp_path, conservative_fluxes="require")
+        with pytest.raises(RuntimeError, match="require"):
+            probe._regrid_method_for("pr")
+
+    def test_require_does_not_raise_for_non_flux(self, tmp_path, monkeypatch):
+        """Only flux variables need the capability."""
+        monkeypatch.setattr(DiagnosticBase, "_CONSERVATIVE_SUPPORTED", False)
+        probe = _probe(tmp_path, conservative_fluxes="require")
+        assert probe._regrid_method_for("tas") == "linear"
+
+    def test_default_mode_falls_back_quietly(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(DiagnosticBase, "_CONSERVATIVE_SUPPORTED", False)
+        probe = _probe(tmp_path, conservative_fluxes=True)
+        assert probe._regrid_method_for("pr") == "linear"
+
+    def test_require_still_honours_the_size_budget(self, tmp_path):
+        """Over-budget is a cost decision, not a broken environment."""
+        probe = _probe(tmp_path, conservative_fluxes="require",
+                       conservative_max_points=1000)
+        assert probe._regrid_method_for("pr", 5000) == "linear"
+
+
 class TestPrecipResolution:
     def test_defaults_to_obs_native(self, tmp_path):
         assert _cfg(tmp_path).get_precip_resolution(0.1) == 0.1
