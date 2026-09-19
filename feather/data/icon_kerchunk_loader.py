@@ -9,9 +9,11 @@ intake catalogues pointing at kerchunk reference stores::
             → /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/
                   v20240618/{2,3}/erc2023_{realm}_native_*_remap025.parq
 
-This loader reads the ``2d_monthly_mean`` gr025 stores directly (bypassing
-intake) and presents them through the same ``load_var``/``load_coords`` API
-as :class:`~feather.data.cmor_loader.CMORLoader`, so the members drop into a
+This loader reads the gr025 ``2d_monthly_mean`` stores — and, when a
+diagnostic asks for ``table="day"``, the matching ``2d_daily_{mean,min,max}``
+stores — directly (bypassing intake) and presents them through the same
+``load_var``/``load_coords`` API as
+:class:`~feather.data.cmor_loader.CMORLoader`, so the members drop into a
 multi-source config next to the CMOR-published r1.
 
 Why a dedicated loader
@@ -25,7 +27,8 @@ variable names, so almost nothing is shared.
 Store conventions handled here
 ------------------------------
 * Grid is standard and needs no reordering: ``lat`` −90→90 (721),
-  ``lon`` 0→359.75 (1440).  Time is monthly, 1975-02 → 2014-12.
+  ``lon`` 0→359.75 (1440).  Time is monthly, 1975-02 → 2014-12, or daily,
+  1975-01-02 → 2014-12-31 (14,609 steps), for the ``day`` stores.
 * Singleton ``height`` / ``height_2`` / ``height_3`` / ``lev`` / ``depth``
   dimensions are squeezed away.
 * Ocean fields mark land with ``missing_value = -9e33``.  The zarr metadata
@@ -50,6 +53,16 @@ Deliberately *not* provided
   all and r3's covers only 90 months, so neither supports a 1980–2014
   climatology.  Diagnostics that need them (``ocean_en4``) skip these
   members via the usual ``KeyError`` path.
+* Monthly ``tasmin``/``tasmax``.  The monthly store declares them but
+  never resets the accumulators: every cell of every month is 999.0 and
+  −99.0.  They are omitted from the monthly map so a request fails loudly;
+  the daily extremes below are the real thing.
+* Daily ``tasmax`` for **r2**.  r2 publishes ``2d_daily_max`` on the native
+  unstructured grid only — there is no ``_remap025`` variant, unlike r3 —
+  and this loader does no regridding.  ``load_var(..., table="day")`` for
+  ``tasmax`` therefore raises ``FileNotFoundError`` on r2, which the
+  extremes diagnostics treat like any other missing file.  Daily ``tasmin``
+  *is* remapped for both members.
 """
 
 import logging
@@ -84,8 +97,12 @@ _ATMOS2D: dict[str, tuple[str, float, float]] = {
     # Temperature
     "tas":     ("tas",     1.0, 0.0),   # K
     "ts":      ("ts",      1.0, 0.0),   # K
-    "tasmin":  ("tasmin",  1.0, 0.0),   # K, monthly mean of daily minima
-    "tasmax":  ("tasmax",  1.0, 0.0),   # K, monthly mean of daily maxima
+    # NOTE: the monthly store also declares ``tasmin``/``tasmax``, but both
+    # are uninitialised accumulators — every cell of every month is exactly
+    # 999.0 and -99.0 respectively, on both r2 and r3.  They are deliberately
+    # left out so a request raises ``KeyError`` (model skipped) instead of
+    # returning sentinels that look like temperatures.  The *daily* extremes
+    # are real: ask for them with ``table="day"``.
     # Pressure
     "psl":     ("psl",     1.0, 0.0),   # Pa
     "ps":      ("ps",      1.0, 0.0),   # Pa
@@ -142,6 +159,20 @@ _OCEAN2D: dict[str, tuple[str, float, float]] = {
     "sisnthick": ("hs",      1.0, 0.0),   # m
 }
 
+#: Daily-**maximum** store fields (``2d_daily_max``).
+#:
+#: The store names a field's daily maximum after the field itself, so its
+#: ``tas`` is CMOR ``tasmax``.  Only r3 publishes a ``_remap025`` variant of
+#: this store; r2 has the native-grid one alone (see the module docstring).
+_ATMOS2D_DAY_MAX: dict[str, tuple[str, float, float]] = {
+    "tasmax": ("tas", 1.0, 0.0),   # K
+}
+
+#: Daily-**minimum** store fields (``2d_daily_min``).  Same naming rule.
+_ATMOS2D_DAY_MIN: dict[str, tuple[str, float, float]] = {
+    "tasmin": ("tas", 1.0, 0.0),   # K
+}
+
 #: Singleton dimensions to drop when present on a store variable.
 _SQUEEZE_DIMS = ("height", "height_2", "height_3", "lev", "depth")
 
@@ -151,9 +182,19 @@ _FILL_THRESHOLD = -1e30
 
 #: Store file names under ``{root}/{member}/``.
 _STORE_FILES = {
+    # Monthly means (the default for every diagnostic that passes no table).
     "atmos2d": "erc2023_atmos_native_2d_monthly_mean_remap025.parq",
     "ocean2d": "erc2023_ocean_native_2d_monthly_mean_remap025.parq",
+    # Daily, reached with ``table="day"``.
+    "atmos2d_day": "erc2023_atmos_native_2d_daily_mean_remap025.parq",
+    "atmos2d_daymax": "erc2023_atmos_native_2d_daily_max_remap025.parq",
+    "atmos2d_daymin": "erc2023_atmos_native_2d_daily_min_remap025.parq",
+    "ocean2d_day": "erc2023_ocean_native_2d_daily_mean_remap025.parq",
 }
+
+#: CMOR table names that mean "daily".  Anything else (``Amon``, ``Omon``,
+#: ``SImon``, ``None``) resolves to the monthly stores.
+_DAILY_TABLES = frozenset({"day", "daily", "1d"})
 
 
 class ICONKerchunkLoader:
@@ -183,19 +224,29 @@ class ICONKerchunkLoader:
         model: str,
         variable: str,
         *,
-        table: str | None = None,   # accepted for API parity; ignored
+        table: str | None = None,
         period: tuple[str, str] | None = None,
         time_mean: bool = False,
     ) -> xr.DataArray:
         """Load *variable* for *model* as ``(time, lat, lon)``.
+
+        Parameters
+        ----------
+        table : str, optional
+            ``"day"`` selects the daily stores; anything else (``"Amon"``,
+            ``"Omon"``, ``None``) selects the monthly ones.
 
         Raises
         ------
         KeyError
             If *variable* is not published by these stores.  Diagnostics
             treat this the same as a missing CMOR file and skip the model.
+        FileNotFoundError
+            If the store that would hold *variable* is not published for
+            this member — notably daily ``tasmax`` on r2, which exists only
+            on the native grid.
         """
-        da = self._load_raw(model, variable)
+        da = self._load_raw(model, variable, table=table)
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -218,17 +269,54 @@ class ICONKerchunkLoader:
     # Internals
     # ------------------------------------------------------------------
 
-    def _load_raw(self, model: str, variable: str) -> xr.DataArray:
-        if variable in _ATMOS2D:
-            store, (name, scale, offset) = "atmos2d", _ATMOS2D[variable]
-        elif variable in _OCEAN2D:
-            store, (name, scale, offset) = "ocean2d", _OCEAN2D[variable]
-        else:
+    @staticmethod
+    def _resolve_store(
+        variable: str, table: str | None,
+    ) -> tuple[str, tuple[str, float, float]]:
+        """Map *variable* + *table* onto ``(store key, (name, scale, offset))``.
+
+        Daily maxima and minima live in their own stores and shadow the
+        monthly ``tasmax``/``tasmin`` entries, which are *monthly means of*
+        the daily extremes rather than the extremes themselves.
+        """
+        if table is not None and table.lower() in _DAILY_TABLES:
+            if variable in _ATMOS2D_DAY_MAX:
+                return "atmos2d_daymax", _ATMOS2D_DAY_MAX[variable]
+            if variable in _ATMOS2D_DAY_MIN:
+                return "atmos2d_daymin", _ATMOS2D_DAY_MIN[variable]
+            if variable in _ATMOS2D:
+                return "atmos2d_day", _ATMOS2D[variable]
+            if variable in _OCEAN2D:
+                return "ocean2d_day", _OCEAN2D[variable]
+            known = sorted(
+                set(_ATMOS2D) | set(_OCEAN2D)
+                | set(_ATMOS2D_DAY_MAX) | set(_ATMOS2D_DAY_MIN)
+            )
             raise KeyError(
                 f"Variable {variable!r} not published by the ICON gr025 "
-                f"monthly stores. Known: "
-                f"{sorted(_ATMOS2D) + sorted(_OCEAN2D)}"
+                f"daily stores. Known: {known}"
             )
+
+        if variable in _ATMOS2D:
+            return "atmos2d", _ATMOS2D[variable]
+        if variable in _OCEAN2D:
+            return "ocean2d", _OCEAN2D[variable]
+        if variable in _ATMOS2D_DAY_MAX or variable in _ATMOS2D_DAY_MIN:
+            raise KeyError(
+                f"{variable!r} is published monthly by the ICON gr025 stores "
+                f"only as an uninitialised sentinel (-99 / 999 everywhere); "
+                f"request it with table=\"day\" to get the real daily field"
+            )
+        raise KeyError(
+            f"Variable {variable!r} not published by the ICON gr025 "
+            f"monthly stores. Known: "
+            f"{sorted(_ATMOS2D) + sorted(_OCEAN2D)}"
+        )
+
+    def _load_raw(
+        self, model: str, variable: str, table: str | None = None,
+    ) -> xr.DataArray:
+        store, (name, scale, offset) = self._resolve_store(variable, table)
 
         ds = self._open_store(model, store)
         if name not in ds:

@@ -307,3 +307,130 @@ class TestStorePath:
 
     def test_fill_threshold_below_any_physical_value(self):
         assert _FILL_THRESHOLD < -1e20
+
+
+# ── Daily stores (table="day") ───────────────────────────────────────────
+
+
+def _make_daily_store(store_vars, n_days=5):
+    """Minimal daily store: named vars on (time, height, lat, lon)."""
+    time = xr.date_range("1980-01-01", periods=n_days, freq="D")
+    base = np.arange(n_days * N_LAT * N_LON, dtype=np.float32)
+    base = base.reshape(n_days, N_LAT, N_LON)
+    ds_vars = {
+        name: xr.DataArray(
+            base[:, None, :, :] + i * 100.0,
+            dims=["time", "height", "lat", "lon"],
+            attrs={"units": "K"},
+        )
+        for i, name in enumerate(store_vars)
+    }
+    coords = {"time": time, "lat": LATS, "lon": LONS, "height": [2.0]}
+    return xr.Dataset(ds_vars, coords=coords)
+
+
+class TestStoreResolution:
+    """`table` picks the store; daily extremes shadow the monthly names."""
+
+    def test_daily_tasmax_uses_daily_max_store(self):
+        store, (name, scale, offset) = ICONKerchunkLoader._resolve_store(
+            "tasmax", "day",
+        )
+        # The store names a daily maximum after the field itself.
+        assert (store, name, scale, offset) == ("atmos2d_daymax", "tas", 1.0, 0.0)
+
+    def test_daily_tasmin_uses_daily_min_store(self):
+        store, (name, _, _) = ICONKerchunkLoader._resolve_store("tasmin", "day")
+        assert (store, name) == ("atmos2d_daymin", "tas")
+
+    def test_daily_plain_atmos_var_uses_daily_mean_store(self):
+        store, spec = ICONKerchunkLoader._resolve_store("pr", "day")
+        assert store == "atmos2d_day"
+        assert spec == _ATMOS2D["pr"]
+
+    def test_daily_ocean_var_uses_daily_ocean_store(self):
+        store, spec = ICONKerchunkLoader._resolve_store("siconc", "day")
+        assert store == "ocean2d_day"
+        assert spec == _OCEAN2D["siconc"]
+
+    def test_daily_conversions_carry_over(self):
+        """Daily fields get the same scaling as their monthly counterparts."""
+        _, (_, scale, _) = ICONKerchunkLoader._resolve_store("hfss", "day")
+        assert scale == -1.0
+
+    @pytest.mark.parametrize("table", ["day", "DAY", "Daily", "1d"])
+    def test_daily_table_spellings(self, table):
+        store, _ = ICONKerchunkLoader._resolve_store("tasmax", table)
+        assert store == "atmos2d_daymax"
+
+    @pytest.mark.parametrize("table", [None, "Amon", "Omon", "SImon"])
+    def test_non_daily_tables_use_monthly_stores(self, table):
+        store, spec = ICONKerchunkLoader._resolve_store("pr", table)
+        assert store == "atmos2d"
+        assert spec == _ATMOS2D["pr"]
+
+    def test_unknown_daily_variable_raises_keyerror(self):
+        with pytest.raises(KeyError, match="daily stores"):
+            ICONKerchunkLoader._resolve_store("nosuchvar", "day")
+
+    def test_every_store_key_has_a_file(self):
+        keys = {"atmos2d", "ocean2d", "atmos2d_day",
+                "atmos2d_daymax", "atmos2d_daymin", "ocean2d_day"}
+        assert set(_STORE_FILES) == keys
+        assert "daily_max" in _STORE_FILES["atmos2d_daymax"]
+        assert "daily_min" in _STORE_FILES["atmos2d_daymin"]
+        assert all(f.endswith("_remap025.parq") for f in _STORE_FILES.values())
+
+
+class TestMonthlyExtremeSentinels:
+    """Monthly tasmin/tasmax are uninitialised accumulators — never served."""
+
+    def test_monthly_map_omits_extremes(self):
+        assert "tasmax" not in _ATMOS2D
+        assert "tasmin" not in _ATMOS2D
+
+    @pytest.mark.parametrize("var", ["tasmax", "tasmin"])
+    def test_monthly_request_points_at_daily(self, var):
+        with pytest.raises(KeyError, match="sentinel"):
+            ICONKerchunkLoader._resolve_store(var, "Amon")
+
+    @pytest.mark.parametrize("var", ["tasmax", "tasmin"])
+    def test_monthly_request_without_table_also_raises(self, var):
+        with pytest.raises(KeyError, match="sentinel"):
+            ICONKerchunkLoader._resolve_store(var, None)
+
+
+class TestDailyLoad:
+    def test_load_daily_tasmax(self, tmp_path, monkeypatch):
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        daily = _make_daily_store(["tas", "hur", "sfcwind"])
+        monkeypatch.setattr(
+            loader, "_open_store",
+            lambda m, s: daily if s == "atmos2d_daymax" else pytest.fail(s),
+        )
+        da = loader.load_var(MODEL, "tasmax", table="day")
+
+        assert da.dims == ("time", "lat", "lon")   # singleton height squeezed
+        assert da.sizes["time"] == 5
+        np.testing.assert_allclose(da.values, daily["tas"].squeeze("height").values)
+
+    def test_daily_period_slicing(self, tmp_path, monkeypatch):
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        daily = _make_daily_store(["tas"], n_days=40)
+        monkeypatch.setattr(loader, "_open_store", lambda m, s: daily)
+        da = loader.load_var(
+            MODEL, "tasmin", table="day", period=("1980-01-05", "1980-01-09"),
+        )
+        assert da.sizes["time"] == 5
+
+    def test_missing_daily_max_store_raises_filenotfound(self, tmp_path):
+        """r2 publishes daily_max on the native grid only — no _remap025."""
+        cfg = _make_config(tmp_path, member=2)
+        loader = ICONKerchunkLoader(cfg)
+        root = tmp_path / "stores" / "2"
+        root.mkdir(parents=True)
+        (root / _STORE_FILES["atmos2d_daymin"]).touch()
+
+        assert loader._store_path(MODEL, "atmos2d_daymin").exists()
+        with pytest.raises(FileNotFoundError, match="daily_max"):
+            loader._store_path(MODEL, "atmos2d_daymax")

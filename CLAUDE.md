@@ -113,6 +113,7 @@ feather/                     # Package root
 | `configs/default.yaml` | DestinE configuration (legacy list format) |
 | `configs/eerie.yaml` | EERIE Ensemble configuration (structured dict format) |
 | `configs/eerie_10_mems_cmip6.yaml` | EERIE 10-member set (= `eerie_all_members_cmip6_highresmip.yaml` + ICON-ESM-ER r2/r3 via `icon_kerchunk`) |
+| `configs/eerie_10_mems_extremes.yaml` | `heatwave_hotspots` on the 10-member set — 8 members publish daily `tasmax`; ICON r2 (native-grid daily-max only) and HadGEM3-GC5 (no daily `tasmax` anywhere) are commented out |
 | `configs/eerie_psl.yaml` | EERIE Ensemble + psl for HadGEM3 (symlinked from HadGEM3-GC5E-HH/historical) |
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
@@ -656,7 +657,10 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 ### ICONKerchunkLoader
 - `feather/data/icon_kerchunk_loader.py`: loads ICON-ESM-ER hist-1950 members **r2/r3**, which the EERIE CMOR tree does not publish (only r1 is CMOR'd)
 - Source: kerchunk parquet reference stores under `/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618/{2,3}/` (the intake catalogues at `/work/bm1344/DKRZ/intake/disk/phase2-model-output/icon-esm-er/hist-1950/r{2,3}i1p1f1/` point at these; the loader reads them directly, bypassing intake)
-- Reads only the two gr025 monthly stores: `erc2023_{atmos,ocean}_native_2d_monthly_mean_remap025.parq`
+- Reads the two gr025 monthly stores `erc2023_{atmos,ocean}_native_2d_monthly_mean_remap025.parq`, and — when a diagnostic passes `table="day"` — the daily ones `erc2023_atmos_native_2d_daily_{mean,min,max}_remap025.parq` / `erc2023_ocean_native_2d_daily_mean_remap025.parq` (daily 1975-01-02 → 2014-12-31, 14,609 steps, same 0.25° grid)
+- **Daily extremes name the field after itself**: `tasmax` is `tas` in the `daily_max` store, `tasmin` is `tas` in `daily_min`. `_resolve_store()` maps variable+table → store; `_DAILY_TABLES` = {day, daily, 1d}, everything else (`Amon`, `None`, …) is monthly
+- **Monthly `tasmin`/`tasmax` are uninitialised accumulators** — literally 999.0 and −99.0 in every cell of every month, on both members. They are omitted from `_ATMOS2D` so a monthly request raises `KeyError` naming the sentinel instead of returning fake temperatures; `table="day"` gives the real extremes
+- **r2 has no remapped daily-max store**: only the native unstructured `erc2023_atmos_native_2d_daily_max.parq` (no `_remap025`, unlike r3), and the loader does no regridding — daily `tasmax` on r2 raises `FileNotFoundError` and the extremes diagnostics skip it. Daily `tasmin` is remapped for both
 - Config: per-model `data_source_type: "icon_kerchunk"`, `data_root` = the version dir, `member` = store sub-directory (`2` → r2i1p1f1, `3` → r3i1p1f1) → routed via `CompositeModelLoader`
 - Grid already matches CMOR output: 0.25° lat/lon, lat −90→90 (721), lon 0→359.75 (1440), monthly 1975-02 → 2014-12. No regridding or reordering
 - **Distinct from `KerchunkParquetLoader`** (IFS-FESOM2 r2/r3): that one handles a flat `value` dim, GRIB short names and 9999 fill; the ICON stores are rectilinear with near-CMOR names, so the two share nothing
@@ -666,7 +670,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **Deliberately not provided**: net radiation (`rss`/`rls`/`rst`/`rlt` + clear-sky) is *not* derived from the up/down components, even though the store has them — `CMORLoader` does not derive them for ICON r1 either, and deriving here would put r2/r3 into radiation panels r1 is absent from, skewing ensemble statistics. Deriving nets belongs in `CMORLoader` so r1 gains them at the same time
 - **Not available**: 3-D ocean (r2 has no model-level store; r3's covers only 90 months) and 3-D atmosphere → `ocean_en4` and the `teleconnections` QBO mode skip these members via the usual `KeyError` path
 - Ocean/sea-ice archive gaps (atmosphere is complete): r2 missing 1996-02..06, r3 missing 1982-08..12 and 1993-04..1994-03
-- 57 dedicated tests in `tests/test_icon_kerchunk_loader.py`, plus `TestEerie10MembersConfig` in `tests/test_composite_loader.py`
+- 80 dedicated tests in `tests/test_icon_kerchunk_loader.py`, plus `TestEerie10MembersConfig` in `tests/test_composite_loader.py`
 
 ### CompositeModelLoader
 - `feather/data/composite_loader.py`: routes `load_var()` and `load_coords()` to the correct backend per model
