@@ -316,6 +316,14 @@ benchmarks:
     influence_radius: 80000
     ensemble_mode: one_per_model
 
+# Added Value region settings.  `region_thresholds` are the two AR6 keep-set
+# cut-offs: how many *individual* members (ensemble mean/median excluded) must
+# have positive regional AV for a region to be drawn/tabulated.  6 of 10 is a
+# majority; 3 is the looser "helps at least a subset" view from the reference
+# analysis, which used 5-of-8 and 3-of-8.
+added_value:
+  region_thresholds: [6, 3]
+
 dask:
   n_workers: 4
   memory_limit: "8GB"
@@ -371,6 +379,7 @@ website:
   group_order:
     - evaluation
     - regions
+    - ar6_regions
     - ocean_added_value
     - temperature
     - precipitation
@@ -383,6 +392,7 @@ website:
   group_labels:
     evaluation: "Global Biases"
     regions: "CORDEX Regions"
+    ar6_regions: "AR6 Regions"
     ocean_added_value: "Ocean Added Value"
     temperature: "Temperature"
     precipitation: "Precipitation"

@@ -34,6 +34,7 @@ import numpy as np
 import xarray as xr
 
 from feather.data.variables import VARIABLE_REGISTRY, get_var
+from feather.diag import _ar6_added_value as _ar6
 from feather.diag import _berkeley
 from feather.diag import ocean_bias as _ocean_bias
 from feather.diag.base import DiagnosticBase
@@ -49,6 +50,36 @@ from feather.util.temporal import climatology, seasonal_climatology
 logger = logging.getLogger(__name__)
 
 _AV_CMAP = cmocean.tools.crop_by_percent(cmocean.cm.tarn, 50, which="both", N=None)
+
+#: Region catalogues selectable with ``--added-value-regions``.
+_REGION_SETS = ("cordex14", "ar6")
+
+
+def _region_sets(regions) -> tuple[str, ...]:
+    """Normalise the ``regions`` argument to a tuple of region-set names.
+
+    ``False``/``None`` → none; ``True`` → ``("cordex14",)`` so the bare
+    ``--added-value-regions`` flag keeps its original meaning; a list is
+    taken as-is, with unknown names warned about and dropped.
+    """
+    if regions is None or regions is False:
+        return ()
+    if regions is True:
+        return ("cordex14",)
+    if isinstance(regions, str):
+        regions = [regions]
+
+    out = []
+    for name in regions:
+        key = str(name).lower()
+        if key not in _REGION_SETS:
+            logger.warning(
+                "Unknown Added Value region set %r — known: %s",
+                name, ", ".join(_REGION_SETS),
+            )
+            continue
+        out.append(key)
+    return tuple(dict.fromkeys(out))
 
 _OBS_DISPLAY_NAMES: dict[str, str] = {
     "ERA5": "ERA5",
@@ -119,10 +150,16 @@ class AddedValueDiag(DiagnosticBase):
         self.experiment = experiment
         self.period = period
         self.cmip6_individual = cmip6_individual
-        # Per-CORDEX-region Added Value bar charts are opt-in (CLI
-        # ``--added-value-regions``).  When disabled, the per-region category
-        # stats are not computed and the per-region figures are not produced.
-        self.regions = regions
+        # Per-region Added Value output is opt-in (CLI
+        # ``--added-value-regions [SET ...]``).  ``regions`` accepts a bool
+        # for backwards compatibility — ``True`` means the CORDEX-14 bars,
+        # which is what the bare flag used to do — or a list of set names
+        # (``cordex14``, ``ar6``).  When a set is off, neither its stats nor
+        # its figures are produced.
+        sets = _region_sets(regions)
+        self.region_sets = sets
+        self.regions = "cordex14" in sets
+        self.ar6_regions = "ar6" in sets
         self._regrid_method = self.config.nereus.get("method", "nearest")
         self._project_name = self.config.project.get("name", "EERIE")
         # Berkeley Earth's ocean values are SST, not 2 m air temperature, so
@@ -469,6 +506,13 @@ class AddedValueDiag(DiagnosticBase):
                                 "Bar chart %s failed", eerie_bar_id,
                                 exc_info=True,
                             )
+
+        # ── AR6 reference-region Added Value (dedicated nav page) ───────────
+        if self.ar6_regions:
+            try:
+                saved.extend(self._run_ar6_regions(skip_existing=skip_existing))
+            except Exception:
+                logger.warning("AR6 region Added Value failed", exc_info=True)
 
         # ── Ocean Added Value (dedicated nav page) ──────────────────────────
         try:
@@ -2503,6 +2547,329 @@ class AddedValueDiag(DiagnosticBase):
             figures.append((fig2, meta2))
 
         return figures
+
+    # -- AR6 reference regions ----------------------------------------------
+
+    #: Website nav group for the AR6 region figures (own page, like the
+    #: CORDEX bars and the Ocean AV page).
+    _AR6_NAV_GROUP = "ar6_regions"
+
+    @property
+    def ar6_output_dir(self) -> Path:
+        """Figures directory for the AR6 region maps and tables."""
+        return Path(self.config.output_dir) / "figures" / "added_value_ar6"
+
+    def _ar6_figure_exists(self, figure_id: str) -> bool:
+        d = self.ar6_output_dir
+        return (d / f"{figure_id}.png").exists() and (
+            d / f"{figure_id}.json"
+        ).exists()
+
+    def _ar6_meta(self, var: str, title: str, figure_id: str,
+                  description: str, plot_type: str) -> dict:
+        """Metadata for an AR6 figure, routed to its own nav group."""
+        return self._build_metadata(
+            title=title,
+            figure_id=figure_id,
+            models=list(self.config.models),
+            description=description,
+            plot_type=plot_type,
+            variables=[var],
+            extra={"group": self._AR6_NAV_GROUP, "region_set": "ar6"},
+        )
+
+    def _run_ar6_regions(
+        self, skip_existing: bool = True,
+    ) -> list[tuple[Path, Path]]:
+        """Added Value over the 58 AR6 reference regions: maps, tables, CSV.
+
+        Reads the bias NetCDFs written by the bias-map diagnostics rather
+        than recomputing (see :mod:`feather.diag._ar6_added_value`), so this
+        is cheap enough to run on its own once those exist.
+        """
+        logger.info("AR6 reference-region Added Value (%s)", self._bench_label)
+        saved: list[tuple[Path, Path]] = []
+        majority, subset = _ar6.region_thresholds(self.config)
+        seasons = self._ar6_periods()
+
+        for var in self.variables:
+            if var not in _ar6.DEFAULT_REFERENCES and not (
+                self.config.added_value or {}
+            ).get("ar6_references", {}).get(var):
+                # Only variables with a declared reference are tabulated;
+                # say so rather than silently producing nothing.
+                logger.info(
+                    "  AR6: skipping %s — no reference declared (add one "
+                    "under added_value.ar6_references)", var,
+                )
+                continue
+            try:
+                saved.extend(self._run_ar6_variable(
+                    var, seasons, majority, subset,
+                    skip_existing=skip_existing,
+                ))
+            except Exception:
+                logger.warning(
+                    "AR6 region Added Value failed for %s", var, exc_info=True,
+                )
+        return saved
+
+    def _ar6_periods(self) -> tuple[str, ...]:
+        """Period keys to tabulate — config ``project.seasons`` or all five."""
+        configured = self.config.project.get("seasons")
+        if not configured:
+            return _ar6.ALL_PERIODS
+        keys = []
+        for item in configured:
+            key = "annual" if str(item).lower() == "annual" else str(item).upper()
+            if key in _ar6.ALL_PERIODS:
+                keys.append(key)
+        return tuple(keys) or _ar6.ALL_PERIODS
+
+    def _run_ar6_variable(
+        self, var: str, seasons, majority: int, subset: int,
+        *, skip_existing: bool,
+    ) -> list[tuple[Path, Path]]:
+        """Compute and plot the AR6 region figures for one variable."""
+        var_info = get_var(var)
+        references = _ar6.references_for(var, self.config)
+        ref_labels = [label for label, _ in references]
+
+        rows = _ar6.compute_region_av(self, var, periods=seasons)
+        if not rows:
+            logger.warning(
+                "  AR6 %s: no bias NetCDF found for any reference — skipping "
+                "(run global_biases/precipitation_mswep with --save-netcdf)",
+                var,
+            )
+            return []
+
+        csv_path = self.ar6_output_dir / (
+            f"{var}_ar6_av_per_member{self._bench_suffix}.csv"
+        )
+        _ar6.rows_to_csv(rows, csv_path)
+        logger.info("  AR6 %s: wrote %s (%d rows)", var, csv_path.name, len(rows))
+
+        members = [m for m in _ar6.ENSEMBLE_ROWS] + [
+            sanitize_name(m) for m in self.config.models
+        ]
+        present = {r["member"] for r in rows}
+        members = [m for m in members if m in present]
+        regions = _ar6.list_ar6_regions()
+
+        saved: list[tuple[Path, Path]] = []
+        saved.extend(self._plot_ar6_tables(
+            var, var_info, rows, seasons, members, regions, ref_labels,
+            majority, subset, skip_existing=skip_existing,
+        ))
+        saved.extend(self._plot_ar6_maps(
+            var, var_info, rows, references, majority, subset,
+            skip_existing=skip_existing,
+        ))
+        return saved
+
+    def _plot_ar6_tables(
+        self, var, var_info, rows, seasons, members, regions, ref_labels,
+        majority, subset, *, skip_existing: bool,
+    ) -> list[tuple[Path, Path]]:
+        """Region × member heatmaps: all regions, plus the two keep-sets."""
+        saved = []
+        # ``dict.fromkeys`` collapses the two keep-sets into one when the
+        # config sets both thresholds to the same value.
+        variants = [("", None, "all 58 regions")] + [
+            (f"_min{t}", t, f"regions where \u2265{t} members add value")
+            for t in dict.fromkeys((majority, subset))
+        ]
+        for period_key in seasons:
+            for token, threshold, blurb in variants:
+                cols = regions if threshold is None else _ar6.keep_set(
+                    rows, period_key, threshold,
+                )
+                if not cols:
+                    logger.info(
+                        "  AR6 %s/%s%s: no region passes — skipping table",
+                        var, period_key, token,
+                    )
+                    continue
+
+                figure_id = (
+                    f"{var}_{period_key.lower()}_ar6_av_table{token}"
+                    f"{self._bench_suffix}"
+                )
+                if skip_existing and self._ar6_figure_exists(figure_id):
+                    saved.append((
+                        self.ar6_output_dir / f"{figure_id}.png",
+                        self.ar6_output_dir / f"{figure_id}.json",
+                    ))
+                    continue
+
+                fig = _ar6.plot_region_table(
+                    rows, period_key, references=ref_labels, members=members,
+                    regions=cols, config=self.config,
+                    title=(
+                        f"Per-member Added Value of {var_info.long_name} over "
+                        f"the AR6 reference regions ({period_key}), "
+                        f"{self.period[0]}\u2013{self.period[1]} \u2014 {blurb}"
+                    ),
+                    subtitle=(
+                        f"Added value vs {self._bench_label} \u2014 boxed = "
+                        f"positive ({self._project_name} better)"
+                    ),
+                    cmap=_AV_CMAP,
+                )
+                meta = self._ar6_meta(
+                    var,
+                    title=(
+                        f"{var_info.long_name} {period_key} AR6 region "
+                        f"Added Value table"
+                    ),
+                    figure_id=figure_id,
+                    description=(
+                        f"Area-weighted Added Value of each ensemble member "
+                        f"over the AR6 reference regions ({blurb}), "
+                        f"{period_key} {self.period[0]}\u2013{self.period[1]}, "
+                        f"against {', '.join(ref_labels)}."
+                    ),
+                    plot_type="heatmap",
+                )
+                saved.append(save_figure_with_metadata(
+                    fig, meta, self.ar6_output_dir, figure_id,
+                ))
+                plt.close(fig)
+        return saved
+
+    def _plot_ar6_maps(
+        self, var, var_info, rows, references, majority, subset,
+        *, skip_existing: bool,
+    ) -> list[tuple[Path, Path]]:
+        """Gridded AV maps with AR6 outlines (annual only, as in the paper).
+
+        Two kinds: one panel per member for each reference, and an ensemble
+        mean/median pair per reference sharing a single keep-set outline.
+        """
+        saved = []
+        period_key = "annual"
+        loaded = {}
+        for ref_label, diag_dir in references:
+            fields = _ar6.load_av_fields(self, var, diag_dir, period_key)
+            if fields is not None:
+                loaded[ref_label] = fields
+
+        if not loaded:
+            return saved
+
+        # Per-member panels, one figure per reference.
+        for ref_label, (lat, lon, fields) in loaded.items():
+            figure_id = (
+                f"{var}_{period_key}_ar6_av_members_{ref_label.lower()}"
+                f"{self._bench_suffix}"
+            )
+            if skip_existing and self._ar6_figure_exists(figure_id):
+                saved.append((
+                    self.ar6_output_dir / f"{figure_id}.png",
+                    self.ar6_output_dir / f"{figure_id}.json",
+                ))
+            else:
+                fig = _ar6.plot_member_maps(
+                    lat, lon, fields, config=self.config,
+                    title=(
+                        f"Added Value of {self._project_name} "
+                        f"{var_info.long_name} over the 58 AR6 reference "
+                        f"regions (annual, {ref_label}), "
+                        f"{self.period[0]}\u2013{self.period[1]}"
+                    ),
+                    subtitle=(
+                        f"Added value vs {self._bench_label} "
+                        f"({ref_label} reference) \u2014 "
+                        f"{self._project_name} better where positive"
+                    ),
+                    cmap=_AV_CMAP,
+                )
+                meta = self._ar6_meta(
+                    var,
+                    title=(
+                        f"{var_info.long_name} annual AR6 Added Value "
+                        f"(per member, {ref_label})"
+                    ),
+                    figure_id=figure_id,
+                    description=(
+                        f"Gridded annual Added Value vs {self._bench_label} "
+                        f"for every member, with the 58 AR6 reference-region "
+                        f"outlines overlaid. Reference: {ref_label}."
+                    ),
+                    plot_type="map",
+                )
+                saved.append(save_figure_with_metadata(
+                    fig, meta, self.ar6_output_dir, figure_id,
+                ))
+                plt.close(fig)
+
+        # Ensemble mean/median with the keep-set outlined, one figure per
+        # threshold.  The keep-set is the union across references so every
+        # panel carries identical outlines.
+        for threshold in dict.fromkeys((majority, subset)):
+            keep = _ar6.keep_set(rows, period_key, threshold)
+            if not keep:
+                continue
+            panels = []
+            for ref_label, (lat, lon, fields) in loaded.items():
+                for stat in _ar6.ENSEMBLE_ROWS:
+                    if stat not in fields:
+                        continue
+                    panels.append((
+                        f"{_ar6.member_label(stat, self.config)} \u2014 "
+                        f"{ref_label}",
+                        lat, lon, fields[stat],
+                    ))
+            if not panels:
+                continue
+
+            figure_id = (
+                f"{var}_{period_key}_ar6_av_ens_min{threshold}"
+                f"{self._bench_suffix}"
+            )
+            if skip_existing and self._ar6_figure_exists(figure_id):
+                saved.append((
+                    self.ar6_output_dir / f"{figure_id}.png",
+                    self.ar6_output_dir / f"{figure_id}.json",
+                ))
+                continue
+
+            fig = _ar6.plot_ensemble_maps(
+                panels, keep=keep,
+                title=(
+                    f"{self._project_name} {var_info.long_name} annual Added "
+                    f"Value \u2014 {len(keep)}/58 AR6 regions where "
+                    f"\u2265{threshold} members add value, "
+                    f"{self.period[0]}\u2013{self.period[1]}"
+                ),
+                subtitle=(
+                    f"Added value vs {self._bench_label} \u2014 "
+                    f"{self._project_name} better where positive"
+                ),
+                cmap=_AV_CMAP,
+            )
+            meta = self._ar6_meta(
+                var,
+                title=(
+                    f"{var_info.long_name} annual AR6 Added Value "
+                    f"(ensemble, \u2265{threshold} members)"
+                ),
+                figure_id=figure_id,
+                description=(
+                    f"Gridded annual Added Value of the ensemble mean and "
+                    f"median vs {self._bench_label}, outlining the "
+                    f"{len(keep)} AR6 regions where at least {threshold} "
+                    f"individual members add value."
+                ),
+                plot_type="map",
+            )
+            saved.append(save_figure_with_metadata(
+                fig, meta, self.ar6_output_dir, figure_id,
+            ))
+            plt.close(fig)
+
+        return saved
 
     def _run_ocean(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Compute + plot the ocean Added Value page for the active benchmark."""

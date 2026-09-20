@@ -623,6 +623,17 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **Land-only `tas` reference**: the Berkeley Earth reference is land-masked (see `temperature_berkeley` above), so ocean cells are NaN. `_compute_av`/`_av_from_biases` now share `_av_ratio()`, which **preserves NaN** instead of collapsing undefined cells to 0.0 — a fake "neither model is better" value that would drag the domain-mean AV toward zero.
 - 24 dedicated tests in `tests/test_added_value.py`
 
+### AR6 reference-region Added Value
+- `--added-value-regions` is now `nargs="*"`: bare (`--added-value-regions`) still means the CORDEX-14 bars, so old invocations are unchanged; `ar6` selects the 58 IPCC AR6 / Iturbide et al. (2020) reference regions (46 land + 15 ocean, 3 shared → 58). `feather/diag/added_value.py:_region_sets()` normalises bool/str/list.
+- `feather/util/ar6_regions.py` — polygons from `regionmask.defined_regions.ar6.all` (vendors the SantanderMetGroup/ATLAS reference shapefiles). **`regionmask>=0.13` is a hard dependency** (pulls geopandas + rasterio); unlike the CORDEX catalogue there is no baked-in corner table, because AR6 shapes are genuine multi-vertex polygons. `ar6_mask()` caches by grid signature — the 58-polygon point-in-polygon test costs ~3 s on a 0.25° grid and is reused across every variable, period and member.
+- Regions **tile the globe** (99.998 % of 0.25° cells) and there is no land/ocean sub-masking: an ocean region such as `NAO` is averaged over its whole polygon.
+- `feather/diag/_ar6_added_value.py` — reads the **bias NetCDFs the bias-map diagnostics already wrote** (`{output}/netcdf/{global_biases,precipitation_mswep,temperature_berkeley}/{var}_{period}_{p0}-{p1}.nc`, fields `{member}_bias` + `{benchmark}_MMM_bias`) instead of recomputing. Prerequisite: run those with `--save-netcdf`. A missing file warns and skips — it deliberately does **not** fall back to a silent multi-hour recompute.
+- AV is computed **per grid cell then area-averaged per region** (cos-lat weighted, NaN-aware), not from region-mean biases — otherwise a warm half cancelling a cold half would score as skill. Reuses `AddedValueDiag._av_from_biases`.
+- **Keep-sets**: a region qualifies when ≥N *individual* members (ens mean/median excluded — they are summaries, not evidence) have positive regional AV. Two thresholds from `added_value.region_thresholds` (default `[6, 3]` = majority of 10, and the looser "helps a subset" view). With two references the keep-set is the **union**, so map outlines match the table columns exactly. The reference analysis used 5-of-8 and 3-of-8.
+- **References** per variable via `added_value.ar6_references`; defaults `tas: [ERA5]`, `pr: [ERA5, MSWEP]`. Berkeley (`BE`) is available but not a `tas` default — it is land-only, so it cannot score the 15 ocean regions.
+- Figures land in `figures/added_value_ar6/` with metadata `group="ar6_regions"` (own nav page, badge in `style.css`): region×member heatmap tables for every configured season (all regions + one per keep-set; two references render as split diagonal cells, boxed = positive), annual gridded AV maps with AR6 outlines one panel per member per reference, and annual ensemble mean/median maps outlining the keep-set. Plus `{var}_ar6_av_per_member{bench}.csv`.
+- 31 tests in `tests/test_ar6_regions.py`, 49 in `tests/test_ar6_added_value.py`
+
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
 - No dependency on xarray/dask/healpy — works entirely on already-generated figures
@@ -759,7 +770,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 
 ## Dependencies
 
-Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, pyyaml, netcdf4, zarr, cmocean, nbformat, pydantic, google-generativeai, openai, jinja2
+Core: xarray, dask, distributed, numpy, scipy, matplotlib, cartopy, intake, intake-xarray, healpy, nereus, regionmask (AR6 regions; pulls geopandas + rasterio), pyyaml, netcdf4, zarr, cmocean, nbformat, pydantic, google-generativeai, openai, jinja2
 
 Dev: pytest, pytest-cov
 

@@ -78,10 +78,19 @@ def main(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--added-value-regions",
-        action="store_true",
-        help="Compute and plot per-CORDEX-region Added Value bar charts "
-             "(added_value diagnostic). Off by default: only the global-domain "
-             "Added Value figures are produced.",
+        nargs="*",
+        default=None,
+        metavar="SET",
+        choices=["cordex14", "ar6"],
+        help="Compute and plot per-region Added Value (added_value "
+             "diagnostic). Off by default: only the global-domain Added "
+             "Value figures are produced. Pass the flag bare for the "
+             "CORDEX-14 bar charts (the original behaviour), or name the "
+             "sets: 'cordex14', 'ar6' (58 IPCC AR6 / Iturbide et al. 2020 "
+             "reference regions -> gridded AV maps + region x member "
+             "tables). The 'ar6' set reads the bias NetCDFs written by "
+             "global_biases / precipitation_mswep, so run those with "
+             "--save-netcdf first.",
     )
     parser.add_argument(
         "--benchmarks",
