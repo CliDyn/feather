@@ -13,6 +13,11 @@ dependencies:
   # Geospatial
   - cartopy
   - healpy
+  # AR6 (Iturbide et al. 2020) reference-region polygons, used by
+  # feather/util/ar6_regions.py.  From conda-forge rather than pip: it pulls
+  # geopandas and rasterio, which ship their own GDAL and are far better
+  # behaved installed alongside cartopy than layered in as pip wheels.
+  - regionmask>=0.13
   # NetCDF / zarr
   - netcdf4
   - zarr
