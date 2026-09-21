@@ -616,48 +616,37 @@ CNRM-CM6-1-HR, HadGEM3-GC31-MM, IPSL-CM6A-LR, MPI-ESM-1-2-HAM and MPI-ESM1-2-LR 
 have since been converted and rejoined without any code change, which is the
 selection rule working as intended.
 
-**HighResMIP `hist-1950` — 19 of 22 candidate models included:**
+**HighResMIP `hist-1950` — 20 of 22 candidate models included:**
 
-> CESM1-CAM5-SE-HR, CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1,
-> CNRM-CM6-1-HR, EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR, ECMWF-IFS-LR,
-> ECMWF-IFS-MR, GFDL-CM4C192, HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL,
-> HadGEM3-GC31-MM, INM-CM5-H, MPI-ESM1-2-HR, MPI-ESM1-2-XR
+> BCC-CSM2-HR, CESM1-CAM5-SE-HR, CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4,
+> CNRM-CM6-1, CNRM-CM6-1-HR, EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR,
+> ECMWF-IFS-LR, ECMWF-IFS-MR, GFDL-CM4C192, HadGEM3-GC31-HH, HadGEM3-GC31-HM,
+> HadGEM3-GC31-LL, HadGEM3-GC31-MM, INM-CM5-H, MPI-ESM1-2-HR, MPI-ESM1-2-XR
 
-*Excluded (3):*
+*Excluded (2):*
 - **AWI-CM-1-1-HR**, **AWI-CM-1-1-LR** — no usable `tas` store yet (empty / not yet
   converted); rejoin once rebuilt.
-- **BCC-CSM2-HR** — fails criterion 3: its converted `Amon` stores cover only
-  **2001–12 to 2014–12** (168 months), not the full 1980–2014 window. This is a DRS
-  publication quirk rather than a failed conversion. BCC split the `Amon` record
-  across two version directories — `v20200822` holds
-  `tas_..._195001-200012.nc` and `v20200921` holds `tas_..._200101-201412.nc` —
-  and `pool_discovery.variable_files()` follows the usual CMIP6 rule of reading the
-  **latest** version directory only, so the earlier half is never opened. All six
-  `Amon` variables are affected the same way; `Omon`/`SImon` are not, because
-  `tos`/`siconc` publish both time chunks under a single version and do span
-  1980–2014. A scan of every multi-version `Amon/tas` directory in both pools found
-  this to be the only such case.
 
-  The converter carries a **version-union override** for it
-  (`VERSION_UNION_OVERRIDES` in `scripts/convert_pool_cmip6.py`), which unions
-  non-overlapping segments across version directories instead of reading the latest
-  alone. Re-convert to pick the early years up:
-
-  ```bash
-  python scripts/convert_pool_cmip6.py --activity HighResMIP \
-      --experiment hist-1950 --models BCC-CSM2-HR --period 1980 2014 \
-      --out /work/bm1344/AWI/EERIE/cmip6_pool_zarr/highresmip_hist-1950 \
-      --no-skip-existing -v
-  ```
-
-  That restores `tas`, `pr` and `ts` to the full 420 months; `psl`, `uas` and `prw`
-  stay at 168 because only the 2001–2014 file was ever published for them, so
-  BCC-CSM2-HR will rejoin the `tas` ensemble but remain absent from those three.
-  Extend the behaviour to other publications with
-  `--union-versions MODEL[/EXPERIMENT[/TABLE[/VARIABLE]]]`, or disable the built-in
-  list with `--no-builtin-union`. Selection is strictly additive — an older file is
-  taken only when no newer version publishes the same span — so a genuine supersede
-  is never downgraded.
+> **BCC-CSM2-HR and split version directories.** BCC publishes its `hist-1950`
+> `Amon` record as two halves under *different* DRS versions — `v20200822` holds
+> `tas_..._195001-200012.nc`, `v20200921` holds `tas_..._200101-201412.nc`. Reading
+> only the latest version, the normal CMIP6 rule, therefore yielded 168 of 780
+> months and the model failed the full-coverage check. The converter now carries a
+> **version-union override** for it (`VERSION_UNION_OVERRIDES` in
+> `scripts/convert_pool_cmip6.py`), which unions non-overlapping segments across
+> versions, and after reconversion `tas`, `pr` and `ts` span the full 1980–2014.
+>
+> `psl`, `uas` and `prw` remain at 168 months: only the 2001–2014 file was ever
+> published for them, so BCC-CSM2-HR counts towards the `tas` ensemble above but is
+> absent from those three variables' MMMs. `Omon`/`SImon` were never affected —
+> `tos`/`siconc` keep both time chunks under a single version.
+>
+> Extend the behaviour to other publications with
+> `--union-versions MODEL[/EXPERIMENT[/TABLE[/VARIABLE]]]`, or drop the built-in
+> entry with `--no-builtin-union`. Selection is strictly additive — an older file is
+> taken only when no newer version publishes the same span — so a genuine supersede
+> is never downgraded. A scan of every multi-version `Amon/tas` directory in the
+> CMIP historical and HighResMIP pools found this to be the only such publication.
 
 > **Re-converting only the missing stores:** the converter's `skip_existing` treats
 > an empty store as "done", so delete the empties first — the verification sweep
