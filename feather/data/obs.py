@@ -1,5 +1,6 @@
 """Observation data access."""
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,8 @@ import xarray as xr
 
 from feather.config import FeatherConfig
 from feather.data.variables import get_var
+
+logger = logging.getLogger(__name__)
 
 
 class ObsLoader:
@@ -496,7 +499,9 @@ class ObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
         return da
 
-    def load_berkeley_hr(self, dataset_key: str, period=None) -> xr.DataArray:
+    def load_berkeley_hr(self, dataset_key: str, period=None, *,
+                         land_only: bool = False,
+                         land_threshold: float = 0.5) -> xr.DataArray:
         """Load a Berkeley Earth high-resolution (0.25°) gridded field in K.
 
         Handles the Berkeley Earth gridded format used by both the global
@@ -513,6 +518,13 @@ class ObsLoader:
             ``BERKELEY_EARTH_LAND_TMAX``, ``BERKELEY_EARTH_LAND_TMIN``.
         period : tuple of str, optional
             (start, end) for time slicing.
+        land_only : bool, optional
+            Mask cells whose ``land_mask`` land-area fraction is below
+            *land_threshold*.  The Land+Ocean product reports SST over the
+            ocean, so a like-for-like comparison against model ``tas``
+            needs the ocean dropped.
+        land_threshold : float, optional
+            Land-area-fraction cut-off (default 0.5).
 
         Returns
         -------
@@ -563,6 +575,17 @@ class ObsLoader:
         abs_temp = anom + xr.DataArray(
             clim_matched, dims=anom.dims, coords=anom.coords,
         )
+
+        if land_only:
+            if "land_mask" in ds_full:
+                abs_temp = abs_temp.where(
+                    ds_full["land_mask"] >= land_threshold,
+                )
+            else:
+                logger.warning(
+                    "%s has no land_mask variable -- returning unmasked field",
+                    dataset_key,
+                )
 
         rename = {}
         if "latitude" in abs_temp.dims:

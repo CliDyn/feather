@@ -35,7 +35,12 @@ dependencies:
   # pip-only packages
   - pip
   - pip:
-    - nereus
+    # Pinned to a commit, not a tag: conservative remapping (PR #12) and the
+    # pole fix (PR #13) both postdate the 0.4.1 release, and upstream did not
+    # bump the version, so an installed nereus reports 0.4.1 either way and
+    # `nereus==0.4.1` would silently give you a build without them.
+    # Replace with `nereus==0.4.2` once upstream cuts a release.
+    - nereus @ git+https://github.com/koldunovn/nereus@32c6226
     - gsw
     - pydantic>=2.0
     - google-genai>=1.0

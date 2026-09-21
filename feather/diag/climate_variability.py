@@ -19,6 +19,7 @@ from feather.data.variables import get_var
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map, plot_combined_map
+from feather.util.regrid import regrid as fregrid
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
 from feather.util.temporal import deseason, detrend
 
@@ -209,10 +210,11 @@ class ClimateVariability(DiagnosticBase):
             if n_src not in _interp_cache:
                 logger.info("  Building nereus interpolator (grid size %d)...",
                             n_src)
-                std_regrid, interp = nr.regrid(
+                std_regrid, interp = fregrid(
                     model_std.values.ravel(),
                     lon=np.asarray(lon), lat=np.asarray(lat),
                     resolution=obs_res,
+                    method=self._regrid_method_for(var, n_src, resolution=obs_res, default="nearest"),
                     influence_radius=influence_radius,
                     lon_bounds=(0.0, 360.0),
                     as_xarray=True,
@@ -225,11 +227,12 @@ class ClimateVariability(DiagnosticBase):
 
                     # Regrid obs to common nereus grid (once)
                     obs_lons_2d, obs_lats_2d = np.meshgrid(obs_lons, obs_lats)
-                    _, obs_interpolator = nr.regrid(
+                    _, obs_interpolator = fregrid(
                         obs_std.values.ravel(),
                         lon=obs_lons_2d.ravel(),
                         lat=obs_lats_2d.ravel(),
                         resolution=obs_res,
+                        method=self._regrid_method_for(var, obs_lons_2d.size, resolution=obs_res, default="nearest"),
                         influence_radius=influence_radius,
                         lon_bounds=(0.0, 360.0),
                         as_xarray=True,
@@ -382,7 +385,7 @@ class ClimateVariability(DiagnosticBase):
             regridded = self._regrid_to_target(
                 da_std, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             std_fields.append(regridded)
             models_used.append(label)
@@ -451,7 +454,7 @@ class ClimateVariability(DiagnosticBase):
             regridded = self._regrid_to_target(
                 da_std, target_lats, target_lons,
                 resolution, influence_radius, cmip6_interp_cache,
-                method=self._regrid_method,
+                method=self._regrid_method_for(var, resolution=resolution),
             )
             std_diff = regridded - obs_std_common
             diff_gmean = float(
@@ -535,7 +538,7 @@ class ClimateVariability(DiagnosticBase):
             src_lon = np.where(lon_arr > 180, lon_arr - 360, lon_arr)
             grid_key = ("unstructured", int(data.shape[0]))
             if grid_key not in interp_cache:
-                _, interp_cache[grid_key] = nr.regrid(
+                _, interp_cache[grid_key] = fregrid(
                     data, lon=src_lon, lat=lat_arr,
                     resolution=resolution, method=method,
                     influence_radius=ir, lon_bounds=(-180.0, 180.0),
@@ -558,7 +561,7 @@ class ClimateVariability(DiagnosticBase):
 
         if grid_key not in interp_cache:
             lon_2d, lat_2d = np.meshgrid(lon_arr, lat_arr)
-            _, interp_cache[grid_key] = nr.regrid(
+            _, interp_cache[grid_key] = fregrid(
                 da.values[:, sort_idx].ravel(),
                 lon=lon_2d.ravel(), lat=lat_2d.ravel(),
                 resolution=resolution,

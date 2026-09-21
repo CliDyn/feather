@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 
 from feather.data.variables import get_var
+from feather.diag import _berkeley
 from feather.diag._ts_panel import build_envelope_timeseries
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
@@ -79,6 +80,14 @@ class TemperatureBerkeley(DiagnosticBase):
         # (skip per-model bias maps and all other groups).
         self.ensemble_only = ensemble_only
         self._regrid_method = self.config.nereus.get("method", "nearest")
+        # Berkeley Earth Land+Ocean reports SST over the ocean, not 2 m air
+        # temperature, so the comparison is restricted to land by default.
+        self.land_only = (
+            _berkeley.land_only_enabled(self.config)
+            and "BERKELEY_EARTH_HR" in self.config.obs_datasets
+        )
+        self.land_threshold = _berkeley.land_threshold(self.config)
+        self._land_frac: xr.DataArray | None | str = "unset"
 
     @staticmethod
     def _grid_signature(lon, lat) -> tuple:
@@ -289,9 +298,69 @@ class TemperatureBerkeley(DiagnosticBase):
     @property
     def _berkeley_label(self) -> str:
         """Display name for the Berkeley Earth product actually loaded."""
-        return ("Berkeley Earth HR"
+        base = ("Berkeley Earth HR"
                 if "BERKELEY_EARTH_HR" in self.config.obs_datasets
                 else "Berkeley Earth")
+        return f"{base} (land)" if self.land_only else base
+
+    def _land_fraction(self) -> xr.DataArray | None:
+        """Berkeley Earth land area fraction, loaded once and cached."""
+        if isinstance(self._land_frac, str):  # sentinel "unset"
+            self._land_frac = _berkeley.load_land_fraction(self.config)
+        return self._land_frac
+
+    @property
+    def _land_field_hook(self):
+        """Land-masking hook for benchmark fields, or None when disabled.
+
+        Benchmark (CMIP6/HighResMIP) members are reduced to a global mean by
+        the base class; without this hook their series would be a
+        land+ocean mean while the models and Berkeley Earth are land-only.
+        """
+        if not self.land_only:
+            return None
+        frac = self._land_fraction()
+        if frac is None:
+            return None
+        return lambda da: _berkeley.mask_latlon_to_land(
+            da, frac, self.land_threshold,
+        )
+
+    def _mask_common_to_land(self, da: xr.DataArray) -> xr.DataArray:
+        """Mask a field already on the common lat/lon grid to land cells."""
+        if not self.land_only:
+            return da
+        return _berkeley.mask_latlon_to_land(
+            da, self._land_fraction(), self.land_threshold,
+        )
+
+    def _mask_model_to_land(
+        self, model: str, da: xr.DataArray,
+    ) -> xr.DataArray:
+        """Restrict a model field to land cells, matching the obs masking.
+
+        Uses the model's own ``sftlf`` when it publishes one, else the
+        Berkeley Earth ``land_mask`` sampled onto the model grid.  Returns
+        *da* unchanged when land-only mode is off or no mask is available.
+        """
+        if not self.land_only:
+            return da
+        try:
+            lon, lat = self._load_model_coords(model, "tas")
+        except (KeyError, FileNotFoundError, AttributeError):
+            return da
+        mask = _berkeley.model_land_mask(
+            self.model_loader, model, da, lon, lat,
+            self.config.get_grid_type(model, self.domain),
+            self._land_fraction(), self.land_threshold,
+        )
+        if mask is None:
+            logger.warning(
+                "  %s: no land mask available -- comparing over all cells",
+                model,
+            )
+            return da
+        return da.where(mask)
 
     def _load_berkeley_earth(
         self, period: tuple[str, str] | None = None,
@@ -315,55 +384,15 @@ class TemperatureBerkeley(DiagnosticBase):
         and a separate ``climatology`` array (12 × lat × lon, °C).
         Absolute temperature = anomaly + climatology[month_of_year].
 
-        Time is encoded as decimal years (float); this method converts it to
-        a proper ``pandas.DatetimeIndex`` before slicing.
+        Time is encoded as decimal years (float); the shared helper converts
+        it to a proper ``pandas.DatetimeIndex`` before slicing, and drops the
+        ocean (where the product reports SST, not 2 m air temperature) when
+        land-only mode is active.
         """
-        import pandas as pd
-
-        ds_cfg = self.config.obs_datasets["BERKELEY_EARTH_HR"]
-        filepath = Path(ds_cfg["path"]) / ds_cfg["variables"]["temperature"]
-        ds_full = xr.open_dataset(filepath, chunks="auto")
-
-        # Convert decimal-year time → DatetimeIndex
-        dec_years = ds_full["time"].values
-        years = dec_years.astype(int)
-        months = np.floor((dec_years - years) * 12).astype(int) + 1
-        months = np.clip(months, 1, 12)
-        datetimes = pd.to_datetime(
-            [f"{y:04d}-{m:02d}-01" for y, m in zip(years, months)]
+        return _berkeley.load_berkeley_hr(
+            self.config, "BERKELEY_EARTH_HR", period,
+            land_only=self.land_only, threshold=self.land_threshold,
         )
-        ds_full = ds_full.assign_coords(time=datetimes)
-
-        # Slice to requested period
-        start, end = period if period else (None, None)
-        anom = ds_full["temperature"].sel(time=slice(start, end))
-        clim = ds_full["climatology"]  # (month_number, latitude, longitude)
-
-        # Reconstruct absolute temperature: anomaly + climatology[month_of_year]
-        month_idx = anom.time.dt.month.values - 1  # 0-based
-        clim_np = clim.values  # (12, nlat, nlon)
-        clim_matched = clim_np[month_idx]  # (ntime, nlat, nlon)
-        abs_temp = anom + xr.DataArray(
-            clim_matched, dims=anom.dims, coords=anom.coords,
-        )
-
-        # Rename dims latitude/longitude → lat/lon
-        rename = {}
-        if "latitude" in abs_temp.dims:
-            rename["latitude"] = "lat"
-        if "longitude" in abs_temp.dims:
-            rename["longitude"] = "lon"
-        if rename:
-            abs_temp = abs_temp.rename(rename)
-
-        # Shift −180..180 → 0..360
-        if float(abs_temp.lon.min()) < 0:
-            abs_temp = abs_temp.assign_coords(
-                lon=((abs_temp.lon + 360) % 360),
-            ).sortby("lon")
-
-        # degC → K
-        return abs_temp + 273.15
 
     def _load_berkeley_earth_legacy(
         self, period: tuple[str, str] | None = None,
@@ -401,7 +430,10 @@ class TemperatureBerkeley(DiagnosticBase):
         for model in self.config.models:
             try:
                 da = self._load_model_var(model, "tas", period=self.period)
-                model_monthly[model] = da
+                # Mask before anything downstream so bias maps, global means,
+                # trends and the Taylor diagram all cover the same domain as
+                # the (land-only) Berkeley Earth reference.
+                model_monthly[model] = self._mask_model_to_land(model, da)
                 lon, lat = self._load_model_coords(model, "tas")
                 model_coords[model] = (lon, lat)
             except (KeyError, FileNotFoundError):
@@ -799,7 +831,9 @@ class TemperatureBerkeley(DiagnosticBase):
         era5_ts = self._era5_global_mean("tas")
 
         # Benchmark global-mean series (CMIP6, HighResMIP, …)
-        benchmarks_ts = self._benchmark_timeseries("tas")
+        benchmarks_ts = self._benchmark_timeseries(
+            "tas", field_hook=self._land_field_hook,
+        )
         primary = benchmarks_ts[0] if benchmarks_ts else None
 
         return {
@@ -816,6 +850,10 @@ class TemperatureBerkeley(DiagnosticBase):
         """Area-weighted ERA5 global-mean series, or None if unavailable."""
         try:
             era5 = self._load_obs_var(var, self.period)
+            if self.land_only:
+                era5 = _berkeley.mask_latlon_to_land(
+                    era5, self._land_fraction(), self.land_threshold,
+                )
             return latlon_global_mean(era5)
         except Exception:  # noqa: BLE001 — ERA5 is an optional overlay
             logger.info("  ERA5 %s unavailable — skipping reference line", var)
@@ -997,7 +1035,9 @@ class TemperatureBerkeley(DiagnosticBase):
 
         # Benchmark monthly climatologies (CMIP6, HighResMIP, …)
         benchmarks_monthly = []
-        for bench in self._benchmark_timeseries("tas"):
+        for bench in self._benchmark_timeseries(
+            "tas", field_hook=self._land_field_hook,
+        ):
             benchmarks_monthly.append({
                 "label": bench["label"],
                 "color": bench["color"],
@@ -1315,7 +1355,10 @@ class TemperatureBerkeley(DiagnosticBase):
                     loader=bench,
                 )
                 if trend is not None:
-                    benchmark_trends[label] = trend
+                    # Model and obs trends already carry the land mask (their
+                    # source fields were masked); benchmark trends are built
+                    # from raw global fields, so mask them here.
+                    benchmark_trends[label] = self._mask_common_to_land(trend)
                     benchmark_trend_colors[label] = (
                         getattr(bench, "color", None) or benchmark_color(i)
                     )
