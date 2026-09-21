@@ -545,10 +545,13 @@ def plot_region_table(
     cb.set_label(subtitle, fontsize=8)
     cb.ax.tick_params(labelsize=7)
     if split:
-        ax.text(
-            1.005, -0.02,
-            f"lower-left: {references[0]}   upper-right: {references[1]}",
-            transform=ax.transAxes, fontsize=7, ha="right", va="top",
+        # As an xlabel rather than a positioned annotation: the rotated
+        # region ticks vary in height with the longest abbreviation, so any
+        # fixed offset in axes coordinates eventually lands on top of them.
+        ax.set_xlabel(
+            f"cell split — lower-left: {references[0]}, "
+            f"upper-right: {references[1]}",
+            fontsize=7.5, labelpad=6,
         )
     fig.tight_layout()
     return fig
