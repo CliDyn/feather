@@ -593,22 +593,28 @@ Membership grows automatically as more stores are converted. The lists below ref
 the current cache for atmospheric `tas`; per-variable membership varies with which
 stores converted.
 
-**CMIP6 historical — 55 of 63 candidate models included:**
+**CMIP6 historical — 62 of 63 candidate models included:**
 
-> ACCESS-CM2, ACCESS-ESM1-5, AWI-CM-1-1-MR, AWI-ESM-1-1-LR, BCC-CSM2-MR, BCC-ESM1,
-> CAMS-CSM1-0, CESM2, CESM2-FV2, CESM2-WACCM, CESM2-WACCM-FV2, CIESM, CMCC-CM2-HR4,
-> CMCC-CM2-SR5, CMCC-ESM2, CNRM-CM6-1, CNRM-ESM2-1, CanESM5, CanESM5-CanOE, E3SM-1-0,
-> E3SM-1-1, E3SM-1-1-ECA, EC-Earth3, EC-Earth3-AerChem, EC-Earth3-CC, EC-Earth3-Veg,
+> ACCESS-CM2, ACCESS-ESM1-5, AWI-CM-1-1-MR, AWI-ESM-1-1-LR, AWI-ESM-1-REcoM,
+> BCC-CSM2-MR, BCC-ESM1, CAMS-CSM1-0, CAS-ESM2-0, CESM2, CESM2-FV2, CESM2-WACCM,
+> CESM2-WACCM-FV2, CIESM, CMCC-CM2-HR4, CMCC-CM2-SR5, CMCC-ESM2, CNRM-CM6-1,
+> CNRM-CM6-1-HR, CNRM-ESM2-1, CanESM5, CanESM5-CanOE, E3SM-1-0, E3SM-1-1,
+> E3SM-1-1-ECA, EC-Earth3, EC-Earth3-AerChem, EC-Earth3-CC, EC-Earth3-Veg,
 > EC-Earth3-Veg-LR, FGOALS-f3-L, FGOALS-g3, FIO-ESM-2-0, GFDL-CM4, GFDL-ESM4,
-> GISS-E2-1-G, GISS-E2-1-G-CC, GISS-E2-1-H, HadGEM3-GC31-LL, ICON-ESM-LR, IITM-ESM,
-> INM-CM4-8, INM-CM5-0, IPSL-CM5A2-INCA, KACE-1-0-G, KIOST-ESM, MCM-UA-1-0,
-> MIROC-ES2L, MIROC6, MPI-ESM1-2-HR, MRI-ESM2-0, NESM3, NorCPM1, NorESM2-LM,
+> GISS-E2-1-G, GISS-E2-1-G-CC, GISS-E2-1-H, HadGEM3-GC31-LL, HadGEM3-GC31-MM,
+> ICON-ESM-LR, IITM-ESM, INM-CM4-8, INM-CM5-0, IPSL-CM5A2-INCA, IPSL-CM6A-LR,
+> KACE-1-0-G, KIOST-ESM, MCM-UA-1-0, MIROC-ES2L, MIROC6, MPI-ESM-1-2-HAM,
+> MPI-ESM1-2-HR, MPI-ESM1-2-LR, MRI-ESM2-0, NESM3, NorCPM1, NorESM2-LM,
 > NorESM2-MM, SAM0-UNICON, TaiESM1, UKESM1-0-LL
 
-*Excluded (8) — pending (re)conversion:* AWI-ESM-1-REcoM, CAS-ESM2-0, CNRM-CM6-1-HR,
-HadGEM3-GC31-MM, IPSL-CM6A-LR, IPSL-CM6A-LR-INCA, MPI-ESM-1-2-HAM, MPI-ESM1-2-LR —
-currently missing a usable `tas` store (empty or not yet converted). They rejoin the
-ensemble automatically once their stores are rebuilt.
+*Excluded (1) — pending (re)conversion:* IPSL-CM6A-LR-INCA — no `Amon` `tas` store in
+the cache (its other variables are present, so this is a per-variable gap rather than
+a missing model). It rejoins the ensemble automatically once the store is written.
+
+The seven models previously listed here as excluded — AWI-ESM-1-REcoM, CAS-ESM2-0,
+CNRM-CM6-1-HR, HadGEM3-GC31-MM, IPSL-CM6A-LR, MPI-ESM-1-2-HAM and MPI-ESM1-2-LR —
+have since been converted and rejoined without any code change, which is the
+selection rule working as intended.
 
 **HighResMIP `hist-1950` — 17 of 22 candidate models included:**
 
