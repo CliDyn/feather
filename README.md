@@ -638,6 +638,27 @@ selection rule working as intended.
   1980–2014. A scan of every multi-version `Amon/tas` directory in both pools found
   this to be the only such case.
 
+  The converter carries a **version-union override** for it
+  (`VERSION_UNION_OVERRIDES` in `scripts/convert_pool_cmip6.py`), which unions
+  non-overlapping segments across version directories instead of reading the latest
+  alone. Re-convert to pick the early years up:
+
+  ```bash
+  python scripts/convert_pool_cmip6.py --activity HighResMIP \
+      --experiment hist-1950 --models BCC-CSM2-HR --period 1980 2014 \
+      --out /work/bm1344/AWI/EERIE/cmip6_pool_zarr/highresmip_hist-1950 \
+      --no-skip-existing -v
+  ```
+
+  That restores `tas`, `pr` and `ts` to the full 420 months; `psl`, `uas` and `prw`
+  stay at 168 because only the 2001–2014 file was ever published for them, so
+  BCC-CSM2-HR will rejoin the `tas` ensemble but remain absent from those three.
+  Extend the behaviour to other publications with
+  `--union-versions MODEL[/EXPERIMENT[/TABLE[/VARIABLE]]]`, or disable the built-in
+  list with `--no-builtin-union`. Selection is strictly additive — an older file is
+  taken only when no newer version publishes the same span — so a genuine supersede
+  is never downgraded.
+
 > **Re-converting only the missing stores:** the converter's `skip_existing` treats
 > an empty store as "done", so delete the empties first — the verification sweep
 > writes their paths to `…/cmip6_empty_stores.txt` and

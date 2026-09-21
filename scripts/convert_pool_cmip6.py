@@ -215,6 +215,53 @@ def _rechunk_uniform(ds):
     return ds.chunk(chunks) if chunks else ds
 
 
+#: Publications whose record is split across version directories rather than
+#: republished whole, so that reading only the latest version silently drops
+#: earlier years.  Entries are ``(model, experiment, table, variable)`` with
+#: ``"*"`` as a wildcard; a match makes discovery union the non-overlapping
+#: segments (see ``pool_discovery.union_version_files``).
+#:
+#: Kept as an explicit allowlist rather than applied everywhere, because
+#: "latest version supersedes" is the correct CMIP6 reading and holds for
+#: every other publication scanned in the CMIP and HighResMIP pools.
+#:
+#: * BCC-CSM2-HR / hist-1950 / Amon -- ``v20200822`` holds 1950-2000 and
+#:   ``v20200921`` holds 2001-2014, so the default rule yields 168 of the
+#:   780 months and the model fails the full-coverage check.
+VERSION_UNION_OVERRIDES: list[tuple[str, str, str, str]] = [
+    ("BCC-CSM2-HR", "hist-1950", "Amon", "*"),
+]
+
+
+def _union_versions_for(
+    model: str, experiment: str, table: str, variable: str,
+    overrides=None,
+) -> bool:
+    """True when this (model, experiment, table, variable) is overridden."""
+    for o_model, o_exp, o_table, o_var in (
+        VERSION_UNION_OVERRIDES if overrides is None else overrides
+    ):
+        if all(
+            pattern in ("*", value)
+            for pattern, value in (
+                (o_model, model), (o_exp, experiment),
+                (o_table, table), (o_var, variable),
+            )
+        ):
+            return True
+    return False
+
+
+def parse_override(spec: str) -> tuple[str, str, str, str]:
+    """Parse a ``MODEL/EXPERIMENT/TABLE/VARIABLE`` CLI override spec.
+
+    Trailing fields may be omitted and default to ``"*"``, so
+    ``BCC-CSM2-HR`` alone overrides every table and variable of that model.
+    """
+    parts = (spec.split("/") + ["*", "*", "*"])[:4]
+    return tuple(part or "*" for part in parts)  # type: ignore[return-value]
+
+
 def convert_model(
     exp_dir: Path,
     model: str,
@@ -226,6 +273,7 @@ def convert_model(
     *,
     skip_existing: bool = True,
     dry_run: bool = False,
+    overrides=None,
 ) -> int:
     """Convert all variables for one model member. Returns count written."""
     written = 0
@@ -237,10 +285,16 @@ def convert_model(
                 continue
             if store.exists():
                 logger.info("    reconverting incomplete store %s", store.name)
-            files = disc.variable_files(exp_dir, member, table, variable)
+            union = _union_versions_for(
+                model, experiment, table, variable, overrides,
+            )
+            files = disc.variable_files(
+                exp_dir, member, table, variable, union_versions=union,
+            )
             if not files:
                 continue
-            logger.info("    %s/%s (%d files)", table, variable, len(files))
+            logger.info("    %s/%s (%d files%s)", table, variable, len(files),
+                        ", version-union" if union else "")
             if dry_run:
                 written += 1
                 continue
@@ -258,7 +312,12 @@ def convert_model(
         store = out_dir / f"{model}_{experiment}_{member}_{table}_{area_var}.zarr"
         if skip_existing and _store_is_valid(store, area_var):
             continue
-        files = disc.variable_files(exp_dir, member, table, area_var)
+        files = disc.variable_files(
+            exp_dir, member, table, area_var,
+            union_versions=_union_versions_for(
+                model, experiment, table, area_var, overrides,
+            ),
+        )
         if not files:
             continue
         logger.info("    %s/%s (area)", table, area_var)
@@ -297,6 +356,16 @@ def main(argv=None) -> int:
                         help="overwrite existing zarr stores")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be converted without writing")
+    parser.add_argument(
+        "--union-versions", nargs="+", default=None, metavar="SPEC",
+        help="additional MODEL[/EXPERIMENT[/TABLE[/VARIABLE]]] specs whose "
+             "record is split across DRS version directories; omitted "
+             "fields default to '*'. Combines non-overlapping time segments "
+             "instead of reading the latest version alone. Adds to the "
+             "built-in list (currently BCC-CSM2-HR/hist-1950/Amon).")
+    parser.add_argument(
+        "--no-builtin-union", action="store_true",
+        help="ignore the built-in version-union overrides")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args(argv)
 
@@ -305,6 +374,12 @@ def main(argv=None) -> int:
         logging.INFO if args.verbose == 1 else logging.WARNING,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+    overrides = [] if args.no_builtin_union else list(VERSION_UNION_OVERRIDES)
+    overrides += [parse_override(spec) for spec in (args.union_versions or [])]
+    if overrides:
+        logger.info("Version-union overrides: %s",
+                    ", ".join("/".join(o) for o in overrides))
 
     activity_root = Path(args.pool_root) / args.activity
     out_dir = Path(args.out)
@@ -341,6 +416,7 @@ def main(argv=None) -> int:
             out_dir, args.period,
             skip_existing=not args.no_skip_existing,
             dry_run=args.dry_run,
+            overrides=overrides,
         )
 
     logger.info("Done — %d zarr store(s) %s",

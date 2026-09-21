@@ -161,3 +161,63 @@ def test_rechunk_uniform_roundtrips_to_zarr(tmp_path):
     store = tmp_path / "rt.zarr"
     convert._write_zarr_atomic(convert._rechunk_uniform(ds), store)
     assert convert._store_is_valid(store, "tos")
+
+
+# ── Version-union overrides ──────────────────────────────────────────────
+
+
+class TestParseOverride:
+    def test_full_spec(self):
+        assert convert.parse_override("BCC-CSM2-HR/hist-1950/Amon/tas") == (
+            "BCC-CSM2-HR", "hist-1950", "Amon", "tas")
+
+    def test_trailing_fields_default_to_wildcard(self):
+        assert convert.parse_override("BCC-CSM2-HR") == (
+            "BCC-CSM2-HR", "*", "*", "*")
+        assert convert.parse_override("BCC-CSM2-HR/hist-1950") == (
+            "BCC-CSM2-HR", "hist-1950", "*", "*")
+
+    def test_empty_field_becomes_wildcard(self):
+        assert convert.parse_override("M//Amon") == ("M", "*", "Amon", "*")
+
+    def test_extra_fields_ignored(self):
+        assert convert.parse_override("a/b/c/d/e") == ("a", "b", "c", "d")
+
+
+class TestUnionOverrideMatching:
+    def test_builtin_covers_bcc_amon(self):
+        assert convert._union_versions_for(
+            "BCC-CSM2-HR", "hist-1950", "Amon", "tas")
+
+    def test_builtin_is_scoped_to_amon(self):
+        """Omon/SImon publish both chunks under one version already."""
+        assert not convert._union_versions_for(
+            "BCC-CSM2-HR", "hist-1950", "Omon", "tos")
+
+    def test_builtin_is_scoped_to_experiment(self):
+        assert not convert._union_versions_for(
+            "BCC-CSM2-HR", "historical", "Amon", "tas")
+
+    def test_other_models_untouched(self):
+        assert not convert._union_versions_for(
+            "CNRM-CM6-1", "hist-1950", "Amon", "tas")
+
+    def test_explicit_overrides_replace_builtin(self):
+        assert not convert._union_versions_for(
+            "BCC-CSM2-HR", "hist-1950", "Amon", "tas", overrides=[])
+
+    def test_wildcard_model_matches_everything(self):
+        assert convert._union_versions_for(
+            "ANY", "historical", "Amon", "tas",
+            overrides=[("*", "*", "*", "*")])
+
+    def test_variable_level_override(self):
+        ov = [("M", "historical", "Amon", "tas")]
+        assert convert._union_versions_for("M", "historical", "Amon", "tas", ov)
+        assert not convert._union_versions_for("M", "historical", "Amon", "pr", ov)
+
+
+def test_builtin_override_list_is_documented_shape():
+    """Each entry must be a 4-tuple so the matcher cannot silently misread."""
+    assert convert.VERSION_UNION_OVERRIDES
+    assert all(len(o) == 4 for o in convert.VERSION_UNION_OVERRIDES)

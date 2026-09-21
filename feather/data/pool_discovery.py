@@ -136,6 +136,80 @@ def latest_version(grid_dir: Path) -> Path | None:
     return None
 
 
+#: Filename time-span suffix, e.g. ``..._gn_195001-200012.nc``.  CMIP6
+#: filenames end with the period covered; fixed fields (``areacella``) have
+#: no such suffix.
+_SPAN_RE = re.compile(r"_(\d{4,8})-(\d{4,8})\.nc$")
+
+
+def _file_span(path: Path) -> tuple[str, str] | None:
+    """``(start, end)`` from a CMIP6 filename, or ``None`` if it has no span."""
+    m = _SPAN_RE.search(path.name)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def union_version_files(grid_dir: Path) -> list[Path]:
+    """Files from *every* version directory, newest winning on equal spans.
+
+    The usual rule -- read the latest version only -- assumes a new version
+    republishes the whole series.  A few centres instead publish *different
+    time segments* under different version dates, so the newest directory
+    holds one chunk and the rest are stranded.  BCC-CSM2-HR's ``hist-1950``
+    ``Amon`` record is the known case: ``v20200822`` carries 1950-2000 and
+    ``v20200921`` carries 2001-2014.
+
+    Selection is strictly additive: a file from an older version is taken
+    only when **no** newer version publishes the same time span, so a
+    genuine supersede still wins and this can never downgrade a corrected
+    file to its earlier edition.  Files with no parseable span fall back to
+    latest-version-only, since without a span there is no way to tell a
+    supersede from a distinct segment.
+    """
+    grid_dir = Path(grid_dir)
+    if not grid_dir.is_dir():
+        return []
+    versions = sorted(d for d in grid_dir.glob("v*") if d.is_dir())
+    if len(versions) < 2:
+        latest = latest_version(grid_dir)
+        return sorted(latest.glob("*.nc")) if latest else []
+
+    # Later versions are visited last, so they overwrite earlier entries
+    # for the same span.
+    by_span: dict[tuple[str, str], Path] = {}
+    spanless: list[Path] = []
+    for version in versions:
+        for nc in sorted(version.glob("*.nc")):
+            span = _file_span(nc)
+            if span is None:
+                spanless.append(nc)
+            else:
+                by_span[span] = nc
+
+    if not by_span:
+        latest = latest_version(grid_dir)
+        return sorted(latest.glob("*.nc")) if latest else []
+
+    if spanless:
+        # Mixed span/spanless in one variable directory is not a layout we
+        # can reason about; stay with the conservative default.
+        logger.warning(
+            "union_version_files: %s mixes files with and without a time "
+            "span; falling back to the latest version only", grid_dir,
+        )
+        latest = latest_version(grid_dir)
+        return sorted(latest.glob("*.nc")) if latest else []
+
+    chosen = sorted(by_span.items(), key=lambda kv: kv[0][0])
+    extra = [p for span, p in chosen if p.parent != versions[-1]]
+    if extra:
+        logger.info(
+            "union_version_files: %s -- recovered %d file(s) from older "
+            "version(s): %s", grid_dir, len(extra),
+            ", ".join(sorted({p.parent.name for p in extra})),
+        )
+    return [p for _, p in chosen]
+
+
 def variable_files(
     exp_dir: Path,
     member: str,
@@ -143,11 +217,21 @@ def variable_files(
     variable: str,
     *,
     grid_prefer: tuple[str, ...] = _DEFAULT_GRID_PREFERENCE,
+    union_versions: bool = False,
 ) -> list[Path]:
     """Resolve the sorted NetCDF files for one variable.
 
     Walks ``{exp_dir}/{member}/{table}/{variable}/{grid}/{version}/`` using
     the grid and version preferences.
+
+    Parameters
+    ----------
+    union_versions : bool, optional
+        When True, combine non-overlapping time segments across version
+        directories instead of reading the latest one alone -- see
+        :func:`union_version_files`.  Off by default: "latest supersedes"
+        is the correct CMIP6 reading and applies to all but a handful of
+        publications.
 
     Returns
     -------
@@ -158,6 +242,8 @@ def variable_files(
     grid = select_grid(var_dir, prefer=grid_prefer)
     if grid is None:
         return []
+    if union_versions:
+        return union_version_files(var_dir / grid)
     version_dir = latest_version(var_dir / grid)
     if version_dir is None:
         return []
