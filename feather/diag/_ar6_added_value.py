@@ -360,15 +360,19 @@ def _draw_regions(ax, keep: "list[str] | None" = None, label: bool = False):
         if not numbers:
             return
         regions = regions[numbers]
-    try:
-        regions.plot_regions(
-            # ``label="abbrev"``: the default is the AR6 *number*, which is
-            # unreadable on a map — the tables are keyed by abbreviation.
-            ax=ax, line_kws=dict(lw=0.4, color="k"),
-            add_label=label, label="abbrev", label_multipolygon="all",
+    kwargs = dict(ax=ax, line_kws=dict(lw=0.4, color="k"), add_label=label)
+    if label:
+        # Only pass the text options when labels are actually drawn —
+        # regionmask warns on every call otherwise, once per panel.
+        # ``label="abbrev"``: the default is the AR6 *number*, which is
+        # unreadable on a map — the tables are keyed by abbreviation.
+        kwargs.update(
+            label="abbrev", label_multipolygon="all",
             text_kws=dict(fontsize=4.5, color="k",
                           bbox=dict(pad=0.15, color="w", alpha=0.6)),
         )
+    try:
+        regions.plot_regions(**kwargs)
     except Exception as exc:  # pragma: no cover - plotting robustness
         logger.warning("  Could not draw AR6 region outlines: %s", exc)
 
