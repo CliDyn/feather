@@ -616,17 +616,27 @@ CNRM-CM6-1-HR, HadGEM3-GC31-MM, IPSL-CM6A-LR, MPI-ESM-1-2-HAM and MPI-ESM1-2-LR 
 have since been converted and rejoined without any code change, which is the
 selection rule working as intended.
 
-**HighResMIP `hist-1950` — 17 of 22 candidate models included:**
+**HighResMIP `hist-1950` — 19 of 22 candidate models included:**
 
-> BCC-CSM2-HR, CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1,
+> CESM1-CAM5-SE-HR, CESM1-CAM5-SE-LR, CMCC-CM2-HR4, CMCC-CM2-VHR4, CNRM-CM6-1,
 > CNRM-CM6-1-HR, EC-Earth3P, EC-Earth3P-HR, ECMWF-IFS-HR, ECMWF-IFS-LR,
-> ECMWF-IFS-MR, HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL,
-> HadGEM3-GC31-MM, MPI-ESM1-2-HR, MPI-ESM1-2-XR
+> ECMWF-IFS-MR, GFDL-CM4C192, HadGEM3-GC31-HH, HadGEM3-GC31-HM, HadGEM3-GC31-LL,
+> HadGEM3-GC31-MM, INM-CM5-H, MPI-ESM1-2-HR, MPI-ESM1-2-XR
 
-*Excluded (5):*
-- **AWI-CM-1-1-HR**, **AWI-CM-1-1-LR**, **CESM1-CAM5-SE-HR**, **GFDL-CM4C192**,
-  **INM-CM5-H** — no usable `tas` store yet (empty / not yet converted); rejoin once
-  rebuilt.
+*Excluded (3):*
+- **AWI-CM-1-1-HR**, **AWI-CM-1-1-LR** — no usable `tas` store yet (empty / not yet
+  converted); rejoin once rebuilt.
+- **BCC-CSM2-HR** — fails criterion 3: its converted `Amon` stores cover only
+  **2001–12 to 2014–12** (168 months), not the full 1980–2014 window. This is a DRS
+  publication quirk rather than a failed conversion. BCC split the `Amon` record
+  across two version directories — `v20200822` holds
+  `tas_..._195001-200012.nc` and `v20200921` holds `tas_..._200101-201412.nc` —
+  and `pool_discovery.variable_files()` follows the usual CMIP6 rule of reading the
+  **latest** version directory only, so the earlier half is never opened. All six
+  `Amon` variables are affected the same way; `Omon`/`SImon` are not, because
+  `tos`/`siconc` publish both time chunks under a single version and do span
+  1980–2014. A scan of every multi-version `Amon/tas` directory in both pools found
+  this to be the only such case.
 
 > **Re-converting only the missing stores:** the converter's `skip_existing` treats
 > an empty store as "done", so delete the empties first — the verification sweep
