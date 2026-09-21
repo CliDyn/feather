@@ -41,7 +41,9 @@ pip install -e .
 pip install -e .
 ```
 
-See `environment.yml` for the full list of dependencies. Key packages that are best installed via conda-forge: `cartopy`, `healpy`, `netcdf4`, `eccodes`, `cfgrib`.
+See `environment.yml` for the full list of dependencies. Key packages that are best installed via conda-forge: `cartopy`, `healpy`, `netcdf4`, `eccodes`, `cfgrib`, `regionmask`.
+
+`regionmask` (>= 0.13) supplies the AR6 reference-region polygons used by the per-region Added Value output. It pulls in `geopandas` and `rasterio`, which ship their own GDAL, so install it from conda-forge rather than pip to avoid a second GDAL sitting alongside cartopy's.
 
 **nereus** must be installed directly from GitHub, from `main` rather than a tag:
 
@@ -141,6 +143,13 @@ feather --variables tas pr -v
 
 # Include individual CMIP6 model lines/biases alongside MMM
 feather --cmip6-individual -v
+
+# Per-region Added Value. Bare flag = CORDEX-14 bar charts; name a set for
+# the others. 'ar6' reads the bias NetCDFs written by global_biases /
+# precipitation_mswep, so run those with --save-netcdf first.
+feather --diagnostics added_value --added-value-regions -v            # CORDEX-14
+feather --diagnostics added_value --added-value-regions ar6 -v        # 58 AR6 regions
+feather --diagnostics added_value --added-value-regions cordex14 ar6 -v
 
 # Figures-only website (no LLM analysis)
 feather --no-llm -v
@@ -359,6 +368,40 @@ Outputs written to `{output_dir}/climate_classification/` for later regional ana
 | `added_value` | `AddedValueDiag` | ERA5 / Berkeley Earth / MSWEP (atmos); ESA-CCI + HadISST / EN4 / OSI-SAF (ocean) | Dosio et al. (2015) Added Value: EERIE ensemble vs CMIP6/HighResMIP MMM — ensemble summary maps + per-model panels. Includes a dedicated **Ocean Added Value** page (`tos` vs ESA-CCI *and* HadISST, `thetao`/`so` vs EN4, `siconc` vs OSI-SAF) that reuses the ocean diagnostics' benchmark-bias NetCDFs |
 
 **Added Value** (AV) quantifies where the EERIE ensemble outperforms the CMIP6 multi-model mean relative to observations. AV ∈ [-1, 1]: AV > 0 means EERIE reduces squared error vs CMIP6 MMM at that grid point. Two figures per period (annual, DJF, JJA): ensemble mean/median summary and one panel per individual EERIE and CMIP6 model.
+
+#### Per-region Added Value (`--added-value-regions`)
+
+Off by default — only the global-domain figures are produced. Two region catalogues are available, and both can run in one invocation.
+
+**`cordex14`** (also what the bare flag selects, preserving the original behaviour) — the 14 CORDEX-CMIP6 `*-11` domains from `feather/util/regions.py`, as summary **bar charts** per region for annual/DJF/JJA. Written to `figures/added_value_regions/` as their own "CORDEX Regions" nav page.
+
+**`ar6`** — the 58 IPCC AR6 reference regions of [Iturbide et al. (2020)](https://doi.org/10.5194/essd-12-2959-2020) (46 land + 15 ocean, three belonging to both sets), with polygons from `regionmask`. Written to `figures/added_value_ar6/` as an "AR6 Regions" nav page:
+
+- **Tables** — region × member heatmaps for every configured season. Three per season: all 58 regions, plus one per keep-set threshold. With two references each cell is split on the diagonal; a black box marks a positive value.
+- **Maps** — annual gridded AV with region outlines, one panel per member per reference; plus ensemble mean/median with the keep-set outlined, one figure per threshold.
+- **CSV** — `{var}_ar6_av_per_member.csv`, one row per (reference, period, member, region).
+
+AV is computed per grid cell and then area-averaged over each region (cos-lat weighted, NaN-aware), rather than derived from region-mean biases — otherwise a warm half cancelling a cold half would score as skill.
+
+A region is drawn and tabulated when at least *N* **individual** members have positive regional AV; the ensemble mean and median are excluded from that count, being summaries of the members rather than further evidence. Both thresholds come from `added_value.region_thresholds` in the config (default `[6, 3]`: a majority of a ten-member ensemble, and a looser "helps at least a subset" view). With more than one reference the keep-set is the **union** across them, so the map outlines always match the table columns.
+
+References per variable are set by `added_value.ar6_references`, defaulting to `tas: [ERA5]` and `pr: [ERA5, MSWEP]`. Berkeley Earth (`BE`) is available but is not a `tas` default: it is land-only, so it cannot score the 15 ocean regions.
+
+Unlike the rest of the diagnostic, the `ar6` set **reads the bias NetCDFs that the bias-map diagnostics already wrote** (`{output_dir}/netcdf/{global_biases,precipitation_mswep,temperature_berkeley}/`) instead of recomputing, which takes the whole regional pass from hours to seconds. Generate them first; a missing file is reported and skipped rather than silently triggering a full recompute:
+
+```bash
+# 1) bias NetCDFs for the references you want (compute node)
+feather --config configs/eerie_10_mems_cmip6.yaml \
+        --diagnostics global_biases precipitation_mswep \
+        --variables tas pr --benchmarks CMIP6 --save-netcdf \
+        --steps diagnostics -v
+
+# 2) AR6 maps + tables (cheap enough for a login node)
+feather --config configs/eerie_10_mems_cmip6.yaml \
+        --diagnostics added_value --variables tas pr \
+        --added-value-regions ar6 --benchmarks CMIP6 \
+        --steps diagnostics -v
+```
 
 All diagnostics support:
 - `variables=["tas", ...]` — filter which variables to evaluate (CMOR canonical names)
