@@ -5,6 +5,7 @@ import pytest
 import xarray as xr
 
 from feather.config import FeatherConfig
+from feather.data.variables import get_var
 from feather.diag.teleconnections import (
     ModeDefinition,
     TeleconnectionDiag,
@@ -1426,3 +1427,62 @@ class TestCurvilinearGrid:
         assert idx is not None
         assert "time" in idx.dims
         assert pat is None
+
+
+class TestObsMetadata:
+    """Sidecar metadata must name the obs dataset the figure actually used."""
+
+    def _diag(self, sst_field, sst_obs_field, cfg):
+        return TeleconnectionDiag(
+            MultiVarModelLoader({"tos": sst_field}),
+            MultiVarObsLoader({"tos": sst_obs_field}),
+            cfg,
+        )
+
+    def test_sst_modes_report_their_override(self):
+        # ENSO/IOD/PDO read HadISST, not the ESA-CCI default the registry
+        # carries for `tos` — the sidecar must say so.
+        for name in ("enso", "iod", "pdo"):
+            meta = TeleconnectionDiag._obs_meta(_MODE_REGISTRY[name])
+            assert meta == {"obs_dataset": "HADISST", "obs_variable": "sst"}
+
+    def test_registry_default_left_alone_without_override(self):
+        # No override → empty, so build_metadata's registry auto-fill stands.
+        for name in ("nao", "sam", "ao", "qbo"):
+            assert TeleconnectionDiag._obs_meta(_MODE_REGISTRY[name]) == {}
+
+    def test_timeseries_sidecar_names_hadisst(self, sst_field, sst_obs_field,
+                                              teleconnection_config):
+        diag = self._diag(sst_field, sst_obs_field, teleconnection_config)
+        mode_def = _MODE_REGISTRY["enso"]
+        _, meta = diag._plot_timeseries(mode_def, diag._compute_mode(mode_def))
+        assert meta["obs_dataset"] == "HADISST"
+        assert meta["obs_variable"] == "sst"
+
+    def test_all_enso_figures_name_hadisst(self, sst_field, sst_obs_field,
+                                           teleconnection_config):
+        import matplotlib.pyplot as plt
+
+        diag = self._diag(sst_field, sst_obs_field, teleconnection_config)
+        mode_def = _MODE_REGISTRY["enso"]
+        result = diag._compute_mode(mode_def)
+        figures = diag._plot_mode(mode_def, result)
+        assert figures
+        for fig, meta in figures:
+            assert meta["obs_dataset"] == "HADISST", meta["figure_id"]
+            assert meta["obs_variable"] == "sst", meta["figure_id"]
+            plt.close(fig)
+
+    def test_slp_mode_keeps_registry_obs(self, slp_field, slp_obs_field,
+                                         teleconnection_config):
+        import matplotlib.pyplot as plt
+
+        diag = TeleconnectionDiag(
+            MultiVarModelLoader({"psl": slp_field}),
+            MultiVarObsLoader({"psl": slp_obs_field}),
+            teleconnection_config,
+        )
+        mode_def = _MODE_REGISTRY["nao"]
+        _, meta = diag._plot_timeseries(mode_def, diag._compute_mode(mode_def))
+        assert meta["obs_dataset"] == get_var("psl").obs_dataset
+        plt.close("all")

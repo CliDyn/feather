@@ -43,7 +43,7 @@ _PACKING_ENCODING_KEYS = (
 def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     """Drop attrs whose values can't serialize to NetCDF (e.g. GRIB/earthkit
     dict attrs like ``_earthkit={'bitsPerValue': 24}``) and strip inherited
-    integer-packing encoding that breaks float/NaN fields.
+    packing metadata that breaks float/NaN fields.
 
     Cleans the dataset's own attrs plus every variable's and coordinate's
     attrs and encoding. Mutates *ds* in place and returns it.
@@ -57,7 +57,35 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
         clean(var.attrs)
         for k in _PACKING_ENCODING_KEYS:
             var.encoding.pop(k, None)
+            # Packing metadata that arrived as an *attribute* rather than in
+            # ``encoding`` is just as fatal: the kerchunk stores carry
+            # ``_FillValue: "NaN"`` (the string) on their time coordinate, and
+            # netCDF4 rejects it when creating the int64 time variable
+            # ("invalid literal for int() with base 10: 'NaN'"), aborting the
+            # write part-way through.  These derived fields are plain floats
+            # written with xarray's own fill value, so the inherited values
+            # describe nothing here.
+            var.attrs.pop(k, None)
     return ds
+
+
+def _write_netcdf(ds: xr.Dataset, path: Path) -> None:
+    """Write *ds* to *path* atomically.
+
+    ``to_netcdf`` defines every dimension and then fills variables one by one,
+    so a failure part-way leaves a readable but **truncated** file — all the
+    dims, only the variables written before the error.  Since callers skip
+    paths that already exist, such a stump would be treated as a finished
+    product by every later run.  Writing to a sibling temp file and renaming
+    only on success means the destination either holds a complete dataset or
+    does not exist.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        _sanitize_attrs(ds).to_netcdf(tmp)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def sanitize_name(name: str) -> str:
@@ -350,7 +378,7 @@ def export_generic_netcdf(
     )
     if extra_attrs:
         ds.attrs.update(extra_attrs)
-    _sanitize_attrs(ds).to_netcdf(path)
+    _write_netcdf(ds, path)
     logger.info("  Wrote NetCDF: %s (%d fields)", path.name, len(ds.data_vars))
     return [path]
 
@@ -412,7 +440,7 @@ def export_biasmap_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _sanitize_attrs(ds).to_netcdf(path)
+        _write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s", path.name)
         written.append(path)
 
@@ -472,7 +500,7 @@ def export_biasmap_individual_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _sanitize_attrs(ds).to_netcdf(path)
+        _write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s (%d members×fields)",
                     path.name, len(ds.data_vars))
         written.append(path)
