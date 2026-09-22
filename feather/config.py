@@ -90,6 +90,11 @@ class FeatherConfig:
     # Benchmark ensembles (e.g. CMIP6, HighResMIP) — list of config dicts.
     benchmarks: list = field(default_factory=list)
 
+    # Added Value diagnostic settings (region keep-set thresholds, AR6
+    # reference datasets).  Consumed by feather.diag.added_value and its AR6
+    # region companion; absent from most configs, hence the empty default.
+    added_value: dict = field(default_factory=dict)
+
     # Daily-resolution CMIP6 envelope (read straight from the DRS NetCDF tree,
     # no zarr cache).  Consumed only by diagnostics that need daily fields
     # (e.g. heatwave_hotspots); kept separate from ``cmip6``/``benchmarks`` so
@@ -393,6 +398,7 @@ class FeatherConfig:
             model_configs=model_configs,
             data_source=data_source,
             benchmarks=raw.get("benchmarks", []),
+            added_value=raw.get("added_value", {}),
             cmip6_daily=raw.get("cmip6_daily", {}),
         )
 
