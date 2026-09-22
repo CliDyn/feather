@@ -72,8 +72,12 @@ comparing models against EN4 v4.2.2. Monthly as semi-transparent \
 background, annual means as thick foreground. Assess warming/freshening \
 rates at different depths.
 17. **Trend maps** — Combined multi-panel figure showing linear trends \
-(units/decade) over the analysis period. First panel shows observation \
-trends, subsequent panels show model-obs trend differences. Look for: \
+(units/decade) over the analysis period. Two variants exist per variable \
+and period. The *trend difference* variant shows the observed trend \
+(first panel) followed by model-obs trend differences. The *trend fields* \
+variant shows the observed trend and each simulated trend field directly \
+on a shared colorbar (no differencing), so absolute warming/cooling and \
+precipitation-change patterns can be compared side by side. Look for: \
 spatial patterns of warming/cooling, precipitation changes, trend \
 magnitude comparison across models, regions of agreement/disagreement.
 18. **Climate variability STD maps** — Combined multi-panel figure showing \

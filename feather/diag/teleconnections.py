@@ -45,6 +45,14 @@ class ModeDefinition:
     variable: str          # CMOR variable name
     method: str            # "box_mean", "box_diff", "eof", "zonal_mean"
     domain: str            # "sfc", "o2d", "pl"
+    # Optional obs override: load the reference field directly from this
+    # obs dataset/variable instead of the registry default for ``variable``.
+    # Used for SST modes (ENSO/IOD/PDO) to pick HadISST (full 1870-present
+    # record) rather than ESA-CCI, whose file only spans 1990-2014.
+    obs_dataset: str | None = None
+    obs_variable: str | None = None
+    # Label for the observation panel/legend (matches obs_dataset).
+    obs_label: str = "ERA5"
     # Box regions: {name: (lon_min, lon_max, lat_min, lat_max)}
     boxes: dict = field(default_factory=dict)
     # EOF region
@@ -83,6 +91,8 @@ _register_mode(ModeDefinition(
     boxes={"nino34": (190, 240, -5, 5)},  # 170W-120W = 190-240 in 0-360
     typical_period="3-7 years",
     seasonal_peak="DJF",
+    obs_dataset="HADISST", obs_variable="sst",  # full 1870-present record
+    obs_label="HadISST",
 ))
 
 # NAO: EOF1 of SLP over North Atlantic
@@ -147,6 +157,8 @@ _register_mode(ModeDefinition(
     },
     typical_period="2-4 years",
     seasonal_peak="SON",
+    obs_dataset="HADISST", obs_variable="sst",  # full 1870-present record
+    obs_label="HadISST",
 ))
 
 # PDO: EOF1 of N. Pacific SST with global-mean SST removed
@@ -163,6 +175,8 @@ _register_mode(ModeDefinition(
     sign_point=(45, 200),  # Central N. Pacific — negative for PDO+
     plot_projection="np",
     plot_extent=(-180, 180, 15, 90),
+    obs_dataset="HADISST", obs_variable="sst",  # full 1870-present record
+    obs_label="HadISST",
 ))
 
 # QBO: Equatorial zonal-mean zonal wind at 50 hPa
@@ -446,7 +460,22 @@ class TeleconnectionDiag(DiagnosticBase):
             return self._data_cache[cache_key]
 
         if source == "obs":
-            da = self._load_obs_var(var, self.period)
+            if mode_def.obs_dataset is not None:
+                # Explicit obs override (e.g. HadISST for the SST modes,
+                # which covers the full analysis window unlike ESA-CCI).
+                da = self.obs_loader.load(
+                    mode_def.obs_dataset, mode_def.obs_variable,
+                    period=self.period,
+                )
+                # HadISST flags land/sea-ice cells with sentinel fill values
+                # (e.g. -1000.0, -1e30). Mask any non-physical SST to NaN so
+                # they cannot corrupt box means or the PDO North-Pacific EOF
+                # (EOF drops non-finite columns; box means skip NaN). The
+                # window is generous enough to cover either °C (~[-2, 40]) or
+                # K (~[270, 313]) storage while excluding the fill sentinels.
+                da = da.where((da > -100.0) & (da < 1000.0))
+            else:
+                da = self._load_obs_var(var, self.period)
         else:
             da = self._load_model_var(model, var, period=self.period)
             if "time" in da.dims and self.period:
@@ -1336,7 +1365,7 @@ class TeleconnectionDiag(DiagnosticBase):
         # Observations first
         obs_idx = result.get("obs_index")
         if obs_idx is not None:
-            panels.append(("ERA5", obs_idx, OBS_COLOR))
+            panels.append((mode_def.obs_label, obs_idx, OBS_COLOR))
 
         # Models
         for model, idx in result["model_indices"].items():
@@ -1394,7 +1423,7 @@ class TeleconnectionDiag(DiagnosticBase):
             ax.set_ylabel(label, fontsize=10, fontweight="bold")
             ax.grid(True, alpha=0.3)
 
-            if label not in ("ERA5", "CMIP6 MMM"):
+            if label not in (mode_def.obs_label, "CMIP6 MMM"):
                 stats[label] = {
                     "std": float(idx.std()),
                     "mean": float(idx.mean()),
@@ -1433,7 +1462,7 @@ class TeleconnectionDiag(DiagnosticBase):
         patterns = {}
         cmip6_labels: set[str] = set()
         if result.get("obs_pattern") is not None:
-            patterns["ERA5"] = result["obs_pattern"]
+            patterns[mode_def.obs_label] = result["obs_pattern"]
         for model, pat in result.get("model_patterns", {}).items():
             if pat is not None:
                 patterns[model] = pat
@@ -1556,7 +1585,7 @@ class TeleconnectionDiag(DiagnosticBase):
         for model, ve in result.get("model_var_explained", {}).items():
             var_exp_stats[model] = {"variance_explained": ve}
         if result.get("obs_var_explained") is not None:
-            var_exp_stats["ERA5"] = {
+            var_exp_stats[mode_def.obs_label] = {
                 "variance_explained": result["obs_var_explained"],
             }
 
@@ -1708,7 +1737,7 @@ class TeleconnectionDiag(DiagnosticBase):
             periods, psd = power_spectrum(obs_idx.values)
             if len(periods) > 0:
                 ax.plot(periods, psd, color=OBS_COLOR, linewidth=2.5,
-                        label="ERA5")
+                        label=mode_def.obs_label)
 
         # Mark typical period range
         if mode_def.typical_period and "-" in mode_def.typical_period:
@@ -1788,7 +1817,7 @@ class TeleconnectionDiag(DiagnosticBase):
             offset = (source_idx - n_sources / 2 + 0.5) * bar_width
             ax.bar(
                 months + offset, monthly_std.values,
-                bar_width, color=OBS_COLOR, label="ERA5",
+                bar_width, color=OBS_COLOR, label=mode_def.obs_label,
             )
 
         ax.set_xticks(months)
