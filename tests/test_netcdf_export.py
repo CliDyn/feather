@@ -396,3 +396,54 @@ def test_sanitize_strips_packing_attrs():
     da.attrs = {"_FillValue": "NaN", "scale_factor": 0.01, "units": "K"}
     ds = nx._sanitize_attrs(xr.Dataset({"v": da}))
     assert ds["v"].attrs == {"units": "K"}
+
+
+# ── Checkpoint writers share the atomic path ──────────────────────────
+
+
+def test_write_netcdf_leaves_source_dataset_untouched(tmp_path):
+    """Sanitising cleans a copy — the caller keeps its dataset as it was.
+
+    The checkpoint writers build a dataset, write it, and in places go on
+    using it, so the write must not quietly strip their attrs.
+    """
+    da = xr.DataArray(np.ones(4), dims="x", name="v")
+    da.attrs = {"_FillValue": "NaN", "units": "K"}
+    da.encoding = {"dtype": np.dtype("int16")}
+    ds = xr.Dataset({"v": da})
+
+    nx.write_netcdf(ds, tmp_path / "chk.nc")
+
+    assert ds["v"].attrs == {"_FillValue": "NaN", "units": "K"}
+    assert ds["v"].encoding == {"dtype": np.dtype("int16")}
+    written = xr.open_dataset(tmp_path / "chk.nc")
+    assert written["v"].attrs == {"units": "K"}
+    written.close()
+
+
+def test_write_netcdf_forwards_kwargs(tmp_path):
+    """Extra kwargs reach ``to_netcdf`` (callers may pass ``encoding=``)."""
+    ds = xr.Dataset({"v": ("x", np.ones(4))})
+    nx.write_netcdf(ds, tmp_path / "e.nc",
+                    encoding={"v": {"zlib": True, "complevel": 1}})
+    out = xr.open_dataset(tmp_path / "e.nc")
+    assert out["v"].encoding.get("zlib") is True
+    out.close()
+
+
+def test_diagnostic_checkpoints_use_the_atomic_writer():
+    """No diagnostic writes a checkpoint with a bare ``to_netcdf``.
+
+    A half-written checkpoint is worse than a half-written export: the
+    exports are merely skipped when present, but a checkpoint is *read back*
+    to rebuild figures, so a stump silently feeds truncated data into a
+    figure that looks complete.
+    """
+    import pathlib
+
+    diag_dir = pathlib.Path(__file__).resolve().parents[1] / "feather" / "diag"
+    offenders = [
+        p.name for p in sorted(diag_dir.glob("*.py"))
+        if p.name != "netcdf_export.py" and ".to_netcdf(" in p.read_text()
+    ]
+    assert offenders == []

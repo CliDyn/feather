@@ -39,6 +39,7 @@ from feather.util.koeppen_trewartha import (
     transition_matrix,
 )
 from feather.util.spatial import compute_latlon_areas
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class ClimateShiftsDiag(KTClimateClassification):
             "land_only": "True — ocean pixels are NaN",
         })
         path = self.nc_dir / f"{self._safe(source)}_kt_{kind}_{self._safe(str(self.period[0]))}.nc"
-        ds.to_netcdf(path)
+        write_netcdf(ds, path)
 
     # ── Plot ───────────────────────────────────────────────────────────
 

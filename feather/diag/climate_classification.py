@@ -50,6 +50,7 @@ from feather.util.koeppen_trewartha import (
     classify_kt,
 )
 from feather.util.spatial import compute_latlon_areas
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -673,7 +674,7 @@ class KTClimateClassification(DiagnosticBase):
             },
         )
         path = self._nc_path(source)
-        ds.to_netcdf(path)
+        write_netcdf(ds, path)
         logger.info("  Saved KT NetCDF: %s", path)
 
     def _save_clim_nc(
@@ -731,7 +732,7 @@ class KTClimateClassification(DiagnosticBase):
             },
         )
         path = self._clim_path(source)
-        ds.to_netcdf(path)
+        write_netcdf(ds, path)
         logger.info("  Saved climatology NetCDF: %s", path)
 
     def _write_csv(self, area_pct: dict[str, dict[str, float]]) -> None:

@@ -28,6 +28,7 @@ from feather.diag.registry import register
 from feather.plot.maps import _flatten_latlon, plot_combined_map
 from feather.plot.styles import OBS_COLOR
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
+from feather.diag.netcdf_export import write_netcdf
 from feather.util.temporal import (
     annual_mean,
     climatology,
@@ -202,7 +203,8 @@ class PrecipObsComparisonDiag(DiagnosticBase):
             })
             ds.attrs.update(variable="pr", reference="ERA5", secondary="MSWEP",
                             units="kg m-2 s-1", grid="ERA5 0.25deg")
-            ds.to_netcdf(nc_dir / f"pr_mswep_{pk.lower()}_clim_diff.nc")
+            write_netcdf(
+                ds, nc_dir / f"pr_mswep_{pk.lower()}_clim_diff.nc")
 
     # ── Computation ────────────────────────────────────────────────────
 

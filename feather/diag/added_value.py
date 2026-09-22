@@ -39,7 +39,7 @@ from feather.diag import _berkeley
 from feather.diag import ocean_bias as _ocean_bias
 from feather.diag.base import DiagnosticBase
 from feather.diag.figure_meta import save_figure_with_metadata
-from feather.diag.netcdf_export import sanitize_name
+from feather.diag.netcdf_export import sanitize_name, write_netcdf
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_map
 from feather.util.regrid import regrid as fregrid
@@ -1815,7 +1815,7 @@ class AddedValueDiag(DiagnosticBase):
             "source": "feather/diag/added_value.py",
         }
         nc_path.parent.mkdir(parents=True, exist_ok=True)
-        ds.to_netcdf(nc_path)
+        write_netcdf(ds, nc_path)
         logger.info("  Saved AV NetCDF: %s", nc_path)
 
     # -- Regridding helper (shared with GlobalBiases/GlobalTrends) ----------

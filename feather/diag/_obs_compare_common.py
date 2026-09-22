@@ -33,6 +33,7 @@ import numpy as np
 import xarray as xr
 
 from feather.plot.maps import _flatten_latlon, plot_combined_map
+from feather.diag.netcdf_export import write_netcdf
 from feather.util.temporal import (
     annual_mean,
     climatology,
@@ -500,6 +501,6 @@ class PairwiseObsComparison:
                 grid="0.5deg land-masked",
             )
             path = netcdf_dir / f"{s.var}_{s.sec_token}_{pk.lower()}_clim_diff.nc"
-            ds.to_netcdf(path)
+            write_netcdf(ds, path)
             written.append(path)
         return written

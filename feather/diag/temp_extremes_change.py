@@ -48,6 +48,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.util.spatial import latlon_global_mean
 from feather.util.temporal import seasonal_annual_mean
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -261,16 +262,21 @@ class TempExtremesChangeDiag(DiagnosticBase):
             )
             for k, v in series.items()
         }
-        xr.Dataset(
-            ds_vars,
-            attrs={
-                "model": model,
-                "variable": var,
-                "period_start": period[0],
-                "period_end": period[1],
-                "note": "Annual- and seasonal-mean series derived from daily data.",
-            },
-        ).to_netcdf(nc_path)
+        write_netcdf(
+            xr.Dataset(
+                ds_vars,
+                attrs={
+                    "model": model,
+                    "variable": var,
+                    "period_start": period[0],
+                    "period_end": period[1],
+                    "note": (
+                        "Annual- and seasonal-mean series derived from daily data."
+                    ),
+                },
+            ),
+            nc_path,
+        )
         logger.info("  Saved means NC: %s", nc_path)
         return series
 

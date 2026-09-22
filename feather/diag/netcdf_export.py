@@ -69,23 +69,34 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def _write_netcdf(ds: xr.Dataset, path: Path) -> None:
-    """Write *ds* to *path* atomically.
+def write_netcdf(ds: xr.Dataset, path: str | Path, **kwargs) -> Path:
+    """Write *ds* to *path* atomically, with attrs/encoding sanitised.
 
     ``to_netcdf`` defines every dimension and then fills variables one by one,
     so a failure part-way leaves a readable but **truncated** file — all the
-    dims, only the variables written before the error.  Since callers skip
-    paths that already exist, such a stump would be treated as a finished
-    product by every later run.  Writing to a sibling temp file and renaming
-    only on success means the destination either holds a complete dataset or
-    does not exist.
+    dims, only the variables written before the error.  Nothing downstream can
+    tell that stump from a finished file: the per-source exports skip any path
+    that already exists, and the diagnostics' checkpoints are *read back* to
+    rebuild figures, so a stump there feeds truncated data into a figure that
+    looks complete.  Writing to a sibling temp file and renaming only on
+    success means the destination either holds a whole dataset or nothing.
+
+    Sanitising is what avoids the usual cause of that part-way failure:
+    packing metadata inherited from a source store (a string ``_FillValue``,
+    an integer ``dtype``) that netCDF4 rejects for these derived float fields.
+    *ds* itself is left untouched — a copy is cleaned.
+
+    Any extra *kwargs* go to ``to_netcdf`` (e.g. ``encoding=``).  Returns the
+    path written.
     """
+    path = Path(path)
     tmp = path.with_name(f".{path.name}.tmp")
     try:
-        _sanitize_attrs(ds).to_netcdf(tmp)
+        _sanitize_attrs(ds.copy()).to_netcdf(tmp, **kwargs)
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
+    return path
 
 
 def sanitize_name(name: str) -> str:
@@ -378,7 +389,7 @@ def export_generic_netcdf(
     )
     if extra_attrs:
         ds.attrs.update(extra_attrs)
-    _write_netcdf(ds, path)
+    write_netcdf(ds, path)
     logger.info("  Wrote NetCDF: %s (%d fields)", path.name, len(ds.data_vars))
     return [path]
 
@@ -440,7 +451,7 @@ def export_biasmap_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _write_netcdf(ds, path)
+        write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s", path.name)
         written.append(path)
 
@@ -500,7 +511,7 @@ def export_biasmap_individual_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _write_netcdf(ds, path)
+        write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s (%d members×fields)",
                     path.name, len(ds.data_vars))
         written.append(path)
