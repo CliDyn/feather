@@ -82,6 +82,7 @@ def build_metadata(
     period: tuple[str, str] | None = None,
     obs_dataset: str = "",
     obs_variable: str = "",
+    units: str = "",
     plot_type: str = "",
     spatial_extent: str = "global",
     summary_statistics: dict[str, Any] | None = None,
@@ -117,6 +118,11 @@ def build_metadata(
         Observation dataset name (e.g. ``"ERA5"``).
     obs_variable : str
         Variable name in the observation dataset.
+    units : str
+        Units of the plotted quantity and of *summary_statistics*.
+        Overrides the registry's canonical units — pass it whenever the
+        figure is displayed in converted units (e.g. ``pr`` in mm/day
+        rather than kg m-2 s-1).
     plot_type : str
         Type of plot (e.g. ``"bias_map"``, ``"timeseries"``).
     spatial_extent : str
@@ -134,14 +140,14 @@ def build_metadata(
         Metadata dictionary ready for JSON serialization.
     """
     # Pull info from variable registry
-    units = ""
     domain = ""
     group = ""
     cmap = ""
     if variables_used:
         try:
             vinfo = get_var(variables_used[0])
-            units = vinfo.units
+            if not units:
+                units = vinfo.units
             domain = vinfo.domain
             group = vinfo.group
             cmap = vinfo.cmap

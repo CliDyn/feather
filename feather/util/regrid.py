@@ -154,37 +154,93 @@ class DedupedInterpolator:
     keep passing full-length arrays and nothing downstream changes.  Every
     other attribute (``target_lat``, ``target_lon``, ``method``, …) proxies
     to the wrapped interpolator.
+
+    *src_shape* is the source grid's spatial shape when the caller works in
+    nereus' rectilinear convention (axis vectors plus ``(…, nlat, nlon)``
+    data).  Those trailing dims are flattened to match the deduplicated point
+    list, so a cached interpolator keeps accepting fields shaped the way the
+    caller built it.
     """
 
-    def __init__(self, interpolator, inverse: np.ndarray):
+    def __init__(self, interpolator, inverse: np.ndarray,
+                 src_shape: tuple[int, ...] | None = None):
         self._interpolator = interpolator
         self._inverse = inverse
+        self._src_shape = src_shape
 
     def __call__(self, data, *args, **kwargs):
         return self._interpolator(
-            collapse_values(data, self._inverse), *args, **kwargs,
+            collapse_values(_flatten_spatial(data, self._src_shape),
+                            self._inverse),
+            *args, **kwargs,
         )
 
     def __getattr__(self, name):
         return getattr(self._interpolator, name)
 
 
+def _flatten_spatial(data, src_shape: tuple[int, ...] | None):
+    """Ravel *data*'s trailing *src_shape* dims into one point axis."""
+    data = np.asarray(data)
+    if src_shape is None:
+        return data
+    n = len(src_shape)
+    if data.ndim >= n and data.shape[-n:] == tuple(src_shape):
+        return data.reshape(*data.shape[:-n], -1)
+    return data
+
+
+def _mesh_if_rectilinear(data, lon, lat):
+    """Expand nereus' rectilinear convention to an explicit point list.
+
+    ``nereus.regrid`` accepts two source conventions: scattered points (1-D
+    ``lon``/``lat`` of equal length, paired elementwise) and rectilinear axes
+    (1-D ``lon``/``lat`` of *independent* lengths with ``(…, nlat, nlon)``
+    data, which it meshgrids internally).  Deduplication needs paired points,
+    so build the mesh here for the rectilinear case — otherwise a 721-lat,
+    1440-lon grid reaches :func:`dedupe_points` as two arrays it tries to
+    pair elementwise, and the coordinate maths fails to broadcast.
+
+    Returns ``(lon_points, lat_points, src_shape)``, with *src_shape* None
+    when the input was already a point list.
+    """
+    lon_a = np.asarray(lon)
+    lat_a = np.asarray(lat)
+    arr = np.asarray(data)
+    rectilinear = (
+        lon_a.ndim == 1 and lat_a.ndim == 1 and arr.ndim >= 2
+        and arr.shape[-2:] == (lat_a.size, lon_a.size)
+    )
+    if not rectilinear:
+        return lon_a, lat_a, None
+    # meshgrid ordering matches raveling (…, nlat, nlon): index = ilat*nlon + ilon
+    lon_m, lat_m = np.meshgrid(lon_a, lat_a)
+    return lon_m.ravel(), lat_m.ravel(), (lat_a.size, lon_a.size)
+
+
 def regrid(data, lon=None, lat=None, *, method="nearest", **kwargs):
     """Drop-in for ``nereus.regrid`` that tolerates pole-inclusive grids.
 
-    Delegates unchanged for every method other than ``"conservative"``.
+    Accepts either source convention nereus does — scattered points, or
+    rectilinear axes with ``(…, nlat, nlon)`` data.  Delegates unchanged for
+    every method other than ``"conservative"``.
     """
     import nereus as nr
 
     if method != "conservative" or lon is None or lat is None:
         return nr.regrid(data, lon=lon, lat=lat, method=method, **kwargs)
 
-    lon_u, lat_u, inverse = dedupe_points(lon, lat)
+    lon_p, lat_p, src_shape = _mesh_if_rectilinear(data, lon, lat)
+    if lon_p.size != lat_p.size:
+        # Neither convention fits; let nereus report it in its own terms.
+        return nr.regrid(data, lon=lon, lat=lat, method=method, **kwargs)
+
+    lon_u, lat_u, inverse = dedupe_points(lon_p, lat_p)
     if inverse is None:
         return nr.regrid(data, lon=lon, lat=lat, method=method, **kwargs)
 
     regridded, interpolator = nr.regrid(
-        collapse_values(np.asarray(data), inverse),
+        collapse_values(_flatten_spatial(data, src_shape), inverse),
         lon=lon_u, lat=lat_u, method=method, **kwargs,
     )
-    return regridded, DedupedInterpolator(interpolator, inverse)
+    return regridded, DedupedInterpolator(interpolator, inverse, src_shape)

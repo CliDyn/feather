@@ -74,6 +74,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map
 from feather.util.spatial import latlon_global_mean
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -651,7 +652,7 @@ class HeatwaveChangeDiag(DiagnosticBase):
             },
         )
         nc_path.parent.mkdir(parents=True, exist_ok=True)
-        hw_ds.to_netcdf(nc_path)
+        write_netcdf(hw_ds, nc_path)
         logger.info("  Saved HW NC: %s", nc_path)
 
         idx_vars = [v for v in _INDICES if v in hw_ds]

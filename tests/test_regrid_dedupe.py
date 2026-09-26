@@ -280,3 +280,118 @@ class TestRegridWrapper:
                          resolution=10.0, method="conservative",
                          lon_bounds=(0.0, 360.0))
         assert np.nanmin(out) > 0.0
+
+
+# ── nereus' rectilinear convention (axis vectors + (…, nlat, nlon) data) ──
+
+
+@pytest.fixture(scope="module")
+def axes_grid():
+    """Pole-inclusive grid as the *diagnostics* pass it: 1-D axes, 2-D data.
+
+    ``nereus.regrid`` accepts two source conventions, and every call site in
+    feather that regrids a model or obs field uses this one — 1-D lon/lat of
+    independent lengths, with the field shaped (nlat, nlon).
+    """
+    lat = np.linspace(-90.0, 90.0, 37)
+    lon = np.linspace(0.0, 355.0, 72)
+    field = np.abs(np.cos(np.deg2rad(lat)))[:, None] * np.ones(lon.size)
+    return lon, lat, field
+
+
+class TestRectilinearAxes:
+    """Regression: the axes convention reached dedupe_points unmeshed.
+
+    Coordinates arrived as two arrays of *different* lengths (721 lats vs
+    1440 lons on the EERIE grid), which dedupe_points tried to pair
+    elementwise:
+
+        ValueError: operands could not be broadcast together with
+        shapes (721,) (1440,)
+
+    so conservative remapping of any flux variable failed outright.
+    """
+
+    def test_conservative_succeeds_on_axes(self, axes_grid):
+        lon, lat, field = axes_grid
+        out, _ = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                        method="conservative", lon_bounds=(0.0, 360.0))
+        assert np.isfinite(np.asarray(out)).all()
+
+    def test_conservative_conserves_on_axes(self, axes_grid):
+        lon, lat, field = axes_grid
+        out, it = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                         method="conservative", lon_bounds=(0.0, 360.0))
+        _, la = np.meshgrid(lon, lat)
+        src = _area_integral(field, la, 5.0, 5.0)
+        got = _area_integral(np.asarray(out), it.target_lat, 10.0, 10.0)
+        assert abs(got - src) / src < 0.01
+
+    def test_matches_the_scattered_convention(self, axes_grid):
+        """Both conventions describe the same grid, so both must agree."""
+        lon, lat, field = axes_grid
+        a, _ = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                      method="conservative", lon_bounds=(0.0, 360.0))
+        lo, la = np.meshgrid(lon, lat)
+        b, _ = regrid(field.ravel(), lon=lo.ravel(), lat=la.ravel(),
+                      resolution=10.0, method="conservative",
+                      lon_bounds=(0.0, 360.0))
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b))
+
+    def test_cached_interpolator_takes_2d_fields(self, axes_grid):
+        """The per-grid cache reuses one interpolator across variables.
+
+        Callers keep handing it (nlat, nlon) fields, so the wrapper must
+        flatten them itself rather than expecting a point list.
+        """
+        lon, lat, field = axes_grid
+        _, it = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                       method="conservative", lon_bounds=(0.0, 360.0))
+        other = np.random.default_rng(7).gamma(0.4, 8.0, size=field.shape)
+        out = np.asarray(it(other))
+        _, la = np.meshgrid(lon, lat)
+        src = _area_integral(other, la, 5.0, 5.0)
+        got = _area_integral(out, it.target_lat, 10.0, 10.0)
+        assert abs(got - src) / src < 0.01
+
+    def test_as_xarray_signature_of_the_real_call_site(self, axes_grid):
+        """added_value/global_biases pass as_xarray + influence_radius."""
+        lon, lat, field = axes_grid
+        out, it = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                         method="conservative", influence_radius=500_000,
+                         lon_bounds=(0.0, 360.0), as_xarray=True)
+        assert out.dims == ("lat", "lon")
+        assert it.target_lat[:, 0].size == out.sizes["lat"]
+
+    def test_leading_dims_preserved(self, axes_grid):
+        """A (time, nlat, nlon) field keeps its leading axis."""
+        lon, lat, field = axes_grid
+        stack = np.stack([field, field * 2.0, field * 3.0])
+        out, _ = regrid(stack, lon=lon, lat=lat, resolution=10.0,
+                        method="conservative", lon_bounds=(0.0, 360.0))
+        assert np.asarray(out).shape[0] == 3
+
+    def test_polefree_axes_delegate_unchanged(self):
+        """With nothing to merge, the axes go straight to nereus."""
+        import nereus as nr
+
+        lat = np.linspace(-89.75, 89.75, 36)
+        lon = np.linspace(0.0, 355.0, 72)
+        field = np.abs(np.cos(np.deg2rad(lat)))[:, None] * np.ones(lon.size)
+        a, it = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                       method="conservative", lon_bounds=(0.0, 360.0))
+        b, _ = nr.regrid(field, lon=lon, lat=lat, resolution=10.0,
+                         method="conservative", lon_bounds=(0.0, 360.0))
+        assert not isinstance(it, DedupedInterpolator)
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    @pytest.mark.parametrize("method", ["nearest", "linear"])
+    def test_non_conservative_axes_delegate(self, axes_grid, method):
+        import nereus as nr
+
+        lon, lat, field = axes_grid
+        a, _ = regrid(field, lon=lon, lat=lat, resolution=10.0,
+                      method=method, lon_bounds=(0.0, 360.0))
+        b, _ = nr.regrid(field, lon=lon, lat=lat, resolution=10.0,
+                         method=method, lon_bounds=(0.0, 360.0))
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))

@@ -68,6 +68,7 @@ from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.maps import plot_combined_bias_map
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -562,15 +563,18 @@ class TropicalNightsChangeDiag(DiagnosticBase):
                 ),
                 "units": "K",
             })
-        xr.Dataset(
-            ds_vars,
-            attrs={
-                "model": model,
-                "period_start": period[0],
-                "period_end": period[1],
-                "threshold": f"tasmin > {_TN_THRESHOLD_K} K (20 °C)",
-            },
-        ).to_netcdf(nc_path)
+        write_netcdf(
+            xr.Dataset(
+                ds_vars,
+                attrs={
+                    "model": model,
+                    "period_start": period[0],
+                    "period_end": period[1],
+                    "threshold": f"tasmin > {_TN_THRESHOLD_K} K (20 °C)",
+                },
+            ),
+            nc_path,
+        )
         logger.info("  Saved TN NC: %s", nc_path)
         return tn_annual, tmin_mean
 
