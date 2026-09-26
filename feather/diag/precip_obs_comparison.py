@@ -533,6 +533,7 @@ class PrecipObsComparisonDiag(DiagnosticBase):
                 plot_type="combined_trend_map",
                 period=self.PERIOD_LONG,
                 obs_dataset="ERA5, MSWEP",
+                units="mm/day/decade",
             )
             out.append((fig, meta))
 
@@ -586,6 +587,7 @@ class PrecipObsComparisonDiag(DiagnosticBase):
                 plot_type="combined_trend_map",
                 period=self.PERIOD_LONG,
                 obs_dataset="ERA5, MSWEP",
+                units="mm/day/decade",
             )
             out.append((fig, meta))
 
@@ -723,6 +725,7 @@ class PrecipObsComparisonDiag(DiagnosticBase):
                 plot_type="combined_bias_map",
                 period=self.PERIOD_LONG,
                 obs_dataset="ERA5, MSWEP",
+                units="mm/day",
             )
             out.append((fig, meta))
 
@@ -805,6 +808,7 @@ class PrecipObsComparisonDiag(DiagnosticBase):
                 plot_type="combined_bias_map",
                 period=self.PERIOD_LONG,
                 obs_dataset="ERA5, MSWEP",
+                units="%",
             )
             out.append((fig, meta))
 
@@ -859,6 +863,7 @@ class PrecipObsComparisonDiag(DiagnosticBase):
             plot_type="timeseries",
             period=self.PERIOD_LONG,
             obs_dataset="ERA5, MSWEP",
+            units="mm/day",
         )
         return [(fig, meta)]
 

@@ -315,7 +315,7 @@ class PairwiseObsComparison:
                     f"{s.sec_name} for {short} and {long} (0.5° land-masked)."
                 ),
                 plot_type="combined_trend_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units=tu,
             )
             out.append((fig, meta))
         return out
@@ -347,7 +347,7 @@ class PairwiseObsComparison:
                     f"and {s.ref_name} − {s.sec_name} disagreement."
                 ),
                 plot_type="combined_trend_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units=tu,
             )
             out.append((fig, meta))
         return out
@@ -421,6 +421,7 @@ class PairwiseObsComparison:
                 ),
                 plot_type="combined_bias_map", period=self.period_long,
                 obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                units=s.units_label,
             )
             out.append((fig, meta))
         return out
@@ -466,7 +467,7 @@ class PairwiseObsComparison:
                     f"/ {s.sec_name} × 100 % for {short} and {long}."
                 ),
                 plot_type="combined_bias_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units="%",
             )
             out.append((fig, meta))
         return out

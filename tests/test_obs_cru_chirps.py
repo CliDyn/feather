@@ -305,6 +305,27 @@ class TestEngine:
             assert "figure_id" in meta
             plt.close(fig)
 
+    def test_figure_units_are_display_units(self, engine_diag):
+        """Engine sidecars carry display units, not the registry's canonical."""
+        lons360 = np.sort((_LONS_180 + 360) % 360)
+        ser = [_latlon_series("2001-01", n, _LATS, lons360, value=3e-5,
+                              seed=k) for k, n in enumerate((60, 96, 60, 96))]
+        spec = occ.CompareSpec(
+            var="pr", ref_name="ERA5", sec_name="CRU", sec_token="cru",
+            units_label="mm/day", display_factor=86400.0, land_only=True,
+            relative_bias=True)
+        eng = occ.PairwiseObsComparison(
+            engine_diag, spec, ("2001", "2004"), ("2001", "2008"))
+        import matplotlib.pyplot as plt
+        units = {}
+        for fig, meta in eng.figures(eng.compute(*ser)):
+            units[meta["figure_id"].rsplit("_", 1)[-1]] = meta["units"]
+            plt.close(fig)
+        assert units["trends"] == "mm/day/decade"
+        assert units["diffs"] == "mm/day/decade"
+        assert units["clim"] == "mm/day"
+        assert units["bias"] == "%"
+
     def test_export_netcdf(self, engine_results, tmp_path):
         eng, res = engine_results
         written = eng.export_netcdf(res, tmp_path / "nc")
