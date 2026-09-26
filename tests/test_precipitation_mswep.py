@@ -643,6 +643,37 @@ class TestBiasMaps:
         for fig, _ in figures:
             plt.close(fig)
 
+    def test_bias_map_units_match_statistics(self, synth_precip_healpix,
+                                             synth_mswep, precip_config):
+        """Sidecar units must be mm/day: the statistics are scaled to it."""
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, precip_config)
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        figures = diag._plot_bias_maps(results)
+        _, meta = figures[0]
+        assert meta["units"] == "mm/day"
+        m = results["models"]["ifs-fesom"]
+        assert meta["summary_statistics"]["ifs-fesom"]["rmse"] == \
+            pytest.approx(m["annual_rmse"] * 86400.0)
+        import matplotlib.pyplot as plt
+        for fig, _ in figures:
+            plt.close(fig)
+
+    def test_relative_bias_units_percent(self, synth_precip_healpix,
+                                         synth_mswep, precip_config):
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, precip_config)
+        shared = diag._load_shared_data()
+        figures = diag._plot_relative_bias(diag._compute_relative_bias(shared))
+        assert figures
+        import matplotlib.pyplot as plt
+        for fig, meta in figures:
+            assert meta["units"] == "%"
+            plt.close(fig)
+
     def test_bias_map_obs_title_mswep(self, synth_precip_healpix,
                                        synth_mswep, precip_config):
         """Obs panel should be labeled MSWEP, not ERA5."""
