@@ -149,8 +149,15 @@ class GlobalBiases(DiagnosticBase):
                     f"pr_{p}_relative_bias_combined"
                     for p in ["annual", "djf", "mam", "jja", "son"]
                 ]
-            # Ensemble summary figures (only when ≥2 models configured)
-            if len(self.config.models) >= 2:
+            # Ensemble summary figures: per-family means, or the pooled
+            # ensemble (only when ≥2 models configured)
+            if self._per_family:
+                if len(self.config.get_model_families()) >= 2:
+                    figure_ids += [
+                        f"{var}_{p}_family_mean_bias_combined"
+                        for p in ["annual", "djf", "mam", "jja", "son"]
+                    ]
+            elif len(self.config.models) >= 2:
                 figure_ids += [
                     f"{var}_{p}_ens_bias_combined"
                     for p in ["annual", "djf", "mam", "jja", "son"]
@@ -526,9 +533,18 @@ class GlobalBiases(DiagnosticBase):
                 cmip6_data = benchmark_data[primary_label]
                 cmip6_info = benchmark_info[primary_label]
 
-        # EERIE ensemble mean/median bias maps (when ≥2 models available)
+        # Ensemble summary: one mean per model family, or the pooled
+        # ensemble mean/median (when ≥2 models available)
         ens_data: dict[str, dict] = {}
-        if len(model_results) >= 2 and obs_clim_common is not None:
+        family_data: dict[str, dict] = {}
+        if self._per_family:
+            families = self.config.get_model_families(list(model_results))
+            if len(families) >= 2 and obs_clim_common is not None:
+                family_data = self._compute_family_stats(
+                    model_results, families, obs_clim_common,
+                    obs_seasonal_common, common_area,
+                )
+        elif len(model_results) >= 2 and obs_clim_common is not None:
             ens_data = self._compute_ens_stats(
                 model_results, obs_clim_common, obs_seasonal_common,
                 common_area,
@@ -542,6 +558,7 @@ class GlobalBiases(DiagnosticBase):
             cmip6_individual_data=cmip6_individual_data,
             ens_data=ens_data,
             benchmark_data=benchmark_data,
+            family_data=family_data,
         )
 
         return {
@@ -560,9 +577,75 @@ class GlobalBiases(DiagnosticBase):
             "benchmark_info": benchmark_info,
             "benchmark_individual_data": benchmark_individual_data,
             "ens_data": ens_data,
+            "family_data": family_data,
         }
 
     # -- Ensemble stats helpers ---------------------------------------------
+
+    @property
+    def _per_family(self) -> bool:
+        """Summarise models per family instead of as one pooled ensemble."""
+        return self.config.get_ensemble_mode() == "per_family"
+
+    @staticmethod
+    def _compute_family_stats(model_results, families, obs_clim_common,
+                              obs_seasonal_common, common_area):
+        """Mean field and bias per model family.
+
+        Each family's members are averaged on the common grid; families are
+        never pooled with each other.  A member missing a period is left out
+        of that period's mean, so ``n_members`` is the count actually used.
+
+        Parameters
+        ----------
+        model_results : dict
+            Per-model computation output from ``_compute_variable``.
+        families : dict
+            Ordered ``{family: [member, ...]}`` over the models in
+            *model_results*.
+        obs_clim_common, obs_seasonal_common, common_area
+            Common-grid observation and area weights.
+
+        Returns
+        -------
+        dict
+            ``{period: {family: {mean, bias, bias_gmean, rmse, n_members,
+            members}}}`` for ``"annual"`` and each season present.
+        """
+        out: dict[str, dict] = {}
+        periods = [("annual", obs_clim_common)] + [
+            (s, obs_seasonal_common[s]) for s in ("DJF", "MAM", "JJA", "SON")
+            if s in obs_seasonal_common
+        ]
+        for period, obs in periods:
+            per_family: dict[str, dict] = {}
+            for family, members in families.items():
+                used, fields = [], []
+                for m in members:
+                    mr = model_results[m]
+                    f = (mr["annual_regrid"] if period == "annual"
+                         else mr["seasonal_regrids"].get(period))
+                    if f is not None:
+                        used.append(m)
+                        fields.append(f)
+                if not fields:
+                    continue
+                mean = (fields[0] if len(fields) == 1
+                        else xr.concat(fields, dim="member").mean("member"))
+                bias = mean - obs
+                per_family[family] = {
+                    "mean": mean,
+                    "bias": bias,
+                    "bias_gmean": float(
+                        latlon_global_mean(bias, area=common_area).values),
+                    "rmse": float(np.sqrt(
+                        latlon_global_mean(bias ** 2, area=common_area).values)),
+                    "n_members": len(used),
+                    "members": used,
+                }
+            if per_family:
+                out[period] = per_family
+        return out
 
     @staticmethod
     def _compute_ens_stats(model_results, obs_clim_common,
@@ -1141,6 +1224,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_individual_data: dict[str, dict] | None = None,
         ens_data: dict[str, dict] | None = None,
         benchmark_data: dict[str, dict] | None = None,
+        family_data: dict[str, dict] | None = None,
     ) -> dict[str, dict]:
         """Compute shared colorbar ranges across all models per period.
 
@@ -1159,6 +1243,7 @@ class GlobalBiases(DiagnosticBase):
         cmip6_data = cmip6_data or {}
         cmip6_individual_data = cmip6_individual_data or {}
         ens_data = ens_data or {}
+        family_data = family_data or {}
         benchmark_data = benchmark_data or {}
 
         def _finite_vals(arrays):
@@ -1196,6 +1281,8 @@ class GlobalBiases(DiagnosticBase):
         if "annual" in ens_data:
             bias_arrays.append(ens_data["annual"]["mean_bias"])
             bias_arrays.append(ens_data["annual"]["median_bias"])
+        for fdata in family_data.get("annual", {}).values():
+            bias_arrays.append(fdata["bias"])
         vmin, vmax = _percentile_range(field_arrays)
         ranges["annual"] = {
             "vmin": vmin, "vmax": vmax,
@@ -1231,6 +1318,8 @@ class GlobalBiases(DiagnosticBase):
             if season in ens_data:
                 s_biases.append(ens_data[season]["mean_bias"])
                 s_biases.append(ens_data[season]["median_bias"])
+            for fdata in family_data.get(season, {}).values():
+                s_biases.append(fdata["bias"])
             vmin, vmax = _percentile_range(s_fields)
             ranges[season] = {
                 "vmin": vmin, "vmax": vmax,
@@ -1275,6 +1364,7 @@ class GlobalBiases(DiagnosticBase):
         benchmark_data = vr.get("benchmark_data", {})
         benchmark_info = vr.get("benchmark_info", {})
         ens_data = vr.get("ens_data", {})
+        family_data = vr.get("family_data", {})
 
         is_pr = (var == "pr")
 
@@ -1575,4 +1665,97 @@ class GlobalBiases(DiagnosticBase):
                 )
                 figures.append((fig_ens, meta_ens))
 
+            # ── Per-family summary figure (obs + one mean per family + MMMs) ──
+            if period_key in family_data:
+                figures.append(self._plot_family_figure(
+                    var, var_info, period_key, period_label,
+                    family_data[period_key], benchmark_data, benchmark_info,
+                    cmip6_info, obs_plot, unit_scale,
+                    cmap=disp_cmap, bias_cmap=disp_bias_cmap,
+                    vmin=vmin_p, vmax=vmax_p, bias_vmax=bvmax_p,
+                    units=disp_units,
+                ))
+
         return figures
+
+    def _plot_family_figure(
+        self, var, var_info, period_key, period_label, fdata,
+        benchmark_data, benchmark_info, cmip6_info, obs_plot, unit_scale,
+        *, cmap, bias_cmap, vmin, vmax, bias_vmax, units,
+    ):
+        """Obs + one bias panel per model family + benchmark MMM panels.
+
+        Families are summarised separately (never pooled): a multi-member
+        family is shown as the mean of its members, a single-member family
+        as that member.  Panel labels carry the member count.
+        """
+        bias_dict: dict[str, xr.DataArray] = {}
+        stats: dict[str, dict] = {}
+        for family, d in fdata.items():
+            n = d["n_members"]
+            lbl = (rf"{family} mean $\mathbf{{({n})}}$" if n > 1
+                   else rf"{family} $\mathbf{{({n})}}$")
+            bias_dict[lbl] = d["bias"] * unit_scale
+            stats[lbl] = {
+                "global_mean_bias": d["bias_gmean"] * unit_scale,
+                "rmse": d["rmse"] * unit_scale,
+                "n_members": n,
+                "members": d["members"],
+            }
+        for b_label, b_data in benchmark_data.items():
+            if period_key not in b_data:
+                continue
+            m = benchmark_info.get(b_label, {}).get("n_members", 0)
+            lbl = rf"{b_label} $\mathbf{{({m})}}$"
+            c = b_data[period_key]
+            bias_dict[lbl] = c["bias"] * unit_scale
+            stats[lbl] = {
+                "global_mean_bias": c["bias_gmean"] * unit_scale,
+                "rmse": (c["rmse"] * unit_scale
+                         if c.get("rmse") is not None else None),
+                "n_members": m,
+            }
+
+        fig, _ = plot_combined_bias_map(
+            obs_plot,
+            bias_dict,
+            title=f"{var_info.long_name} {period_label} — Model means",
+            obs_title=var_info.obs_dataset,
+            cmap=cmap,
+            bias_cmap=bias_cmap,
+            vmin=vmin,
+            vmax=vmax,
+            bias_vmax=bias_vmax,
+            units=units,
+            method=self._regrid_method,
+        )
+        families = ", ".join(
+            f"{f} ({d['n_members']} member{'s' if d['n_members'] != 1 else ''})"
+            for f, d in fdata.items()
+        )
+        meta = self._build_metadata(
+            title=f"{var_info.long_name} {period_label} Bias — Model Means",
+            figure_id=f"{var}_{period_key.lower()}_family_mean_bias_combined",
+            models=list(self.config.models),
+            variables=[var],
+            description=(
+                f"{period_label} climatology bias maps for "
+                f"{var_info.long_name}: one panel per model family, each the "
+                f"mean of its ensemble members ({families}), plus the "
+                f"benchmark multi-model means. Model families are compared "
+                f"separately and are not pooled into one ensemble."
+            ),
+            computation_notes=(
+                "Each member is regridded to the common grid; members of a "
+                "family are averaged there and the observed climatology is "
+                "subtracted. Panel labels give the number of members (or "
+                "benchmark models) averaged."
+            ),
+            plot_type="combined_bias_map",
+            period=self.period,
+            cmip6_info=cmip6_info or None,
+            benchmark_info=self._benchmark_meta_from_info(benchmark_info) or None,
+            summary_statistics=stats,
+            extra={"model_families": {f: d["members"] for f, d in fdata.items()}},
+        )
+        return fig, meta

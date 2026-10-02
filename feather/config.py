@@ -1,6 +1,7 @@
 """YAML configuration loading."""
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +64,8 @@ class ModelConfig:
     experiments: list = field(default_factory=list)  # experiments to stitch
     grid_dir: str = ""       # CMOR grid label dir for CMIP6 tree (e.g. "gn"/"gr")
     ensemble: str = ""       # ensemble group label (e.g. CORDEX/CMIP5/CMIP6/EERIE)
+    family: str = ""         # model family members belong to (e.g. IFS-FESOM2-SR
+                             # for its r1/r2/r3); "" → name minus a trailing -rN
 
 
 @dataclass
@@ -241,6 +244,38 @@ class FeatherConfig:
         if period and len(period) == 2:
             return (str(period[0]), str(period[1]))
         return self.get_period()
+
+    def get_ensemble_mode(self) -> str:
+        """How evaluated models are summarised in ensemble figures.
+
+        ``"pooled"`` (default): one ensemble median/mean over all models.
+        ``"per_family"``: one mean per model family (see
+        :meth:`get_model_families`), for model sets whose members must not be
+        pooled — e.g. EERIE, where ICON runs without a convection scheme.
+        """
+        mode = self.project.get("ensemble_mode", "pooled")
+        if mode not in ("pooled", "per_family"):
+            raise ValueError(
+                f"project.ensemble_mode must be 'pooled' or 'per_family', got {mode!r}"
+            )
+        return mode
+
+    def get_model_family(self, model: str) -> str:
+        """Family of *model*: its ``family`` key, else its name minus ``-rN``."""
+        mc = self.model_configs.get(model)
+        if mc is not None and mc.family:
+            return mc.family
+        return re.sub(r"-r\d+$", "", model)
+
+    def get_model_families(self, models: list[str] | None = None) -> dict[str, list[str]]:
+        """Ordered ``{family: [members]}`` for *models* (default: all models).
+
+        Families appear in the order of their first member in the config.
+        """
+        out: dict[str, list[str]] = {}
+        for m in (self.models if models is None else models):
+            out.setdefault(self.get_model_family(m), []).append(m)
+        return out
 
     def get_comparison_type(self) -> str:
         """Return the comparison type for LLM prompt framing.
@@ -459,5 +494,6 @@ def _build_model_configs(
             experiments=cfg.get("experiments", []),
             grid_dir=cfg.get("grid_dir", ""),
             ensemble=cfg.get("ensemble", ""),
+            family=cfg.get("family", ""),
         )
     return configs
