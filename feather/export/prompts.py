@@ -253,7 +253,9 @@ def build_curation_prompt(
 
     for diag_name, synth in sorted(syntheses.items()):
         parts.append(f"\n--- {diag_name} ---")
-        parts.append(json.dumps(synth, indent=2))
+        # The provenance block is bookkeeping for audit, not prompt evidence.
+        content = {k: v for k, v in synth.items() if k != "provenance"}
+        parts.append(json.dumps(content, indent=2))
 
     parts.append("\n" + "=" * 60)
     parts.append("AVAILABLE FIGURES (with metadata and analyses)")
