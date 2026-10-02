@@ -470,9 +470,12 @@ class DiagnosticBase(ABC):
             default = self._regrid_method_default
         flux = is_flux_variable(variable) if is_flux is None else is_flux
         if not flux:
-            return default
+            return self._record_regrid_method(
+                variable, default, default, "non_flux", n_source, resolution)
         if not self.config.use_conservative_fluxes():
-            return default
+            return self._record_regrid_method(
+                variable, default, default, "conservative_fluxes_disabled",
+                n_source, resolution)
 
         if not self._conservative_available():
             msg = (
@@ -488,14 +491,13 @@ class DiagnosticBase(ABC):
                     "so this is fatal rather than falling back."
                 )
             logger.warning("%s Falling back to %r.", msg, default)
-            return default
+            return self._record_regrid_method(
+                variable, "conservative", default, "conservative_unavailable",
+                n_source, resolution)
 
         max_points = self.config.get_conservative_max_points()
 
-        n_target = None
-        if resolution is not None and resolution > 0:
-            n_target = int(round(360.0 / resolution)) * int(
-                round(180.0 / resolution))
+        n_target = self._n_target_points(resolution)
 
         # Cost is driven by source and target together (a spherical Voronoi
         # tessellation on each side, then polygon overlap), so budget their
@@ -513,9 +515,46 @@ class DiagnosticBase(ABC):
                 f"{n_target:,}" if n_target is not None else "?",
                 budget, max_points, default,
             )
-            return default
+            return self._record_regrid_method(
+                variable, "conservative", default,
+                f"cost_guard: source {n_source} + target {n_target} = {budget}"
+                f" > conservative_max_points {max_points}",
+                n_source, resolution)
 
-        return "conservative"
+        return self._record_regrid_method(
+            variable, "conservative", "conservative", "flux", n_source,
+            resolution)
+
+    @staticmethod
+    def _n_target_points(resolution: float | None) -> int | None:
+        """Cell count of a global regular grid at *resolution* degrees."""
+        if resolution is None or resolution <= 0:
+            return None
+        return int(round(360.0 / resolution)) * int(round(180.0 / resolution))
+
+    def _record_regrid_method(
+        self, variable: str, requested: str, used: str, reason: str,
+        n_source: int | None, resolution: float | None,
+    ) -> str:
+        """Emit a provenance record of a regrid-method decision; return *used*.
+
+        Makes a silent conservative→point-interpolation fallback visible on
+        the figure rather than only in the log.
+        """
+        from feather import provenance
+
+        provenance.emit(
+            "regrid_method",
+            variable=variable,
+            requested=requested,
+            used=used,
+            fallback=requested != used,
+            reason=reason,
+            n_src=n_source,
+            n_tgt=self._n_target_points(resolution),
+            target_resolution=resolution,
+        )
+        return used
 
     @property
     def _regrid_method_default(self) -> str:
@@ -731,6 +770,12 @@ class DiagnosticBase(ABC):
             vinfo = get_var(variable)
             if vinfo.cmor_obs_sign != 1.0:
                 da = da * vinfo.cmor_obs_sign
+                from feather import provenance
+
+                provenance.emit(
+                    "convert", role="obs", variable=variable,
+                    op="cmor_sign_convention", factor=vinfo.cmor_obs_sign,
+                )
 
         return da
 

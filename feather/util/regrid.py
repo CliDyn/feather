@@ -218,6 +218,20 @@ def _mesh_if_rectilinear(data, lon, lat):
     return lon_m.ravel(), lat_m.ravel(), (lat_a.size, lon_a.size)
 
 
+def _record_conservative(n_src: int, n_unique: int | None, kwargs: dict) -> None:
+    """Provenance record of one conservative weight build."""
+    from feather import provenance
+
+    provenance.emit(
+        "regrid",
+        method="conservative",
+        n_src=n_src,
+        n_src_after_merge=n_unique if n_unique is not None else n_src,
+        points_merged=(n_src - n_unique) if n_unique is not None else 0,
+        target_resolution=kwargs.get("resolution"),
+    )
+
+
 def regrid(data, lon=None, lat=None, *, method="nearest", **kwargs):
     """Drop-in for ``nereus.regrid`` that tolerates pole-inclusive grids.
 
@@ -236,6 +250,7 @@ def regrid(data, lon=None, lat=None, *, method="nearest", **kwargs):
         return nr.regrid(data, lon=lon, lat=lat, method=method, **kwargs)
 
     lon_u, lat_u, inverse = dedupe_points(lon_p, lat_p)
+    _record_conservative(lon_p.size, lon_u.size if inverse is not None else None, kwargs)
     if inverse is None:
         return nr.regrid(data, lon=lon, lat=lat, method=method, **kwargs)
 

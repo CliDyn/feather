@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig
 from feather.data.variables import get_var
 
@@ -46,6 +47,9 @@ class CMORLoader:
         self._config = config
         self._root = Path(config.data_source.get("root", ""))
         self._cache: dict[tuple, xr.DataArray] = {}
+        # Files behind each cached array, and their provenance records.
+        self._inputs: dict[tuple, list[Path]] = {}
+        self._prov: dict[tuple, tuple] = {}
 
     def load_var(
         self,
@@ -89,6 +93,14 @@ class CMORLoader:
         else:
             da = self._open_variable(model, variable, table)
             self._cache[cache_key] = da
+
+        provenance.record_read(
+            self._prov, cache_key, period=period,
+            role="model", backend=type(self).__name__, variable=variable,
+            paths=self._inputs.get(cache_key, ()), data=da, table=table,
+            scale_factor=self._get_scale_factor(model, variable),
+            **provenance.model_fields(self._config, model),
+        )
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -211,6 +223,7 @@ class CMORLoader:
             )
 
         alias = self._get_alias(model, variable)
+        self._inputs[(model, variable, table)] = nc_files
 
         logger.info(
             "Opening %s/%s/%s (%d files)%s",

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from feather import provenance
 from feather.config import FeatherConfig
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ def run_pipeline(
     ensemble_only: bool = False,
     replot_from_netcdf: bool = False,
     no_llm: bool = False,
+    provenance_hash: str = "stat",
+    provenance_hash_obs: str | None = None,
 ) -> dict[str, Any]:
     """Run the feather pipeline (diagnostics -> analyze -> report -> website).
 
@@ -66,13 +69,71 @@ def run_pipeline(
     no_llm : bool
         When True, skip the ``"analyze"`` step and generate a
         figures-only website without LLM content.
+    provenance_hash, provenance_hash_obs : str
+        Input fingerprint policy (``"none"``, ``"stat"``, ``"content"``)
+        for the provenance record; the obs policy defaults to the general
+        one.  See :mod:`feather.provenance`.
 
     Returns
     -------
     dict
         Summary with keys: ``figures``, ``analyses``, ``syntheses``,
-        ``report``, ``site_dir``.
+        ``report``, ``site_dir``, ``run_id``.
     """
+    options = {k: v for k, v in locals().items()
+               if k not in ("config", "provenance_hash", "provenance_hash_obs")}
+    with provenance.run_scope(
+        config, options=options, extra=_regrid_environment(config),
+        hash_policy=provenance_hash, hash_policy_obs=provenance_hash_obs,
+    ) as recorder:
+        summary = _pipeline(config, **options)
+        summary["run_id"] = recorder.run_id if recorder is not None else None
+        return summary
+
+
+def _regrid_environment(config: FeatherConfig) -> dict[str, Any]:
+    """Regridding capabilities and settings for the run record.
+
+    The nereus conservative capability cannot be read from
+    ``nereus.__version__`` (upstream did not bump it), so a stale
+    environment changes the numbers without failing.  Recording the probe
+    result per run makes that attributable.
+    """
+    try:
+        from feather.diag.base import DiagnosticBase
+
+        return {"regrid": {
+            "nereus_conservative_available": DiagnosticBase._conservative_available(),
+            "conservative_fluxes": config.nereus.get("conservative_fluxes", True),
+            "conservative_max_points": config.get_conservative_max_points(),
+            "method": config.nereus.get("method", "nearest"),
+        }}
+    except Exception as exc:  # provenance must never fail the run
+        return {"regrid": {"error": f"{type(exc).__name__}: {exc}"}}
+
+
+def _pipeline(
+    config: FeatherConfig,
+    *,
+    steps: str | list[str],
+    diagnostics: list[str] | None,
+    variables: list[str] | None,
+    experiment: str,
+    period: tuple[str, str],
+    api_key: str | None,
+    openai_api_key: str | None,
+    skip_existing: bool,
+    compile_pdf: bool,
+    cmip6_individual: bool,
+    added_value_regions: bool | list[str] | None,
+    benchmarks: list[str] | None,
+    save_netcdf: bool,
+    individual_netcdf_only: bool,
+    ensemble_only: bool,
+    replot_from_netcdf: bool,
+    no_llm: bool,
+) -> dict[str, Any]:
+    """Body of :func:`run_pipeline`, run inside its provenance scope."""
     if isinstance(steps, str):
         steps = [steps]
     if "all" in steps:
@@ -305,14 +366,19 @@ def _run_diagnostics(
             model_loader, obs_loader, config,
             **kwargs,
         )
-        try:
-            if replot_from_netcdf:
-                saved = diag.replot_from_netcdf(skip_existing=skip_existing)
-            else:
-                saved = diag.run(skip_existing=skip_existing)
-            total_figures += len(saved)
-        except Exception:
-            logger.exception("Diagnostic %s failed", name)
+        with provenance.diagnostic_scope(name):
+            try:
+                if replot_from_netcdf:
+                    saved = diag.replot_from_netcdf(skip_existing=skip_existing)
+                else:
+                    saved = diag.run(skip_existing=skip_existing)
+                total_figures += len(saved)
+                provenance.emit("diagnostic", name=name, status="ok",
+                                n_figures=len(saved))
+            except Exception as exc:
+                logger.exception("Diagnostic %s failed", name)
+                provenance.emit("diagnostic", name=name, status="failed",
+                                error=f"{type(exc).__name__}: {exc}")
 
     return total_figures
 

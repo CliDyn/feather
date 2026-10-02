@@ -4,10 +4,13 @@ Entry points::
 
     feather --steps report -v                     # installed console script
     python -m feather --steps analyze report -v   # module invocation
+    feather provenance --figure global_biases/tas_annual_bias  # inspect
+    feather verify --config configs/eerie.yaml    # check against provenance
 """
 
 import argparse
 import logging
+import sys
 
 from feather.config import FeatherConfig
 from feather.run import run_pipeline
@@ -15,6 +18,16 @@ from feather.run import run_pipeline
 
 def main(argv: list[str] | None = None):
     """Main CLI entry point for the feather pipeline."""
+    args_in = sys.argv[1:] if argv is None else list(argv)
+    if args_in and args_in[0] == "provenance":
+        from feather.provenance_cli import main as provenance_main
+
+        return provenance_main(args_in[1:])
+    if args_in and args_in[0] == "verify":
+        from feather.verify import main as verify_main
+
+        return verify_main(args_in[1:])
+
     parser = argparse.ArgumentParser(
         prog="feather",
         description="Feather — climate model evaluation pipeline "
@@ -155,6 +168,22 @@ def main(argv: list[str] | None = None):
         help="Compile LaTeX report to PDF (requires pdflatex)",
     )
     parser.add_argument(
+        "--provenance-hash",
+        default="stat",
+        choices=["none", "stat", "content"],
+        help="How input files are fingerprinted in the provenance record: "
+             "'stat' (default) hashes path+size+mtime, 'content' hashes the "
+             "bytes, 'none' records paths only",
+    )
+    parser.add_argument(
+        "--provenance-hash-obs",
+        default=None,
+        choices=["none", "stat", "content"],
+        help="Fingerprint policy for observation inputs (default: same as "
+             "--provenance-hash). 'content' is affordable for most obs files "
+             "and detects a dataset swapped in place",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -225,6 +254,8 @@ def main(argv: list[str] | None = None):
         ensemble_only=args.ensemble_only,
         replot_from_netcdf=args.replot_from_netcdf,
         no_llm=args.no_llm,
+        provenance_hash=args.provenance_hash,
+        provenance_hash_obs=args.provenance_hash_obs,
     )
 
     print()

@@ -4,6 +4,51 @@ from pathlib import Path
 
 import xarray as xr
 
+from feather import provenance
+
+
+def _entry_urlpath(entry) -> str | None:
+    """Store location of an intake catalog entry (best effort)."""
+    try:
+        url = getattr(entry, "urlpath", None) or entry.describe()["args"]["urlpath"]
+        return str(url) if url else None
+    except Exception:
+        return None
+
+
+def _store_fingerprint_paths(url: str | None) -> list[str]:
+    """Files fingerprinted for a store.
+
+    A DestinE zarr store holds hundreds of thousands of chunks, so only its
+    consolidated metadata is fingerprinted: a republished store rewrites it.
+    """
+    if not url:
+        return []
+    path = Path(url)
+    if path.is_dir():
+        for name in (".zmetadata", "zarr.json", ".zgroup"):
+            if (path / name).exists():
+                return [str(path / name)]
+        return []
+    return [url] if path.exists() else []
+
+
+def _record_catalog_read(prov: dict, key: str, variable: str, ds, url: str | None,
+                         catalog: str | None = None) -> None:
+    from feather.data.variables import get_var
+
+    try:
+        canonical = get_var(variable).name
+    except KeyError:
+        canonical = variable
+    provenance.record_read(
+        prov, (key, variable),
+        role="model", backend="intake", variable=canonical,
+        paths=lambda: _store_fingerprint_paths(url), data=ds[variable],
+        catalog_key=key, catalog=catalog, store=url,
+        store_variable=variable if variable != canonical else None,
+    )
+
 
 class DataLoader:
     """Unified model data access via intake catalogs or explicit paths."""
@@ -12,6 +57,7 @@ class DataLoader:
         self._catalog = catalog
         self._paths = paths or {}
         self._cache: dict[str, xr.Dataset] = {}
+        self._prov: dict[tuple, tuple] = {}
 
     @classmethod
     def from_catalog(cls, catalog_path: str, **kwargs) -> "DataLoader":
@@ -63,6 +109,12 @@ class DataLoader:
                 f"Variable {variable!r} not in dataset. "
                 f"Available: {list(ds.data_vars)}"
             )
+        if provenance.current_run() is not None:
+            if self._catalog is not None and key in self._catalog:
+                url = _entry_urlpath(self._catalog[key])
+            else:
+                url = self._paths.get(key)
+            _record_catalog_read(self._prov, key, variable, ds, url)
         return ds[variable]
 
     def get_mesh(self) -> xr.Dataset:
@@ -105,6 +157,7 @@ class MultiCatalogLoader:
 
         self._catalogs = {}
         self._cache: dict[str, xr.Dataset] = {}
+        self._prov: dict[tuple, tuple] = {}
         for label, path in catalog_paths.items():
             self._catalogs[label] = intake.open_catalog(path)
 
@@ -131,6 +184,10 @@ class MultiCatalogLoader:
                 f"Variable {variable!r} not in dataset. "
                 f"Available: {list(ds.data_vars)}"
             )
+        if provenance.current_run() is not None:
+            label = next((lb for lb, cat in self._catalogs.items() if key in cat), None)
+            url = _entry_urlpath(self._catalogs[label][key]) if label else None
+            _record_catalog_read(self._prov, key, variable, ds, url, catalog=label)
         return ds[variable]
 
     def list_entries(self) -> list[str]:

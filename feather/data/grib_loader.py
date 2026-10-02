@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig
 from feather.data.variables import get_var
 
@@ -51,6 +52,10 @@ class GRIBLoader:
         self._config = config
         self._root = Path(config.data_source.get("root", ""))
         self._cache: dict[tuple, xr.DataArray] = {}
+        # Files behind each cached array, and their provenance records.
+        self._inputs: dict[tuple, list] = {}
+        self._prov: dict[tuple, tuple] = {}
+        self._opened: list = []
 
     def load_var(
         self,
@@ -81,8 +86,17 @@ class GRIBLoader:
         if cache_key in self._cache:
             da = self._cache[cache_key]
         else:
+            self._opened = []
             da = self._open_variable(model, variable)
             self._cache[cache_key] = da
+            self._inputs[cache_key] = self._opened
+
+        provenance.record_read(
+            self._prov, cache_key, period=period,
+            role="model", backend=type(self).__name__, variable=variable,
+            paths=self._inputs.get(cache_key, ()), data=da,
+            **provenance.model_fields(self._config, model),
+        )
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -212,6 +226,8 @@ class GRIBLoader:
                     oceanModelLayer=np.arange(n, dtype=np.float64),
                 )
             return ds
+
+        self._opened.extend(grib_files)
 
         ds = xr.open_mfdataset(
             grib_files,

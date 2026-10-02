@@ -16,6 +16,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 
+from feather import provenance
 from feather.data.variables import get_var
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,13 @@ def save_figure_with_metadata(
     if close:
         plt.close(fig)
 
-    # Add generation timestamp
+    # Add generation timestamp, plus the run id and the provenance events
+    # relevant to this figure when a pipeline run is recording them.
     metadata_out = {**metadata, "generated_at": datetime.now(timezone.utc).isoformat()}
+    prov = provenance.figure_block(metadata)
+    if prov is not None:
+        metadata_out["run_id"] = prov["run_id"]
+        metadata_out["provenance"] = prov
     with open(json_path, "w") as f:
         json.dump(metadata_out, f, indent=2, default=str)
 
