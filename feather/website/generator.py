@@ -170,6 +170,7 @@ class SiteGenerator:
                         "title": metadata.get("title", _humanize(stem)),
                         "metadata": metadata,
                         "analysis": analysis,
+                        "analysis_stale": _analysis_is_stale(analysis, metadata),
                     }
                 )
 
@@ -355,3 +356,15 @@ class SiteGenerator:
             "Site generated: %s (%d pages)", site_dir, len(diagnostics) + 1
         )
         return site_dir
+
+
+def _analysis_is_stale(analysis: dict, metadata: dict) -> bool:
+    """Whether *analysis* was written against different figure metadata.
+
+    Analyses predating interpretation provenance carry no digest and are
+    never flagged.
+    """
+    from feather.provenance import sidecar_digest
+
+    recorded = ((analysis or {}).get("provenance") or {}).get("sidecar_sha256")
+    return bool(recorded) and recorded != sidecar_digest(metadata or {})

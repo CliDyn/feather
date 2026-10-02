@@ -675,3 +675,31 @@ img {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
 }
+
+/* ── Provenance panel ───────────────────────────────────────────── */
+.provenance-panel {
+    margin: 0.75rem 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+.provenance-panel > summary {
+    cursor: pointer;
+    padding: 0.5rem 0.75rem;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.provenance-panel > :not(summary) { margin-left: 0.75rem; margin-right: 0.75rem; }
+.provenance-panel h5 { margin: 0.6rem 0 0.25rem; color: var(--text-primary); }
+.provenance-panel ul { margin: 0 0 0.5rem; padding-left: 1.1rem; }
+.provenance-panel li { margin: 0.15rem 0; overflow-wrap: anywhere; }
+.provenance-panel code { font-size: 0.78rem; color: var(--text-muted); }
+.prov-run { margin-left: 0.5rem; font-weight: 400; color: var(--text-muted); font-size: 0.78rem; }
+.prov-flag {
+    margin-left: 0.5rem; padding: 0.05rem 0.4rem; border-radius: var(--radius-sm);
+    background: var(--warning); color: var(--bg-primary); font-size: 0.72rem; font-weight: 600;
+}
+.prov-warn { color: var(--warning); }
+.prov-note { color: var(--text-muted); }

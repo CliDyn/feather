@@ -40,7 +40,7 @@ pytest tests/ -v -m "integration"
 pytest tests/ -v
 ```
 
-Current test count: ~1372 tests (1367 unit + 5 integration).
+Current test count: ~2741 tests (2726 unit + 15 integration). The unit suite takes ~1.5 h on a login node; the slowest tests (`TestAddedValueRun`, `precip_obs_comparison::TestRun`) take 60-150 s each and up to ~15 GB RSS.
 
 **Note:** Unit tests use small synthetic data (nside=8, 768 cells) and are safe to run on the login node. Integration tests (`-m integration`) access real data files but only open metadata/small slices — they are also safe on the login node. For any end-to-end test that runs full diagnostics on real data (nside=1024, 12.6M cells), ask the user to execute it in a compute environment.
 
@@ -52,6 +52,10 @@ feather/                     # Package root
 ├── run.py                   # Pipeline orchestration (run_pipeline)
 ├── __main__.py              # python -m feather support
 ├── config.py                # FeatherConfig dataclass + YAML loading
+├── provenance.py            # Run-scoped provenance capture (run record, events, sidecar block)
+├── provenance_cli.py        # `feather provenance` — inspect a figure's provenance
+├── verify.py                # `feather verify` — check outputs against recorded provenance
+├── prov_export.py           # W3C PROV-JSON export of a figure's provenance
 ├── data/
 │   ├── loader.py            # MultiCatalogLoader (DestinE intake catalogs)
 │   ├── cmor_loader.py       # CMORLoader (CMOR directory tree, e.g. EERIE)
@@ -633,6 +637,23 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - **References** per variable via `added_value.ar6_references`; defaults `tas: [ERA5]`, `pr: [ERA5, MSWEP]`. Berkeley (`BE`) is available but not a `tas` default — it is land-only, so it cannot score the 15 ocean regions.
 - Figures land in `figures/added_value_ar6/` with metadata `group="ar6_regions"` (own nav page, badge in `style.css`): region×member heatmap tables for every configured season (all regions + one per keep-set; two references render as split diagonal cells, boxed = positive), annual gridded AV maps with AR6 outlines one panel per member per reference, and annual ensemble mean/median maps outlining the keep-set. Plus `{var}_ar6_av_per_member{bench}.csv`.
 - 31 tests in `tests/test_ar6_regions.py`, 49 in `tests/test_ar6_added_value.py`
+
+### Provenance
+- Captures *how* each figure was produced, not just what it shows. Design: `/work/bm1344/AWI/EERIE/science/feather_provenance_design.md`; this implementation deviates from it on purpose in two places (below).
+- **Events, not `attrs`**: choke points call `provenance.emit(step, **fields)` into a run scope held in a `ContextVar`. Data arrays are never touched. The design's `DataArray.attrs` carrier was rejected: it needs global `keep_attrs=True`, which makes derived fields inherit stale `units` attrs that `ocean_sst`/`ocean_bias` read to decide on K→°C, and it would not survive the nereus interpolators (numpy out) or reach `_build_metadata` (which receives no arrays) without editing every diagnostic.
+- **Outside a run scope everything is a no-op** — diagnostics called from tests/notebooks write byte-identical sidecars. Every capture path swallows its own errors (degrades to an `{"error": ...}` event); provenance can never fail a run.
+- Scopes: `run_pipeline` → `provenance.run_scope()` (writes `{output}/provenance/run_{run_id}.json`: git commit/dirty, argv, options, **fully resolved config** with secrets redacted, package versions, nereus conservative probe, hash policy); `_run_diagnostics` → `diagnostic_scope(name)` per diagnostic (writes `{output}/provenance/{run_id}/{diag}.json`, incl. full input path lists).
+- `save_figure_with_metadata` adds `run_id` + a `provenance` block to every sidecar: events filtered to the figure (variable-tagged events match `variables_used` or a `{var}_` figure-id prefix, for derived keys like radiation_budget's `dq_key`; untagged events apply to all figures of the diagnostic), benchmark members collapsed into one `benchmark` summary, `paths` dropped, capped at `MAX_FIGURE_EVENTS` (50). Prompt builders pick fields by name, so the block costs no LLM tokens.
+- Event steps: `read` (all model loaders incl. intake/kerchunk + `ObsLoader._cached`; files, `stat`/`content`/`none` fingerprint, actual `time_coverage` vs `declared_experiment`, `n_per_month`/`missing_months` within the requested period), `regrid_method` (`DiagnosticBase._regrid_method_for`: requested vs used + reason — catches the silent conservative fallback), `regrid` (conservative weight build + pole points merged, `util/regrid.py`), `convert` (obs unit factor/offset, CMOR sign flip), `benchmark_member` (`CMIP6Loader.load_var` verdicts: used / `no_store` / `partial_coverage` / `no_timesteps_in_period` / `unstructured_grid` / `no_lat_lon`), `diagnostic` (ok/failed).
+- Loaders cache opened stores and are shared across diagnostics, so `provenance.record_read(memo, key, ...)` memoises the record per run and **re-emits it on cache hits** — otherwise only the first diagnostic to touch a variable would list its inputs.
+- DestinE zarr stores are fingerprinted by their consolidated metadata only (`.zmetadata`), not by walking ~10⁵ chunks. Kerchunk stores fingerprint the reference files, not the archive they point at.
+- CLI: `--provenance-hash {none,stat,content}` (default `stat`), `--provenance-hash-obs` (default: same). The design suggested `content` as the obs default; not adopted because full ERA5 per-variable files are several GB each.
+- LLM: each `*_analysis.json` / `synthesis.json` gets a `provenance` block (model, tokens, finish reason, attempts + failures, JSON repairs applied, prompt SHA-256s, `sidecar_sha256` + `figure_sha256`). `sidecar_digest()` ignores `generated_at`/`run_id`/`provenance`, so re-saving an unchanged figure is not "stale". Provenance blocks are stripped before analyses/syntheses are fed back into a prompt. `analyze_figure`/`synthesize_diagnostic` keep their return types; `*_with_provenance` variants return `(result, record)`. `skip_existing` warns on stale analyses; the dashboard flags them.
+- NetCDF: `write_netcdf` stamps `feather_run_id`, `feather_provenance` (JSON string) and appends a CF `history` line.
+- Commands: `feather provenance --figure DIAG/FIGURE_ID [--full] [--json] [--export prov-json]`, `feather provenance --runs`, `feather verify [--checks inputs analyses regrid coverage code] [--no-content] [--strict] [--json]`. `verify` re-fingerprints inputs, flags stale/orphaned analyses, regrid fallbacks and capability changes, data that starts after its declared experiment (`EXPERIMENT_START_YEAR`) or misses months, and figures from other commits / dirty trees / without provenance.
+- Dashboard: collapsible "Provenance" panel per figure (inputs, regridding with fallback badge, benchmark exclusions).
+- Not done (deferred from the design): deriving sidecar `units` from the conversion chain (needs per-diagnostic edits); routing the ~22 direct `nr.regrid` call sites (non-flux, nearest) through `util.regrid`; feeding provenance fields into the LLM prompt.
+- 84 tests across `tests/test_provenance.py` (33), `test_provenance_inputs.py` (17), `test_provenance_llm.py` (11), `test_provenance_verify.py` (17), `test_provenance_outputs.py` (6) — incl. a sidecar-equality check that `global_biases`/`timeseries`/`seasonal_cycle` produce identical results with recording on and off.
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`

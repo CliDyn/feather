@@ -69,6 +69,24 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+def _add_provenance(ds: xr.Dataset, path: Path) -> None:
+    """Stamp the active run's provenance into *ds*'s global attributes.
+
+    Adds ``feather_run_id`` and ``feather_provenance`` (a JSON string —
+    NetCDF attributes must be scalars or strings) and appends one line to
+    the CF ``history`` attribute.  No-op outside a pipeline run.
+    """
+    from feather import provenance
+
+    attrs = provenance.netcdf_attrs(path.stem)
+    if not attrs:
+        return
+    line = attrs.pop("history")
+    prior = ds.attrs.get("history")
+    ds.attrs["history"] = f"{prior}\n{line}" if isinstance(prior, str) and prior else line
+    ds.attrs.update(attrs)
+
+
 def write_netcdf(ds: xr.Dataset, path: str | Path, **kwargs) -> Path:
     """Write *ds* to *path* atomically, with attrs/encoding sanitised.
 
@@ -91,8 +109,10 @@ def write_netcdf(ds: xr.Dataset, path: str | Path, **kwargs) -> Path:
     """
     path = Path(path)
     tmp = path.with_name(f".{path.name}.tmp")
+    out = _sanitize_attrs(ds.copy())
+    _add_provenance(out, path)
     try:
-        _sanitize_attrs(ds.copy()).to_netcdf(tmp, **kwargs)
+        out.to_netcdf(tmp, **kwargs)
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
