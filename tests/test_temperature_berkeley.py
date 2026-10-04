@@ -1626,3 +1626,35 @@ class TestPrompts:
         from feather.llm.prompts import build_figure_analysis_system
         system = build_figure_analysis_system()
         assert "warming trend" in system.lower() or "°C/decade" in system
+
+
+class TestFamilyBias:
+    """Group A in ``project.ensemble_mode: per_family``."""
+
+    def test_family_figure_replaces_pooled(self, synth_temp_healpix,
+                                           synth_temp_obs, tmp_path):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        cfg = FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom", "ifs-fesom-r2", "ifs-nemo"],
+            obs_root="",
+            obs_datasets={"BERKELEY_EARTH": {
+                "path": "/fake", "variables": {"2t": "fake.nc"},
+            }},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            project={"ensemble_mode": "per_family"},
+        )
+        diag = _make_diag(MockTempModelLoader(synth_temp_healpix),
+                          MockBerkeleyObsLoader(synth_temp_obs), cfg)
+        results = diag._compute_bias_maps(diag._load_shared_data())
+        assert results["ens_data"] == {}
+        assert results["family_data"]["annual"]["ifs-fesom"]["n_members"] == 2
+        fids = [m["figure_id"] for _, m in diag._plot_bias_maps(results)]
+        assert "tas_annual_family_mean_bias_combined" in fids
+        assert not any("ens_bias" in f for f in fids)
+        plt.close("all")

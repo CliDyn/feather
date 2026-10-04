@@ -108,6 +108,28 @@ class DiagnosticBase(ABC):
             or self._benchmarks_explicit
         )
 
+    @property
+    def _per_family(self) -> bool:
+        """Summarise models per family instead of as one pooled ensemble.
+
+        See :mod:`feather.diag._families` and ``project.ensemble_mode``.
+        """
+        return self.config.get_ensemble_mode() == "per_family"
+
+    def _line_families(self, models) -> dict[str, list[str]] | None:
+        """``{family: [members]}`` of *models* for time-series family lines.
+
+        ``None`` in pooled mode, so line plots keep their ensemble mean/median.
+        """
+        if not self._per_family:
+            return None
+        models = list(models)
+        # Config order, so a family's first member (whose colour its line
+        # takes) is r1 whatever order the series arrive in.
+        ordered = [m for m in self.config.models if m in models]
+        ordered += [m for m in models if m not in ordered]
+        return self.config.get_model_families(ordered)
+
     # ── NetCDF export ─────────────────────────────────────────────────
 
     @property

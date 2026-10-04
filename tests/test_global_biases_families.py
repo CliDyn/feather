@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from feather.config import FeatherConfig, ModelConfig
+from feather.diag import _families
 from feather.diag.global_biases import GlobalBiases
 
 
@@ -114,7 +115,7 @@ class TestFamilyStats:
         mr = dict(res["models"])
         del mr["A-r3"]
         fams = cfg.get_model_families(list(mr))
-        out = GlobalBiases._compute_family_stats(
+        out = _families.compute_family_stats(
             mr, fams, res["obs"]["clim"], res["obs"]["seasonal_clim"], None)
         assert out["annual"]["A"]["n_members"] == 2
 

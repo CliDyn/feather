@@ -35,6 +35,7 @@ import xarray as xr
 
 from feather.data.variables import VARIABLE_REGISTRY, get_var
 from feather.diag import _ar6_added_value as _ar6
+from feather.diag import _families
 from feather.diag import _berkeley
 from feather.diag import ocean_bias as _ocean_bias
 from feather.diag.base import DiagnosticBase
@@ -234,9 +235,9 @@ class AddedValueDiag(DiagnosticBase):
         )
 
     def _all_nc_exist(self, var: str) -> bool:
-        """True when all 10 NC files (5 periods × 2 ensemble types) exist."""
+        """True when the NC file of every period × ensemble summary exists."""
         for period in ("annual", "djf", "mam", "jja", "son"):
-            for etype in ("ensemble_mean", "ensemble_median"):
+            for etype in self._summary_etypes():
                 if not self._nc_path(var, period, etype).exists():
                     return False
         return True
@@ -346,6 +347,139 @@ class AddedValueDiag(DiagnosticBase):
             f"_{period_key}_{self.period[0]}_{self.period[1]}"
             f"{self._bench_suffix}"
         )
+
+    # -- Ensemble summaries -------------------------------------------------
+    #
+    # AV is computed for the individual members and for ensemble
+    # "summaries": the pooled ensemble mean and median by default, or — with
+    # ``project.ensemble_mode: per_family`` — one mean per model family
+    # (never pooled across families; see :mod:`feather.diag._families`).
+    # Each summary has an *etype* key that names its NetCDF checkpoint and
+    # its flat entries in a period's AV dict (``{etype}``,
+    # ``{etype}_domain_av``, ``{etype}_frac_positive``).
+
+    _POOLED_ETYPES = ("ensemble_mean", "ensemble_median")
+
+    @staticmethod
+    def _family_etype(family: str) -> str:
+        """Summary key (and NC filename token) of a model family."""
+        return f"family_{sanitize_name(family)}"
+
+    def _summary_etypes(self) -> list[str]:
+        """Summary keys expected for the configured models."""
+        if self._per_family:
+            return [self._family_etype(f)
+                    for f in self.config.get_model_families()]
+        return list(self._POOLED_ETYPES)
+
+    def _summaries(
+        self, per_model: dict[str, xr.DataArray],
+        ens_mean: xr.DataArray | None = None,
+        ens_median: xr.DataArray | None = None,
+    ) -> dict[str, dict]:
+        """Ensemble summaries for one period.
+
+        *per_model* maps member → field (a climatology or a bias — whatever
+        AV is then taken of).  Per-family mode averages it per family;
+        pooled mode uses *ens_mean*/*ens_median* as given.
+
+        Returns
+        -------
+        dict
+            Ordered ``{etype: {"label", "field", ...}}``; family entries carry
+            ``family``/``members``, pooled ones the obs-stats key
+            (``stats_key``).
+        """
+        out: dict[str, dict] = {}
+        if self._per_family:
+            fams = self.config.get_model_families(list(per_model))
+            for fam, d in _families.family_mean_fields(per_model, fams).items():
+                out[self._family_etype(fam)] = {
+                    "label": _families.family_label(
+                        fam, d["n_members"], bold=False),
+                    "field": d["mean"],
+                    "family": fam,
+                    "members": d["members"],
+                }
+            return out
+        proj = self._project_name
+        if ens_mean is not None:
+            out["ensemble_mean"] = {
+                "label": f"{proj} Ens. Mean", "field": ens_mean,
+                "stats_key": "eerie_mean",
+            }
+        if ens_median is not None:
+            out["ensemble_median"] = {
+                "label": f"{proj} Ens. Median", "field": ens_median,
+                "stats_key": "eerie_median",
+            }
+        return out
+
+    def _attach_summary_avs(
+        self, pdata: dict, summaries: dict[str, dict], av_fn, area,
+    ) -> dict[str, xr.DataArray]:
+        """Compute ``av_fn(field)`` per summary and store it flat in *pdata*.
+
+        Also records ``pdata["summaries"]`` (``{etype: label}``, in order) so
+        plotting and NetCDF persistence iterate the summaries actually
+        present.  Returns ``{etype: AV field}``.
+        """
+        avs: dict[str, xr.DataArray] = {}
+        for etype, summ in summaries.items():
+            av = av_fn(summ["field"])
+            avs[etype] = av
+            pdata[etype] = av
+            pdata[f"{etype}_domain_av"] = self._domain_mean_av(av, area)
+            pdata[f"{etype}_frac_positive"] = self._frac_positive(av, area)
+        pdata["summaries"] = {e: summ["label"] for e, summ in summaries.items()}
+        return avs
+
+    def _summary_labels(self, period_data: dict) -> dict[str, str]:
+        """``{etype: label}`` of the summaries in a period's AV dict."""
+        if period_data.get("summaries"):
+            return dict(period_data["summaries"])
+        proj = self._project_name
+        return {
+            e: lbl for e, lbl in (
+                ("ensemble_mean", f"{proj} Ens. Mean"),
+                ("ensemble_median", f"{proj} Ens. Median"),
+            ) if e in period_data
+        }
+
+    def _save_summary_ncs(
+        self, var: str, period_key: str, pdata: dict, nc_meta: dict,
+        obs_name: str | None = None,
+    ) -> None:
+        """Persist each summary's AV field (skipping existing files)."""
+        for etype, label in self._summary_labels(pdata).items():
+            nc_path = self._nc_path(
+                var, period_key.lower(), etype, obs_name=obs_name)
+            if not nc_path.exists():
+                self._save_av_to_nc(
+                    pdata[etype], var, period_key.lower(), etype, nc_meta,
+                    obs_name=obs_name, label=label,
+                )
+
+    def _summary_categories(
+        self, summaries: dict[str, dict], avs: dict[str, xr.DataArray],
+        area, mask=None,
+    ) -> dict[str, Any]:
+        """Category fractions of each summary's AV for the obs-stats JSON.
+
+        Pooled summaries go under their legacy keys (``eerie_mean``/
+        ``eerie_median``); family summaries under ``families.{family}``.
+        *mask* (a boolean DataArray) restricts the fractions to a region.
+        """
+        out: dict[str, Any] = {}
+        for etype, av in avs.items():
+            summ = summaries[etype]
+            cats = self._frac_categories(
+                av if mask is None else av.where(mask), area=area)
+            if summ.get("family"):
+                out.setdefault("families", {})[summ["family"]] = cats
+            else:
+                out[summ["stats_key"]] = cats
+        return out
 
     # -- Orchestration -------------------------------------------------------
 
@@ -710,7 +844,9 @@ class AddedValueDiag(DiagnosticBase):
 
         Returns a dict with ``bench``/``ens_mean``/``ens_median`` biases, a
         ``models`` map of {EERIE model → bias}, and the grid ``area``/coords,
-        or ``None`` when the file or a required field is missing.
+        or ``None`` when the file or a required field is missing.  In
+        per-family mode the pooled ``ens_*`` fields are not required (family
+        means are built from the member biases) and may be ``None``.
         """
         diag = self._OBS_NETCDF_SOURCE.get(obs_name)
         if diag is None:
@@ -725,8 +861,10 @@ class AddedValueDiag(DiagnosticBase):
         ds = xr.open_dataset(path)
         try:
             bench_key = f"{sanitize_name(self._bench_label)}_bias"
-            if (bench_key not in ds
-                    or "ens_mean_bias" not in ds
+            if bench_key not in ds:
+                return None
+            if not self._per_family and (
+                    "ens_mean_bias" not in ds
                     or "ens_median_bias" not in ds):
                 return None
             models = {}
@@ -741,8 +879,10 @@ class AddedValueDiag(DiagnosticBase):
             lon = bench["lon"].values
             return {
                 "bench": bench,
-                "ens_mean": ds["ens_mean_bias"].load(),
-                "ens_median": ds["ens_median_bias"].load(),
+                "ens_mean": (ds["ens_mean_bias"].load()
+                             if "ens_mean_bias" in ds else None),
+                "ens_median": (ds["ens_median_bias"].load()
+                               if "ens_median_bias" in ds else None),
                 "models": models,
                 "area": compute_latlon_areas(lat, lon),
             }
@@ -810,16 +950,18 @@ class AddedValueDiag(DiagnosticBase):
                 area = pb["area"]
                 bench_b = pb["bench"]
                 ens_mean_b = pb["ens_mean"]
-                ens_median_b = pb["ens_median"]
 
-                av_mean = self._av_from_biases(bench_b, ens_mean_b)
-                av_median = self._av_from_biases(bench_b, ens_median_b)
+                summaries = self._summaries(
+                    pb["models"], ens_mean_b, pb["ens_median"])
                 per_eerie = {
                     m: self._av_from_biases(bench_b, b)
                     for m, b in pb["models"].items()
                 }
                 per_cmip6: dict[str, xr.DataArray] = {}
-                if self.cmip6_individual:
+                # Benchmark members are scored against the pooled ensemble
+                # mean, which per-family mode does not form.
+                if self.cmip6_individual and ens_mean_b is not None \
+                        and not self._per_family:
                     for member, mbias in self._read_individual_biases(
                         var, obs_name, period_key,
                     ).items():
@@ -828,27 +970,20 @@ class AddedValueDiag(DiagnosticBase):
                             ens_mean_b, mbias,
                         )
 
-                per_period[period_key] = {
-                    "ensemble_mean": av_mean,
-                    "ensemble_median": av_median,
-                    "per_eerie_av": per_eerie,
-                    "per_cmip6_av": per_cmip6,
-                    "ensemble_mean_domain_av": self._domain_mean_av(
-                        av_mean, area),
-                    "ensemble_median_domain_av": self._domain_mean_av(
-                        av_median, area),
-                    "ensemble_mean_frac_positive": self._frac_positive(
-                        av_mean, area),
-                    "ensemble_median_frac_positive": self._frac_positive(
-                        av_median, area),
-                }
+                pdata = {"per_eerie_av": per_eerie, "per_cmip6_av": per_cmip6}
+                avs = self._attach_summary_avs(
+                    pdata, summaries,
+                    lambda b: self._av_from_biases(bench_b, b), area,
+                )
+                per_period[period_key] = pdata
 
                 # Category fractions for the summary bar charts (global
                 # domain + per CORDEX region).
                 obs_stats.setdefault(obs_name, {})[period_key.lower()] = (
                     self._stats_block(
-                        av_mean, av_median,
-                        self._av_from_biases(ens_mean_b, bench_b),
+                        summaries, avs,
+                        None if self._per_family
+                        else self._av_from_biases(ens_mean_b, bench_b),
                         per_eerie, area,
                         bench_b["lat"].values, bench_b["lon"].values,
                     )
@@ -889,15 +1024,8 @@ class AddedValueDiag(DiagnosticBase):
         }
         for obs_key, obs_av in av_by_obs.items():
             for period_key, pdata in obs_av.items():
-                for etype in ("ensemble_mean", "ensemble_median"):
-                    nc_path = self._nc_path(
-                        var, period_key.lower(), etype, obs_name=obs_key,
-                    )
-                    if not nc_path.exists():
-                        self._save_av_to_nc(
-                            pdata[etype], var, period_key.lower(), etype,
-                            nc_meta, obs_name=obs_key,
-                        )
+                self._save_summary_ncs(
+                    var, period_key, pdata, nc_meta, obs_name=obs_key)
         if obs_stats:
             self._save_obs_stats_json(var, obs_stats, nc_meta)
 
@@ -1177,13 +1305,15 @@ class AddedValueDiag(DiagnosticBase):
         # -- AV computation -------------------------------------------------
         # Model1 = CMIP6 MMM, Model2 = EERIE  →  AV > 0 means EERIE adds value
         #
-        # Two ensemble statistics computed:
+        # Ensemble summaries (see _summaries): pooled mode computes
         #   ensemble_mean  : AV(CMIP6 MMM, EERIE ens. mean,   ERA5)
         #   ensemble_median: AV(CMIP6 MMM, EERIE ens. median, ERA5)
+        # per-family mode one AV(CMIP6 MMM, family mean, ERA5) per family.
         #
         # Per-model individual AV maps:
         #   per_eerie_av:  {model: AV(CMIP6 MMM, EERIE_i, ERA5)}
         #   per_cmip6_av:  {label: AV(EERIE ens. mean, CMIP6_j, ERA5)}
+        #                  (pooled mode only)
 
         av_results: dict[str, dict] = {}
 
@@ -1191,35 +1321,26 @@ class AddedValueDiag(DiagnosticBase):
                        eerie_fields, eerie_labels,
                        cmip6_fields, cmip6_labels,
                        obs_field):
-            """Compute ensemble and per-model AV for one period."""
-            av_ens_mean = self._compute_av(cmip6_field, eerie_ens_mean,
-                                           obs_field)
-            av_ens_median = self._compute_av(cmip6_field, eerie_ens_median,
-                                             obs_field)
-
+            """Compute ensemble-summary and per-model AV for one period."""
+            summaries = self._summaries(
+                dict(zip(eerie_labels, eerie_fields)),
+                eerie_ens_mean, eerie_ens_median,
+            )
             per_eerie_av = {
                 lbl: self._compute_av(cmip6_field, ef, obs_field)
                 for lbl, ef in zip(eerie_labels, eerie_fields)
             }
-            per_cmip6_av = {
+            per_cmip6_av = {} if self._per_family else {
                 lbl: self._compute_av(eerie_ens_mean, cf, obs_field)
                 for lbl, cf in zip(cmip6_labels, cmip6_fields)
             }
-
-            return {
-                "ensemble_mean": av_ens_mean,
-                "ensemble_median": av_ens_median,
-                "per_eerie_av": per_eerie_av,
-                "per_cmip6_av": per_cmip6_av,
-                "ensemble_mean_domain_av": self._domain_mean_av(
-                    av_ens_mean, common_area),
-                "ensemble_median_domain_av": self._domain_mean_av(
-                    av_ens_median, common_area),
-                "ensemble_mean_frac_positive": self._frac_positive(
-                    av_ens_mean, common_area),
-                "ensemble_median_frac_positive": self._frac_positive(
-                    av_ens_median, common_area),
-            }
+            pdata = {"per_eerie_av": per_eerie_av, "per_cmip6_av": per_cmip6_av}
+            self._attach_summary_avs(
+                pdata, summaries,
+                lambda f: self._compute_av(cmip6_field, f, obs_field),
+                common_area,
+            )
+            return pdata
 
         # Annual
         av_results["annual"] = _period_av(
@@ -1263,13 +1384,7 @@ class AddedValueDiag(DiagnosticBase):
             "obs_dataset": obs_dataset_name,
         }
         for period_key, period_data in av_results.items():
-            for etype in ("ensemble_mean", "ensemble_median"):
-                nc_path = self._nc_path(var, period_key.lower(), etype)
-                if not nc_path.exists():
-                    self._save_av_to_nc(
-                        period_data[etype], var,
-                        period_key.lower(), etype, nc_meta,
-                    )
+            self._save_summary_ncs(var, period_key, period_data, nc_meta)
 
         # -- Per-obs improvement/neutral/deterioration statistics ------------
         eerie_individual_annual = dict(zip(eerie_models_used, eerie_annual_fields))
@@ -1360,15 +1475,8 @@ class AddedValueDiag(DiagnosticBase):
             if obs_key == primary_obs_name:
                 continue
             for period_key, pdata in obs_av.items():
-                for etype in ("ensemble_mean", "ensemble_median"):
-                    nc_path = self._nc_path(
-                        var, period_key.lower(), etype, obs_name=obs_key,
-                    )
-                    if not nc_path.exists():
-                        self._save_av_to_nc(
-                            pdata[etype], var, period_key.lower(), etype,
-                            nc_meta, obs_name=obs_key,
-                        )
+                self._save_summary_ncs(
+                    var, period_key, pdata, nc_meta, obs_name=obs_key)
 
         return {
             "var_info": var_info,
@@ -1389,7 +1497,9 @@ class AddedValueDiag(DiagnosticBase):
         """
         var_info = get_var(var)
         av_results: dict[str, dict] = {}
-        _etypes = ("ensemble_mean", "ensemble_median")
+        _etypes = self._summary_etypes()
+        if not _etypes:
+            return None
 
         for period in ("annual", "djf", "mam", "jja", "son"):
             paths = {
@@ -1401,11 +1511,17 @@ class AddedValueDiag(DiagnosticBase):
             datasets = {et: xr.open_dataset(p) for et, p in paths.items()}
             av_fields = {et: ds["av"] for et, ds in datasets.items()}
 
-            lat_vals = av_fields["ensemble_mean"]["lat"].values
-            lon_vals = av_fields["ensemble_mean"]["lon"].values
+            first = av_fields[_etypes[0]]
+            lat_vals = first["lat"].values
+            lon_vals = first["lon"].values
             area = compute_latlon_areas(lat_vals, lon_vals)
 
-            period_data: dict[str, Any] = {}
+            period_data: dict[str, Any] = {
+                "summaries": {
+                    et: av_f.attrs.get("summary_label") or et
+                    for et, av_f in av_fields.items()
+                },
+            }
             for et, av_f in av_fields.items():
                 period_data[et] = av_f
                 period_data[f"{et}_domain_av"] = self._domain_mean_av(
@@ -1425,7 +1541,7 @@ class AddedValueDiag(DiagnosticBase):
 
         # Recover model lists from NC attributes
         ds = xr.open_dataset(
-            self._nc_path(var, "annual", "ensemble_mean"))
+            self._nc_path(var, "annual", _etypes[0]))
         n_eerie = int(ds["av"].attrs.get("n_eerie_models", 0))
         n_cmip6 = int(ds["av"].attrs.get("n_cmip6_models", 0))
         eerie_models = ds["av"].attrs.get("eerie_models", "").split(",")
@@ -1644,9 +1760,9 @@ class AddedValueDiag(DiagnosticBase):
 
     def _regional_stats(
         self,
-        av_mean: xr.DataArray,
-        av_median: xr.DataArray,
-        av_cmip6: xr.DataArray,
+        summaries: dict[str, dict],
+        summary_avs: dict[str, xr.DataArray],
+        av_cmip6: xr.DataArray | None,
         per_eerie_av: dict[str, xr.DataArray],
         area: np.ndarray | None,
         lat: np.ndarray,
@@ -1658,29 +1774,33 @@ class AddedValueDiag(DiagnosticBase):
         set to NaN, so :meth:`_frac_categories` excludes them) and the same
         category fractions are computed as for the global domain.
         """
+        fields = [*summary_avs.values(), *per_eerie_av.values()]
+        if av_cmip6 is not None:
+            fields.append(av_cmip6)
+        if not fields:
+            return {}
+        template = fields[0]
         masks = self._region_masks(lat, lon)
         out: dict[str, dict] = {}
         for rname, mask in masks.items():
-            m = xr.DataArray(mask, dims=av_mean.dims, coords=av_mean.coords)
-            out[rname] = {
-                "eerie_mean": self._frac_categories(
-                    av_mean.where(m), area=area),
-                "eerie_median": self._frac_categories(
-                    av_median.where(m), area=area),
-                "cmip6_mean": self._frac_categories(
-                    av_cmip6.where(m), area=area),
-                "per_eerie_models": {
-                    mm: self._frac_categories(av.where(m), area=area)
-                    for mm, av in per_eerie_av.items()
-                },
+            m = xr.DataArray(mask, dims=template.dims, coords=template.coords)
+            block = self._summary_categories(
+                summaries, summary_avs, area, mask=m)
+            if av_cmip6 is not None:
+                block["cmip6_mean"] = self._frac_categories(
+                    av_cmip6.where(m), area=area)
+            block["per_eerie_models"] = {
+                mm: self._frac_categories(av.where(m), area=area)
+                for mm, av in per_eerie_av.items()
             }
+            out[rname] = block
         return out
 
     def _stats_block(
         self,
-        av_mean: xr.DataArray,
-        av_median: xr.DataArray,
-        av_cmip6: xr.DataArray,
+        summaries: dict[str, dict],
+        summary_avs: dict[str, xr.DataArray],
+        av_cmip6: xr.DataArray | None,
         per_eerie_av: dict[str, xr.DataArray],
         area: np.ndarray | None,
         lat: np.ndarray,
@@ -1688,22 +1808,23 @@ class AddedValueDiag(DiagnosticBase):
     ) -> dict[str, Any]:
         """Build the global category-stats block plus a ``"regions"`` sub-dict.
 
-        The global keys (``eerie_mean``/``eerie_median``/``cmip6_mean``/
-        ``per_eerie_models``) match the legacy schema for backward compat;
-        ``regions`` adds the same structure per CORDEX ``-11`` region.
+        Pooled mode keeps the legacy keys (``eerie_mean``/``eerie_median``/
+        ``cmip6_mean``/``per_eerie_models``).  Per-family mode writes
+        ``families.{family}`` instead of the ensemble keys and omits
+        ``cmip6_mean`` (*av_cmip6* ``None``): that bar scores the benchmark
+        against the pooled ensemble mean, which is not formed.  ``regions``
+        adds the same structure per CORDEX ``-11`` region.
         """
-        block: dict[str, Any] = {
-            "eerie_mean": self._frac_categories(av_mean, area=area),
-            "eerie_median": self._frac_categories(av_median, area=area),
-            "cmip6_mean": self._frac_categories(av_cmip6, area=area),
-            "per_eerie_models": {
-                m: self._frac_categories(av, area=area)
-                for m, av in per_eerie_av.items()
-            },
+        block = self._summary_categories(summaries, summary_avs, area)
+        if av_cmip6 is not None:
+            block["cmip6_mean"] = self._frac_categories(av_cmip6, area=area)
+        block["per_eerie_models"] = {
+            m: self._frac_categories(av, area=area)
+            for m, av in per_eerie_av.items()
         }
         if self.regions:
             block["regions"] = self._regional_stats(
-                av_mean, av_median, av_cmip6, per_eerie_av, area, lat, lon,
+                summaries, summary_avs, av_cmip6, per_eerie_av, area, lat, lon,
             )
         return block
 
@@ -1724,14 +1845,20 @@ class AddedValueDiag(DiagnosticBase):
         and returns the area-weighted improvement/neutral/degradation
         fractions for the global domain and each CORDEX region.
         """
-        av_em = self._compute_av(cmip6_mmm, eerie_mean, obs)
-        av_emd = self._compute_av(cmip6_mmm, eerie_median, obs)
-        av_c = self._compute_av(eerie_mean, cmip6_mmm, obs)
+        summaries = self._summaries(
+            eerie_individual or {}, eerie_mean, eerie_median)
+        avs = {
+            e: self._compute_av(cmip6_mmm, summ["field"], obs)
+            for e, summ in summaries.items()
+        }
+        av_c = (None if self._per_family
+                else self._compute_av(eerie_mean, cmip6_mmm, obs))
         per_eerie = {
             n: self._compute_av(cmip6_mmm, f, obs)
             for n, f in (eerie_individual or {}).items()
         }
-        return self._stats_block(av_em, av_emd, av_c, per_eerie, area, lat, lon)
+        return self._stats_block(
+            summaries, avs, av_c, per_eerie, area, lat, lon)
 
     # -- NetCDF I/O ---------------------------------------------------------
 
@@ -1743,6 +1870,7 @@ class AddedValueDiag(DiagnosticBase):
         ensemble_type: str,
         meta: dict[str, Any],
         obs_name: str | None = None,
+        label: str | None = None,
     ) -> None:
         """Save a single AV field as a CMORized NetCDF file.
 
@@ -1755,13 +1883,17 @@ class AddedValueDiag(DiagnosticBase):
         period : str
             Period label (``"annual"``, ``"djf"``, ``"mam"``, ``"jja"``, ``"son"``).
         ensemble_type : str
-            ``"mean"`` or ``"median"``.
+            Summary key: ``"ensemble_mean"``/``"ensemble_median"``, or
+            ``"family_<name>"`` in per-family mode.
         meta : dict
             Provenance metadata written to variable attributes.
         obs_name : str, optional
             Obs dataset the AV was computed against.  Selects the (possibly
             obs-tokened) filename and the ``reference_dataset`` attribute.
             Defaults to ``meta["obs_dataset"]``.
+        label : str, optional
+            Display label of the summary (stored as ``summary_label`` so the
+            figures can be rebuilt from the file).
         """
         if obs_name is None:
             obs_name = meta.get("obs_dataset", "ERA5")
@@ -1790,6 +1922,7 @@ class AddedValueDiag(DiagnosticBase):
                         "model2": f"{self._project_name} {ensemble_type}",
                         "reference_dataset": obs_name,
                         "ensemble_type": ensemble_type,
+                        "summary_label": label or ensemble_type,
                         "n_eerie_models": meta["n_eerie_models"],
                         "n_cmip6_models": meta["n_cmip6_models"],
                         "eerie_models": ",".join(meta["eerie_models"]),
@@ -2308,7 +2441,7 @@ class AddedValueDiag(DiagnosticBase):
         blocks: dict[str, dict] = {}
         for pk, pdata in bd.items():
             ens = ens_data.get(pk, {})
-            if ens.get("mean_bias") is None:
+            if ens.get("mean_bias") is None and not self._per_family:
                 continue
             model_biases: dict[str, xr.DataArray] = {}
             for m, mdata in models.items():
@@ -2319,8 +2452,8 @@ class AddedValueDiag(DiagnosticBase):
             bench_bias = pdata["bias"]
             blocks[pk] = {
                 "bench_bias": bench_bias,
-                "ens_mean_bias": ens["mean_bias"],
-                "ens_median_bias": ens["median_bias"],
+                "ens_mean_bias": ens.get("mean_bias"),
+                "ens_median_bias": ens.get("median_bias"),
                 "models": model_biases,
                 "individual": {
                     member: md["bias"]
@@ -2357,29 +2490,26 @@ class AddedValueDiag(DiagnosticBase):
         av_results: dict[str, dict] = {}
         for pk, blk in blocks.items():
             bench_bias = blk["bench_bias"]
-            ens_mean_bias = blk["ens_mean_bias"]
-            ens_median_bias = blk["ens_median_bias"]
+            ens_mean_bias = blk.get("ens_mean_bias")
             area = blk["area"]
-            av_mean = self._av_from_biases(bench_bias, ens_mean_bias)
-            av_median = self._av_from_biases(bench_bias, ens_median_bias)
+            summaries = self._summaries(
+                blk["models"], ens_mean_bias, blk.get("ens_median_bias"))
+            if not summaries:
+                continue
             per_eerie = {
                 m: self._av_from_biases(bench_bias, b)
                 for m, b in blk["models"].items()
             }
-            per_cmip6 = {
+            per_cmip6 = {} if (self._per_family or ens_mean_bias is None) else {
                 member: self._av_from_biases(ens_mean_bias, mb)
                 for member, mb in blk.get("individual", {}).items()
             }
-            av_results[pk] = {
-                "ensemble_mean": av_mean,
-                "ensemble_median": av_median,
-                "per_eerie_av": per_eerie,
-                "per_cmip6_av": per_cmip6,
-                "ensemble_mean_domain_av": self._domain_mean_av(av_mean, area),
-                "ensemble_median_domain_av": self._domain_mean_av(av_median, area),
-                "ensemble_mean_frac_positive": self._frac_positive(av_mean, area),
-                "ensemble_median_frac_positive": self._frac_positive(av_median, area),
-            }
+            pdata = {"per_eerie_av": per_eerie, "per_cmip6_av": per_cmip6}
+            self._attach_summary_avs(
+                pdata, summaries,
+                lambda b: self._av_from_biases(bench_bias, b), area,
+            )
+            av_results[pk] = pdata
 
         if not av_results:
             return None
@@ -2397,14 +2527,7 @@ class AddedValueDiag(DiagnosticBase):
             "obs_dataset": obs_name,
         }
         for pk, pdata in av_results.items():
-            for etype in ("ensemble_mean", "ensemble_median"):
-                nc_path = self._nc_path(
-                    var, pk.lower(), etype, obs_name=obs_name)
-                if not nc_path.exists():
-                    self._save_av_to_nc(
-                        pdata[etype], var, pk.lower(), etype, nc_meta,
-                        obs_name=obs_name,
-                    )
+            self._save_summary_ncs(var, pk, pdata, nc_meta, obs_name=obs_name)
 
         return {
             "var_info": var_info,
@@ -2456,23 +2579,22 @@ class AddedValueDiag(DiagnosticBase):
             pk_lower = period_key.lower()
             base = f"ocean_{var}_{pk_lower}_{self.period[0]}_{self.period[1]}"
 
-            # ── Figure 1: ensemble mean + median ──────────────────────────
+            # ── Figure 1: ensemble summaries (mean + median, or one mean
+            # per model family) ─────────────────────────────────────────
+            ens_word, ens_desc = self._summary_wording()
             data_dict: dict[str, xr.DataArray] = {}
-            for etype, label in (
-                ("ensemble_mean", f"AV({self._project_name} Ens. Mean)"),
-                ("ensemble_median", f"AV({self._project_name} Ens. Median)"),
-            ):
+            for etype, label in self._summary_labels(period_data).items():
                 dom = period_data[f"{etype}_domain_av"]
                 frac = period_data[f"{etype}_frac_positive"]
                 data_dict[
-                    f"{label}\ndomain mean={dom:+.3f}, AV>0: {frac:.0%}"
+                    f"AV({label})\ndomain mean={dom:+.3f}, AV>0: {frac:.0%}"
                 ] = period_data[etype]
 
             fig1, _ = plot_combined_map(
                 data_dict,
                 title=(
                     f"{var_info.long_name} {period_label} Added Value"
-                    f" — {self._project_name} ensemble vs {self._bench_label}"
+                    f" — {self._project_name} {ens_word} vs {self._bench_label}"
                     f"  (vs {obs_label}, green = {self._project_name} better)"
                 ),
                 cmap=_AV_CMAP, vmin=-1.0, vmax=1.0, units="AV [ ]",
@@ -2481,7 +2603,7 @@ class AddedValueDiag(DiagnosticBase):
             meta1 = self._build_metadata(
                 title=(
                     f"{var_info.long_name} {period_label} Ocean Added Value "
-                    f"({self._project_name} ensemble vs {self._bench_label}, "
+                    f"({self._project_name} {ens_word} vs {self._bench_label}, "
                     f"obs: {obs_label})"
                 ),
                 figure_id=f"{base}_added_value{obs_suffix}{self._bench_suffix}",
@@ -2491,9 +2613,10 @@ class AddedValueDiag(DiagnosticBase):
                     f"Dosio et al. (2015) Added Value for {var_info.long_name} "
                     f"({period_label}), {self.period[0]}-{self.period[1]}, "
                     f"surface field vs {obs_label}. AV > 0: {self._project_name} "
-                    f"ensemble reduces squared error over {self._bench_label}. "
+                    f"{ens_word} reduces squared error over {self._bench_label}. "
                     f"{self._project_name} n={vr['n_eerie_models']}, "
                     f"{self._bench_name} n={vr['n_cmip6_models']}."
+                    f"{ens_desc}"
                 ),
                 plot_type="added_value_map",
                 period=self.period,
@@ -2650,7 +2773,7 @@ class AddedValueDiag(DiagnosticBase):
         _ar6.rows_to_csv(rows, csv_path)
         logger.info("  AR6 %s: wrote %s (%d rows)", var, csv_path.name, len(rows))
 
-        members = [m for m in _ar6.ENSEMBLE_ROWS] + [
+        members = list(_ar6.summary_rows(self.config)) + [
             sanitize_name(m) for m in self.config.models
         ]
         present = {r["member"] for r in rows}
@@ -2804,16 +2927,23 @@ class AddedValueDiag(DiagnosticBase):
                 ))
                 plt.close(fig)
 
-        # Ensemble mean/median with the keep-set outlined, one figure per
-        # threshold.  The keep-set is the union across references so every
-        # panel carries identical outlines.
+        # Ensemble mean/median (per-family mode: one mean per model family)
+        # with the keep-set outlined, one figure per threshold.  The keep-set
+        # is the union across references so every panel carries identical
+        # outlines.
+        per_family = self._per_family
+        summary_tok = "family" if per_family else "ens"
+        summary_what = (
+            "the mean of each model family (families not pooled)"
+            if per_family else "the ensemble mean and median"
+        )
         for threshold in dict.fromkeys((majority, subset)):
             keep = _ar6.keep_set(rows, period_key, threshold)
             if not keep:
                 continue
             panels = []
             for ref_label, (lat, lon, fields) in loaded.items():
-                for stat in _ar6.ENSEMBLE_ROWS:
+                for stat in _ar6.summary_rows(self.config):
                     if stat not in fields:
                         continue
                     panels.append((
@@ -2825,7 +2955,7 @@ class AddedValueDiag(DiagnosticBase):
                 continue
 
             figure_id = (
-                f"{var}_{period_key}_ar6_av_ens_min{threshold}"
+                f"{var}_{period_key}_ar6_av_{summary_tok}_min{threshold}"
                 f"{self._bench_suffix}"
             )
             if skip_existing and self._ar6_figure_exists(figure_id):
@@ -2853,12 +2983,13 @@ class AddedValueDiag(DiagnosticBase):
                 var,
                 title=(
                     f"{var_info.long_name} annual AR6 Added Value "
-                    f"(ensemble, \u2265{threshold} members)"
+                    f"({'model means' if per_family else 'ensemble'}, "
+                    f"\u2265{threshold} members)"
                 ),
                 figure_id=figure_id,
                 description=(
-                    f"Gridded annual Added Value of the ensemble mean and "
-                    f"median vs {self._bench_label}, outlining the "
+                    f"Gridded annual Added Value of {summary_what} "
+                    f"vs {self._bench_label}, outlining the "
                     f"{len(keep)} AR6 regions where at least {threshold} "
                     f"individual members add value."
                 ),
@@ -2905,6 +3036,18 @@ class AddedValueDiag(DiagnosticBase):
         return saved
 
     # -- Plotting -----------------------------------------------------------
+
+    def _summary_wording(self) -> tuple[str, str]:
+        """``(noun, description sentence)`` for the ensemble-summary figures."""
+        if not self._per_family:
+            return "ensemble", ""
+        fams = ", ".join(
+            f"{f} ({len(m)})" for f, m in self.config.get_model_families().items()
+        )
+        return "model means", (
+            f" One panel per model family, each the mean of its members "
+            f"({fams}); families are not pooled into one ensemble."
+        )
 
     def plot(
         self, results: dict[str, Any],
@@ -2963,26 +3106,26 @@ class AddedValueDiag(DiagnosticBase):
 
                 pk_lower = period_key.lower()
 
-                # ── Figure 1: ensemble mean + median ───────────────────────
+                # ── Figure 1: ensemble summaries (mean + median, or one
+                # mean per model family) ──────────────────────────────────
                 summary_stats: dict[str, Any] = {}
                 data_dict: dict[str, xr.DataArray] = {}
-                for etype, label in (
-                    ("ensemble_mean",   f"AV({self._project_name} Ens. Mean)"),
-                    ("ensemble_median", f"AV({self._project_name} Ens. Median)"),
-                ):
+                for etype, label in self._summary_labels(period_data).items():
                     dom_av = period_data[f"{etype}_domain_av"]
                     frac = period_data[f"{etype}_frac_positive"]
                     panel_title = (
-                        f"{label}\n"
+                        f"AV({label})\n"
                         f"domain mean={dom_av:+.3f}, AV>0: {frac:.0%}"
                     )
                     data_dict[panel_title] = period_data[etype]
                     summary_stats[etype] = {
+                        "label": label,
                         "domain_mean_av": dom_av,
                         "frac_positive": frac,
                         "n_eerie_models": vr["n_eerie_models"],
                         "n_cmip6_models": vr["n_cmip6_models"],
                     }
+                ens_word, ens_desc = self._summary_wording()
 
                 per_obs_period: dict[str, dict] = {}
                 for _obs, _periods in obs_stats_all.items():
@@ -2996,7 +3139,7 @@ class AddedValueDiag(DiagnosticBase):
                     data_dict,
                     title=(
                         f"{var_info.long_name} {period_label} Added Value"
-                        f" — {self._project_name} ensemble vs {self._bench_label}"
+                        f" — {self._project_name} {ens_word} vs {self._bench_label}"
                         f"  (vs {obs_label}, green = {self._project_name} better)"
                     ),
                     cmap=_AV_CMAP,
@@ -3007,7 +3150,7 @@ class AddedValueDiag(DiagnosticBase):
                 meta1 = self._build_metadata(
                     title=(
                         f"{var_info.long_name} {period_label} Added Value "
-                        f"({self._project_name} ensemble vs {self._bench_label}, obs: {obs_label})"
+                        f"({self._project_name} {ens_word} vs {self._bench_label}, obs: {obs_label})"
                     ),
                     figure_id=f"{var}_{pk_lower}_{self.period[0]}_{self.period[1]}_added_value{obs_suffix}{self._bench_suffix}",
                     models=vr["eerie_models"],
@@ -3017,10 +3160,11 @@ class AddedValueDiag(DiagnosticBase):
                         f"{var_info.long_name} ({period_label}), "
                         f"{self.period[0]}-{self.period[1]}. "
                         f"Reference obs: {obs_label}. "
-                        f"AV > 0: {self._project_name} ensemble reduces squared error over "
+                        f"AV > 0: {self._project_name} {ens_word} reduces squared error over "
                         f"{self._bench_label}. "
                         f"{self._project_name} n={vr['n_eerie_models']}, "
                         f"{self._bench_name} n={vr['n_cmip6_models']}."
+                        f"{ens_desc}"
                     ),
                     plot_type="added_value_map",
                     period=self.period,
@@ -3133,6 +3277,30 @@ class AddedValueDiag(DiagnosticBase):
 
     # -- Summary bar charts -------------------------------------------------
 
+    def _family_bar_series(self) -> list[tuple]:
+        """``(stats getter, colour, label)`` per model family."""
+        return [
+            (
+                (lambda st, f=fam: st.get("families", {}).get(f, {})),
+                self.config.get_model_color(members[0]),
+                _families.family_label(fam, len(members), bold=False),
+            )
+            for fam, members in self.config.get_model_families().items()
+        ]
+
+    def _ensemble_bar_series(self) -> list[tuple]:
+        """Bar series of the ensemble-view summary chart."""
+        if self._per_family:
+            return self._family_bar_series()
+        return [
+            ((lambda st, k=key: st.get(k, {})), color, label)
+            for key, color, label in (
+                ("eerie_mean", "#1f77b4", f"{self._project_name} mean"),
+                ("eerie_median", "#6aaed6", f"{self._project_name} median"),
+                ("cmip6_mean", "#2ca02c", f"{self._bench_name} mean"),
+            )
+        ]
+
     def _plot_summary_bars_ensemble(
         self,
         all_obs_stats: dict[str, dict],
@@ -3184,9 +3352,14 @@ class AddedValueDiag(DiagnosticBase):
         active = [(n, lbl) for n, lbl in obs_panels if n in panel_rows]
         n_panels = len(active)
 
+        # Bar series: (stats getter, colour, legend label).  Pooled mode:
+        # EERIE mean / median / CMIP6 mean.  Per-family mode: one bar per
+        # model family (its members' hue); no CMIP6 bar, which would only
+        # mirror a pooled mean that is not formed.
+        series = self._ensemble_bar_series()
         bar_h = 0.22
         grp_pad = 0.15  # gap between variable groups
-        n_bars = 3       # EERIE mean, EERIE median, CMIP6 mean
+        n_bars = len(series)
 
         def _panel_height(n_vars: int) -> float:
             return n_vars * (n_bars * bar_h + grp_pad) + 0.8
@@ -3200,19 +3373,8 @@ class AddedValueDiag(DiagnosticBase):
             figure=fig,
         )
 
-        etype_colors = {
-            "eerie_mean":   "#1f77b4",
-            "eerie_median": "#6aaed6",
-            "cmip6_mean":   "#2ca02c",
-        }
-        etype_labels = {
-            "eerie_mean":   f"{self._project_name} mean",
-            "eerie_median": f"{self._project_name} median",
-            "cmip6_mean":   f"{self._bench_name} mean",
-        }
         neutral_color = "#d5d5d5"
         det_color = "white"
-        etypes = ["eerie_mean", "eerie_median", "cmip6_mean"]
 
         for pi, (obs_name, obs_label) in enumerate(active):
             rows = panel_rows[obs_name]
@@ -3224,20 +3386,18 @@ class AddedValueDiag(DiagnosticBase):
             y_offsets = np.array([(i - (n_bars - 1) / 2) * bar_h
                                   for i in range(n_bars)])
 
-            for ei, etype in enumerate(etypes):
+            for ei, (getter, ec, elabel) in enumerate(series):
                 imp = np.array([
-                    r[2].get(etype, {}).get("pct_improvement", 0.0) for r in rows
+                    getter(r[2]).get("pct_improvement", 0.0) for r in rows
                 ])
                 neu = np.array([
-                    r[2].get(etype, {}).get("pct_neutral", 0.0) for r in rows
+                    getter(r[2]).get("pct_neutral", 0.0) for r in rows
                 ])
                 det = np.array([
-                    r[2].get(etype, {}).get("pct_deterioration", 0.0) for r in rows
+                    getter(r[2]).get("pct_deterioration", 0.0) for r in rows
                 ])
                 ys = grp_centers + y_offsets[ei]
-                ec = etype_colors[etype]
-                ax.barh(ys, imp, height=bar_h, color=ec,
-                        label=etype_labels[etype])
+                ax.barh(ys, imp, height=bar_h, color=ec, label=elabel)
                 ax.barh(ys, neu, height=bar_h, left=imp,
                         color=neutral_color, label="_")
                 ax.barh(ys, det, height=bar_h, left=imp + neu,
@@ -3255,8 +3415,7 @@ class AddedValueDiag(DiagnosticBase):
         # Shared legend on first panel
         first_ax = fig.axes[0]
         legend_handles = [
-            Patch(facecolor=etype_colors[e], label=etype_labels[e])
-            for e in etypes
+            Patch(facecolor=ec, label=elabel) for _, ec, elabel in series
         ] + [
             Patch(facecolor=neutral_color, label="Neutral"),
             Patch(facecolor=det_color, label="Degradation"),
@@ -3270,7 +3429,8 @@ class AddedValueDiag(DiagnosticBase):
         fig.suptitle(
             f"Added Value — {period_label}{region_suffix}: "
             f"area-weighted % improvement / neutral / degradation\n"
-            f"{self._project_name} ensemble vs {self._bench_label}",
+            f"{self._project_name} {self._summary_wording()[0]} vs "
+            f"{self._bench_label}",
             fontsize=11, fontweight="bold", y=1.01,
         )
 
@@ -3290,8 +3450,15 @@ class AddedValueDiag(DiagnosticBase):
             description=(
                 f"Summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}) for all variables and obs datasets. "
-                f"Blue = {self._project_name} improves, green = CMIP6 reference, white = degradation."
-                f"{region_desc}"
+                + (
+                    f"One bar per model family (family mean vs "
+                    f"{self._bench_label}, in the family's colour), white = "
+                    f"degradation.{self._summary_wording()[1]}"
+                    if self._per_family else
+                    f"Blue = {self._project_name} improves, green = CMIP6 "
+                    f"reference, white = degradation."
+                )
+                + f"{region_desc}"
             ),
             plot_type="added_value_bars",
             period=self.period,
@@ -3368,14 +3535,29 @@ class AddedValueDiag(DiagnosticBase):
 
         active = [(n, lbl) for n, lbl in obs_panels if n in panel_rows]
         n_panels = len(active)
-        # +2 ensemble summary bars when EERIE-only view
-        n_bars = len(eerie_model_names) + (1 if show_cmip6_bar else 2)
+        # Trailing summary bars: the CMIP6 mean bar, or (EERIE-only view)
+        # the ensemble mean + median.  Per-family mode has no CMIP6 bar (it
+        # scores the benchmark against the pooled mean) and shows one bar
+        # per model family in the EERIE-only view.
+        if self._per_family:
+            summary_series = [] if show_cmip6_bar else self._family_bar_series()
+        elif show_cmip6_bar:
+            summary_series = []
+        else:
+            summary_series = [
+                ((lambda st, k=key: st.get(k, {})), color, label)
+                for key, color, label in (
+                    ("eerie_mean", "#c5b0d5", "Ensemble mean"),
+                    ("eerie_median", "#9467bd", "Ensemble median"),
+                )
+            ]
+        draw_cmip6 = show_cmip6_bar and not self._per_family
+        n_bars = (len(eerie_model_names) + len(summary_series)
+                  + (1 if draw_cmip6 else 0))
 
         eerie_colors = {m: self.config.get_model_color(m)
                         for m in eerie_model_names}
         cmip6_color = "#2ca02c"
-        ensemble_mean_color = "#c5b0d5"    # light purple
-        ensemble_median_color = "#9467bd"  # purple
         neutral_color = "#d5d5d5"
         det_color = "white"
 
@@ -3433,7 +3615,7 @@ class AddedValueDiag(DiagnosticBase):
                         color=det_color, label="_")
 
             # CMIP6 mean bar (last in group, optional)
-            if show_cmip6_bar:
+            if draw_cmip6:
                 imp_c = np.array([
                     r[2].get("cmip6_mean", {}).get("pct_improvement", 0.0)
                     for r in rows
@@ -3454,22 +3636,19 @@ class AddedValueDiag(DiagnosticBase):
                 ax.barh(ys_c, det_c, height=bar_h, left=imp_c + neu_c,
                         color=det_color, label="_")
 
-            # Ensemble mean + median summary bars (EERIE-only view)
+            # Ensemble summary bars (EERIE-only view)
             else:
-                for ei, (etype, ec, elabel) in enumerate([
-                    ("eerie_mean",   ensemble_mean_color,   "Ensemble mean"),
-                    ("eerie_median", ensemble_median_color, "Ensemble median"),
-                ]):
+                for ei, (getter, ec, elabel) in enumerate(summary_series):
                     imp_e = np.array([
-                        r[2].get(etype, {}).get("pct_improvement", 0.0)
+                        getter(r[2]).get("pct_improvement", 0.0)
                         for r in rows
                     ])
                     neu_e = np.array([
-                        r[2].get(etype, {}).get("pct_neutral", 0.0)
+                        getter(r[2]).get("pct_neutral", 0.0)
                         for r in rows
                     ])
                     det_e = np.array([
-                        r[2].get(etype, {}).get("pct_deterioration", 0.0)
+                        getter(r[2]).get("pct_deterioration", 0.0)
                         for r in rows
                     ])
                     ys_e = grp_centers + y_offsets[len(eerie_model_names) + ei]
@@ -3494,9 +3673,9 @@ class AddedValueDiag(DiagnosticBase):
             [Patch(facecolor=eerie_colors[m], label=m) for m in eerie_model_names]
             + (
                 [Patch(facecolor=cmip6_color, label=f"{self._bench_name} mean")]
-                if show_cmip6_bar else [
-                    Patch(facecolor=ensemble_mean_color,   label="Ensemble mean"),
-                    Patch(facecolor=ensemble_median_color, label="Ensemble median"),
+                if draw_cmip6 else [
+                    Patch(facecolor=ec, label=elabel)
+                    for _, ec, elabel in summary_series
                 ]
             )
             + [
@@ -3525,8 +3704,13 @@ class AddedValueDiag(DiagnosticBase):
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}). "
                 f"Blue shades = {self._project_name} models vs {self._bench_label}, "
-                f"green = {self._bench_name} mean vs {self._project_name} mean, white = degradation."
-                f"{region_desc}"
+                + (
+                    "white = degradation."
+                    if self._per_family else
+                    f"green = {self._bench_name} mean vs "
+                    f"{self._project_name} mean, white = degradation."
+                )
+                + f"{region_desc}"
             )
         else:
             suptitle_suffix = (
@@ -3542,9 +3726,15 @@ class AddedValueDiag(DiagnosticBase):
                 f"Per-model summary bar chart of area-weighted improvement/neutral/degradation "
                 f"fractions ({period_label}), {self._project_name} models only "
                 f"({self._bench_name} mean bar excluded). "
-                f"Individual model colors from config; light purple = ensemble mean, "
-                f"purple = ensemble median, white = degradation."
-                f"{region_desc}"
+                + (
+                    "Individual model colors from config, followed by one "
+                    "bar per model family (family mean), white = degradation."
+                    if self._per_family else
+                    "Individual model colors from config; light purple = "
+                    "ensemble mean, purple = ensemble median, white = "
+                    "degradation."
+                )
+                + f"{region_desc}"
             )
 
         region_suffix = f"  [{region_label}]" if region_label else ""
