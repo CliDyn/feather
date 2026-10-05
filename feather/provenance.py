@@ -551,7 +551,16 @@ def _write_json(path: Path, payload: dict) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     with open(tmp, "w") as f:
         json.dump(payload, f, indent=2, default=str)
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except FileNotFoundError:
+        # Lustre (/work on Levante) occasionally loses track of a file it
+        # has just created, so the rename fails with ENOENT.  Fall back to a
+        # plain write: a non-atomic record beats no record.
+        logger.debug("Atomic rename failed for %s; writing directly", path)
+        tmp.unlink(missing_ok=True)
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2, default=str)
 
 
 def current_run() -> RunRecorder | None:
