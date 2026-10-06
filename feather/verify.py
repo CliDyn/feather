@@ -39,6 +39,7 @@ CHECKS = ("inputs", "analyses", "regrid", "coverage", "code")
 #: here are checked; anything else (piControl, amip variants, …) is skipped.
 EXPERIMENT_START_YEAR = {
     "hist-1950": 1950,
+    "hist-1975": 1975,
     "historical": 1850,
     "baseline_hist": 1990,
     "ssp119": 2015, "ssp126": 2015, "ssp245": 2015, "ssp370": 2015,

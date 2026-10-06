@@ -1452,3 +1452,51 @@ class TestKerchunkConversion:
 
         # Kerchunk should NOT be ~285 (unconverted Kelvin)
         assert float(kerchunk_da.mean().values) < 100
+
+
+# ── Per-family ensemble summaries ────────────────────────────────────
+
+
+class TestFamilyMode:
+    @pytest.fixture
+    def family_diag(self, mock_ocean_model_loader, mock_esa_cci_obs_loader,
+                    ocean_sst_config):
+        import dataclasses
+        cfg = dataclasses.replace(
+            ocean_sst_config,
+            models=["ifs-fesom", "ifs-fesom-r2", "ifs-nemo"],
+            project={"ensemble_mode": "per_family"},
+        )
+        return OceanSST(
+            model_loader=mock_ocean_model_loader,
+            obs_loader=mock_esa_cci_obs_loader,
+            config=cfg,
+        )
+
+    def test_family_bias_figures(self, family_diag):
+        saved = family_diag.run(skip_existing=False)
+        stems = {p.stem for p, _ in saved}
+        for pk in ("annual", "djf", "jja"):
+            assert f"sst_{pk}_family_mean_bias_combined" in stems
+            assert f"sst_{pk}_ens_bias_combined" not in stems
+        meta = json.loads(next(
+            j for p, j in saved
+            if p.stem == "sst_annual_family_mean_bias_combined").read_text())
+        assert meta["model_families"] == {
+            "ifs-fesom": ["ifs-fesom", "ifs-fesom-r2"], "ifs-nemo": ["ifs-nemo"]}
+        assert "not pooled" in meta["description"]
+        # skip_existing recognises the family ids (no recompute of Group A)
+        again = family_diag.run(skip_existing=True)
+        assert {p.stem for p, _ in again} == stems
+        plt.close("all")
+
+    def test_timeseries_has_family_line_not_pooled(self, family_diag):
+        model_monthly, _ = family_diag._load_model_data()
+        results = family_diag._compute_timeseries(model_monthly)
+        assert results["ens_mean"] is None and results["ens_median"] is None
+        (fig, meta), = family_diag._plot_timeseries(results)
+        labels = [ln.get_label() for ln in fig.axes[0].get_lines()]
+        assert "ifs-fesom mean (2)" in labels
+        assert not any("ensemble" in lbl for lbl in labels)
+        assert "per-family means" in meta["description"]
+        plt.close("all")

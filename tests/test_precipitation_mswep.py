@@ -1665,3 +1665,46 @@ class TestColorbarRanges:
         results = diag._compute_bias_maps(shared)
         cb = results["colorbar_ranges"]["annual"]
         assert cb["bias_vmax"] > 0
+
+
+class TestFamilyBias:
+    """Group A in ``project.ensemble_mode: per_family``."""
+
+    def _cfg(self, tmp_path):
+        return FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom", "ifs-fesom-r2", "ifs-nemo"],
+            obs_root="",
+            obs_datasets={"MSWEP": {"path": "/fake", "variables": {"pr": "fake"}}},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            project={"ensemble_mode": "per_family"},
+        )
+
+    def test_family_figure_replaces_pooled(self, synth_precip_healpix,
+                                           synth_mswep, tmp_path):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        diag = _make_diag(MockPrecipModelLoader(synth_precip_healpix),
+                          MockMSWEPObsLoader(synth_mswep), self._cfg(tmp_path))
+        results = diag._compute_bias_maps(diag._load_shared_data())
+        assert results["ens_data"] == {}
+        fam = results["family_data"]["annual"]
+        assert list(fam) == ["ifs-fesom", "ifs-nemo"]
+        assert fam["ifs-fesom"]["members"] == ["ifs-fesom", "ifs-fesom-r2"]
+        figs = diag._plot_bias_maps(results)
+        fids = [m["figure_id"] for _, m in figs]
+        assert "pr_annual_family_mean_bias_combined" in fids
+        assert not any("ens_bias" in f for f in fids)
+        meta = next(m for _, m in figs
+                    if m["figure_id"] == "pr_annual_family_mean_bias_combined")
+        assert meta["model_families"]["ifs-fesom"] == ["ifs-fesom", "ifs-fesom-r2"]
+        assert meta["units"] == "mm/day"
+        # Stats are displayed in mm/day, like the per-model figure.
+        lbl = r"ifs-fesom mean $\mathbf{(2)}$"
+        assert meta["summary_statistics"][lbl]["global_mean_bias"] == pytest.approx(
+            fam["ifs-fesom"]["bias_gmean"] * 86400.0)
+        plt.close("all")

@@ -139,9 +139,11 @@ def main(argv: list[str] | None = None):
         action="store_true",
         help="Plot ONLY the ensemble bias-summary figures "
              "({var}_{period}_ens_bias_combined: obs + ensemble median/mean + "
-             "benchmark MMM(s) with member counts) and skip the per-model bias "
-             "maps and all other figure groups. Supported by the bias-map "
-             "diagnostics temperature_berkeley and precipitation_mswep.",
+             "benchmark MMM(s) with member counts; with project.ensemble_mode: "
+             "per_family, {var}_{period}_family_mean_bias_combined instead) "
+             "and skip the per-model bias maps and all other figure groups. "
+             "Supported by the bias-map diagnostics temperature_berkeley and "
+             "precipitation_mswep.",
     )
     parser.add_argument(
         "--replot-from-netcdf",

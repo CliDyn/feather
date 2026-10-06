@@ -75,10 +75,26 @@ def load_timeseries_netcdf(nc_path, name_map: dict, benchmarks, benchmark_color)
     dv = set(ds.data_vars)
     if "obs" not in dv:
         return None
+    # The exporter isolates a field's dims as ``{field}__{dim}`` when its
+    # coordinate differs from an earlier field's (e.g. members on other
+    # calendars or periods).  Restore the plain names per field — never by
+    # re-assigning into *ds*, which would reindex onto the shared axis.
+    def field(name):
+        if name not in dv:
+            return None
+        da = ds[name]
+        iso = {d: d.split("__", 1)[1] for d in da.dims
+               if d.startswith(f"{name}__")}
+        return da.rename(iso) if iso else da
 
+    # Config order first (name_map is built from config.models), then any
+    # field the config no longer lists.
+    model_fields = [f"models_{k}" for k in name_map if f"models_{k}" in dv]
+    model_fields += sorted(
+        f for f in dv if f.startswith("models_") and f not in model_fields)
     models = {
-        name_map.get(f[len("models_"):], f[len("models_"):]): ds[f]
-        for f in dv if f.startswith("models_")
+        name_map.get(f[len("models_"):], f[len("models_"):]): field(f)
+        for f in model_fields
     }
 
     labels = json.loads(ds.attrs.get("ts_benchmark_labels", "[]"))
@@ -90,7 +106,7 @@ def load_timeseries_netcdf(nc_path, name_map: dict, benchmarks, benchmark_color)
     })
     benchmarks_ts: list[dict] = []
     for i in indices:
-        ts = ds.get(f"benchmarks_ts_{i}_ts")
+        ts = field(f"benchmarks_ts_{i}_ts")
         if ts is None:
             continue
         if i < len(labels) and labels[i]:
@@ -107,20 +123,20 @@ def load_timeseries_netcdf(nc_path, name_map: dict, benchmarks, benchmark_color)
             "color": color,
             "ts": ts,
             "info": {"n_members": n_members},
-            "env_min": ds.get(f"benchmarks_ts_{i}_env_min"),
-            "env_max": ds.get(f"benchmarks_ts_{i}_env_max"),
+            "env_min": field(f"benchmarks_ts_{i}_env_min"),
+            "env_max": field(f"benchmarks_ts_{i}_env_max"),
             "individual": {},
         })
 
     primary = benchmarks_ts[0] if benchmarks_ts else None
     return {
         "models": models,
-        "obs": ds["obs"],
-        "era5_ts": ds.get("era5_ts"),
+        "obs": field("obs"),
+        "era5_ts": field("era5_ts"),
         "benchmarks_ts": benchmarks_ts,
-        "ens_mean": ds.get("ens_mean"),
-        "ens_median": ds.get("ens_median"),
-        "cmip6_ts": primary["ts"] if primary else ds.get("cmip6_ts"),
+        "ens_mean": field("ens_mean"),
+        "ens_median": field("ens_median"),
+        "cmip6_ts": primary["ts"] if primary else field("cmip6_ts"),
         "cmip6_info": dict(primary["info"]) if primary else {},
         "cmip6_individual_ts": {},
     }
@@ -151,6 +167,7 @@ def build_envelope_timeseries(
     extra_obs: list[tuple] | None = None,
     offset: float = 0.0,
     factor: float = 1.0,
+    families: dict[str, list[str]] | None = None,
 ) -> plt.Figure:
     """Render an envelope (or anomaly) global-mean time-series figure.
 
@@ -178,6 +195,11 @@ def build_envelope_timeseries(
         Auxiliary reference series rendered as dashed black lines (e.g. ERA5).
     offset, factor : float
         Display transform ``value * factor + offset``.
+    families : dict, optional
+        ``{family: [members]}`` (``project.ensemble_mode: per_family``).  When
+        given, each multi-member family's mean is drawn as a thick line in its
+        members' hue, members are drawn thinner, and *ens_mean*/*ens_median*
+        are ignored — families are never pooled.
     """
     benchmarks = benchmarks or []
     extra_obs = extra_obs or []
@@ -231,10 +253,20 @@ def build_envelope_timeseries(
         t = _to_plot_time(ba.time.values)
         ax.plot(t, ba.values, color=c, lw=2.0, ls="--", label=f"{lbl} ({n})")
 
+    member_lw = 1.2 if families else 2.0
     for model, ts in models.items():
         a = annual_mean(xf(ts))
         t = _to_plot_time(a.time.values)
-        ax.plot(t, a.values, color=model_color(model), lw=2.0, label=model)
+        ax.plot(t, a.values, color=model_color(model), lw=member_lw,
+                label=model)
+
+    if families:
+        from feather.diag import _families
+        _families.plot_family_lines(
+            ax, _families.family_mean_series(models, families), model_color,
+            transform=xf,
+        )
+        ens_mean = ens_median = None
 
     if ens_median is not None:
         a = annual_mean(xf(ens_median))

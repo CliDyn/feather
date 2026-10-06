@@ -46,18 +46,25 @@
 
 project:
   name: "EERIE"
-  description: "EERIE 10-member ensemble evaluation vs CMIP6 + HighResMIP benchmarks"
+  description: "EERIE per-model evaluation (10 members, 4 models) vs CMIP6 + HighResMIP benchmarks"
   experiment: "hist-1950"
   period: ["1980", "2014"]
   seasons: [annual, DJF, MAM, JJA, SON]
   resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"
+  # The four EERIE models are summarised one family at a time (mean of each
+  # model's members) instead of as one pooled 10-member ensemble: ICON-ESM-ER
+  # runs without a parameterised convection scheme, so pooling it with the
+  # other models would blend physically different configurations.
+  ensemble_mode: per_family
   comparison_description: >-
-    EERIE 10-member ensemble (3 members IFS-FESOM2-SR, 3 members IFS-NEMO-ER,
-    3 members ICON-ESM-ER, 1 member HadGEM3-GC5) with option to be evaluated
-    against one or two benchmark ensembles: the full CMIP6 historical
-    multi-model mean and the HighResMIP hist-1950 multi-model mean, each
-    computed from one member per model.
+    Four EERIE models compared individually, each summarised by the mean of
+    its own members (IFS-FESOM2-SR: 3, IFS-NEMO-ER: 3, ICON-ESM-ER: 3,
+    HadGEM3-GC5: 1). The models are not pooled into a single ensemble because
+    ICON-ESM-ER runs without a parameterised convection scheme, unlike the
+    others. They are evaluated against the full CMIP6 historical multi-model
+    mean and the HighResMIP hist-1950 multi-model mean, each computed from one
+    member per model.
 
 # Global default source for the majority of models (CMOR).  Overridden
 # per-model by IFS-FESOM2-SR r2/r3 (kerchunk_parquet) and ICON-ESM-ER r2/r3
@@ -71,6 +78,7 @@ models:
   IFS-FESOM2-SR:
     institution: AWI
     ensemble: EERIE
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -92,6 +100,7 @@ models:
   IFS-FESOM2-SR-r2:
     institution: AWI
     ensemble: EERIE
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -105,6 +114,7 @@ models:
   IFS-FESOM2-SR-r3:
     institution: AWI
     ensemble: EERIE
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -119,6 +129,7 @@ models:
   IFS-NEMO-ER:
     institution: BSC
     ensemble: EERIE
+    family: IFS-NEMO-ER
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -131,6 +142,7 @@ models:
   IFS-NEMO-ER-r2:
     institution: BSC
     ensemble: EERIE
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r2i1p1f1
     data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
@@ -144,6 +156,7 @@ models:
   IFS-NEMO-ER-r3:
     institution: BSC
     ensemble: EERIE
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r3i1p1f1
     data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
@@ -158,6 +171,7 @@ models:
   ICON-ESM-ER:
     institution: MPI-M
     ensemble: EERIE
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -172,6 +186,7 @@ models:
   ICON-ESM-ER-r2:
     institution: MPI-M
     ensemble: EERIE
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "icon_kerchunk"
@@ -186,6 +201,7 @@ models:
   ICON-ESM-ER-r3:
     institution: MPI-M
     ensemble: EERIE
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "icon_kerchunk"
@@ -201,6 +217,7 @@ models:
   HadGEM3-GC5:
     institution: MOHC
     ensemble: EERIE
+    family: HadGEM3-GC5
     experiment: eerie-historical
     variant: r1i1p1f1
     grids:
@@ -375,7 +392,7 @@ report:
 
 website:
   title: "Feather — EERIE 10-Member Evaluation (CMIP6 + HighResMIP benchmarks)"
-  subtitle: "EERIE 10-member ensemble vs CMIP6 historical + HighResMIP hist-1950 MMM (1980-2014)"
+  subtitle: "EERIE model means (4 models, 10 members) vs CMIP6 historical + HighResMIP hist-1950 MMM (1980-2014)"
   group_order:
     - evaluation
     - regions

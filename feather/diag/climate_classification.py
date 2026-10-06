@@ -265,12 +265,9 @@ class KTClimateClassification(DiagnosticBase):
         # ── Per-family ensembles (mean/median of member climatologies) ──
         # Members are grouped by their config `ensemble` label, so a mixed
         # config yields e.g. CORDEX / CMIP5 / CMIP6 ensembles.
-        groups: dict[str, list[str]] = {}
-        for m in model_sources:
-            mc = self.config.model_configs.get(m)
-            label = mc.ensemble if mc and mc.ensemble else ""
-            if label:
-                groups.setdefault(label, []).append(m)
+        # In per-family mode they are grouped by model family instead and
+        # summarised by their mean only (see feather.diag._families).
+        groups = self._ensemble_groups(model_sources)
 
         ensembles: dict[str, dict] = {}        # label → {"mean": name, "median": name}
         ensemble_names: list[str] = []
@@ -279,14 +276,14 @@ class KTClimateClassification(DiagnosticBase):
                 continue
             stack_t = xr.concat([clims_tas[m] for m in members], dim="member")
             stack_p = xr.concat([clims_pr[m] for m in members], dim="member")
-            mean_name, median_name = f"{label} Ensemble Mean", f"{label} Ensemble Median"
-            clims_tas[mean_name] = stack_t.mean("member")
-            clims_pr[mean_name] = stack_p.mean("member")
-            clims_tas[median_name] = stack_t.median("member")
-            clims_pr[median_name] = stack_p.median("member")
-            ensembles[label] = {"mean": mean_name, "median": median_name,
-                                "members": members}
-            ensemble_names += [mean_name, median_name]
+            names = self._ensemble_names(label)
+            clims_tas[names["mean"]] = stack_t.mean("member")
+            clims_pr[names["mean"]] = stack_p.mean("member")
+            if "median" in names:
+                clims_tas[names["median"]] = stack_t.median("member")
+                clims_pr[names["median"]] = stack_p.median("member")
+            ensembles[label] = {**names, "members": members}
+            ensemble_names += list(names.values())
 
         # CMIP6 multi-model mean from the zarr CMIP6 loader (global/legacy path)
         if cmip6_n > 0:
@@ -370,24 +367,19 @@ class KTClimateClassification(DiagnosticBase):
         }
 
         # Reconstruct per-family ensembles from config groups + saved kt files.
-        groups: dict[str, list[str]] = {}
-        for m in self.config.models:
-            mc = self.config.model_configs.get(m)
-            if mc and mc.ensemble and m in codes:
-                groups.setdefault(mc.ensemble, []).append(m)
+        groups = self._ensemble_groups(
+            [m for m in self.config.models if m in codes])
         ensembles: dict[str, dict] = {}
         ensemble_codes: dict[str, xr.DataArray] = {}
         for label, members in groups.items():
             if len(members) < 2:
                 continue
-            mean_name = f"{label} Ensemble Mean"
-            median_name = f"{label} Ensemble Median"
-            pm, pmed = self._nc_path(mean_name), self._nc_path(median_name)
-            if pm.exists() and pmed.exists():
-                ensemble_codes[mean_name] = xr.open_dataset(pm)["kt_code"]
-                ensemble_codes[median_name] = xr.open_dataset(pmed)["kt_code"]
-                ensembles[label] = {"mean": mean_name, "median": median_name,
-                                    "members": members}
+            names = self._ensemble_names(label)
+            paths = {k: self._nc_path(n) for k, n in names.items()}
+            if all(p.exists() for p in paths.values()):
+                for k, p in paths.items():
+                    ensemble_codes[names[k]] = xr.open_dataset(p)["kt_code"]
+                ensembles[label] = {**names, "members": members}
 
         # Force a full recompute when the config expects ensembles the cache
         # cannot supply (e.g. a stale cache from a previous ensemble layout).
@@ -874,6 +866,29 @@ class KTClimateClassification(DiagnosticBase):
         )
         return fig, meta
 
+    def _ensemble_groups(self, models) -> dict[str, list[str]]:
+        """Members grouped for the ensemble summaries.
+
+        Pooled mode groups by the config ``ensemble`` label (a mixed config
+        yields e.g. CORDEX / CMIP5 / CMIP6); per-family mode by model family.
+        """
+        if self._per_family:
+            return self.config.get_model_families(list(models))
+        groups: dict[str, list[str]] = {}
+        for m in models:
+            mc = self.config.model_configs.get(m)
+            label = mc.ensemble if mc and mc.ensemble else ""
+            if label:
+                groups.setdefault(label, []).append(m)
+        return groups
+
+    def _ensemble_names(self, label: str) -> dict[str, str]:
+        """Source names of a group's summaries (``{"mean"[, "median"]}``)."""
+        if self._per_family:
+            return {"mean": f"{label} Mean"}
+        return {"mean": f"{label} Ensemble Mean",
+                "median": f"{label} Ensemble Median"}
+
     def _plot_ensemble_maps(self, results: dict) -> tuple[plt.Figure, dict] | None:
         """Observations + each family's ensemble mean/median (+ CMIP6 MMM)."""
         ensemble_codes = results.get("ensemble_codes", {})
@@ -887,7 +902,7 @@ class KTClimateClassification(DiagnosticBase):
         # Each family's mean then median, in ensemble order.
         for label, info in results.get("ensembles", {}).items():
             for key in ("mean", "median"):
-                name = info[key]
+                name = info.get(key)
                 if name in ensemble_codes:
                     panels.append((name, ensemble_codes[name]))
         if _CMIP6_MMM in codes:
@@ -904,10 +919,19 @@ class KTClimateClassification(DiagnosticBase):
             figure_id="kt_classification_ensemble",
             models=results["models"],
             description=(
-                "Köppen–Trewartha classification: observations alongside the "
-                f"ensemble mean and median of each model family ({labels}), each "
-                "classified from the per-cell mean/median of the member tas and "
-                "pr climatologies. Land only, common grid."
+                (
+                    "Köppen–Trewartha classification: observations alongside "
+                    f"the mean of each model family ({labels}), each "
+                    "classified from the per-cell mean of the member tas and "
+                    "pr climatologies. Families are summarised separately and "
+                    "not pooled into one ensemble. Land only, common grid."
+                ) if self._per_family else (
+                    "Köppen–Trewartha classification: observations alongside "
+                    f"the ensemble mean and median of each model family "
+                    f"({labels}), each classified from the per-cell "
+                    "mean/median of the member tas and pr climatologies. "
+                    "Land only, common grid."
+                )
             ),
             period=self.period,
             plot_type="map",

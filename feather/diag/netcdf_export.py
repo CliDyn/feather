@@ -201,6 +201,14 @@ def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
             if edata.get(f"{stat}_bias") is not None:
                 fields[f"ens_{stat}_bias"] = edata[f"{stat}_bias"]
 
+    # Per-family means (and their bias vs obs), when present.
+    for family, fdata in results.get("family_data", {}).get(period_key, {}).items():
+        key = f"family_{sanitize_name(family)}_mean"
+        if fdata.get("mean") is not None:
+            fields[key] = fdata["mean"]
+        if fdata.get("bias") is not None:
+            fields[f"{key}_bias"] = fdata["bias"]
+
     return fields
 
 

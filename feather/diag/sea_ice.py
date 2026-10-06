@@ -211,8 +211,10 @@ class SeaIceDiag(DiagnosticBase):
                 for fig, meta in figs:
                     saved.append(self._save(fig, meta, meta["figure_id"]))
 
-        # Group F: Ensemble summary (2 figures — obs clim + ens mean/median bias)
-        for var in ("siconc", "sithick"):
+        # Group F: Ensemble summary (2 figures — obs clim + ens mean/median
+        # bias).  Skipped in per-family mode: the pooled members must not be
+        # averaged, and the *_family_bias figures already show each family.
+        for var in (() if self._per_family else ("siconc", "sithick")):
             fid = f"{var}_ens_summary"
             if skip_existing and self._figure_exists(fid):
                 logger.info("Skipping %s — figure exists", fid)
@@ -356,7 +358,7 @@ class SeaIceDiag(DiagnosticBase):
             ("sithick_sh_bias", "sithick", "sp"),
         ]:
             figures.extend(self._plot_bias_spatial(fid, var, pole))
-        for var in ("siconc", "sithick"):
+        for var in (() if self._per_family else ("siconc", "sithick")):
             figures.extend(self._plot_ensemble_summary(var))
         for var in ("siconc", "sithick"):
             figures.extend(self._plot_mean_bias_bars(var))
