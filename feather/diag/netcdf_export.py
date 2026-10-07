@@ -43,7 +43,7 @@ _PACKING_ENCODING_KEYS = (
 def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
     """Drop attrs whose values can't serialize to NetCDF (e.g. GRIB/earthkit
     dict attrs like ``_earthkit={'bitsPerValue': 24}``) and strip inherited
-    integer-packing encoding that breaks float/NaN fields.
+    packing metadata that breaks float/NaN fields.
 
     Cleans the dataset's own attrs plus every variable's and coordinate's
     attrs and encoding. Mutates *ds* in place and returns it.
@@ -57,7 +57,66 @@ def _sanitize_attrs(ds: xr.Dataset) -> xr.Dataset:
         clean(var.attrs)
         for k in _PACKING_ENCODING_KEYS:
             var.encoding.pop(k, None)
+            # Packing metadata that arrived as an *attribute* rather than in
+            # ``encoding`` is just as fatal: the kerchunk stores carry
+            # ``_FillValue: "NaN"`` (the string) on their time coordinate, and
+            # netCDF4 rejects it when creating the int64 time variable
+            # ("invalid literal for int() with base 10: 'NaN'"), aborting the
+            # write part-way through.  These derived fields are plain floats
+            # written with xarray's own fill value, so the inherited values
+            # describe nothing here.
+            var.attrs.pop(k, None)
     return ds
+
+
+def _add_provenance(ds: xr.Dataset, path: Path) -> None:
+    """Stamp the active run's provenance into *ds*'s global attributes.
+
+    Adds ``feather_run_id`` and ``feather_provenance`` (a JSON string —
+    NetCDF attributes must be scalars or strings) and appends one line to
+    the CF ``history`` attribute.  No-op outside a pipeline run.
+    """
+    from feather import provenance
+
+    attrs = provenance.netcdf_attrs(path.stem)
+    if not attrs:
+        return
+    line = attrs.pop("history")
+    prior = ds.attrs.get("history")
+    ds.attrs["history"] = f"{prior}\n{line}" if isinstance(prior, str) and prior else line
+    ds.attrs.update(attrs)
+
+
+def write_netcdf(ds: xr.Dataset, path: str | Path, **kwargs) -> Path:
+    """Write *ds* to *path* atomically, with attrs/encoding sanitised.
+
+    ``to_netcdf`` defines every dimension and then fills variables one by one,
+    so a failure part-way leaves a readable but **truncated** file — all the
+    dims, only the variables written before the error.  Nothing downstream can
+    tell that stump from a finished file: the per-source exports skip any path
+    that already exists, and the diagnostics' checkpoints are *read back* to
+    rebuild figures, so a stump there feeds truncated data into a figure that
+    looks complete.  Writing to a sibling temp file and renaming only on
+    success means the destination either holds a whole dataset or nothing.
+
+    Sanitising is what avoids the usual cause of that part-way failure:
+    packing metadata inherited from a source store (a string ``_FillValue``,
+    an integer ``dtype``) that netCDF4 rejects for these derived float fields.
+    *ds* itself is left untouched — a copy is cleaned.
+
+    Any extra *kwargs* go to ``to_netcdf`` (e.g. ``encoding=``).  Returns the
+    path written.
+    """
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.tmp")
+    out = _sanitize_attrs(ds.copy())
+    _add_provenance(out, path)
+    try:
+        out.to_netcdf(tmp, **kwargs)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
 
 
 def sanitize_name(name: str) -> str:
@@ -141,6 +200,14 @@ def _period_fields(results: dict, period_key: str) -> dict[str, xr.DataArray]:
                 fields[f"ens_{stat}"] = edata[stat]
             if edata.get(f"{stat}_bias") is not None:
                 fields[f"ens_{stat}_bias"] = edata[f"{stat}_bias"]
+
+    # Per-family means (and their bias vs obs), when present.
+    for family, fdata in results.get("family_data", {}).get(period_key, {}).items():
+        key = f"family_{sanitize_name(family)}_mean"
+        if fdata.get("mean") is not None:
+            fields[key] = fdata["mean"]
+        if fdata.get("bias") is not None:
+            fields[f"{key}_bias"] = fdata["bias"]
 
     return fields
 
@@ -350,7 +417,7 @@ def export_generic_netcdf(
     )
     if extra_attrs:
         ds.attrs.update(extra_attrs)
-    _sanitize_attrs(ds).to_netcdf(path)
+    write_netcdf(ds, path)
     logger.info("  Wrote NetCDF: %s (%d fields)", path.name, len(ds.data_vars))
     return [path]
 
@@ -412,7 +479,7 @@ def export_biasmap_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _sanitize_attrs(ds).to_netcdf(path)
+        write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s", path.name)
         written.append(path)
 
@@ -472,7 +539,7 @@ def export_biasmap_individual_netcdf(
         )
         if extra_attrs:
             ds.attrs.update(extra_attrs)
-        _sanitize_attrs(ds).to_netcdf(path)
+        write_netcdf(ds, path)
         logger.info("  Wrote NetCDF: %s (%d members×fields)",
                     path.name, len(ds.data_vars))
         written.append(path)

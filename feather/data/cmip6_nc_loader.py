@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig, ModelConfig
 from feather.data._cftime import cftime_decode_kwargs
 from feather.data import pool_discovery as _pd
@@ -104,6 +105,10 @@ class CMIP6NCLoader:
         self._config = config
         self._root = Path(config.data_source.get("cmip6_root", _DEFAULT_ROOT))
         self._cache: dict[tuple, xr.DataArray] = {}
+        # Files behind each cached array, and their provenance records.
+        self._inputs: dict[tuple, list] = {}
+        self._prov: dict[tuple, tuple] = {}
+        self._opened: list = []
 
     @classmethod
     def for_models(
@@ -146,8 +151,17 @@ class CMIP6NCLoader:
         if cache_key in self._cache:
             da = self._cache[cache_key]
         else:
+            self._opened = []
             da = self._open_member(model, variable, table or "Amon")
             self._cache[cache_key] = da
+            self._inputs[cache_key] = self._opened
+
+        provenance.record_read(
+            self._prov, cache_key, period=period,
+            role="model", backend=type(self).__name__, variable=variable,
+            paths=self._inputs.get(cache_key, ()), data=da,
+            **provenance.model_fields(self._config, model),
+        )
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -177,6 +191,7 @@ class CMIP6NCLoader:
             if not files:
                 continue
             logger.info("CMIP6 %s/%s: opening %d file(s)", model, exp, len(files))
+            self._opened.extend(files)
             ds = xr.open_mfdataset(
                 files, chunks={}, combine="by_coords", data_vars="minimal", coords="minimal", compat="override",
                 decode_timedelta=False, drop_variables=_BOUNDS_VARS, **_CFTIME,

@@ -16,6 +16,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 
+from feather import provenance
 from feather.data.variables import get_var
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,13 @@ def save_figure_with_metadata(
     if close:
         plt.close(fig)
 
-    # Add generation timestamp
+    # Add generation timestamp, plus the run id and the provenance events
+    # relevant to this figure when a pipeline run is recording them.
     metadata_out = {**metadata, "generated_at": datetime.now(timezone.utc).isoformat()}
+    prov = provenance.figure_block(metadata)
+    if prov is not None:
+        metadata_out["run_id"] = prov["run_id"]
+        metadata_out["provenance"] = prov
     with open(json_path, "w") as f:
         json.dump(metadata_out, f, indent=2, default=str)
 
@@ -82,6 +88,7 @@ def build_metadata(
     period: tuple[str, str] | None = None,
     obs_dataset: str = "",
     obs_variable: str = "",
+    units: str = "",
     plot_type: str = "",
     spatial_extent: str = "global",
     summary_statistics: dict[str, Any] | None = None,
@@ -117,6 +124,11 @@ def build_metadata(
         Observation dataset name (e.g. ``"ERA5"``).
     obs_variable : str
         Variable name in the observation dataset.
+    units : str
+        Units of the plotted quantity and of *summary_statistics*.
+        Overrides the registry's canonical units — pass it whenever the
+        figure is displayed in converted units (e.g. ``pr`` in mm/day
+        rather than kg m-2 s-1).
     plot_type : str
         Type of plot (e.g. ``"bias_map"``, ``"timeseries"``).
     spatial_extent : str
@@ -134,14 +146,14 @@ def build_metadata(
         Metadata dictionary ready for JSON serialization.
     """
     # Pull info from variable registry
-    units = ""
     domain = ""
     group = ""
     cmap = ""
     if variables_used:
         try:
             vinfo = get_var(variables_used[0])
-            units = vinfo.units
+            if not units:
+                units = vinfo.units
             domain = vinfo.domain
             group = vinfo.group
             cmap = vinfo.cmap

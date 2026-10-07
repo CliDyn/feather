@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from feather import provenance
 from feather.data.variables import VARIABLE_REGISTRY, get_var
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ class CMIP6Loader:
             variants = self._get_variants(model_cfg)
             if not variants:
                 logger.warning("No variants configured for model %s", model)
+                self._record_member(cmip6_var, model, None, "no_variant_configured")
                 return None
             variant = variants[0]
 
@@ -140,7 +142,10 @@ class CMIP6Loader:
 
         da = self._open_stitched(cmip6_var, model, variant, table)
         if da is None:
+            self._record_member(cmip6_var, model, variant, "no_store", table=table)
             return None
+        coverage = (provenance.time_coverage(da)
+                    if provenance.current_run() is not None else {})
 
         # Reject partial-coverage members before slicing (e.g. a model whose
         # data starts in 2001 cannot enter a 1980–2014 ensemble mean).
@@ -154,6 +159,8 @@ class CMIP6Loader:
                 "Skipping %s/%s — does not cover full period %s–%s",
                 model, cmip6_var, period[0], period[1],
             )
+            self._record_member(cmip6_var, model, variant, "partial_coverage",
+                                table=table, period=list(period), **coverage)
             return None
 
         # Normalize time coordinate
@@ -169,6 +176,9 @@ class CMIP6Loader:
 
             if da.sizes.get("time", 0) == 0:
                 logger.debug("No timesteps after filtering for %s/%s", model, cmip6_var)
+                self._record_member(cmip6_var, model, variant, "no_timesteps_in_period",
+                                    table=table, period=list(period) if period else None,
+                                    season=season, **coverage)
                 return None
 
             # Normalize siconc
@@ -192,9 +202,40 @@ class CMIP6Loader:
                 "Skipping %s/%s — unstructured grid (dims %s) not supported",
                 model, cmip6_var, tuple(da.dims),
             )
+            self._record_member(cmip6_var, model, variant, "unstructured_grid",
+                                table=table, dims=list(da.dims))
             return None
 
+        self._record_member(cmip6_var, model, variant, None, table=table,
+                            **coverage)
         return da.compute()
+
+    def _record_member(
+        self, cmip6_var: str, model: str, variant: str | None,
+        excluded: str | None, **fields,
+    ) -> None:
+        """Provenance record of one benchmark member's selection verdict.
+
+        ``excluded`` is the reason a member was dropped, or ``None`` when it
+        was used.  Figure sidecars collapse these into one ``benchmark``
+        summary per benchmark and variable.
+        """
+        if provenance.current_run() is None:
+            return
+        stores = []
+        if variant is not None and fields.get("table"):
+            for exp in self._get_experiments():
+                path = self._zarr_path(model, variant, fields["table"],
+                                       cmip6_var, experiment=exp)
+                if os.path.exists(path):
+                    stores.append(path)
+        provenance.emit(
+            "benchmark_member", benchmark=self.label, variable=cmip6_var,
+            model=model, variant=variant,
+            status="excluded" if excluded else "used", reason=excluded,
+            stores=stores or None,
+            **{k: v for k, v in fields.items() if v is not None},
+        )
 
     @staticmethod
     def _covers_period(da: xr.DataArray, period: tuple[str, str]) -> bool:
@@ -369,6 +410,8 @@ class CMIP6Loader:
                 lat, lon = self._find_lat_lon(da)
             except ValueError as e:
                 logger.warning("Cannot find lat/lon for %s: %s", member_label, e)
+                self._record_member(cmip6_var, model, variant, "no_lat_lon",
+                                    table=table)
                 models_skipped.append(member_label)
                 continue
 

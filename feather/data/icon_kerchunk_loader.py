@@ -58,6 +58,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,7 @@ class ICONKerchunkLoader:
         self._config = config
         self._root = Path(config.data_source.get("root", ""))
         self._store_cache: dict[tuple[str, str], xr.Dataset] = {}
+        self._prov: dict[tuple, tuple] = {}
 
     # ------------------------------------------------------------------
     # Public API (matches CMORLoader / KerchunkParquetLoader)
@@ -196,6 +198,15 @@ class ICONKerchunkLoader:
             treat this the same as a missing CMOR file and skip the model.
         """
         da = self._load_raw(model, variable)
+
+        store = "atmos2d" if variable in _ATMOS2D else "ocean2d"
+        provenance.record_read(
+            self._prov, (model, variable), period=period,
+            role="model", backend=type(self).__name__, variable=variable,
+            paths=lambda: [self._store_path(model, store)], data=da,
+            store=_STORE_FILES[store],
+            **provenance.model_fields(self._config, model),
+        )
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))

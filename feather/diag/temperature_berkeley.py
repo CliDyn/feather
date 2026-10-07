@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 
 from feather.data.variables import get_var
+from feather.diag import _families
 from feather.diag import _berkeley
 from feather.diag._ts_panel import build_envelope_timeseries
 from feather.diag.base import DiagnosticBase
@@ -116,17 +117,23 @@ class TemperatureBerkeley(DiagnosticBase):
         out = self.output_dir
 
         # Determine which groups need computing
-        ens_ids = [
-            f"tas_{p}_ens_bias_combined"
-            for p in ["annual", "djf", "mam", "jja", "son"]
-        ]
+        if self._per_family:
+            ens_ids = (
+                _families.family_summary_ids("tas")
+                if len(self.config.get_model_families()) >= 2 else []
+            )
+        else:
+            ens_ids = [
+                f"tas_{p}_ens_bias_combined"
+                for p in ["annual", "djf", "mam", "jja", "son"]
+            ]
         bias_ids = [
             f"tas_{p}_bias_combined"
             for p in ["annual", "DJF", "MAM", "JJA", "SON"]
         ]
         # Ensemble summary panels are produced alongside the bias maps when
         # ≥2 models are configured (mirrors GlobalBiases).
-        if len(list(self.config.models)) >= 2:
+        if self._per_family or len(list(self.config.models)) >= 2:
             bias_ids += ens_ids
         # ensemble_only: Group A is gated on the ensemble figures alone.
         check_ids = ens_ids if self.ensemble_only else bias_ids
@@ -635,11 +642,23 @@ class TemperatureBerkeley(DiagnosticBase):
                 cmip6_data = benchmark_data[primary_label]
                 cmip6_info = benchmark_info[primary_label]
 
-        # EERIE ensemble mean/median bias maps (when ≥2 models available)
-        from feather.diag.global_biases import GlobalBiases
-        ens_data = GlobalBiases._compute_ens_stats(
-            model_results, obs_clim_common, obs_seasonal_common, common_area,
-        )
+        # Ensemble summary: one mean per model family, or the pooled
+        # ensemble mean/median (when ≥2 models available)
+        ens_data: dict[str, dict] = {}
+        family_data: dict[str, dict] = {}
+        if self._per_family:
+            families = self.config.get_model_families(list(model_results))
+            if len(families) >= 2:
+                family_data = _families.compute_family_stats(
+                    model_results, families, obs_clim_common,
+                    obs_seasonal_common, common_area,
+                )
+        else:
+            from feather.diag.global_biases import GlobalBiases
+            ens_data = GlobalBiases._compute_ens_stats(
+                model_results, obs_clim_common, obs_seasonal_common,
+                common_area,
+            )
 
         # Shared colorbar ranges
         colorbar_ranges = self._compute_colorbar_ranges(
@@ -663,6 +682,7 @@ class TemperatureBerkeley(DiagnosticBase):
             "benchmark_info": benchmark_info,
             "benchmark_individual_data": benchmark_individual_data,
             "ens_data": ens_data,
+            "family_data": family_data,
         }
 
     def _plot_bias_maps(self, results: dict) -> list[tuple[plt.Figure, dict]]:
@@ -810,6 +830,31 @@ class TemperatureBerkeley(DiagnosticBase):
                         results.get("benchmark_info")) or None,
                 )
                 figures.append((fig_e, meta_e))
+
+            # ── Per-family summary (obs + one mean per family + MMMs) ──
+            family_data = results.get("family_data", {})
+            if period_key in family_data:
+                figures.append(_families.plot_family_bias_figure(
+                    self, var="tas", period_key=period_key,
+                    period_label=period_label,
+                    fdata=family_data[period_key],
+                    benchmarks=_families.benchmark_panels(
+                        benchmark_data, results.get("benchmark_info"),
+                        period_key),
+                    obs_plot=obs_period - _K_TO_C,
+                    obs_title=self._berkeley_label,
+                    long_name="2m Temperature",
+                    cmap="cmo.thermal", bias_cmap="RdBu_r",
+                    vmin=(p_cb["vmin"] - _K_TO_C
+                          if p_cb.get("vmin") is not None else None),
+                    vmax=(p_cb["vmax"] - _K_TO_C
+                          if p_cb.get("vmax") is not None else None),
+                    bias_vmax=p_cb.get("bias_vmax"), units="°C",
+                    variables=["tas"], obs_dataset=self._berkeley_label,
+                    obs_variable="2m temperature", period=self.period,
+                    benchmark_info=self._benchmark_meta_from_info(
+                        results.get("benchmark_info")) or None,
+                ))
 
         return figures
 
@@ -986,6 +1031,7 @@ class TemperatureBerkeley(DiagnosticBase):
             benchmarks=benchmarks,
             extra_obs=extra_obs,
             offset=-_K_TO_C,
+            families=self._line_families(results["models"]),
         )
 
         if anomaly:
@@ -1007,7 +1053,8 @@ class TemperatureBerkeley(DiagnosticBase):
             figure_id=f"tas_timeseries_{suffix}",
             models=all_models,
             variables=["tas"],
-            description=descr,
+            description=descr + _families.family_lines_note(
+                self._line_families(results["models"])),
             obs_dataset="Berkeley Earth",
             obs_variable="2m temperature",
             plot_type="timeseries",

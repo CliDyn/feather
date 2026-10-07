@@ -64,6 +64,7 @@ from feather.diag._extremes_obs import (
 )
 from feather.util.spatial import compute_latlon_areas
 from feather.util.temporal import linear_trend
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +483,7 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             model=model, period_start=start, period_end=end,
             method="yearly P99 and P87.5 of daily tasmax (Kornhuber et al. 2024)",
         )
-        ds.to_netcdf(nc_path)
+        write_netcdf(ds, nc_path)
         logger.info("  Saved percentile NetCDF: %s", nc_path)
 
     # ── Regridding / trends ────────────────────────────────────────────

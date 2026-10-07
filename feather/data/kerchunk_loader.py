@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig
 from feather.data.variables import get_var
 
@@ -166,6 +167,12 @@ class KerchunkParquetLoader:
         self._store_cache: dict[tuple, xr.Dataset] = {}
         # Cache loaded lat/lon grids keyed by model
         self._grid_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        # Store path per (model, store_type), the stores touched by the
+        # current load (a derived variable can read several), and the
+        # provenance records built from them.
+        self._store_paths: dict[tuple, Path] = {}
+        self._touched: list[Path] = []
+        self._prov: dict[tuple, tuple] = {}
 
     # ------------------------------------------------------------------
     # Public API (matches CMORLoader)
@@ -191,7 +198,16 @@ class KerchunkParquetLoader:
         time_mean : bool
             Return temporal mean if True.
         """
+        self._touched = []
         da = self._load_raw(model, variable)
+
+        touched = list(dict.fromkeys(self._touched))
+        provenance.record_read(
+            self._prov, (model, variable), period=period,
+            role="model", backend=type(self).__name__, variable=variable,
+            paths=touched, data=da,
+            **provenance.model_fields(self._config, model),
+        )
 
         if period and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -540,11 +556,15 @@ class KerchunkParquetLoader:
         """Open (and cache) the xarray dataset for *model*/*store_type*."""
         key = (model, store_type)
         if key in self._store_cache:
+            if key in self._store_paths:
+                self._touched.append(self._store_paths[key])
             return self._store_cache[key]
 
         import fsspec
 
         path = self._store_path(model, store_type)
+        self._store_paths[key] = path
+        self._touched.append(path)
         logger.debug("Opening kerchunk store %s for %s/%s", path, model, store_type)
         fs = fsspec.filesystem("reference", fo=str(path), remote_protocol="file", lazy=True)
         ds = xr.open_dataset(

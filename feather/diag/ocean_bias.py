@@ -35,6 +35,7 @@ import numpy as np
 import nereus as nr
 import xarray as xr
 
+from feather.diag import _families
 from feather.diag.netcdf_export import (
     export_biasmap_individual_netcdf,
     export_biasmap_netcdf,
@@ -538,9 +539,24 @@ def compute_ocean_fields(
         logger.warning("No evaluated models for ocean %s — skipping", var)
         return None
 
-    # -- Evaluated ensemble mean/median ------------------------------------
+    # -- Evaluated ensemble mean/median, or one mean per model family ------
     ens_data: dict[str, dict] = {}
+    family_data: dict[str, dict] = {}
+    per_family = config.get_ensemble_mode() == "per_family"
+    families = config.get_model_families(list(models))
     for pk in periods:
+        if per_family:
+            fdata = _families.family_mean_fields(
+                {m: (e["annual_regrid"] if pk == "annual"
+                     else e["seasonal_regrids"].get(pk))
+                 for m, e in models.items()},
+                families,
+            )
+            for d in fdata.values():
+                d["bias"] = d["mean"] - obs_fields[pk]
+            if fdata:
+                family_data[pk] = fdata
+            continue
         if not ens_regrids[pk]:
             continue
         stack = xr.concat(ens_regrids[pk], dim="member")
@@ -627,6 +643,7 @@ def compute_ocean_fields(
         "obs": obs_block,
         "models": models,
         "ens_data": ens_data,
+        "family_data": family_data,
         "benchmark_data": benchmark_data,
     }
     if want_individual and benchmark_individual:

@@ -33,6 +33,7 @@ import numpy as np
 import xarray as xr
 
 from feather.plot.maps import _flatten_latlon, plot_combined_map
+from feather.diag.netcdf_export import write_netcdf
 from feather.util.temporal import (
     annual_mean,
     climatology,
@@ -314,7 +315,7 @@ class PairwiseObsComparison:
                     f"{s.sec_name} for {short} and {long} (0.5° land-masked)."
                 ),
                 plot_type="combined_trend_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units=tu,
             )
             out.append((fig, meta))
         return out
@@ -346,7 +347,7 @@ class PairwiseObsComparison:
                     f"and {s.ref_name} − {s.sec_name} disagreement."
                 ),
                 plot_type="combined_trend_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units=tu,
             )
             out.append((fig, meta))
         return out
@@ -420,6 +421,7 @@ class PairwiseObsComparison:
                 ),
                 plot_type="combined_bias_map", period=self.period_long,
                 obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                units=s.units_label,
             )
             out.append((fig, meta))
         return out
@@ -465,7 +467,7 @@ class PairwiseObsComparison:
                     f"/ {s.sec_name} × 100 % for {short} and {long}."
                 ),
                 plot_type="combined_bias_map", period=self.period_long,
-                obs_dataset=f"{s.ref_name}, {s.sec_name}",
+                obs_dataset=f"{s.ref_name}, {s.sec_name}", units="%",
             )
             out.append((fig, meta))
         return out
@@ -500,6 +502,6 @@ class PairwiseObsComparison:
                 grid="0.5deg land-masked",
             )
             path = netcdf_dir / f"{s.var}_{s.sec_token}_{pk.lower()}_clim_diff.nc"
-            ds.to_netcdf(path)
+            write_netcdf(ds, path)
             written.append(path)
         return written

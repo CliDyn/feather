@@ -133,10 +133,69 @@
             </table>
             {% endif %}
 
+            <!-- Provenance (how the figure was produced) -->
+            {% set prov = fig.metadata.provenance if fig.metadata else none %}
+            {% if prov %}
+            {% set ev = prov.events or [] %}
+            {% set fallbacks = ev | selectattr("step", "equalto", "regrid_method") | selectattr("fallback") | list %}
+            <details class="provenance-panel">
+                <summary>Provenance
+                    {% if fallbacks %}<span class="prov-flag">regrid fallback</span>{% endif %}
+                    <span class="prov-run">run {{ prov.run_id }}</span>
+                </summary>
+                {% set reads = ev | selectattr("step", "equalto", "read") | list %}
+                {% if reads %}
+                <h5>Inputs</h5>
+                <ul>
+                {% for e in reads %}
+                    <li>
+                        <strong>{{ e.name or e.dataset or e.catalog_key }}</strong>
+                        {{ e.variable or e.obs_variable or "" }}
+                        {% if e.n_files %} · {{ e.n_files }} file{{ "s" if e.n_files != 1 }}{% endif %}
+                        {% if e.time_coverage %} · data {{ e.time_coverage|join("–") }}{% endif %}
+                        {% if e.declared_experiment %} · declared {{ e.declared_experiment }}{% endif %}
+                        {% if e.n_missing_months %} · <span class="prov-warn">{{ e.n_missing_months }} month(s) missing</span>{% endif %}
+                        {% if e.error %} · <span class="prov-warn">{{ e.error }}</span>{% endif %}
+                        {% if e.root or e.first %}<br><code>{{ e.root or e.first }}</code>{% endif %}
+                    </li>
+                {% endfor %}
+                </ul>
+                {% endif %}
+                {% set regrids = ev | selectattr("step", "equalto", "regrid_method") | list %}
+                {% if regrids %}
+                <h5>Regridding</h5>
+                <ul>
+                {% for e in regrids %}
+                    <li{% if e.fallback %} class="prov-warn"{% endif %}>
+                        {{ e.variable }}: {{ e.used }}
+                        {% if e.fallback %}(requested {{ e.requested }}; {{ e.reason }}){% endif %}
+                    </li>
+                {% endfor %}
+                </ul>
+                {% endif %}
+                {% set benches = ev | selectattr("step", "equalto", "benchmark") | list %}
+                {% if benches %}
+                <h5>Benchmarks</h5>
+                <ul>
+                {% for e in benches %}
+                    <li>{{ e.benchmark }} {{ e.variable }}: {{ e.n_used }} member(s) used
+                    {% if e.excluded %}; excluded:
+                        {% for x in e.excluded %}{{ x.member }} ({{ x.reason|replace("_", " ") }}){% if not loop.last %}, {% endif %}{% endfor %}
+                    {% endif %}</li>
+                {% endfor %}
+                </ul>
+                {% endif %}
+                {% if prov.truncated %}<p class="prov-note">Showing {{ ev|length }} of {{ prov.n_events }} records — see <code>{{ prov.events_file }}</code>.</p>{% endif %}
+            </details>
+            {% endif %}
+
             <!-- LLM analysis -->
             {% if not no_llm %}
             {% if fig.analysis %}
             <div class="analysis-panel">
+                {% if fig.analysis_stale %}
+                <p class="prov-warn">This analysis was written for an earlier version of the figure.</p>
+                {% endif %}
                 <h4>Summary
                     {% if fig.analysis.confidence %}
                     <span class="confidence-badge confidence-badge--{{ fig.analysis.confidence }}">

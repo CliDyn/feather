@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from feather.data.variables import get_var
+from feather.diag import _families
 from feather.diag._ts_panel import build_envelope_timeseries
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
@@ -271,7 +272,11 @@ class TimeseriesDiag(DiagnosticBase):
         cmip6_info = primary["info"] if primary else {}
         cmip6_individual_ts = primary["individual"] if primary else {}
 
-        ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
+        # Per-family mode never pools: family means are drawn at plot time.
+        ens_mean, ens_median = (
+            (None, None) if self._per_family
+            else self._compute_ensemble_stats(model_ts)
+        )
 
         return {
             "models": model_ts,
@@ -442,16 +447,25 @@ class TimeseriesDiag(DiagnosticBase):
                     label=f"{b_label} ({n_mmm})", color=b_color,
                     linewidth=2.0, linestyle="--")
 
-        # DestinE model annual
+        # DestinE model annual (thinner under the family means, if any)
+        families = self._line_families(vr["models"])
         for model, ts in vr["models"].items():
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values + _off,
-                    label=model, color=color, linewidth=2.0)
+                    label=model, color=color,
+                    linewidth=1.2 if families else 2.0)
+
+        # Per-family means (thick, in each family's hue)
+        if families:
+            _families.plot_family_lines(
+                ax, _families.family_mean_series(vr["models"], families),
+                self.config.get_model_color, transform=lambda ts: ts + _off,
+            )
 
         # Ensemble median annual (dashed)
-        if vr.get("ens_median") is not None:
+        if not families and vr.get("ens_median") is not None:
             ens_med_annual = annual_mean(vr["ens_median"])
             time_vals = _to_plot_time(ens_med_annual.time.values)
             ax.plot(time_vals, ens_med_annual.values + _off,
@@ -459,7 +473,7 @@ class TimeseriesDiag(DiagnosticBase):
                     color=ENS_COLOR, linewidth=2.5, linestyle="--")
 
         # Ensemble mean annual (solid)
-        if vr.get("ens_mean") is not None:
+        if not families and vr.get("ens_mean") is not None:
             ens_mean_annual = annual_mean(vr["ens_mean"])
             time_vals = _to_plot_time(ens_mean_annual.time.values)
             ax.plot(time_vals, ens_mean_annual.values + _off,
@@ -486,6 +500,7 @@ class TimeseriesDiag(DiagnosticBase):
             description=(
                 f"Area-weighted global mean time series of "
                 f"{var_info.long_name} for all models vs observations."
+                + _families.family_lines_note(families)
             ),
             plot_type="timeseries",
             period=self.period,
@@ -533,6 +548,7 @@ class TimeseriesDiag(DiagnosticBase):
             ens_median=vr.get("ens_median"),
             ens_prefix=self._project_name,
             offset=var_info.display_offset,
+            families=self._line_families(vr["models"]),
         )
 
         if anomaly:
@@ -554,7 +570,8 @@ class TimeseriesDiag(DiagnosticBase):
             figure_id=f"{var}_timeseries_{suffix}",
             models=all_models,
             variables=[var],
-            description=descr,
+            description=descr + _families.family_lines_note(
+                self._line_families(vr["models"])),
             plot_type="timeseries",
             period=self.period,
             cmip6_info=vr.get("cmip6_info") or None,

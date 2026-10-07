@@ -144,6 +144,20 @@ class TestBuildMetadata:
         assert meta["domain"] == "sfc"
         assert meta["group"] == "temperature"
 
+    def test_units_override_registry(self):
+        """Explicit units (display units) win over the registry's canonical."""
+        meta = build_metadata(
+            "test",
+            "Test",
+            figure_id="test",
+            variables_used=["pr"],
+            models=["ifs-fesom"],
+            units="mm/day",
+        )
+
+        assert meta["units"] == "mm/day"
+        assert meta["group"] == "precipitation"
+
     def test_auto_fills_obs_info(self):
         """Obs dataset and variable are auto-filled from registry."""
         meta = build_metadata(

@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from feather import provenance
 from feather.config import FeatherConfig
 from feather.data.variables import get_var
 
@@ -18,9 +19,14 @@ class ObsLoader:
     def __init__(self, config: FeatherConfig):
         self._config = config
         self._cache: dict[str, xr.Dataset] = {}
+        # Files behind cached datasets that ``encoding["source"]`` does not
+        # name (multi-file and zarr stores), and their provenance records.
+        self._inputs: dict[str, list[Path]] = {}
+        self._prov: dict[tuple, tuple] = {}
 
     def load(self, dataset: str, variable: str,
-             period: tuple[str, str] = None) -> xr.DataArray:
+             period: tuple[str, str] = None, *,
+             model_var: str | None = None) -> xr.DataArray:
         """Load an observation variable, optionally sliced to a period.
 
         Parameters
@@ -31,6 +37,10 @@ class ObsLoader:
             Variable key as defined in config, e.g. "t2m", "toa_sw_all_mon".
         period : tuple of str, optional
             (start, end) for time slicing, e.g. ("1990", "2014").
+        model_var : str, optional
+            CMOR variable this observation is the reference for.  Only
+            tags the provenance record so it is attributed to the figures
+            of that variable.
         """
         ds_cfg = self._config.obs_datasets.get(dataset)
         if ds_cfg is None:
@@ -58,7 +68,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period, variable=model_var, obs_variable=variable)
 
         # Find the data variable in the dataset
         da = self._find_variable(ds, variable)
@@ -75,13 +85,20 @@ class ObsLoader:
         Uses VARIABLE_REGISTRY to find obs_dataset + obs_variable.
         """
         var_info = get_var(model_var)
-        da = self.load(var_info.obs_dataset, var_info.obs_variable, period=period)
+        da = self.load(var_info.obs_dataset, var_info.obs_variable,
+                       period=period, model_var=model_var)
 
         # Apply unit conversion if needed
         if var_info.obs_unit_factor != 1.0:
             da = da * var_info.obs_unit_factor
         if var_info.obs_unit_offset != 0.0:
             da = da + var_info.obs_unit_offset
+        if var_info.obs_unit_factor != 1.0 or var_info.obs_unit_offset != 0.0:
+            provenance.emit(
+                "convert", role="obs", variable=model_var,
+                dataset=var_info.obs_dataset, factor=var_info.obs_unit_factor,
+                offset=var_info.obs_unit_offset, to_units=var_info.units,
+            )
 
         return da
 
@@ -121,7 +138,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         if ceres_var not in ds.data_vars:
             raise KeyError(
                 f"Variable {ceres_var!r} not in CERES {file_key} file. "
@@ -169,7 +186,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         da = ds["analysed_sst"]
         if period is not None and "time" in da.dims:
             da = da.sel(time=slice(period[0], period[1]))
@@ -210,7 +227,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         if period is not None and "time" in ds.dims:
             ds = ds.sel(time=slice(period[0], period[1]))
         return ds
@@ -250,7 +267,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         if period is not None and "time" in ds.dims:
             ds = ds.sel(time=slice(period[0], period[1]))
         return ds
@@ -311,7 +328,7 @@ class ObsLoader:
         if cache_key not in self._cache:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         if period is not None and "time" in ds.dims:
             ds = ds.sel(time=slice(period[0], period[1]))
         return ds
@@ -348,8 +365,9 @@ class ObsLoader:
                 "pr", "zarr/mswep280.past-nrt.monthly.zarr"
             )
             self._cache[cache_key] = xr.open_zarr(str(filepath))
+            self._inputs[cache_key] = [filepath]
 
-        da = self._cache[cache_key]["precipitation"]
+        da = self._cached(cache_key, period)["precipitation"]
 
         # Convert mm/month -> kg/m²/s  (1 mm = 1 kg/m²)
         seconds_in_month = da.time.dt.days_in_month * 86400
@@ -418,8 +436,9 @@ class ObsLoader:
                 data_vars="minimal", coords="minimal", compat="override",
             )
             self._cache[cache_key] = ds
+            self._inputs[cache_key] = files
 
-        da = self._cache[cache_key][variable]
+        da = self._cached(cache_key, period)[variable]
 
         # Shift lons −180..180 → 0..360
         if "lon" in da.coords and float(da.lon.min()) < 0:
@@ -469,7 +488,7 @@ class ObsLoader:
             )
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         da = ds["precip"]
 
         # Rename dims latitude/longitude → lat/lon
@@ -553,7 +572,7 @@ class ObsLoader:
                 base_path / filename, chunks="auto",
             )
 
-        ds_full = self._cache[cache_key]
+        ds_full = self._cached(cache_key, period)
 
         # Decimal-year time → DatetimeIndex (e.g. 1981.125 → Feb 1981)
         dec_years = ds_full["time"].values
@@ -633,7 +652,7 @@ class ObsLoader:
                 base_path / filename, chunks="auto",
             )
 
-        ds = self._cache[cache_key]
+        ds = self._cached(cache_key, period)
         var = "sst" if "sst" in ds.data_vars else next(iter(ds.data_vars))
         da = ds[var]
 
@@ -656,6 +675,28 @@ class ObsLoader:
             da = da.sel(time=slice(period[0], period[1]))
 
         return da + 273.15  # °C → K (canonical tos unit)
+
+    def _cached(self, cache_key: str, period=None, *, variable: str | None = None,
+                obs_variable: str | None = None) -> xr.Dataset:
+        """Return the cached dataset for *cache_key*, recording its provenance."""
+        ds = self._cache[cache_key]
+        dataset = cache_key.split("/", 1)[0]
+        provenance.record_read(
+            self._prov, (cache_key, variable), period=period,
+            role="obs", backend=type(self).__name__, variable=variable,
+            paths=lambda: self._source_paths(cache_key, ds),
+            data=ds, dataset=dataset,
+            source=cache_key.split("/", 1)[1] if "/" in cache_key else None,
+            obs_variable=obs_variable,
+        )
+        return ds
+
+    def _source_paths(self, cache_key: str, ds: xr.Dataset) -> list:
+        """Files behind a cached dataset (explicit list, else its source)."""
+        if cache_key in self._inputs:
+            return list(self._inputs[cache_key])
+        source = ds.encoding.get("source")
+        return [source] if source else []
 
     def list_datasets(self) -> list[str]:
         """List configured observation datasets."""

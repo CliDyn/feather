@@ -41,6 +41,7 @@ from feather.diag._extremes_obs import (
     use_era5_obs,
 )
 from feather.util.spatial import compute_latlon_areas, latlon_global_mean
+from feather.diag.netcdf_export import write_netcdf
 
 logger = logging.getLogger(__name__)
 
@@ -464,7 +465,7 @@ class TropicalNightsDiag(DiagnosticBase):
                 "land_only": "True — ocean pixels are NaN",
             },
         )
-        ds.to_netcdf(nc_path)
+        write_netcdf(ds, nc_path)
         logger.info("  Saved TN NetCDF: %s", nc_path)
 
     # ── Plot ───────────────────────────────────────────────────────────

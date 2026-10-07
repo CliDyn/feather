@@ -78,6 +78,51 @@ ALL_PERIODS = ("annual", "DJF", "MAM", "JJA", "SON")
 #: Summary rows that are tabulated but excluded from keep-set counting.
 ENSEMBLE_ROWS = ("ens_mean", "ens_median")
 
+#: Row-key prefix of a per-family mean (``project.ensemble_mode:
+#: per_family``), matching the bias NetCDF field ``family_<name>_mean_bias``.
+FAMILY_ROW_PREFIX = "family_"
+
+
+def _family_row(family: str) -> str:
+    return f"{FAMILY_ROW_PREFIX}{sanitize_name(family)}_mean"
+
+
+def summary_rows(config) -> tuple[str, ...]:
+    """Summary row keys for *config*: pooled mean/median, or one per family."""
+    if (getattr(config, "project", None) or {}).get(
+            "ensemble_mode") == "per_family":
+        return tuple(_family_row(f) for f in config.get_model_families())
+    return ENSEMBLE_ROWS
+
+
+def is_summary_row(member: str) -> bool:
+    """True for ensemble/family summary rows (not individual members)."""
+    return member in ENSEMBLE_ROWS or (
+        member.startswith(FAMILY_ROW_PREFIX) and member.endswith("_mean"))
+
+
+def _summary_bias(ds, row: str, config):
+    """Bias field of summary *row* in *ds*, or ``None``.
+
+    A family row falls back to the mean of its members' biases (equal to
+    the family-mean bias, the obs being shared) when the NetCDF predates
+    per-family export.
+    """
+    if f"{row}_bias" in ds:
+        return ds[f"{row}_bias"]
+    if not row.startswith(FAMILY_ROW_PREFIX):
+        return None
+    for family, members in config.get_model_families().items():
+        if _family_row(family) != row:
+            continue
+        fields = [ds[f"{sanitize_name(m)}_bias"] for m in members
+                  if f"{sanitize_name(m)}_bias" in ds]
+        if not fields:
+            return None
+        return (fields[0] if len(fields) == 1
+                else xr.concat(fields, dim="member").mean("member"))
+    return None
+
 
 def references_for(var: str, config) -> list[tuple[str, str]]:
     """Resolve the ``(label, diagnostic dir)`` references for *var*.
@@ -195,13 +240,19 @@ def compute_region_av(
 
                 bench_bias = ds[bench_field]
                 av_fields: dict[str, np.ndarray] = {}
-                for member in [*members, *ENSEMBLE_ROWS]:
+                for member in members:
                     field = f"{member}_bias"
                     if field not in ds:
                         continue
                     av_fields[member] = AddedValueDiag._av_from_biases(
                         bench_bias, ds[field],
                     ).values
+                for row in summary_rows(diag.config):
+                    bias = _summary_bias(ds, row, diag.config)
+                    if bias is not None:
+                        av_fields[row] = AddedValueDiag._av_from_biases(
+                            bench_bias, bias,
+                        ).values
 
             if not av_fields:
                 logger.warning(
@@ -234,14 +285,14 @@ def keep_set(
 ) -> list[str]:
     """Regions where at least *threshold* individual members have AV > 0.
 
-    Ensemble mean/median rows are excluded from the count.  With
+    Ensemble mean/median (or family-mean) rows are excluded from the count.  With
     *reference* ``None`` the rule is the union across references — a region
     qualifies if it passes under any of them — which is what keeps the map
     outlines identical to the table columns.
     """
     per_region: dict[str, dict[str, int]] = {}
     for row in rows:
-        if row["period"] != period_key or row["member"] in ENSEMBLE_ROWS:
+        if row["period"] != period_key or is_summary_row(row["member"]):
             continue
         if reference is not None and row["reference"] != reference:
             continue
@@ -300,7 +351,13 @@ def load_av_fields(
         lon = np.asarray(ds["lon"].values, dtype=float)
         bench_bias = ds[bench_field]
         fields = {}
-        for member in [*ENSEMBLE_ROWS, *members]:
+        for row in summary_rows(diag.config):
+            bias = _summary_bias(ds, row, diag.config)
+            if bias is not None:
+                fields[row] = AddedValueDiag._av_from_biases(
+                    bench_bias, bias,
+                ).values.astype(np.float32)
+        for member in members:
             if f"{member}_bias" not in ds:
                 continue
             fields[member] = AddedValueDiag._av_from_biases(
@@ -311,11 +368,17 @@ def load_av_fields(
 
 
 def member_label(member: str, config) -> str:
-    """Display label for a member key (``ens_mean`` → ``Ensemble mean``)."""
+    """Display label for a member key (``ens_mean`` → ``Ensemble mean``,
+    ``family_IFS_NEMO_ER_mean`` → ``IFS-NEMO-ER mean (3)``)."""
     if member == "ens_mean":
         return "Ensemble mean"
     if member == "ens_median":
         return "Ensemble median"
+    if member.startswith(FAMILY_ROW_PREFIX):
+        for family, members in config.get_model_families().items():
+            if _family_row(family) == member:
+                n = len(members)
+                return f"{family} mean ({n})" if n > 1 else f"{family} (1)"
     for name in config.models:
         if sanitize_name(name) == member:
             return name

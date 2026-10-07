@@ -316,3 +316,134 @@ def test_individual_paths_helper(tmp_path):
     names = [p.name for p in paths]
     assert names[0] == "tas_annual_individual_1980-2014.nc"
     assert "tas_SON_individual_1980-2014.nc" in names
+
+
+# ── Packing metadata carried as attrs / atomic writes ─────────────────
+
+
+def _fill_value_attr_results():
+    """Three index series where one carries ``_FillValue: "NaN"`` on time.
+
+    Mirrors the teleconnection SST modes on the 10-member EERIE ensemble: the
+    kerchunk-parquet members publish a *string* ``_FillValue`` attribute on
+    their time coordinate.
+    """
+    import pandas as pd
+
+    t1 = pd.date_range("1980-01-16 12:00", periods=24, freq="MS")
+    t2 = pd.date_range("1980-01-01", periods=24, freq="MS")
+    t_obs = pd.date_range("1990-01-16", periods=12, freq="MS")
+
+    def series(t, offset):
+        da = xr.DataArray(
+            np.arange(len(t), dtype=float) + offset, dims="time",
+            coords={"time": t})
+        return da.assign_coords(month=("time", pd.DatetimeIndex(t).month))
+
+    r2 = series(t2, 100)
+    r2["time"].attrs = {"standard_name": "time", "axis": "T",
+                        "_FillValue": "NaN"}
+    return {
+        "model_indices": {"A": series(t1, 0), "A-r2": r2, "B": series(t1, 10)},
+        "obs_index": series(t_obs, 200),
+    }
+
+
+def test_generic_export_handles_fill_value_attr_on_time(tmp_path):
+    """A string ``_FillValue`` attr on a time coord must not abort the write.
+
+    Regression: netCDF4 rejects ``_FillValue="NaN"`` when creating the int64
+    time variable ("invalid literal for int() with base 10"). Because
+    ``to_netcdf`` declares every dimension up front and then fills variables
+    one by one, the failure left a *truncated* file — all dims, one variable —
+    which ``skip_existing`` then treated as finished on every later run. Every
+    field, obs included, must survive.
+    """
+    paths = nx.export_generic_netcdf(
+        tmp_path, "enso", _fill_value_attr_results(), ("1980", "2014"),
+        skip_existing=False)
+    ds = xr.open_dataset(paths[0])
+    assert set(ds.data_vars) == {
+        "model_indices_A", "model_indices_A_r2", "model_indices_B",
+        "obs_index",
+    }
+    assert int(np.isfinite(ds["obs_index"].values).sum()) == 12
+    assert int(np.isfinite(ds["model_indices_A_r2"].values).sum()) == 24
+    ds.close()
+
+
+def test_generic_export_leaves_no_partial_file_on_write_error(tmp_path,
+                                                              monkeypatch):
+    """A failed write leaves no file behind — not even a truncated stump.
+
+    A stump would be skipped as a finished product by the next run, so the
+    destination must either hold a complete dataset or not exist at all.
+    """
+    def boom(self, *a, **kw):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(xr.Dataset, "to_netcdf", boom)
+    with pytest.raises(RuntimeError):
+        nx.export_generic_netcdf(
+            tmp_path, "enso", _fill_value_attr_results(), ("1980", "2014"),
+            skip_existing=False)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_sanitize_strips_packing_attrs():
+    """Inherited packing metadata is dropped from attrs as well as encoding."""
+    da = xr.DataArray(np.ones(4), dims="x", name="v")
+    da.attrs = {"_FillValue": "NaN", "scale_factor": 0.01, "units": "K"}
+    ds = nx._sanitize_attrs(xr.Dataset({"v": da}))
+    assert ds["v"].attrs == {"units": "K"}
+
+
+# ── Checkpoint writers share the atomic path ──────────────────────────
+
+
+def test_write_netcdf_leaves_source_dataset_untouched(tmp_path):
+    """Sanitising cleans a copy — the caller keeps its dataset as it was.
+
+    The checkpoint writers build a dataset, write it, and in places go on
+    using it, so the write must not quietly strip their attrs.
+    """
+    da = xr.DataArray(np.ones(4), dims="x", name="v")
+    da.attrs = {"_FillValue": "NaN", "units": "K"}
+    da.encoding = {"dtype": np.dtype("int16")}
+    ds = xr.Dataset({"v": da})
+
+    nx.write_netcdf(ds, tmp_path / "chk.nc")
+
+    assert ds["v"].attrs == {"_FillValue": "NaN", "units": "K"}
+    assert ds["v"].encoding == {"dtype": np.dtype("int16")}
+    written = xr.open_dataset(tmp_path / "chk.nc")
+    assert written["v"].attrs == {"units": "K"}
+    written.close()
+
+
+def test_write_netcdf_forwards_kwargs(tmp_path):
+    """Extra kwargs reach ``to_netcdf`` (callers may pass ``encoding=``)."""
+    ds = xr.Dataset({"v": ("x", np.ones(4))})
+    nx.write_netcdf(ds, tmp_path / "e.nc",
+                    encoding={"v": {"zlib": True, "complevel": 1}})
+    out = xr.open_dataset(tmp_path / "e.nc")
+    assert out["v"].encoding.get("zlib") is True
+    out.close()
+
+
+def test_diagnostic_checkpoints_use_the_atomic_writer():
+    """No diagnostic writes a checkpoint with a bare ``to_netcdf``.
+
+    A half-written checkpoint is worse than a half-written export: the
+    exports are merely skipped when present, but a checkpoint is *read back*
+    to rebuild figures, so a stump silently feeds truncated data into a
+    figure that looks complete.
+    """
+    import pathlib
+
+    diag_dir = pathlib.Path(__file__).resolve().parents[1] / "feather" / "diag"
+    offenders = [
+        p.name for p in sorted(diag_dir.glob("*.py"))
+        if p.name != "netcdf_export.py" and ".to_netcdf(" in p.read_text()
+    ]
+    assert offenders == []

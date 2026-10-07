@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from feather.diag import _families
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
 from feather.plot.styles import ENS_COLOR, OBS_COLOR
@@ -199,9 +200,14 @@ class OceanSST(DiagnosticBase):
         )
 
         # Determine which groups need computation
+        if self._per_family:
+            summary = ("family_mean_bias_combined",) if len(
+                self.config.get_model_families()) >= 2 else ()
+        else:
+            summary = ("ens_bias_combined",)
         bias_ids = [
             f"sst_{p}_{suffix}" for p in self._season_pkeys()
-            for suffix in ("bias_combined", "ens_bias_combined")
+            for suffix in ("bias_combined", *summary)
         ]
         need_a = not skip_existing or not all(
             self._figure_exists(f) for f in bias_ids
@@ -598,18 +604,38 @@ class OceanSST(DiagnosticBase):
                 }
 
         # EERIE ensemble mean/median bias (evaluated models only), computed
-        # from the already-regridded model climatologies on the common grid.
+        # from the already-regridded model climatologies on the common grid —
+        # or, in per-family mode, one mean per model family (never pooled).
         ensemble: dict[str, dict] = {}
+        family_data: dict[str, dict] = {}
         eerie = [m for m in model_results if m in self.config.models]
+        families = self.config.get_model_families(eerie)
         for pkey in periods_data:
+            obs_common = periods_data[pkey].get("obs_common")
+            if obs_common is None:
+                continue
+            if self._per_family:
+                if len(families) < 2:
+                    continue
+                fdata = _families.family_mean_fields(
+                    {m: model_results[m].get(pkey, {}).get("regrid")
+                     for m in eerie},
+                    families,
+                )
+                for d in fdata.values():
+                    d["bias"] = d["mean"] - obs_common
+                    d["bias_gmean"] = float(latlon_global_mean(
+                        d["bias"], area=common_area).values)
+                    d["rmse"] = float(np.sqrt(latlon_global_mean(
+                        d["bias"] ** 2, area=common_area).values))
+                if fdata:
+                    family_data[pkey] = fdata
+                continue
             regrids = [
                 model_results[m][pkey]["regrid"]
                 for m in eerie if pkey in model_results[m]
             ]
             if not regrids:
-                continue
-            obs_common = periods_data[pkey].get("obs_common")
-            if obs_common is None:
                 continue
             stack = xr.concat(regrids, dim="member")
             mean = stack.mean("member")
@@ -630,6 +656,7 @@ class OceanSST(DiagnosticBase):
         return {
             "models": model_results,
             "ensemble": ensemble,
+            "family_data": family_data,
             "periods": periods_data,
             "common_area": common_area,
         }
@@ -762,9 +789,14 @@ class OceanSST(DiagnosticBase):
         return figures
 
     def _plot_ens_bias_maps(self, results):
-        """Ensemble mean/median bias maps (+ benchmark MMM) per period."""
+        """Ensemble mean/median bias maps (+ benchmark MMM) per period.
+
+        In per-family mode: one bias panel per model family instead.
+        """
         from feather.plot.maps import plot_combined_bias_map
 
+        if self._per_family:
+            return self._plot_family_bias_maps(results)
         figures = []
         periods_data = results["periods"]
         ensemble = results.get("ensemble", {})
@@ -827,6 +859,40 @@ class OceanSST(DiagnosticBase):
             figures.append((fig, meta))
         return figures
 
+    def _plot_family_bias_maps(self, results):
+        """Obs + one mean-bias panel per model family + benchmark MMMs."""
+        figures = []
+        periods_data = results["periods"]
+        family_data = results.get("family_data", {})
+        benchmarks = [
+            m for m in results["models"] if m not in self.config.models]
+        try:
+            import cmocean
+            obs_cmap = cmocean.cm.thermal
+        except ImportError:
+            obs_cmap = "RdYlBu_r"
+
+        for pkey, plabel in self._season_plot_list():
+            obs_common = periods_data.get(pkey, {}).get("obs_common")
+            fdata = family_data.get(pkey)
+            if obs_common is None or not fdata:
+                continue
+            bench_panels = {
+                label: {**results["models"][label][pkey]}
+                for label in benchmarks if pkey in results["models"][label]
+            }
+            figures.append(_families.plot_family_bias_figure(
+                self, var="sst", period_key=pkey, period_label=plabel,
+                fdata=fdata, benchmarks=bench_panels,
+                obs_plot=obs_common, obs_title=self._obs_label,
+                obs_name=self._obs_dataset_name,
+                long_name="Sea Surface Temperature",
+                cmap=obs_cmap, bias_cmap="RdBu_r", units="°C", land=True,
+                variables=["tos"], period=self.period,
+                obs_dataset=self._obs_dataset_name,
+            ))
+        return figures
+
     # ── Group B: Time series ──────────────────────────────────────────
 
     def _compute_timeseries(self, model_monthly):
@@ -859,8 +925,12 @@ class OceanSST(DiagnosticBase):
         # the majority of CMIP6 ocean models — are included, not skipped.
         benchmarks_ts = self._benchmark_ocean_timeseries()
 
-        # Evaluated-ensemble mean/median across the model series.
-        ens_mean, ens_median = self._compute_ensemble_stats(model_ts)
+        # Evaluated-ensemble mean/median across the model series (per-family
+        # mode never pools: family means are drawn at plot time).
+        ens_mean, ens_median = (
+            (None, None) if self._per_family
+            else self._compute_ensemble_stats(model_ts)
+        )
 
         return {
             "models": model_ts,
@@ -1034,14 +1104,20 @@ class OceanSST(DiagnosticBase):
                     color=b_color, linewidth=2.0, linestyle="--")
             all_models.append(b_label)
 
-        # DestinE model annual
+        # DestinE model annual (thinner under the family means, if any)
+        families = self._line_families(results["models"])
         for model, ts in results["models"].items():
             color = self.config.get_model_color(model)
             ts_annual = annual_mean(ts)
             time_vals = _to_plot_time(ts_annual.time.values)
             ax.plot(time_vals, ts_annual.values, label=model, color=color,
-                    linewidth=2.0)
+                    linewidth=1.2 if families else 2.0)
             all_models.append(model)
+        if families:
+            _families.plot_family_lines(
+                ax, _families.family_mean_series(results["models"], families),
+                self.config.get_model_color,
+            )
 
         # Ensemble median (dashed) / mean (solid)
         proj = self.config.project.get("name", "Ensemble")
@@ -1083,6 +1159,7 @@ class OceanSST(DiagnosticBase):
                 f"{self._obs_label} observations. Monthly values as "
                 f"semi-transparent lines, annual means as thick lines. "
                 f"Units: degrees Celsius."
+                + _families.family_lines_note(families)
             ),
             plot_type="timeseries",
             period=self.period,

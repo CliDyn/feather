@@ -440,6 +440,24 @@ class TeleconnectionDiag(DiagnosticBase):
         else:
             raise ValueError(f"Unknown method: {mode_def.method}")
 
+    @staticmethod
+    def _obs_meta(mode_def: ModeDefinition) -> dict[str, str]:
+        """Metadata kwargs naming the obs dataset actually used for a mode.
+
+        Modes that override the registry default (the SST modes use
+        HadISST, not ESA-CCI) must say so in the JSON sidecar — otherwise
+        :func:`~feather.diag.figure_meta.build_metadata` auto-fills the
+        registry entry for ``mode_def.variable`` and the sidecar names a
+        dataset the figure never touched. Returns ``{}`` for modes without
+        an override so the registry auto-fill stays in charge.
+        """
+        if mode_def.obs_dataset is None:
+            return {}
+        return {
+            "obs_dataset": mode_def.obs_dataset,
+            "obs_variable": mode_def.obs_variable or "",
+        }
+
     def _load_field(
         self,
         mode_def: ModeDefinition,
@@ -1441,6 +1459,7 @@ class TeleconnectionDiag(DiagnosticBase):
             figure_id=f"{mode_def.name}_timeseries",
             models=all_models,
             variables=[mode_def.variable],
+            **self._obs_meta(mode_def),
             description=(
                 f"Monthly {mode_def.long_name} index for each source. "
                 f"Positive values in red, negative in blue. "
@@ -1488,6 +1507,7 @@ class TeleconnectionDiag(DiagnosticBase):
                 figure_id=f"{mode_def.name}_pattern",
                 models=list(result["model_indices"].keys()),
                 variables=[mode_def.variable],
+                **self._obs_meta(mode_def),
                 description=f"No spatial pattern available for {mode_def.long_name}.",
                 plot_type="teleconnection_pattern",
                 period=self.period,
@@ -1594,6 +1614,7 @@ class TeleconnectionDiag(DiagnosticBase):
             figure_id=f"{mode_def.name}_pattern",
             models=all_models,
             variables=[mode_def.variable],
+            **self._obs_meta(mode_def),
             description=(
                 f"Spatial pattern of {mode_def.long_name}. "
                 f"{'EOF loading pattern' if mode_def.method == 'eof' else 'Regression map (field onto index)'}. "
@@ -1765,6 +1786,7 @@ class TeleconnectionDiag(DiagnosticBase):
             figure_id=f"{mode_def.name}_spectrum",
             models=all_models,
             variables=[mode_def.variable],
+            **self._obs_meta(mode_def),
             description=(
                 f"Welch periodogram of {mode_def.long_name} index. "
                 f"Typical period: {mode_def.typical_period}. "
@@ -1836,6 +1858,7 @@ class TeleconnectionDiag(DiagnosticBase):
             figure_id=f"{mode_def.name}_seasonal_variance",
             models=all_models,
             variables=[mode_def.variable],
+            **self._obs_meta(mode_def),
             description=(
                 f"Monthly standard deviation of {mode_def.long_name} "
                 f"index, showing seasonal dependence of variability. "

@@ -643,6 +643,37 @@ class TestBiasMaps:
         for fig, _ in figures:
             plt.close(fig)
 
+    def test_bias_map_units_match_statistics(self, synth_precip_healpix,
+                                             synth_mswep, precip_config):
+        """Sidecar units must be mm/day: the statistics are scaled to it."""
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, precip_config)
+        shared = diag._load_shared_data()
+        results = diag._compute_bias_maps(shared)
+        figures = diag._plot_bias_maps(results)
+        _, meta = figures[0]
+        assert meta["units"] == "mm/day"
+        m = results["models"]["ifs-fesom"]
+        assert meta["summary_statistics"]["ifs-fesom"]["rmse"] == \
+            pytest.approx(m["annual_rmse"] * 86400.0)
+        import matplotlib.pyplot as plt
+        for fig, _ in figures:
+            plt.close(fig)
+
+    def test_relative_bias_units_percent(self, synth_precip_healpix,
+                                         synth_mswep, precip_config):
+        loader = MockPrecipModelLoader(synth_precip_healpix)
+        obs = MockMSWEPObsLoader(synth_mswep)
+        diag = _make_diag(loader, obs, precip_config)
+        shared = diag._load_shared_data()
+        figures = diag._plot_relative_bias(diag._compute_relative_bias(shared))
+        assert figures
+        import matplotlib.pyplot as plt
+        for fig, meta in figures:
+            assert meta["units"] == "%"
+            plt.close(fig)
+
     def test_bias_map_obs_title_mswep(self, synth_precip_healpix,
                                        synth_mswep, precip_config):
         """Obs panel should be labeled MSWEP, not ERA5."""
@@ -1634,3 +1665,46 @@ class TestColorbarRanges:
         results = diag._compute_bias_maps(shared)
         cb = results["colorbar_ranges"]["annual"]
         assert cb["bias_vmax"] > 0
+
+
+class TestFamilyBias:
+    """Group A in ``project.ensemble_mode: per_family``."""
+
+    def _cfg(self, tmp_path):
+        return FeatherConfig(
+            model_catalogs={},
+            models=["ifs-fesom", "ifs-fesom-r2", "ifs-nemo"],
+            obs_root="",
+            obs_datasets={"MSWEP": {"path": "/fake", "variables": {"pr": "fake"}}},
+            cmip6={"enabled": False},
+            dask={},
+            nereus={"influence_radius": 1_000_000},
+            output_dir=str(tmp_path / "output"),
+            project={"ensemble_mode": "per_family"},
+        )
+
+    def test_family_figure_replaces_pooled(self, synth_precip_healpix,
+                                           synth_mswep, tmp_path):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        diag = _make_diag(MockPrecipModelLoader(synth_precip_healpix),
+                          MockMSWEPObsLoader(synth_mswep), self._cfg(tmp_path))
+        results = diag._compute_bias_maps(diag._load_shared_data())
+        assert results["ens_data"] == {}
+        fam = results["family_data"]["annual"]
+        assert list(fam) == ["ifs-fesom", "ifs-nemo"]
+        assert fam["ifs-fesom"]["members"] == ["ifs-fesom", "ifs-fesom-r2"]
+        figs = diag._plot_bias_maps(results)
+        fids = [m["figure_id"] for _, m in figs]
+        assert "pr_annual_family_mean_bias_combined" in fids
+        assert not any("ens_bias" in f for f in fids)
+        meta = next(m for _, m in figs
+                    if m["figure_id"] == "pr_annual_family_mean_bias_combined")
+        assert meta["model_families"]["ifs-fesom"] == ["ifs-fesom", "ifs-fesom-r2"]
+        assert meta["units"] == "mm/day"
+        # Stats are displayed in mm/day, like the per-model figure.
+        lbl = r"ifs-fesom mean $\mathbf{(2)}$"
+        assert meta["summary_statistics"][lbl]["global_mean_bias"] == pytest.approx(
+            fam["ifs-fesom"]["bias_gmean"] * 86400.0)
+        plt.close("all")

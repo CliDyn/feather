@@ -604,6 +604,19 @@ class TestPlot:
         assert len(ids) == len(set(ids)), "Duplicate figure IDs"
         plt.close("all")
 
+    def test_units_are_display_units(self, diag, results):
+        """Sidecar units describe the plotted (mm/day) values, not kg m-2 s-1."""
+        figures = diag.plot(results)
+        expected = {"trends": "mm/day/decade", "trend_diffs": "mm/day/decade",
+                    "clim": "mm/day", "relative_bias": "%",
+                    "timeseries": "mm/day"}
+        for _, meta in figures:
+            fid = meta["figure_id"]
+            suffix = next(k for k in sorted(expected, key=len, reverse=True)
+                          if fid.endswith(k))
+            assert meta["units"] == expected[suffix], fid
+        plt.close("all")
+
 
 class TestPlotTrendMaps:
     @pytest.fixture

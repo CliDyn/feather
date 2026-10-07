@@ -13,12 +13,14 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from google import genai
 from google.genai import types
 
+from feather import provenance
 from feather.config import FeatherConfig
 from feather.llm.prompts import (
     build_figure_analysis_system,
@@ -136,12 +138,17 @@ class FigureAnalyzer:
                 if skip_existing and analysis_path.exists():
                     logger.info("  Skipping (exists): %s", png_path.stem)
                     with open(analysis_path) as f:
-                        analyses.append(json.load(f))
+                        existing = json.load(f)
+                    self._warn_if_stale(existing, json_path, png_path)
+                    analyses.append(existing)
                     continue
 
                 try:
-                    analysis = self.analyze_figure(png_path, json_path)
+                    analysis, prov = self.analyze_figure_with_provenance(
+                        png_path, json_path,
+                    )
                     analysis_dict = analysis.model_dump()
+                    analysis_dict["provenance"] = prov
                     self._save_json(analysis_path, analysis_dict)
                     analyses.append(analysis_dict)
                     n_figures += 1
@@ -156,8 +163,12 @@ class FigureAnalyzer:
                     logger.info("  Synthesis exists, skipping")
                     continue
                 try:
-                    synthesis = self.synthesize_diagnostic(diag_name, analyses)
-                    self._save_json(synthesis_path, synthesis.model_dump())
+                    synthesis, prov = self.synthesize_diagnostic_with_provenance(
+                        diag_name, analyses,
+                    )
+                    synthesis_dict = synthesis.model_dump()
+                    synthesis_dict["provenance"] = prov
+                    self._save_json(synthesis_path, synthesis_dict)
                     n_syntheses += 1
                     logger.info("  Synthesis complete: %s", diag_name)
                 except Exception:
@@ -189,28 +200,48 @@ class FigureAnalyzer:
         FigureAnalysis
             Structured analysis result.
         """
+        return self.analyze_figure_with_provenance(png_path, json_path)[0]
+
+    def analyze_figure_with_provenance(
+        self,
+        png_path: Path,
+        json_path: Path,
+    ) -> tuple[FigureAnalysis, dict[str, Any]]:
+        """:meth:`analyze_figure`, plus the interpretation provenance record.
+
+        The record binds the analysis to the exact sidecar and image it was
+        generated from (``sidecar_sha256``, ``figure_sha256``), so a later
+        re-run that changes the figure leaves a detectably stale analysis.
+        """
         with open(json_path) as f:
             metadata = json.load(f)
 
         user_prompt = build_figure_prompt(metadata)
-        image_part = types.Part.from_bytes(
-            data=png_path.read_bytes(), mime_type="image/png"
+        png_bytes = png_path.read_bytes()
+        image_part = types.Part.from_bytes(data=png_bytes, mime_type="image/png")
+        system = build_figure_analysis_system(
+            models=self._prompt_models,
+            project_name=self._prompt_project,
+            resolution=self._prompt_resolution,
+            comparison_type=self._comparison_type,
+            comparison_description=self._comparison_description,
         )
 
         response_text = self._call_gemini(
-            system_instruction=build_figure_analysis_system(
-                models=self._prompt_models,
-                project_name=self._prompt_project,
-                resolution=self._prompt_resolution,
-                comparison_type=self._comparison_type,
-                comparison_description=self._comparison_description,
-            ),
+            system_instruction=system,
             contents=[image_part, user_prompt],
             response_schema=FigureAnalysis,
         )
 
-        analysis_data = self._parse_json_response(response_text)
-        return FigureAnalysis(**analysis_data)
+        analysis_data, repairs = _parse_json_with_repairs(response_text)
+        analysis = FigureAnalysis(**analysis_data)
+        prov = self._interpretation_record(
+            FigureAnalysis, system, user_prompt, repairs,
+            sidecar_sha256=provenance.sidecar_digest(metadata),
+            figure_sha256=provenance.bytes_digest(png_bytes),
+            figure_run_id=metadata.get("run_id"),
+        )
+        return analysis, prov
 
     def synthesize_diagnostic(
         self,
@@ -230,22 +261,46 @@ class FigureAnalyzer:
         -------
         DiagnosticSynthesis
         """
-        user_prompt = build_synthesis_prompt(diagnostic_name, figure_analyses)
+        return self.synthesize_diagnostic_with_provenance(
+            diagnostic_name, figure_analyses,
+        )[0]
+
+    def synthesize_diagnostic_with_provenance(
+        self,
+        diagnostic_name: str,
+        figure_analyses: list[dict],
+    ) -> tuple[DiagnosticSynthesis, dict[str, Any]]:
+        """:meth:`synthesize_diagnostic`, plus its provenance record."""
+        # Provenance blocks are bookkeeping, not evidence: keep them out of
+        # the prompt (they would only cost tokens).
+        clean = [{k: v for k, v in a.items() if k != "provenance"}
+                 for a in figure_analyses]
+        user_prompt = build_synthesis_prompt(diagnostic_name, clean)
+        system = build_synthesis_system(
+            models=self._prompt_models,
+            project_name=self._prompt_project,
+            resolution=self._prompt_resolution,
+            comparison_type=self._comparison_type,
+            comparison_description=self._comparison_description,
+        )
 
         response_text = self._call_gemini(
-            system_instruction=build_synthesis_system(
-                models=self._prompt_models,
-                project_name=self._prompt_project,
-                resolution=self._prompt_resolution,
-                comparison_type=self._comparison_type,
-                comparison_description=self._comparison_description,
-            ),
+            system_instruction=system,
             contents=[user_prompt],
             response_schema=DiagnosticSynthesis,
         )
 
-        synthesis_data = self._parse_json_response(response_text)
-        return DiagnosticSynthesis(**synthesis_data)
+        synthesis_data, repairs = _parse_json_with_repairs(response_text)
+        synthesis = DiagnosticSynthesis(**synthesis_data)
+        prov = self._interpretation_record(
+            DiagnosticSynthesis, system, user_prompt, repairs,
+            n_analyses=len(figure_analyses),
+            analysis_sidecar_sha256=sorted(
+                (a.get("provenance") or {}).get("sidecar_sha256") or ""
+                for a in figure_analyses
+            ),
+        )
+        return synthesis, prov
 
     # ── Private helpers ──────────────────────────────────────────────
 
@@ -302,6 +357,8 @@ class FigureAnalyzer:
             max_output = max(max_output, self.thinking_budget + 4096)
         config_kwargs["max_output_tokens"] = max_output
 
+        started = time.monotonic()
+        failures: list[str] = []
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self.client.models.generate_content(
@@ -310,8 +367,17 @@ class FigureAnalyzer:
                     config=types.GenerateContentConfig(**config_kwargs),
                 )
                 self._raise_if_truncated(response)
+                self._last_call = {
+                    "attempts": attempt,
+                    "failed_attempts": failures,
+                    "finish_reason": _finish_reason(response),
+                    "tokens": _usage(response),
+                    "max_output_tokens": max_output,
+                    "wall_s": round(time.monotonic() - started, 2),
+                }
                 return response.text
             except Exception as exc:
+                failures.append(f"{type(exc).__name__}: {exc}"[:300])
                 if attempt < self.max_retries:
                     logger.warning(
                         "Gemini call failed (attempt %d/%d): %s — "
@@ -347,6 +413,48 @@ class FigureAnalyzer:
                     "thinking_budget."
                 )
 
+    def _interpretation_record(
+        self, schema: type, system: str, user_prompt: str,
+        repairs: list[str], **fields: Any,
+    ) -> dict[str, Any]:
+        """Provenance of one LLM call: who said it, from what, at what cost."""
+        call = getattr(self, "_last_call", None) or {}
+        return {
+            "schema_version": provenance.SCHEMA_VERSION,
+            "run_id": provenance.current_run_id(),
+            "provider": "vertex",
+            "model": self.model_name,
+            "schema": schema.__name__,
+            "thinking_budget": self.thinking_budget,
+            "prompt_sha256": {
+                "system": provenance.text_digest(system),
+                "user": provenance.text_digest(user_prompt),
+            },
+            **call,
+            "repairs": repairs,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            **fields,
+        }
+
+    @staticmethod
+    def _warn_if_stale(analysis: dict, json_path: Path, png_path: Path) -> None:
+        """Warn when a cached analysis was written against a different figure."""
+        prov = analysis.get("provenance") or {}
+        recorded = prov.get("sidecar_sha256")
+        if not recorded:
+            return
+        try:
+            with open(json_path) as f:
+                current = provenance.sidecar_digest(json.load(f))
+        except (OSError, ValueError):
+            return
+        if current != recorded:
+            logger.warning(
+                "  Stale analysis for %s: its figure metadata changed since it "
+                "was written (rerun with --no-skip-existing to refresh)",
+                png_path.stem,
+            )
+
     @staticmethod
     def _parse_json_response(text: str) -> dict:
         """Parse a JSON response, tolerating common LLM deviations.
@@ -355,44 +463,7 @@ class FigureAnalyzer:
         control characters inside strings (``strict=False``), and leading or
         trailing prose around the JSON object.
         """
-        cleaned = text.strip()
-
-        # Strip ```json ... ``` wrapper
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:-1]).strip()
-
-        # strict=False permits literal control characters (e.g. unescaped
-        # newlines/tabs) inside string values, which Gemini occasionally emits.
-        try:
-            return json.loads(cleaned, strict=False)
-        except json.JSONDecodeError:
-            pass
-
-        # Fix invalid escape sequences (e.g. \Delta, \theta from LaTeX)
-        # \u not followed by 4 hex digits (e.g. \units)
-        cleaned = re.sub(
-            r"\\u(?![0-9a-fA-F]{4})",
-            r"\\\\u",
-            cleaned,
-        )
-        # All other invalid escapes
-        cleaned = re.sub(
-            r'\\(?!["\\/bfnrtu])',
-            r"\\\\",
-            cleaned,
-        )
-
-        try:
-            return json.loads(cleaned, strict=False)
-        except json.JSONDecodeError:
-            # Last resort: extract the outermost {...} object and retry,
-            # discarding any leading/trailing prose the model added.
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                return json.loads(cleaned[start:end + 1], strict=False)
-            raise
+        return _parse_json_with_repairs(text)[0]
 
     def _analysis_path(self, diagnostic_name: str, figure_stem: str) -> Path:
         """Path for a figure-level analysis JSON."""
@@ -408,3 +479,82 @@ class FigureAnalyzer:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+# ── Module helpers ───────────────────────────────────────────────────
+
+
+def _parse_json_with_repairs(text: str) -> tuple[dict, list[str]]:
+    """Parse an LLM JSON response; also return which repairs were needed.
+
+    The repair list is part of the interpretation provenance: an analysis
+    that only parsed after escape fixing or prose stripping deserves a
+    second look.
+    """
+    repairs: list[str] = []
+    cleaned = text.strip()
+
+    # Strip ```json ... ``` wrapper
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        cleaned = "\n".join(lines[1:-1]).strip()
+        repairs.append("strip_markdown_fence")
+
+    # strict=False permits literal control characters (e.g. unescaped
+    # newlines/tabs) inside string values, which Gemini occasionally emits.
+    try:
+        return json.loads(cleaned, strict=False), repairs
+    except json.JSONDecodeError:
+        pass
+
+    # Fix invalid escape sequences (e.g. \Delta, \theta from LaTeX)
+    # \u not followed by 4 hex digits (e.g. \units)
+    cleaned = re.sub(
+        r"\\u(?![0-9a-fA-F]{4})",
+        r"\\\\u",
+        cleaned,
+    )
+    # All other invalid escapes
+    cleaned = re.sub(
+        r'\\(?!["\\/bfnrtu])',
+        r"\\\\",
+        cleaned,
+    )
+    repairs.append("fix_invalid_escapes")
+
+    try:
+        return json.loads(cleaned, strict=False), repairs
+    except json.JSONDecodeError:
+        # Last resort: extract the outermost {...} object and retry,
+        # discarding any leading/trailing prose the model added.
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            repairs.append("extract_outer_object")
+            return json.loads(cleaned[start:end + 1], strict=False), repairs
+        raise
+
+
+def _finish_reason(response: Any) -> str | None:
+    """Finish reason of the first candidate, as a plain name."""
+    for cand in getattr(response, "candidates", None) or []:
+        reason = getattr(cand, "finish_reason", None)
+        if reason is not None:
+            return str(getattr(reason, "name", reason)).rsplit(".", 1)[-1]
+    return None
+
+
+def _usage(response: Any) -> dict[str, int | None]:
+    """Token usage reported by the API (``None`` where not reported)."""
+    um = getattr(response, "usage_metadata", None)
+
+    def _get(name: str) -> int | None:
+        v = getattr(um, name, None) if um is not None else None
+        return v if isinstance(v, int) else None
+
+    return {
+        "input": _get("prompt_token_count"),
+        "output": _get("candidates_token_count"),
+        "thinking": _get("thoughts_token_count"),
+        "total": _get("total_token_count"),
+    }
