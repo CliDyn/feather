@@ -797,3 +797,62 @@ class TestStoreLayoutResolution:
             == "atmos_gr025_2D_daily_min.parq"
         assert loader._store_path("IFS-FESOM2-SR", "atmos2d_daily_max").name \
             == "atmos_gr025_2D_daily_max.parq"
+
+
+# ── Daily average fields (table="day") ───────────────────────────────────
+
+
+def _make_atmos2d_daily_store(n_days=10):
+    """Synthetic flat daily-average store (time, value) with ``tprate``."""
+    time = xr.date_range("1980-01-01T12:00", periods=n_days, freq="D")
+    lat_flat, lon_flat = _make_atmos_lat_lon()
+    data = np.full((n_days, N_CELLS), 2e-8, dtype=np.float32)   # m s-1
+    return xr.Dataset(
+        {"tprate": xr.DataArray(data, dims=["time", "value"],
+                                attrs={"units": "m s**-1"})},
+        coords={"time": time, "lat": ("value", lat_flat),
+                "lon": ("value", lon_flat)},
+    )
+
+
+class TestDailyAverage:
+    def _loader(self, tmp_path, monkeypatch, daily):
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        monthly = loader._open_store
+        monkeypatch.setattr(
+            loader, "_open_store",
+            lambda m, s: daily if s == "atmos2d_daily_avg" else monthly(m, s),
+        )
+        return loader
+
+    def test_daily_pr_keeps_daily_cadence(self, tmp_path, monkeypatch):
+        loader = self._loader(tmp_path, monkeypatch, _make_atmos2d_daily_store())
+        da = loader.load_var("IFS-FESOM2-SR", "pr", table="day")
+        assert da.dims == ("time", "lat", "lon")
+        assert da.sizes["time"] == 10
+
+    def test_daily_pr_converted_to_kg_m2_s(self, tmp_path, monkeypatch):
+        """tprate is m s-1 of water; ×1000 → kg m-2 s-1."""
+        loader = self._loader(tmp_path, monkeypatch, _make_atmos2d_daily_store())
+        da = loader.load_var("IFS-FESOM2-SR", "pr", table="day")
+        np.testing.assert_allclose(da.values, 2e-5, rtol=1e-6)
+
+    def test_daily_period_slicing(self, tmp_path, monkeypatch):
+        loader = self._loader(tmp_path, monkeypatch,
+                              _make_atmos2d_daily_store(n_days=40))
+        da = loader.load_var("IFS-FESOM2-SR", "pr", table="day",
+                             period=("1980-01-05", "1980-01-09"))
+        assert da.sizes["time"] == 5
+
+    def test_monthly_request_unchanged(self, tmp_path, monkeypatch):
+        loader = self._loader(tmp_path, monkeypatch, _make_atmos2d_daily_store())
+        assert loader.load_var("IFS-FESOM2-SR", "pr").sizes["time"] == 6
+
+    def test_daily_avg_store_path(self, tmp_path):
+        loader = KerchunkParquetLoader(_make_config(tmp_path))
+        d = tmp_path / "stores" / "r2i1p1f1" / "atmos" / "gr025"
+        d.mkdir(parents=True)
+        (d / "2D_daily_0.25deg_atmos_avg.parq").touch()
+        (d / "2D_daily_0.25deg_atmos_max.parq").touch()
+        p = loader._store_path("IFS-FESOM2-SR", "atmos2d_daily_avg")
+        assert p.name == "2D_daily_0.25deg_atmos_avg.parq"
