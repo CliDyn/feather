@@ -121,6 +121,7 @@ feather/                     # Package root
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
+| `configs/eerie_10_mems_precip_extremes.yaml` | EERIE 10-member ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6 (`precip_extremes`) |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
@@ -612,6 +613,18 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - `load_cru(variable, period)`: globs per-decade `cru_ts4.09.*.{var}.dat.nc`, `open_mfdataset`, drops aux vars (`stn`/`mae`/`maea`); units → canonical (`pre` mm/month→kg/m²/s, `tmp`/`tmn`/`tmx` °C→K, `cld` % unchanged); land-only (ocean NaN); lons → 0..360
 - `load_chirps(period)`: single 0.05° file (60°N–60°S land), `precip` mm/month→kg/m²/s, `-9999`→NaN, dims renamed lat/lon, lons → 0..360
 - 30 dedicated tests in `tests/test_obs_cru_chirps.py` (loaders + engine + both new diagnostics)
+### PrecipExtremesDiag diagnostic (`precip_extremes`)
+- Nine ETCCDI indices from **daily** pr (C3S `sis-extreme-indices-cmip6` definitions): R1mm, R10mm, R20mm (days), PRCPTOT, R95p, R99p (mm), SDII (mm/day), Rx1day, Rx5day (mm). Wet day = RR ≥ 1 mm. Pure-numpy maths in `feather/util/precip_indices.py`.
+- Units: every loader returns pr in kg m-2 s-1 → ×86400 mm/day (skipped only when the `units` attr already says mm/day). Each model's first year is checked: global mean outside 0.3–20 mm/day → model skipped with an error. The FESOM kerchunk daily store keeps `units: "m s**-1"` on the attr although the loader has already scaled it ×1000, so the attr is not trusted.
+- R95p/R99p thresholds: each model's own wet-day percentiles over `project.precip_extremes.base_period` (default = `climate_change.reference_period`, 1981–2000; ETCCDI's 1961–1990 is not covered by the 1975-start members), held fixed for the future. Computed exactly but streamed: `WetDayPercentiles` keeps only the top-k wet days per cell (k ≈ 5 % of base days), so memory is k × cells, not days × cells.
+- Streams one year at a time on the native grid (threads scheduler, cells in 262k chunks); Rx5day carries the previous year's last 4 days; a cell-year with < 350 valid days is NaN.
+- Periods from `project.climate_change` (shared with the `*_change` diagnostics); historical data from the flat `models` loader, future from `climate_change.models` via `TempExtremesChangeDiag`'s loader factories.
+- CMIP6 from `cmip6_daily` (DRS NetCDF, one member each; only models whose hist member also has `future_experiment` day/pr). MMM on a 1° grid; EERIE family means on 0.25° (`_to_grid`, bilinear, lon-seam padded).
+- Checkpoints: `{output}/precip_extremes/[cmip6/]{model}_{hist|ssp}_{y0}_{y1}.nc` (annual indices, native grid; hist adds `rr95`/`rr99`). **Open with `decode_timedelta=False`** — count indices have `units = "days"`, which xarray otherwise decodes to timedelta64.
+- Figures per index: `{idx}_reference`, `{idx}_change` (counts and R95p/R99p absolute; PRCPTOT/SDII/Rx1day/Rx5day in %, masked below a reference floor), `{idx}_diff_cmip6` (EERIE family − CMIP6 MMM, reference period), `{idx}_timeseries`. Group `precipitation_extremes`. `--save-netcdf` writes `{idx}_{ref0}-{fut1}_summary.nc`.
+- Loader support added for it: `KerchunkParquetLoader.load_var(table="day")` serves atmos-2D averages (pr) from `2D_daily_0.25deg_atmos_avg.parq` without monthly resampling; `ICONKerchunkLoader` daily stores (from `feature/eerie-10-mems-extremes`) plus a −12 h shift, because those stores stamp day D at D+1 00:00.
+- 33 tests in `tests/test_precip_extremes.py`.
+
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM
 - AV = (sq_err_CMIP6 - sq_err_EERIE) / max(sq_err_CMIP6, sq_err_EERIE), bounded [-1, 1]
