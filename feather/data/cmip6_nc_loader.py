@@ -47,6 +47,7 @@ def discover_daily_models(
     member: str = "r1i1p1f1",
     exclude: tuple[str, ...] = (),
     max_models: int | None = None,
+    require_also: tuple[str, ...] = (),
 ) -> list[ModelConfig]:
     """Discover CMIP6 models publishing ``{table}/{variable}`` for *experiment*.
 
@@ -68,6 +69,13 @@ def discover_daily_models(
         Model names to skip (case-sensitive ``source_id``).
     max_models : int, optional
         Keep at most this many models (sorted by name) — for staged runs.
+    require_also : tuple of str
+        Further experiments (e.g. ``("ssp245",)``) the member must also
+        publish ``{table}/{variable}`` for.  The member is then chosen among
+        those that have the files in *every* experiment — *member* first,
+        else the lowest-numbered — instead of taking *member* (or the lowest)
+        and dropping the model when that one lacks them.  Without it the
+        original selection is kept unchanged.
     """
     activity_root = Path(root) / _activity(experiment)
     excl = set(exclude)
@@ -75,7 +83,11 @@ def discover_daily_models(
     for model, exp_dir in _pd.iter_model_dirs(activity_root, experiment):
         if model in excl:
             continue
-        mem = _pd.select_member(exp_dir, prefer=member)
+        if require_also:
+            mem = _member_with(root, exp_dir, model, member, table, variable,
+                               require_also)
+        else:
+            mem = _pd.select_member(exp_dir, prefer=member)
         if mem is None:
             continue
         files = _pd.variable_files(exp_dir, mem, table, variable)
@@ -96,6 +108,38 @@ def discover_daily_models(
         if max_models is not None and len(found) >= max_models:
             break
     return found
+
+
+def experiment_dirs(root, model: str, experiment: str,
+                    institution: str = "") -> list[Path]:
+    """``{root}/{activity}/{inst}/{model}/{experiment}`` for every institution.
+
+    The same model can be filed under different institutions per experiment
+    (MPI-ESM1-2-HR: historical under MPI-M, ssp245 under DKRZ), so the
+    historical institution cannot be assumed.  *institution* is tried first.
+    """
+    activity = Path(root) / _activity(experiment)
+    found = sorted(p for p in activity.glob(f"*/{model}/{experiment}") if p.is_dir())
+    found.sort(key=lambda p: p.parent.parent.name != institution)
+    return found
+
+
+def _member_with(root, exp_dir: Path, model: str, prefer: str, table: str,
+                 variable: str, others: tuple[str, ...]) -> str | None:
+    """First member (*prefer* first) with the variable in every experiment."""
+    members = sorted((d.name for d in exp_dir.iterdir() if d.is_dir()),
+                     key=_pd._member_sort_key)
+    if prefer in members:
+        members.remove(prefer)
+        members.insert(0, prefer)
+    other_dirs = [experiment_dirs(root, model, e) for e in others]
+    for mem in members:
+        if not _pd.variable_files(exp_dir, mem, table, variable):
+            continue
+        if all(any(_pd.variable_files(d, mem, table, variable) for d in dirs)
+               for dirs in other_dirs):
+            return mem
+    return None
 
 
 class CMIP6NCLoader:
@@ -214,13 +258,14 @@ class CMIP6NCLoader:
         variant = mc.variant or "r1i1p1f1"
         activity = self._root / _activity(experiment)
 
-        # Institute: configured, else glob (CMIP6 model names are unique).
-        if mc.institution:
-            institutes = [mc.institution]
-        else:
-            institutes = [p.parent.name for p in activity.glob(f"*/{mc.gcm or mc.name}")]
-
+        # Institute: configured first, then any other that files the model
+        # (CMIP6 model names are unique, but one model can sit under different
+        # institutes per experiment, e.g. MPI-ESM1-2-HR ssp245 under DKRZ).
         model_dir_name = mc.gcm or mc.name
+        globbed = [p.parent.name for p in activity.glob(f"*/{model_dir_name}")]
+        institutes = ([mc.institution] if mc.institution else []) + [
+            i for i in globbed if i != mc.institution]
+
         for inst in institutes:
             var_base = (activity / inst / model_dir_name / experiment
                         / variant / table / variable)

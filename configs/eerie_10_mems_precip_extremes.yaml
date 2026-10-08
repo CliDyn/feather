@@ -47,9 +47,10 @@
 #               0.1°, 1979→, complete 1981–2014 (scripts/mswep_derive_pr_daily.sh)
 # The aqua-dvc MSWEP used by precipitation_mswep is monthly only.
 #
-# CMIP6: auto-discovered from the DKRZ DRS tree, one member per model, keeping
-# only models whose historical member also has ssp245 day/pr (32 at the time
-# of writing).  Indices are computed on each model's native grid, the MMM on a
+# CMIP6: auto-discovered from the DKRZ DRS tree, one member per model — the
+# first member (r1i1p1f1 preferred) with day/pr in BOTH historical and ssp245,
+# looked up under any institution (35 models, checked 2026-10-08; of 67
+# historical models 16 publish no day/pr and 16 have no ssp245 day/pr).  Indices are computed on each model's native grid, the MMM on a
 # common 1° grid.
 #
 # Heavy: every member's daily archive is read (twice for the reference years —
@@ -86,6 +87,12 @@ project:
     # All nine by default; list a subset to run fewer.
     indices: [r1mm, r10mm, r20mm, prcptot, sdii, r95p, r99p, rx1day, rx5day]
     base_period: ["1981", "2000"]   # R95p/R99p thresholds
+    # Seasonal indices (same definitions over the season's days, annual
+    # R95p/R99p thresholds; DJF = Dec of the previous year + Jan–Feb).  Each
+    # season adds the full figure set ({idx}_{season}_reference, …) and a
+    # …_seasons.nc checkpoint per model; existing annual checkpoints are kept,
+    # the daily data are re-read once for the seasons.  Remove to run annual only.
+    seasons: [DJF, MAM, JJA, SON]
     # Daily observations as CMOR trees ({data_root}/{experiment}/r1i1p1f1/
     # day/pr/gr/v1/), regular 0.25° (1440×721), kg m-2 s-1.  Derive them first:
     #   sbatch --array=1981-2014 scripts/era5_derive_pr_daily.sh

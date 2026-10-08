@@ -353,7 +353,7 @@ Computes nine ETCCDI indices from **daily** `pr`, following the C3S CMIP6 extrem
 | R95p / R99p | wet-day total above the 95th / 99th wet-day percentile | mm/yr |
 | Rx1day / Rx5day | maximum 1-day / consecutive 5-day precipitation | mm |
 
-Periods come from `project.climate_change` (reference 1981–2000, future SSP2-4.5 2031–2050 in `configs/eerie_10_mems_precip_extremes.yaml`). R95p/R99p thresholds are each dataset's own wet-day percentiles over `precip_extremes.base_period` (default: the reference period — ETCCDI's 1961–1990 is not covered by the 1975-start members) and stay fixed for the future. Indices are computed year by year on each model's native grid; the period means are then interpolated to 0.25° (EERIE family means) or 1° (CMIP6 MMM). The CMIP6 ensemble is auto-discovered from the DKRZ DRS tree (`cmip6_daily`, one member per model with both historical and ssp245 `day/pr`).
+Periods come from `project.climate_change` (reference 1981–2000, future SSP2-4.5 2031–2050 in `configs/eerie_10_mems_precip_extremes.yaml`). `precip_extremes.seasons` (DJF, MAM, JJA, SON in the EERIE config) adds seasonal versions of every index — the same definitions over the season's days, DJF of year *Y* being December *Y−1* + January–February *Y* — with the full figure set per season (`{idx}_{season}_reference`, …). R95p/R99p thresholds are each dataset's own wet-day percentiles over `precip_extremes.base_period` (default: the reference period — ETCCDI's 1961–1990 is not covered by the 1975-start members) and stay fixed for the future. Indices are computed year by year on each model's native grid; the period means are then interpolated to 0.25° (EERIE family means) or 1° (CMIP6 MMM). The CMIP6 ensemble is auto-discovered from the DKRZ DRS tree (`cmip6_daily`): one member per model, the first (r1i1p1f1 preferred) that publishes `day/pr` in both historical and ssp245, under any institution — 35 models as of 2026-10 (of 67 historical models, 16 have no daily `pr` and 16 no ssp245 daily `pr`).
 
 Figures per index:
 - **`{idx}_reference`** — reference-period climatology: ERA5, MSWEP, one panel per EERIE model family (mean of its members), CMIP6 MMM.
@@ -394,7 +394,7 @@ feather --config configs/eerie_10_mems_precip_extremes.yaml --steps website \
 
 Add `--no-skip-existing` to `analyze` and `report` when figures changed since the last run — otherwise the cached analyses and the cached report structure (`publication/`) are reused.
 
-Checkpoints (annual index fields, native grid): `{output_dir}/precip_extremes/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…` and `…/obs/{dataset}_hist_{start}_{end}.nc`; delete one to force its recomputation. Open them with `decode_timedelta=False` — count indices carry `units = "days"`. `--save-netcdf` writes `{output_dir}/netcdf/precip_extremes/{idx}_{ref0}-{fut1}_summary.nc` (family/CMIP6/obs fields on 0.25°).
+Checkpoints (annual index fields, native grid): `{output_dir}/precip_extremes/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…` and `…/obs/{dataset}_hist_{start}_{end}.nc`, with the seasonal fields next to each in `…_seasons.nc`; delete one to force its recomputation. Adding seasons to a finished run keeps the annual files and re-reads the daily data once for the seasons. Open them with `decode_timedelta=False` — count indices carry `units = "days"`. `--save-netcdf` writes `{output_dir}/netcdf/precip_extremes/{idx}_{ref0}-{fut1}_summary.nc` (family/CMIP6/obs fields on 0.25°).
 
 ### Climate classification
 

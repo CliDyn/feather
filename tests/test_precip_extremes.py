@@ -6,6 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import pytest
 import xarray as xr
 
@@ -169,7 +170,7 @@ class _FakeLoader:
 
 
 def _config(tmp_path, models, *, cc_models=None, cmip6=False, mode="per_family",
-            indices=("r1mm", "prcptot", "r95p", "rx5day"), obs=None):
+            indices=("r1mm", "prcptot", "r95p", "rx5day"), obs=None, seasons=()):
     mcs = {name: ModelConfig(name=name, family=fam, grids={"sfc": "latlon"},
                              color=col)
            for name, fam, col in models}
@@ -181,7 +182,8 @@ def _config(tmp_path, models, *, cc_models=None, cmip6=False, mode="per_family",
         model_configs=mcs,
         project={
             "name": "TEST", "ensemble_mode": mode,
-            "precip_extremes": {"indices": list(indices), "obs": obs or {}},
+            "precip_extremes": {"indices": list(indices), "obs": obs or {},
+                                "seasons": list(seasons)},
             "climate_change": {
                 "reference_period": ["1981", "1982"],
                 "future_period": ["2031", "2032"],
@@ -375,6 +377,24 @@ class TestPrecipExtremesRun:
                           / "r1mm_reference.json").read_text())
         assert ref["units"] == "days"
 
+    def test_figures_closed_one_at_a_time(self, setup, monkeypatch):
+        diag, *_ = setup
+        diag.indices = ["r1mm", "prcptot"]
+        diag.seasons = ["DJF", "JJA"]
+        peak = []
+        orig = diag._save
+
+        def save(fig, meta, fid):
+            peak.append(len(plt.get_fignums()))
+            return orig(fig, meta, fid)
+
+        monkeypatch.setattr(diag, "_save", save)
+        plt.close("all")
+        saved = diag.run()
+        assert len(saved) == 2 * 3 * 4            # indices × (ann+2 seasons) × figs
+        assert max(peak) == 1
+        assert plt.get_fignums() == []
+
     def test_save_netcdf_summary(self, setup):
         diag, *_ , tmp = setup
         diag.indices = ["rx5day"]
@@ -553,6 +573,242 @@ class TestPrecipExtremesObs:
             "ERA5", {"data_root": str(tmp_path / "obs"), "experiment": "era5"})
         da = ldr.load_var("ERA5", "pr", table="day", period=("1981", "1981"))
         assert da.sizes["time"] == 365
+
+
+# ── Seasons ──────────────────────────────────────────────────────────────
+
+
+class TestSeasonBlocks:
+    def _year(self, year=1982):
+        t = pd.date_range(f"{year}-01-01", f"{year}-12-31", freq="D")
+        return np.arange(len(t), dtype=np.float32)[:, None], t.month.values
+
+    def test_mam_block_and_tail(self):
+        from feather.util.precip_indices import season_blocks
+
+        rr, months = self._year()
+        (_, block, tail), = season_blocks(rr, months, ["MAM"])
+        assert block.shape[0] == 92 and block[0, 0] == 59     # 1 March
+        assert tail[:, 0].tolist() == [55, 56, 57, 58]        # 25–28 Feb
+
+    def test_djf_uses_previous_december(self):
+        from feather.util.precip_indices import CARRY_DAYS, season_blocks
+
+        rr, months = self._year()
+        prev = np.full((CARRY_DAYS, 1), -1.0, np.float32)
+        prev[4:] = 100.0                                       # Dec of prev year
+        prev_months = np.array([11] * 4 + [12] * 31)
+        (_, block, tail), = season_blocks(rr, months, ["DJF"], prev, prev_months)
+        assert block.shape[0] == 31 + 59
+        assert (block[:31, 0] == 100.0).all() and block[31, 0] == 0   # 1 Jan
+        assert tail[:, 0].tolist() == [-1.0] * 4                       # late Nov
+
+    def test_djf_without_previous_year_is_short(self):
+        from feather.util.precip_indices import season_blocks, season_min_valid_days
+
+        rr, months = self._year()
+        (_, block, tail), = season_blocks(rr, months, ["DJF"])
+        assert block.shape[0] == 59 < season_min_valid_days("DJF") and tail is None
+
+    def test_min_valid_days(self):
+        from feather.util.precip_indices import season_min_valid_days
+
+        assert [season_min_valid_days(x) for x in ("DJF", "MAM", "JJA", "SON")] == [
+            86, 88, 88, 87]
+
+
+def _seasonal_setup(tmp_path, seasons=("DJF", "MAM"), indices=("r1mm", "prcptot")):
+    from feather.diag.precip_extremes import PrecipExtremesDiag
+
+    hist = _FakeLoader({"A": _daily(1, "1981", "1983")})
+    cfg = _config(tmp_path, [("A", "FamA", "#000")], indices=indices,
+                  seasons=seasons)
+    diag = PrecipExtremesDiag(hist, None, cfg)
+    diag.plot_resolution = 2.0
+    return diag, hist
+
+
+class TestPrecipExtremesSeasons:
+    def test_seasonal_checkpoint_values(self, tmp_path):
+        diag, hist = _seasonal_setup(tmp_path)
+        diag.compute()
+        d = tmp_path / "out" / "precip_extremes"
+        assert (d / "A_hist_1981_1983.nc").exists()
+        sea = xr.open_dataset(d / "A_hist_1981_1983_seasons.nc",
+                              decode_timedelta=False)
+        assert set(sea.data_vars) == {"r1mm_djf", "prcptot_djf",
+                                      "r1mm_mam", "prcptot_mam"}
+        mm = hist.series["A"] * 86400.0
+        wet = (mm >= 1.0)
+        mam82 = wet.sel(time=slice("1982-03-01", "1982-05-31")).sum("time")
+        np.testing.assert_array_equal(sea["r1mm_mam"].sel(year=1982).values,
+                                      mam82.values)
+        djf82 = wet.sel(time=slice("1981-12-01", "1982-02-28")).sum("time")
+        np.testing.assert_array_equal(sea["r1mm_djf"].sel(year=1982).values,
+                                      djf82.values)
+        # No December 1980 → DJF 1981 is missing.
+        assert np.isnan(sea["r1mm_djf"].sel(year=1981).values).all()
+
+    def test_seasons_added_to_existing_annual_checkpoint(self, tmp_path):
+        diag, hist = _seasonal_setup(tmp_path, seasons=())
+        diag.compute()
+        ann = tmp_path / "out" / "precip_extremes" / "A_hist_1981_1983.nc"
+        before = ann.stat().st_mtime_ns
+        rr95 = xr.open_dataset(ann, decode_timedelta=False)["rr95"].values
+
+        diag2, hist2 = _seasonal_setup(tmp_path, seasons=("JJA",))
+        res = diag2.compute()
+        assert ann.stat().st_mtime_ns == before             # annual kept
+        assert len(hist2.calls) == 1                        # daily read once
+        assert ann.with_name("A_hist_1981_1983_seasons.nc").exists()
+        assert "r1mm_jja" in res["eerie"]["A"]["ref"]
+        assert "r1mm" in res["eerie"]["A"]["ref"]
+        np.testing.assert_array_equal(
+            xr.open_dataset(ann, decode_timedelta=False)["rr95"].values, rr95)
+
+        # Third run: everything from checkpoints, no daily read.
+        diag3, hist3 = _seasonal_setup(tmp_path, seasons=("JJA",))
+        diag3.compute()
+        assert hist3.calls == []
+
+    def test_new_season_triggers_recompute_of_seasons_only(self, tmp_path):
+        diag, _ = _seasonal_setup(tmp_path, seasons=("MAM",))
+        diag.compute()
+        diag2, hist2 = _seasonal_setup(tmp_path, seasons=("MAM", "SON"))
+        diag2.compute()
+        sea = xr.open_dataset(tmp_path / "out" / "precip_extremes"
+                              / "A_hist_1981_1983_seasons.nc", decode_timedelta=False)
+        assert {"r1mm_mam", "r1mm_son"} <= set(sea.data_vars)
+        assert len(hist2.calls) == 1
+
+    def test_ssp_djf_uses_contiguous_hist_december(self, tmp_path, monkeypatch):
+        from feather.diag.precip_extremes import PrecipExtremesDiag
+
+        hist = _FakeLoader({"A": _daily(1, "2012", "2014")})
+        fut = _FakeLoader({"A": _daily(2, "2015", "2016")})
+        cfg = _config(tmp_path, [("A", "FamA", "#000")], indices=("r1mm",),
+                      seasons=("DJF",), cc_models={"A": {}})
+        cfg.project["climate_change"].update({
+            "reference_period": ["2012", "2014"], "future_period": ["2015", "2016"],
+            "hist_load_period": ["2012", "2014"], "ssp_load_period": ["2015", "2016"]})
+        diag = PrecipExtremesDiag(hist, None, cfg)
+        monkeypatch.setattr(diag, "_make_fut_loader", lambda m: fut)
+        diag.compute()
+        sea = xr.open_dataset(tmp_path / "out" / "precip_extremes"
+                              / "A_ssp_2015_2016_seasons.nc", decode_timedelta=False)
+        both = xr.concat([hist.series["A"], fut.series["A"]], "time") * 86400.0
+        djf15 = (both.sel(time=slice("2014-12-01", "2015-02-28")) >= 1.0).sum("time")
+        np.testing.assert_array_equal(sea["r1mm_djf"].sel(year=2015).values,
+                                      djf15.values)
+
+    def test_non_contiguous_previous_segment_not_carried(self, setup):
+        # Fixture: hist ends 1983, SSP starts 2031 → DJF 2031 must be missing.
+        diag, *_ , tmp = setup
+        diag.seasons = ["DJF"]
+        diag.indices = ["r1mm"]
+        diag.compute()
+        sea = xr.open_dataset(tmp / "out" / "precip_extremes"
+                              / "A_ssp_2031_2032_seasons.nc", decode_timedelta=False)
+        assert np.isnan(sea["r1mm_djf"].sel(year=2031).values).all()
+        assert np.isfinite(sea["r1mm_djf"].sel(year=2032).values).all()
+
+    def test_seasonal_figures_and_metadata(self, setup_obs):
+        diag, *_ , tmp = setup_obs
+        diag.indices = ["prcptot"]
+        diag.seasons = ["JJA"]
+        saved = diag.run()
+        ids = sorted(p.stem for p, _ in saved)
+        for kind in ("reference", "diff_cmip6", "timeseries", "bias_era5",
+                     "bias_mswep"):
+            assert f"prcptot_{kind}" in ids
+            assert f"prcptot_jja_{kind}" in ids
+        meta = json.loads((tmp / "out" / "figures" / "precip_extremes"
+                           / "prcptot_jja_bias_era5.json").read_text())
+        assert meta["season"] == "JJA" and meta["index"] == "PRCPTOT JJA"
+        assert "Mean JJA PRCPTOT" in meta["title"] or "JJA" in meta["title"]
+        assert "JJA" in meta["description"]
+        ann = json.loads((tmp / "out" / "figures" / "precip_extremes"
+                          / "prcptot_reference.json").read_text())
+        assert ann["season"] == "annual"
+
+    def test_seasonal_percent_floor_scaled(self):
+        from feather.diag.precip_extremes import PrecipExtremesDiag as D
+
+        assert D._percent_floor("prcptot") == 10.0
+        assert D._percent_floor("prcptot_djf") == 2.5
+        assert D._percent_floor("rx1day_djf") == 1.0
+
+    def test_unknown_season_ignored(self, tmp_path):
+        diag, _ = _seasonal_setup(tmp_path, seasons=("JJA", "XYZ", "djf"))
+        assert diag.seasons == ["DJF", "JJA"]
+
+
+# ── CMIP6 member selection ───────────────────────────────────────────────
+
+
+def _drs(root, activity, inst, model, exp, member, var="pr"):
+    d = root / activity / inst / model / exp / member / "day" / var / "gn" / "v1"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{var}.nc").touch()
+
+
+class TestCmip6MemberSelection:
+    def test_member_with_both_experiments_is_chosen(self, tmp_path):
+        from feather.data.cmip6_nc_loader import discover_daily_models
+
+        root = tmp_path / "CMIP6"
+        # r1 has historical day/pr only; r4 has both (CESM2-like).
+        _drs(root, "CMIP", "NCAR", "M1", "historical", "r1i1p1f1")
+        _drs(root, "CMIP", "NCAR", "M1", "historical", "r4i1p1f1")
+        _drs(root, "ScenarioMIP", "NCAR", "M1", "ssp245", "r4i1p1f1")
+        # Preferred member lacks day/pr, r2 has it (CAMS-CSM1-0-like).
+        _drs(root, "CMIP", "CAMS", "M2", "historical", "r1i1p1f1", var="tas")
+        _drs(root, "CMIP", "CAMS", "M2", "historical", "r2i1p1f1")
+        _drs(root, "ScenarioMIP", "CAMS", "M2", "ssp245", "r2i1p1f1")
+        # Future under another institution (MPI-ESM1-2-HR-like).
+        _drs(root, "CMIP", "MPI-M", "M3", "historical", "r1i1p1f1")
+        _drs(root, "ScenarioMIP", "DKRZ", "M3", "ssp245", "r1i1p1f1")
+        # No member with both → dropped.
+        _drs(root, "CMIP", "X", "M4", "historical", "r1i1p1f1")
+
+        old = discover_daily_models(root, experiment="historical", table="day",
+                                    variable="pr")
+        assert {m.name: m.variant for m in old} == {
+            "M1": "r1i1p1f1", "M3": "r1i1p1f1", "M4": "r1i1p1f1"}
+
+        new = discover_daily_models(root, experiment="historical", table="day",
+                                    variable="pr", require_also=("ssp245",))
+        assert {m.name: m.variant for m in new} == {
+            "M1": "r4i1p1f1", "M2": "r2i1p1f1", "M3": "r1i1p1f1"}
+
+    def test_loader_finds_future_under_other_institution(self, tmp_path):
+        from feather.data.cmip6_nc_loader import CMIP6NCLoader
+
+        root = tmp_path / "CMIP6"
+        _drs(root, "CMIP", "MPI-M", "M3", "historical", "r1i1p1f1")
+        _drs(root, "ScenarioMIP", "DKRZ", "M3", "ssp245", "r1i1p1f1")
+        cfg = _config(tmp_path, [("A", "FamA", "#000")])
+        cfg.data_source = {"type": "cmor", "cmip6_root": str(root)}
+        ldr = CMIP6NCLoader(cfg)
+        mc = ModelConfig(name="M3", institution="MPI-M", variant="r1i1p1f1")
+        assert "DKRZ" in str(ldr._var_dir(mc, "ssp245", "pr", "day"))
+        assert "MPI-M" in str(ldr._var_dir(mc, "historical", "pr", "day"))
+
+    def test_diag_discovery_keeps_all_three(self, tmp_path):
+        from feather.diag.precip_extremes import PrecipExtremesDiag
+
+        root = tmp_path / "CMIP6"
+        _drs(root, "CMIP", "NCAR", "M1", "historical", "r1i1p1f1")
+        _drs(root, "CMIP", "NCAR", "M1", "historical", "r4i1p1f1")
+        _drs(root, "ScenarioMIP", "NCAR", "M1", "ssp245", "r4i1p1f1")
+        _drs(root, "CMIP", "MPI-M", "M3", "historical", "r1i1p1f1")
+        _drs(root, "ScenarioMIP", "DKRZ", "M3", "ssp245", "r1i1p1f1")
+        cfg = _config(tmp_path, [("A", "FamA", "#000")], cmip6=True)
+        cfg.cmip6_daily["root"] = str(root)
+        diag = PrecipExtremesDiag(_FakeLoader({}), None, cfg)
+        _, keep = diag._discover_cmip6()
+        assert {m.name: m.variant for m in keep} == {"M1": "r4i1p1f1",
+                                                     "M3": "r1i1p1f1"}
 
 
 class TestRegistry:

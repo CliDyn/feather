@@ -20,6 +20,12 @@ Rx1day     Maximum 1-day precipitation                                     mm
 Rx5day     Maximum consecutive 5-day precipitation                         mm
 =========  ==============================================================  ======
 
+Seasonal indices (DJF, MAM, JJA, SON) apply the same definitions to the days
+of one season; DJF of year *Y* is December *Y−1* plus January–February *Y*.
+R95p/R99p keep the annual base-period thresholds, and an Rx5day window
+belongs to the season of its last day (the four days before the season
+start complete the first windows), exactly as for the annual index.
+
 ``RR95``/``RR99`` are the 95th/99th percentiles of wet-day precipitation over
 a base period, per grid cell (numpy's default linear interpolation between
 order statistics).  ETCCDI uses 1961–1990; here the base period is whatever
@@ -63,6 +69,70 @@ INDEX_INFO: dict[str, tuple[str, str, str]] = {
 #: Minimum number of valid days for a cell-year to count (climdex drops a
 #: year with more than 15 missing days; 350 also admits 360-day calendars).
 MIN_VALID_DAYS: int = 350
+
+#: Season → calendar months, in plotting order.
+SEASONS: dict[str, tuple[int, ...]] = {
+    "DJF": (12, 1, 2), "MAM": (3, 4, 5), "JJA": (6, 7, 8), "SON": (9, 10, 11),
+}
+
+#: Nominal (365-day) season lengths; the valid-day minimum scales with them.
+_SEASON_DAYS: dict[str, int] = {"DJF": 90, "MAM": 92, "JJA": 92, "SON": 91}
+
+#: Days of the previous year to carry: all of December plus the four days
+#: before it (the first DJF Rx5day windows).
+CARRY_DAYS: int = 35
+
+
+def season_min_valid_days(season: str) -> int:
+    """Valid-day minimum for a cell-season, scaled like the annual 350/365."""
+    return int(np.floor(_SEASON_DAYS[season] * MIN_VALID_DAYS / 365.0))
+
+
+def season_blocks(
+    rr: np.ndarray,
+    months: np.ndarray,
+    seasons,
+    prev: np.ndarray | None = None,
+    prev_months: np.ndarray | None = None,
+):
+    """Split one year of daily data into season blocks.
+
+    Parameters
+    ----------
+    rr : ndarray, shape (n_days, ...)
+        Daily precipitation of year *Y*.
+    months : ndarray, shape (n_days,)
+        Calendar month of every day in *rr*.
+    seasons : iterable of str
+        Keys of :data:`SEASONS`.
+    prev, prev_months : ndarray, optional
+        The last :data:`CARRY_DAYS` days of year *Y−1* and their months.
+        Without them DJF has no December and comes out missing.
+
+    Yields
+    ------
+    (season, block, tail)
+        *block* holds the season's days, *tail* the (up to) four days before
+        the season start for Rx5day, or ``None``.
+    """
+    months = np.asarray(months)
+    for season in seasons:
+        if season == "DJF":
+            jf = np.flatnonzero(np.isin(months, (1, 2)))
+            if prev is not None and prev_months is not None:
+                dec = np.flatnonzero(np.asarray(prev_months) == 12)
+            else:
+                dec = np.array([], dtype=int)
+            if len(dec):
+                block = np.concatenate([prev[dec], rr[jf]])
+                tail = prev[: dec[0]][-4:] if dec[0] > 0 else None
+            else:
+                block, tail = rr[jf], None
+        else:
+            idx = np.flatnonzero(np.isin(months, SEASONS[season]))
+            block = rr[idx]
+            tail = rr[max(idx[0] - 4, 0): idx[0]] if len(idx) and idx[0] > 0 else None
+        yield season, block, tail
 
 
 def annual_indices(

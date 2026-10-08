@@ -40,6 +40,17 @@ E ``{idx}_bias_{obs}``   Reference period, one figure per observational
                          dataset: EERIE family − obs, CMIP6 MMM − obs and the
                          other observational datasets − obs.
 
+Seasons
+-------
+``project.precip_extremes.seasons`` (any of DJF, MAM, JJA, SON) adds the same
+figure set per season, ids ``{idx}_{season}_reference`` etc. (lower-case
+season).  Seasonal indices use the definitions of
+:mod:`feather.util.precip_indices` over the season's days, with the annual
+R95p/R99p thresholds; DJF of year *Y* is December *Y−1* + January–February *Y*.
+They are checkpointed next to the annual files as ``…_seasons.nc``, so adding
+seasons to a finished run re-reads the daily data once and keeps the annual
+checkpoints.
+
 Observations
 ------------
 ``project.precip_extremes.obs`` names daily datasets laid out as CMOR trees
@@ -84,11 +95,16 @@ from feather.diag.netcdf_export import write_netcdf
 from feather.diag.registry import register
 from feather.diag.temp_extremes_change import TempExtremesChangeDiag
 from feather.util.precip_indices import (
+    CARRY_DAYS,
+    MIN_VALID_DAYS,
     INDEX_INFO,
     INDICES,
     KG_M2_S_TO_MM_DAY,
+    SEASONS,
     WetDayPercentiles,
     annual_indices,
+    season_blocks,
+    season_min_valid_days,
 )
 from feather.util.spatial import latlon_global_mean
 
@@ -203,6 +219,11 @@ class PrecipExtremesDiag(DiagnosticBase):
             logger.warning("precip_extremes: unknown indices %s ignored", unknown)
         self.indices: list[str] = [i for i in INDICES if i in wanted]
         self.base_period: tuple[str, str] = tuple(pe.get("base_period", self.ref_period))
+        seasons = [str(x).upper() for x in pe.get("seasons", []) or []]
+        bad = sorted(set(seasons) - set(SEASONS))
+        if bad:
+            logger.warning("precip_extremes: unknown seasons %s ignored", bad)
+        self.seasons: list[str] = [x for x in SEASONS if x in seasons]
         self._obs_cfg: dict[str, dict] = dict(pe.get("obs", {}) or {})
         self.obs_load_period: tuple[str, str] = tuple(
             pe.get("obs_load_period", self.hist_load_period))
@@ -225,6 +246,36 @@ class PrecipExtremesDiag(DiagnosticBase):
             base = self.nc_dir / "cmip6" if cmip6 else self.nc_dir
         return base / f"{safe}_{seg}_{p[0]}_{p[1]}.nc"
 
+    @staticmethod
+    def _season_path(path: Path) -> Path:
+        return path.with_name(f"{path.stem}_seasons.nc")
+
+    def _season_vars(self) -> list[str]:
+        return [f"{i}_{x.lower()}" for x in self.seasons for i in self.indices]
+
+    def _keys(self) -> list[str]:
+        """Field keys: ``{idx}`` (annual) then ``{idx}_{season}``."""
+        return list(self.indices) + self._season_vars()
+
+    @staticmethod
+    def _split(key: str) -> tuple[str, str | None]:
+        idx, _, season = key.partition("_")
+        return idx, (season.upper() or None)
+
+    def _info(self, key: str) -> tuple[str, str, str, str | None]:
+        """``(label, long name, units, season)``; label carries the season."""
+        idx, season = self._split(key)
+        label, long_name, units = INDEX_INFO[idx]
+        return (f"{label} {season}" if season else label), long_name, units, season
+
+    @staticmethod
+    def _per(season: str | None) -> str:
+        if season is None:
+            return "annual"
+        if season == "DJF":
+            return "DJF (December of the previous year to February)"
+        return season
+
     # ── Daily data → annual indices ────────────────────────────────────
 
     @staticmethod
@@ -244,6 +295,12 @@ class PrecipExtremesDiag(DiagnosticBase):
         import dask
 
         sel = da.isel(time=np.flatnonzero(da["time"].dt.year.values == year))
+        return self._values(sel, factor)
+
+    @staticmethod
+    def _values(sel: xr.DataArray, factor: float) -> np.ndarray:
+        import dask
+
         # Threads, not the distributed cluster: the year is consumed right
         # here, so shipping ~1.5 GB per year through the scheduler is waste.
         with dask.config.set(scheduler="threads"):
@@ -287,52 +344,94 @@ class PrecipExtremesDiag(DiagnosticBase):
         factor: float,
         rr95: np.ndarray | None,
         rr99: np.ndarray | None,
-        prev_tail: np.ndarray | None = None,
+        prev: tuple[np.ndarray, np.ndarray] | None = None,
         check_units: bool = True,
-    ) -> xr.Dataset:
-        """Annual indices for every year of *da*, as a (year, lat, lon) Dataset."""
+        seasons: bool = False,
+    ) -> tuple[xr.Dataset, xr.Dataset | None]:
+        """Annual (and seasonal) indices for every year of *da*.
+
+        *prev* is ``(values, months)`` of the last :data:`CARRY_DAYS` days
+        before *da* starts (Rx5day tail and the December of the first DJF).
+        Returns ``(annual, seasonal)`` (year, lat, lon) Datasets; *seasonal*
+        is ``None`` unless *seasons* is set.
+        """
         years = sorted(set(int(y) for y in da["time"].dt.year.values))
+        all_years = da["time"].dt.year.values
+        all_months = da["time"].dt.month.values
         ny, nx = da.sizes["lat"], da.sizes["lon"]
         n = ny * nx
         p95 = None if rr95 is None else rr95.reshape(-1)
         p99 = None if rr99 is None else rr99.reshape(-1)
         out = {k: np.full((len(years), n), np.nan, dtype=np.float32)
                for k in INDICES}
-        tail = prev_tail
-        for iy, y in enumerate(years):
-            arr = self._year_values(da, y, factor)
-            if check_units and iy == 0:
-                self._check_units(model, arr, y)
-            flat = arr.reshape(arr.shape[0], -1)
-            tflat = None if tail is None else tail.reshape(tail.shape[0], -1)
+        sea_keys = self._season_vars() if seasons else []
+        sea_out = {k: np.full((len(years), n), np.nan, dtype=np.float32)
+                   for k in sea_keys}
+        wanted = set(self.indices)
+
+        def run(block, tail, min_valid, store, iy, suffix=""):
             for s in range(0, n, _CELL_CHUNK):
                 e = min(s + _CELL_CHUNK, n)
                 res = annual_indices(
-                    flat[:, s:e],
+                    block[:, s:e],
                     p95=None if p95 is None else p95[s:e],
                     p99=None if p99 is None else p99[s:e],
-                    prev_tail=None if tflat is None else tflat[:, s:e],
+                    prev_tail=None if tail is None else tail[:, s:e],
+                    min_valid_days=min_valid,
                 )
                 for k in INDICES:
-                    out[k][iy, s:e] = res[k]
-            tail = arr[-4:]
+                    if not suffix:
+                        store[k][iy, s:e] = res[k]
+                    elif k in wanted:
+                        store[f"{k}{suffix}"][iy, s:e] = res[k]
+
+        pv, pm = (None, None) if prev is None else prev
+        if pv is not None:
+            pv = pv.reshape(pv.shape[0], -1)
+        for iy, y in enumerate(years):
+            sel = np.flatnonzero(all_years == y)
+            arr = self._values(da.isel(time=sel), factor)
+            months = all_months[sel]
+            if check_units and iy == 0:
+                self._check_units(model, arr, y)
+            flat = arr.reshape(arr.shape[0], -1)
+            run(flat, None if pv is None else pv[-4:], MIN_VALID_DAYS, out, iy)
+            if sea_keys:
+                for season, block, tail in season_blocks(
+                        flat, months, self.seasons, pv, pm):
+                    if block.shape[0]:
+                        run(block, tail, season_min_valid_days(season), sea_out,
+                            iy, f"_{season.lower()}")
+            pv, pm = flat[-CARRY_DAYS:], months[-CARRY_DAYS:]
             logger.debug("  %s: %d done (%d days)", model, y, arr.shape[0])
-        logger.info("  %s: indices for %d years (%d–%d)", model, len(years),
-                    years[0], years[-1])
+        logger.info("  %s: indices for %d years (%d–%d)%s", model, len(years),
+                    years[0], years[-1],
+                    f" + seasons {', '.join(self.seasons)}" if sea_keys else "")
 
         coords = {"year": np.asarray(years), "lat": da["lat"].values,
                   "lon": da["lon"].values}
-        data_vars = {}
-        for k in INDICES:
-            label, long_name, units = INDEX_INFO[k]
-            data_vars[k] = xr.DataArray(
-                out[k].reshape(len(years), ny, nx), dims=("year", "lat", "lon"),
-                coords=coords,
-                attrs={"long_name": f"{label}: {long_name}", "units": units},
-            )
-        ds = xr.Dataset(data_vars)
-        ds.attrs["daily_tail_note"] = "Rx5day windows assigned to their last day"
-        return ds, tail
+
+        def as_ds(store):
+            data_vars = {}
+            for k, vals in store.items():
+                label, long_name, units, season = self._info(k)
+                data_vars[k] = xr.DataArray(
+                    vals.reshape(len(years), ny, nx), dims=("year", "lat", "lon"),
+                    coords=coords,
+                    attrs={"long_name": f"{label}: {long_name}", "units": units},
+                )
+            ds = xr.Dataset(data_vars)
+            ds.attrs["daily_tail_note"] = "Rx5day windows assigned to their last day"
+            return ds
+
+        sea_ds = None
+        if sea_keys:
+            sea_ds = as_ds(sea_out)
+            sea_ds.attrs["djf_note"] = ("DJF of year Y = December Y-1 + January-"
+                                        "February Y; the first year's DJF is "
+                                        "missing unless the previous December "
+                                        "was carried in")
+        return as_ds(out), sea_ds
 
     def _segment(
         self,
@@ -341,36 +440,88 @@ class PrecipExtremesDiag(DiagnosticBase):
         path: Path,
         get_da: Callable[[], xr.DataArray] | None,
         thresholds: tuple | None = None,
-        prev_tail_fn: Callable[[], np.ndarray | None] | None = None,
+        prev_fn: Callable[[], tuple | None] | None = None,
     ) -> xr.Dataset | None:
-        """Load the checkpoint for one segment or compute and write it."""
-        if path.exists():
-            logger.info("  %s/%s: loading indices from %s", model, seg, path.name)
-            # Counts carry units "days", which xarray would decode to timedelta.
-            return xr.open_dataset(path, decode_timedelta=False)
+        """Load the checkpoints for one segment, computing what is missing.
+
+        The annual indices live in *path*, the seasonal ones next to it in
+        ``…_seasons.nc``.  When only the seasonal file is missing, the daily
+        data are streamed again for it (the annual file is kept as is and its
+        base-period thresholds are reused).
+        """
+        # Counts carry units "days", which xarray would decode to timedelta.
+        ann = xr.open_dataset(path, decode_timedelta=False) if path.exists() else None
+        sea_vars = self._season_vars()
+        sea_path = self._season_path(path)
+        sea = None
+        if sea_vars and sea_path.exists():
+            sea = xr.open_dataset(sea_path, decode_timedelta=False)
+            missing = [v for v in sea_vars if v not in sea]
+            if missing:
+                logger.info("  %s/%s: %s lacks %s — recomputing seasons", model,
+                            seg, sea_path.name, ", ".join(missing[:4]))
+                sea.close()
+                sea = None
+        if ann is not None and (not sea_vars or sea is not None):
+            logger.info("  %s/%s: loading indices from %s%s", model, seg, path.name,
+                        f" + {sea_path.name}" if sea is not None else "")
+            return self._merge(ann, sea)
         if get_da is None:
-            return None
+            return ann
         try:
             da = self._std_dims(get_da())
         except (KeyError, FileNotFoundError, ValueError, OSError) as exc:
             logger.warning("  %s/%s: no daily pr (%s) — skipping", model, seg, exc)
-            return None
+            return ann
         if da.sizes.get("time", 0) == 0:
             logger.warning("  %s/%s: no daily pr in the load window", model, seg)
-            return None
+            return ann
         da = da.sortby("lat")
         factor = self._to_mm_day_factor(da)
 
+        if thresholds is None and ann is not None and "rr95" in ann:
+            thresholds = (ann["rr95"].values,
+                          ann["rr99"].values if "rr99" in ann else None)
         if thresholds is None:
             rr95, rr99 = self._base_percentiles(model, da, factor)
         else:
             rr95, rr99 = thresholds
-        tail = prev_tail_fn() if prev_tail_fn else None
+        if ann is not None:
+            logger.info("  %s/%s: annual indices from %s; computing seasons",
+                        model, seg, path.name)
+        prev = prev_fn() if prev_fn else None
+        if prev is not None:
+            # Only a December directly before the segment start continues it.
+            y0, m0 = int(da["time"].dt.year.values[0]), int(da["time"].dt.month.values[0])
+            if len(prev) > 2 and (prev[2] != (y0 - 1, 12) or m0 != 1):
+                logger.info("  %s/%s: previous segment ends %d-%02d, not right "
+                            "before %d-%02d — not carried over", model, seg,
+                            *prev[2], y0, m0)
+                prev = None
+            else:
+                prev = prev[:2]
         try:
-            ds, _ = self._stream_indices(model, da, factor, rr95, rr99, tail)
+            ds, sea_ds = self._stream_indices(model, da, factor, rr95, rr99, prev,
+                                              seasons=bool(sea_vars))
         except ValueError as exc:
             logger.error("  %s/%s: %s — skipping", model, seg, exc)
-            return None
+            return ann
+
+        meta = {
+            "model": model, "segment": seg,
+            "base_period": f"{self.base_period[0]}-{self.base_period[1]}",
+            "wet_day_threshold": "1 mm/day",
+            "source_units": "kg m-2 s-1 (x86400 -> mm/day)",
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if sea_ds is not None:
+            sea_ds.attrs.update(meta)
+            write_netcdf(sea_ds, sea_path,
+                         encoding={v: {"zlib": True, "complevel": 1}
+                                   for v in sea_ds.data_vars})
+            logger.info("  Saved %s", sea_path)
+        if ann is not None:
+            return self._merge(ann, sea_ds)
 
         if seg == "hist":
             for q, arr in (("rr95", rr95), ("rr99", rr99)):
@@ -382,17 +533,17 @@ class PrecipExtremesDiag(DiagnosticBase):
                                f"precipitation, {self.base_period[0]}–"
                                f"{self.base_period[1]}",
                                "units": "mm/day"})
-        ds.attrs.update({
-            "model": model, "segment": seg,
-            "base_period": f"{self.base_period[0]}-{self.base_period[1]}",
-            "wet_day_threshold": "1 mm/day",
-            "source_units": "kg m-2 s-1 (x86400 -> mm/day)",
-        })
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ds.attrs.update(meta)
         enc = {v: {"zlib": True, "complevel": 1} for v in ds.data_vars}
         write_netcdf(ds, path, encoding=enc)
         logger.info("  Saved %s", path)
-        return ds
+        return self._merge(ds, sea_ds)
+
+    @staticmethod
+    def _merge(ann: xr.Dataset, sea: xr.Dataset | None) -> xr.Dataset:
+        if sea is None:
+            return ann
+        return xr.merge([ann, sea], join="override", combine_attrs="override")
 
     def _model_indices(
         self,
@@ -410,19 +561,22 @@ class PrecipExtremesDiag(DiagnosticBase):
             hist["rr99"].values if "rr99" in hist else None,
         )
 
-        def tail():
-            # Last four December days, so the first 2015 Rx5day windows are whole.
+        def prev():
+            # The last days of the historical run: whole first-2015 Rx5day
+            # windows and the December of DJF 2015.
             try:
                 da = self._std_dims(get_hist()).sortby("lat")
-                da = da.isel(time=slice(-4, None))
-                return self._year_values(da, int(da["time"].dt.year.values[-1]),
-                                         self._to_mm_day_factor(da))
-            except Exception:   # noqa: BLE001 — a missing tail only shortens 4 windows
+                da = da.isel(time=slice(-CARRY_DAYS, None))
+                t = da["time"]
+                return (self._values(da, self._to_mm_day_factor(da)),
+                        t.dt.month.values,
+                        (int(t.dt.year.values[-1]), int(t.dt.month.values[-1])))
+            except Exception:   # noqa: BLE001 — only shortens 4 windows / DJF 2015
                 return None
 
         ssp = self._segment(model, "ssp", self._nc_path(model, "ssp", cmip6),
                             get_fut, thresholds=thresholds,
-                            prev_tail_fn=tail) if get_fut is not None else None
+                            prev_fn=prev) if get_fut is not None else None
         return {"hist": hist, "ssp": ssp}
 
     # ── Data sources ───────────────────────────────────────────────────
@@ -487,7 +641,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             return None, []
         from feather.data import pool_discovery as _pd
         from feather.data.cmip6_nc_loader import (
-            CMIP6NCLoader, _activity, discover_daily_models,
+            CMIP6NCLoader, discover_daily_models, experiment_dirs,
         )
 
         root = cfg.get("root", "/work/ik1017/CMIP6/data/CMIP6")
@@ -498,6 +652,11 @@ class PrecipExtremesDiag(DiagnosticBase):
                 root, experiment=hist_exp, table="day", variable="pr",
                 member=cfg.get("member", "r1i1p1f1"),
                 exclude=tuple(cfg.get("exclude", [])),
+                # Pick the member that has day/pr in both experiments, not
+                # r1i1p1f1-or-lowest: that rule dropped e.g. CESM2 (r1 has no
+                # ssp245 day/pr, r4/r11 have both) and CAMS-CSM1-0 (only r2).
+                # The future run may sit under another institution.
+                require_also=(fut_exp,),
             )
         except Exception as exc:  # noqa: BLE001 — discovery must not kill the run
             logger.warning("CMIP6 daily discovery failed (%s) — EERIE only", exc)
@@ -508,8 +667,8 @@ class PrecipExtremesDiag(DiagnosticBase):
 
         keep, hist_only = [], []
         for mc in found:
-            exp_dir = Path(root) / _activity(fut_exp) / mc.institution / mc.name / fut_exp
-            if _pd.variable_files(exp_dir, mc.variant, "day", "pr"):
+            if any(_pd.variable_files(d, mc.variant, "day", "pr")
+                   for d in experiment_dirs(root, mc.name, fut_exp, mc.institution)):
                 mc.experiments = [hist_exp, fut_exp]
                 keep.append(mc)
             else:
@@ -550,7 +709,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         out: dict[str, dict] = {}
         for model, segs in raw.items():
             m = {"ref": {}, "fut": {}, "ts": {}}
-            for idx in self.indices:
+            for idx in self._keys():
                 ref = self._window_mean(segs["hist"], idx, self.ref_period)
                 fut = self._window_mean(segs.get("ssp"), idx, self.fut_period)
                 if ref is not None:
@@ -566,12 +725,20 @@ class PrecipExtremesDiag(DiagnosticBase):
             out[model] = m
         return out
 
-    @staticmethod
-    def _change(idx: str, ref: xr.DataArray, fut: xr.DataArray) -> xr.DataArray:
+    @classmethod
+    def _change(cls, key: str, ref: xr.DataArray, fut: xr.DataArray) -> xr.DataArray:
+        idx, _ = cls._split(key)
         if idx in _PERCENT_CHANGE:
             pct = 100.0 * (fut - ref) / ref
-            return pct.where(ref >= _PERCENT_FLOOR[idx])
+            return pct.where(ref >= cls._percent_floor(key))
         return fut - ref
+
+    @classmethod
+    def _percent_floor(cls, key: str) -> float:
+        idx, season = cls._split(key)
+        # A season holds about a quarter of the annual total.
+        scale = 0.25 if (season and idx == "prcptot") else 1.0
+        return _PERCENT_FLOOR[idx] * scale
 
     def _group(self, summary: dict, members: list[str], idx: str) -> dict | None:
         """Mean reference field and change over *members* (future-capable ones)."""
@@ -635,9 +802,9 @@ class PrecipExtremesDiag(DiagnosticBase):
         cmip6 = self._summarise(cmip6_raw, _regular_grid(_CMIP6_RES))
         families = self._families(list(eerie))
 
-        fam: dict[str, dict] = {idx: {} for idx in self.indices}
+        fam: dict[str, dict] = {idx: {} for idx in self._keys()}
         mmm: dict[str, dict | None] = {}
-        for idx in self.indices:
+        for idx in self._keys():
             for f, members in families.items():
                 g = self._group(eerie, members, idx)
                 if g is not None:
@@ -653,7 +820,10 @@ class PrecipExtremesDiag(DiagnosticBase):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         results = self.compute()
         saved = []
-        for fig, meta in self.plot(results):
+        # One figure at a time: with seasons there are ~270, each with several
+        # 0.25° map panels — building them all before saving would hold them
+        # all in memory.
+        for fig, meta in self._iter_figures(results):
             saved.append(self._save(fig, meta, meta["figure_id"]))
             plt.close(fig)
         if self.save_netcdf:
@@ -664,8 +834,10 @@ class PrecipExtremesDiag(DiagnosticBase):
     # ── Plotting ───────────────────────────────────────────────────────
 
     def plot(self, results: dict[str, Any]) -> list[tuple[plt.Figure, dict]]:
-        figs = []
-        for idx in self.indices:
+        return list(self._iter_figures(results))
+
+    def _iter_figures(self, results: dict[str, Any]):
+        for idx in self._keys():
             if not results["family"][idx] and not results["mmm"].get(idx):
                 logger.warning("%s: no data for %s — skipping", self.name, idx)
                 continue
@@ -673,12 +845,11 @@ class PrecipExtremesDiag(DiagnosticBase):
                        self._plot_diff_cmip6, self._plot_timeseries):
                 fm = fn(results, idx)
                 if fm is not None:
-                    figs.append(fm)
+                    yield fm
             for name in self._obs_with(results, idx):
                 fm = self._plot_bias(results, idx, name)
                 if fm is not None:
-                    figs.append(fm)
-        return figs
+                    yield fm
 
     @staticmethod
     def _obs_with(results, idx) -> list[str]:
@@ -737,7 +908,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         return f"{self.fut_period[0]}–{self.fut_period[1]}"
 
     def _plot_reference(self, results, idx):
-        label, long_name, units = INDEX_INFO[idx]
+        label, long_name, units, season = self._info(idx)
         obs = self._obs_with(results, idx)
         panels = [(o, results["obs"][o]["ref"][idx]) for o in obs]
         panels += [(self._label(f, g), g["ref"])
@@ -758,7 +929,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_reference",
             models=self._meta_models(results, idx),
             description=(
-                f"Mean annual {label} ({long_name.lower()}, {units}) over "
+                f"Mean {self._per(season)} {label} ({long_name.lower()}, {units}) over "
                 f"{self._ref_txt()} from daily precipitation (wet day: RR ≥ 1 mm). "
                 + self._panel_note(results, idx)
                 + (f" Observational panels: {', '.join(obs)}." if obs else "")),
@@ -766,12 +937,12 @@ class PrecipExtremesDiag(DiagnosticBase):
             period=self.ref_period, units=units, plot_type="map",
             summary_statistics=self._panel_stats(panels),
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label, **self._obs_meta(obs)},
+            extra={"index": label, "season": season or "annual", **self._obs_meta(obs)},
         )
         return fig, meta
 
     def _plot_change(self, results, idx):
-        label, long_name, units = INDEX_INFO[idx]
+        label, long_name, units, season = self._info(idx)
         panels = [(self._label(f, g, "n_fut"), g["change"])
                   for f, g in results["family"][idx].items()
                   if g["change"] is not None]
@@ -781,7 +952,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         if not panels:
             logger.info("%s: no future data for %s — no change map", self.name, idx)
             return None
-        pct = idx in _PERCENT_CHANGE
+        pct = self._split(idx)[0] in _PERCENT_CHANGE
         cunits = "%" if pct else units
         vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=True,
                                         floor=5.0 if pct else 0.0)
@@ -796,27 +967,29 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_change",
             models=self._meta_models(results, idx, future=True),
             description=(
-                f"Change in mean annual {label} ({long_name.lower()}) between the "
+                f"Change in mean {self._per(season)} {label} ({long_name.lower()}) between the "
                 f"SSP2-4.5 future period {self._fut_txt()} and the reference period "
                 f"{self._ref_txt()}, "
                 + (f"in percent of the reference value (masked where the reference "
-                   f"is below {_PERCENT_FLOOR[idx]:g} {units}). " if pct else
+                   f"is below {self._percent_floor(idx):g} {units}). " if pct else
                    f"in {units}. ")
                 + "Only members whose SSP2-4.5 run covers the future period enter "
                   "the family means"
                 + (f"; families without one: {', '.join(no_fut)}." if no_fut else ".")
                 + (" R95p/R99p use each model's reference-period wet-day "
-                   "percentile as a fixed threshold." if idx in ("r95p", "r99p") else "")),
+                   "percentile as a fixed threshold." if self._split(idx)[0] in
+                   ("r95p", "r99p") else "")),
             computation_notes=self._computation_notes(idx),
             period=(self.ref_period[0], self.fut_period[1]), units=cunits,
             plot_type="map", summary_statistics=self._panel_stats(panels),
             benchmark_info=self._bench_meta(results, idx, "n_fut"),
-            extra={"index": label, "change_type": "relative" if pct else "absolute"},
+            extra={"index": label, "season": season or "annual",
+                   "change_type": "relative" if pct else "absolute"},
         )
         return fig, meta
 
     def _plot_diff_cmip6(self, results, idx):
-        label, long_name, units = INDEX_INFO[idx]
+        label, long_name, units, season = self._info(idx)
         mmm = results["mmm"].get(idx)
         fam = results["family"][idx]
         if not mmm or not fam:
@@ -836,7 +1009,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_diff_cmip6",
             models=self._meta_models(results, idx),
             description=(
-                f"Difference in mean annual {label} ({units}) over {self._ref_txt()} "
+                f"Difference in mean {self._per(season)} {label} ({units}) over {self._ref_txt()} "
                 f"between each EERIE model family and the {self._cmip6_label} "
                 f"multi-model mean of {mmm['n']} models (one member each), the MMM "
                 "interpolated bilinearly from 1° to 0.25°. Positive: EERIE has more "
@@ -846,12 +1019,12 @@ class PrecipExtremesDiag(DiagnosticBase):
             period=self.ref_period, units=units, plot_type="map",
             summary_statistics=self._panel_stats(panels),
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label},
+            extra={"index": label, "season": season or "annual"},
         )
         return fig, meta
 
     def _plot_bias(self, results, idx, obs_name):
-        label, long_name, units = INDEX_INFO[idx]
+        label, long_name, units, season = self._info(idx)
         ref = results["obs"][obs_name]["ref"][idx]
         target = _regular_grid(_EERIE_RES)
         fields = [(self._label(f, g), g["ref"])
@@ -877,7 +1050,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_bias_{obs_name.lower()}",
             models=self._meta_models(results, idx),
             description=(
-                f"Bias of mean annual {label} ({long_name.lower()}, {units}) over "
+                f"Bias of mean {self._per(season)} {label} ({long_name.lower()}, {units}) over "
                 f"{self._ref_txt()} against {obs_name}: each EERIE model family"
                 + (f", the {self._cmip6_label} multi-model mean (interpolated "
                    "bilinearly from 1° to 0.25°)" if mmm else "")
@@ -894,12 +1067,12 @@ class PrecipExtremesDiag(DiagnosticBase):
             period=self.ref_period, units=units, plot_type="map",
             summary_statistics=stats,
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label, **self._obs_meta([obs_name])},
+            extra={"index": label, "season": season or "annual", **self._obs_meta([obs_name])},
         )
         return fig, meta
 
     def _plot_timeseries(self, results, idx):
-        label, long_name, units = INDEX_INFO[idx]
+        label, long_name, units, season = self._info(idx)
         fig, ax = plt.subplots(figsize=(13, 5))
         ax.axvspan(int(self.ref_period[0]), int(self.ref_period[1]) + 1,
                    alpha=0.10, color="#1f77b4", zorder=0)
@@ -963,7 +1136,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_timeseries",
             models=self._meta_models(results, idx),
             description=(
-                f"Area-weighted global (land + ocean) mean of annual {label} "
+                f"Area-weighted global (land + ocean) mean of {self._per(season)} {label} "
                 f"({units}), {self.hist_load_period[0]}–{self.ssp_load_period[1]}: "
                 f"historical to {_HIST_BOUNDARY_YEAR - 1}, SSP2-4.5 after. Thin lines "
                 "are individual EERIE members, thick lines family means; dashed grey "
@@ -976,7 +1149,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
             units=units, plot_type="timeseries", summary_statistics=stats,
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label, **self._obs_meta(obs)},
+            extra={"index": label, "season": season or "annual", **self._obs_meta(obs)},
         )
         return fig, meta
 
@@ -1017,6 +1190,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         return txt
 
     def _computation_notes(self, idx: str) -> str:
+        season = self._split(idx)[1]
         return (
             "Daily pr (kg m-2 s-1) ×86400 → mm/day. Indices computed per year on "
             "each model's native grid (ETCCDI definitions; wet day RR ≥ 1 mm; a "
@@ -1029,13 +1203,20 @@ class PrecipExtremesDiag(DiagnosticBase):
             + (f" Observations ({', '.join(self._obs_cfg)}): daily totals "
                "conservatively remapped to 0.25° before the indices are computed, "
                "each with its own base-period percentiles." if self._obs_cfg else "")
+            + (f" Seasonal index: the same definitions over the days of {season} "
+               f"(cell-season missing below {season_min_valid_days(season)} valid "
+               "days; R95p/R99p with the annual base-period thresholds; Rx5day "
+               "windows ending in the season)."
+               + (" DJF of year Y = December Y-1 + January-February Y, so the "
+                  "first year of a run without a preceding December is missing."
+                  if season == "DJF" else "") if season else "")
         )
 
     def _export_summary(self, results) -> None:
         out_dir = self._netcdf_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         for idx in self.indices:
-            label, _, units = INDEX_INFO[idx]
+            label, _, units, _season = self._info(idx)
             fields = {}
             for f, g in results["family"][idx].items():
                 key = f"family_{f}".replace("-", "_")
@@ -1055,7 +1236,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             ds = xr.Dataset(fields)
             ds.attrs.update({
                 "index": label, "units": units,
-                "change_units": "%" if idx in _PERCENT_CHANGE else units,
+                "change_units": "%" if self._split(idx)[0] in _PERCENT_CHANGE else units,
                 "reference_period": self._ref_txt(), "future_period": self._fut_txt(),
             })
             write_netcdf(ds, out_dir / f"{idx}_{self.ref_period[0]}-"
