@@ -121,7 +121,7 @@ feather/                     # Package root
 | `configs/terradt.yaml` | TerraDT baseline evaluation (per-model members) |
 | `configs/destine_added_value.yaml` | DestinE Added Value 1990–2025 (stitches `baseline_hist` + `projections_ssp3-7.0`; timeseries extend to 2049/2044) |
 | `configs/ifs_fesom_combined.yaml` | IFS-FESOM multi-resolution (mixed data sources) |
-| `configs/eerie_10_mems_precip_extremes.yaml` | EERIE 10-member ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6 (`precip_extremes`) |
+| `configs/eerie_10_mems_precip_extremes.yaml` | EERIE 10-member ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6 and daily ERA5/MSWEP (`precip_extremes`) |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
@@ -623,7 +623,9 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Checkpoints: `{output}/precip_extremes/[cmip6/]{model}_{hist|ssp}_{y0}_{y1}.nc` (annual indices, native grid; hist adds `rr95`/`rr99`). **Open with `decode_timedelta=False`** — count indices have `units = "days"`, which xarray otherwise decodes to timedelta64.
 - Figures per index: `{idx}_reference`, `{idx}_change` (counts and R95p/R99p absolute; PRCPTOT/SDII/Rx1day/Rx5day in %, masked below a reference floor), `{idx}_diff_cmip6` (EERIE family − CMIP6 MMM, reference period), `{idx}_timeseries`. Group `precipitation_extremes`. `--save-netcdf` writes `{idx}_{ref0}-{fut1}_summary.nc`.
 - Loader support added for it: `KerchunkParquetLoader.load_var(table="day")` serves atmos-2D averages (pr) from `2D_daily_0.25deg_atmos_avg.parq` without monthly resampling; `ICONKerchunkLoader` daily stores (from `feature/eerie-10-mems-extremes`) plus a −12 h shift, because those stores stamp day D at D+1 00:00.
-- 33 tests in `tests/test_precip_extremes.py`.
+- **Observations** (`project.precip_extremes.obs`, name → `{data_root, experiment, color}`): daily datasets laid out as CMOR trees (`{data_root}/{experiment}/r1i1p1f1/day/pr/gr/v*/`), read by `CMORLoader` via `_make_obs_loader()` and processed exactly like a hist member (own base-period percentiles; window `precip_extremes.obs_load_period`, default `hist_load_period`). Checkpoints `{output}/precip_extremes/obs/{name}_hist_{y0}_{y1}.nc`. Adds `{idx}_bias_{obs}` figures (family − obs, CMIP6 MMM − obs, other obs − obs; `_latlon_bias_stats` per panel), obs panels first in `{idx}_reference`, obs lines in `{idx}_timeseries`, `obs_{name}_ref` in the summary NetCDF. No obs configured → behaviour unchanged.
+- **Daily obs inputs** (EERIE config): ERA5 from `/pool/data/ERA5/E5/sf/fc/1D/228` (daily totals, m, N320 reduced Gaussian) via `scripts/era5_derive_pr_daily.sh` → `/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/…/day/pr/`; MSWEP v2.8 from the ICDC copy `/pool/data/ICDC/atmosphere/mswep_precipitation/DATA` (0.1°, **3-hourly**, one file per step; the aqua-dvc MSWEP is monthly only) via `scripts/mswep_derive_pr_daily.sh` → `/work/bm1344/AWI/OBS/mswep_derived/CMOR/GloH2O/MSWEP/mswep/…/day/pr/`. Both: area-conservative `remapcon` to r1440x721, kg m-2 s-1, 12:00 stamps, one file per year. Reduced Gaussian has no corners → `setgridtype,regular` before `gencon`. MSWEP days with < 8 steps are skipped, not summed short. cdo 2.2.2 has no `delattribute`; an empty `setattribute,var@att=` deletes.
+- 43 tests in `tests/test_precip_extremes.py`.
 
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM

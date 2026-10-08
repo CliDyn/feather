@@ -169,7 +169,7 @@ class _FakeLoader:
 
 
 def _config(tmp_path, models, *, cc_models=None, cmip6=False, mode="per_family",
-            indices=("r1mm", "prcptot", "r95p", "rx5day")):
+            indices=("r1mm", "prcptot", "r95p", "rx5day"), obs=None):
     mcs = {name: ModelConfig(name=name, family=fam, grids={"sfc": "latlon"},
                              color=col)
            for name, fam, col in models}
@@ -181,7 +181,7 @@ def _config(tmp_path, models, *, cc_models=None, cmip6=False, mode="per_family",
         model_configs=mcs,
         project={
             "name": "TEST", "ensemble_mode": mode,
-            "precip_extremes": {"indices": list(indices)},
+            "precip_extremes": {"indices": list(indices), "obs": obs or {}},
             "climate_change": {
                 "reference_period": ["1981", "1982"],
                 "future_period": ["2031", "2032"],
@@ -395,6 +395,164 @@ class TestPrecipExtremesRun:
         diag.plot_resolution = 2.0
         saved = diag.run()
         assert sorted(p.stem for p, _ in saved) == ["r1mm_reference", "r1mm_timeseries"]
+
+
+_OBS = {"ERA5": {"data_root": "/fake/era5", "experiment": "era5"},
+        "MSWEP": {"data_root": "/fake/mswep", "experiment": "mswep"}}
+
+
+@pytest.fixture
+def setup_obs(tmp_path, monkeypatch):
+    """Two EERIE families, a CMIP6 pair and ERA5 + MSWEP observations."""
+    from feather.diag.precip_extremes import PrecipExtremesDiag
+
+    hist = _FakeLoader({"A": _daily(1, "1981", "1983"),
+                        "B": _daily(3, "1981", "1983", scale=2.0)})
+    cmip = _FakeLoader({"C1": _daily(21, "1981", "1983")})
+    obs = _FakeLoader({"ERA5": _daily(41, "1981", "1983"),
+                       "MSWEP": _daily(42, "1981", "1983", scale=1.3)})
+    cfg = _config(tmp_path, [("A", "FamA", "#1f77b4"), ("B", "FamB", "#d62728")],
+                  cmip6=True, obs=_OBS)
+    diag = PrecipExtremesDiag(hist, None, cfg)
+    diag.plot_resolution = 2.0
+    built = []
+
+    def make_obs_loader(name, spec):
+        built.append((name, spec["data_root"]))
+        return obs
+
+    monkeypatch.setattr(diag, "_make_obs_loader", make_obs_loader)
+    monkeypatch.setattr(diag, "_discover_cmip6",
+                        lambda: (cmip, [ModelConfig(name="C1")]))
+    return diag, obs, built, tmp_path
+
+
+class TestPrecipExtremesObs:
+    def test_obs_checkpoints_and_load_period(self, setup_obs):
+        diag, obs, built, tmp = setup_obs
+        res = diag.compute()
+        d = tmp / "out" / "precip_extremes" / "obs"
+        assert sorted(p.name for p in d.glob("*.nc")) == [
+            "ERA5_hist_1981_1983.nc", "MSWEP_hist_1981_1983.nc"]
+        assert set(built) == {("ERA5", "/fake/era5"), ("MSWEP", "/fake/mswep")}
+        assert {c[0] for c in obs.calls} == {"ERA5", "MSWEP"}
+        assert all(c[3] == ("1981", "1983") for c in obs.calls)
+        assert set(res["obs"]) == {"ERA5", "MSWEP"}
+        # Obs are not ensemble members.
+        assert "ERA5" not in res["eerie"] and "ERA5" not in res["families"].get("FamA", [])
+
+    def test_obs_indices_use_own_percentiles(self, setup_obs):
+        diag, *_ , tmp = setup_obs
+        diag.compute()
+        d = tmp / "out" / "precip_extremes"
+        era5 = xr.open_dataset(d / "obs" / "ERA5_hist_1981_1983.nc",
+                               decode_timedelta=False)
+        mswep = xr.open_dataset(d / "obs" / "MSWEP_hist_1981_1983.nc",
+                                decode_timedelta=False)
+        # MSWEP is scaled ×1.3, so its wet-day percentiles must be higher.
+        assert float(mswep["rr95"].mean()) > float(era5["rr95"].mean()) * 1.2
+
+    def test_obs_load_period_override(self, setup_obs):
+        diag, obs, *_ = setup_obs
+        diag.obs_load_period = ("1981", "1982")
+        diag.compute()
+        assert all(c[3] == ("1981", "1982") for c in obs.calls)
+
+    def test_bias_figures_per_obs(self, setup_obs):
+        diag, *_ , tmp = setup_obs
+        diag.indices = ["prcptot"]
+        saved = diag.run()
+        ids = sorted(p.stem for p, _ in saved)
+        # No future runs in this fixture, hence no change map.
+        assert ids == sorted(["prcptot_reference",
+                              "prcptot_diff_cmip6", "prcptot_timeseries",
+                              "prcptot_bias_era5", "prcptot_bias_mswep"])
+        fdir = tmp / "out" / "figures" / "precip_extremes"
+        meta = json.loads((fdir / "prcptot_bias_era5.json").read_text())
+        assert meta["obs_dataset"] == "ERA5" and meta["obs_variable"] == "pr"
+        stats = meta["summary_statistics"]
+        assert {"FamA minus ERA5", "FamB minus ERA5", "CMIP6 MMM (1 models) minus ERA5",
+                "MSWEP minus ERA5", "ERA5 (reference)"} == set(stats)
+        # B is scaled ×2, A is not: B must be wetter than A relative to ERA5.
+        assert (stats["FamB minus ERA5"]["global_mean_bias"]
+                > stats["FamA minus ERA5"]["global_mean_bias"])
+        assert stats["MSWEP minus ERA5"]["global_mean_bias"] > 0
+        assert stats["FamA minus ERA5"]["rmse"] >= abs(
+            stats["FamA minus ERA5"]["global_mean_bias"])
+
+    def test_bias_against_itself_is_zero(self, tmp_path, monkeypatch):
+        from feather.diag.precip_extremes import PrecipExtremesDiag
+
+        same = _daily(7, "1981", "1983")
+        hist = _FakeLoader({"A": same})
+        obs = _FakeLoader({"ERA5": same})
+        cfg = _config(tmp_path, [("A", "FamA", "#000")], indices=("rx1day",),
+                      obs={"ERA5": _OBS["ERA5"]})
+        diag = PrecipExtremesDiag(hist, None, cfg)
+        diag.plot_resolution = 2.0
+        monkeypatch.setattr(diag, "_make_obs_loader", lambda n, s: obs)
+        res = diag.compute()
+        _, meta = diag._plot_bias(res, "rx1day", "ERA5")
+        st = meta["summary_statistics"]["FamA minus ERA5"]
+        assert st["global_mean_bias"] == pytest.approx(0.0, abs=1e-5)
+        assert st["rmse"] == pytest.approx(0.0, abs=1e-5)
+
+    def test_reference_and_timeseries_include_obs(self, setup_obs):
+        diag, *_ , tmp = setup_obs
+        diag.indices = ["r1mm"]
+        diag.run()
+        fdir = tmp / "out" / "figures" / "precip_extremes"
+        ref = json.loads((fdir / "r1mm_reference.json").read_text())
+        assert {"ERA5", "MSWEP"} <= set(ref["summary_statistics"])
+        assert ref["obs_dataset"] == "ERA5, MSWEP"
+        ts = json.loads((fdir / "r1mm_timeseries.json").read_text())
+        assert {"ERA5", "MSWEP"} <= set(ts["summary_statistics"])
+        # The CMIP6-difference map has no observational reference.
+        diff = json.loads((fdir / "r1mm_diff_cmip6.json").read_text())
+        assert diff["obs_dataset"] == ""
+
+    def test_missing_obs_dataset_skipped(self, tmp_path, monkeypatch):
+        from feather.diag.precip_extremes import PrecipExtremesDiag
+
+        hist = _FakeLoader({"A": _daily(1, "1981", "1983")})
+        obs = _FakeLoader({"ERA5": _daily(41, "1981", "1983")})   # no MSWEP
+        cfg = _config(tmp_path, [("A", "FamA", "#000")], indices=("r1mm",),
+                      obs={**_OBS, "GPCC": {}})                  # GPCC: no root
+        diag = PrecipExtremesDiag(hist, None, cfg)
+        diag.plot_resolution = 2.0
+        monkeypatch.setattr(diag, "_make_obs_loader", lambda n, s: obs)
+        saved = diag.run()
+        assert sorted(p.stem for p, _ in saved) == [
+            "r1mm_bias_era5", "r1mm_reference", "r1mm_timeseries"]
+
+    def test_no_obs_configured_unchanged(self, setup):
+        diag, *_ = setup
+        res = diag.compute()
+        assert res["obs"] == {}
+
+    def test_save_netcdf_includes_obs(self, setup_obs):
+        diag, *_ , tmp = setup_obs
+        diag.indices = ["sdii"]
+        diag.save_netcdf = True
+        diag.run()
+        ds = xr.open_dataset(tmp / "out" / "netcdf" / "precip_extremes"
+                             / "sdii_1981-2032_summary.nc")
+        assert {"obs_ERA5_ref", "obs_MSWEP_ref"} <= set(ds.data_vars)
+
+    def test_make_obs_loader_reads_cmor_tree(self, tmp_path):
+        """The real loader path: a CMOR day/pr tree under data_root."""
+        from feather.diag.precip_extremes import PrecipExtremesDiag
+
+        d = tmp_path / "obs" / "era5" / "r1i1p1f1" / "day" / "pr" / "gr" / "v1"
+        d.mkdir(parents=True)
+        _daily(5, "1981", "1981").to_dataset().to_netcdf(
+            d / "pr_day_ERA5_era5_r1i1p1f1_gr_1981.nc")
+        cfg = _config(tmp_path, [("A", "FamA", "#000")], indices=("r1mm",))
+        diag = PrecipExtremesDiag(_FakeLoader({}), None, cfg)
+        ldr = diag._make_obs_loader(
+            "ERA5", {"data_root": str(tmp_path / "obs"), "experiment": "era5"})
+        da = ldr.load_var("ERA5", "pr", table="day", period=("1981", "1981"))
+        assert da.sizes["time"] == 365
 
 
 class TestRegistry:

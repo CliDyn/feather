@@ -39,6 +39,14 @@
 # simulation the EERIE configs already take psl from (see eerie_psl.yaml) —
 # on its native N640 grid (1280×960), interpolated to 0.25° for the maps.
 #
+# Observations (checked 2026-10-08), both derived to daily 0.25° CMOR trees
+# with area-conservative remapping before the indices are computed:
+#   ERA5        /pool/data/ERA5/E5/sf/fc/1D/228 — daily totals, N320 reduced
+#               Gaussian, 1940→  (scripts/era5_derive_pr_daily.sh)
+#   MSWEP v2.8  /pool/data/ICDC/atmosphere/mswep_precipitation — 3-hourly,
+#               0.1°, 1979→, complete 1981–2014 (scripts/mswep_derive_pr_daily.sh)
+# The aqua-dvc MSWEP used by precipitation_mswep is monthly only.
+#
 # CMIP6: auto-discovered from the DKRZ DRS tree, one member per model, keeping
 # only models whose historical member also has ssp245 day/pr (32 at the time
 # of writing).  Indices are computed on each model's native grid, the MMM on a
@@ -68,12 +76,32 @@ project:
     present-day climatology covers 1981-2000 and the climate-change signal is
     SSP2-4.5 2031-2050 minus 1981-2000. ICON-ESM-ER runs without a
     parameterised convection scheme, unlike the other models, so its wet-day
-    frequency and intensity are expected to differ. No observations are used.
+    frequency and intensity are expected to differ. Present-day biases are
+    evaluated against two daily observational references, ERA5 reanalysis and
+    MSWEP v2.8 (merged gauge-satellite-reanalysis), both conservatively remapped
+    to 0.25 degree; their mutual difference indicates observational uncertainty,
+    which is large for the intensity indices (Rx1day, Rx5day, R99p).
 
   precip_extremes:
     # All nine by default; list a subset to run fewer.
     indices: [r1mm, r10mm, r20mm, prcptot, sdii, r95p, r99p, rx1day, rx5day]
     base_period: ["1981", "2000"]   # R95p/R99p thresholds
+    # Daily observations as CMOR trees ({data_root}/{experiment}/r1i1p1f1/
+    # day/pr/gr/v1/), regular 0.25° (1440×721), kg m-2 s-1.  Derive them first:
+    #   sbatch --array=1981-2014 scripts/era5_derive_pr_daily.sh
+    #   sbatch --array=1981-2014 scripts/mswep_derive_pr_daily.sh
+    # Indices are computed exactly as for a model (own base-period
+    # percentiles); checkpoints go to {output_dir}/precip_extremes/obs/.
+    obs:
+      ERA5:
+        data_root: /work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5
+        experiment: era5
+        color: "black"
+      MSWEP:
+        data_root: /work/bm1344/AWI/OBS/mswep_derived/CMOR/GloH2O/MSWEP
+        experiment: mswep
+        color: "0.45"
+    obs_load_period: ["1981", "2014"]
 
   climate_change:
     reference_period: ["1981", "2000"]

@@ -34,7 +34,21 @@ B ``{idx}_change``       Future − reference, same panels.  Counts and the
                          Rx1day and Rx5day as percent change.
 C ``{idx}_diff_cmip6``   Reference period, EERIE family − CMIP6 MMM.
 D ``{idx}_timeseries``   Global-mean annual index, hist + SSP2-4.5, members
-                         thin, family means thick, CMIP6 MMM + min–max range.
+                         thin, family means thick, CMIP6 MMM + min–max range,
+                         observations in black/grey.
+E ``{idx}_bias_{obs}``   Reference period, one figure per observational
+                         dataset: EERIE family − obs, CMIP6 MMM − obs and the
+                         other observational datasets − obs.
+
+Observations
+------------
+``project.precip_extremes.obs`` names daily datasets laid out as CMOR trees
+(``{data_root}/{experiment}/r1i1p1f1/day/pr/gr/v*/``), read with
+:class:`~feather.data.cmor_loader.CMORLoader` and treated like a historical
+member: same indices, own base-period percentiles.  The EERIE configs use
+ERA5 and MSWEP v2.8, derived to daily 0.25° (area-conservative) by
+``scripts/era5_derive_pr_daily.sh`` and ``scripts/mswep_derive_pr_daily.sh``.
+The reference climatology figure (A) gains one panel per dataset.
 
 In pooled ``project.ensemble_mode`` the families collapse into a single
 "EERIE" group.
@@ -46,6 +60,7 @@ segment, so re-runs (and re-plots on a login node) skip the daily read:
 
   ``{output_dir}/precip_extremes/{model}_{hist|ssp}_{start}_{end}.nc``
   ``{output_dir}/precip_extremes/cmip6/{model}_{hist|ssp}_{start}_{end}.nc``
+  ``{output_dir}/precip_extremes/obs/{dataset}_hist_{start}_{end}.nc``
 
 The ``hist`` file also stores the base-period thresholds ``rr95``/``rr99``
 (mm/day).  Delete a file to force its recomputation.  Open them with
@@ -55,6 +70,7 @@ xarray otherwise turns into timedeltas.
 
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -187,6 +203,9 @@ class PrecipExtremesDiag(DiagnosticBase):
             logger.warning("precip_extremes: unknown indices %s ignored", unknown)
         self.indices: list[str] = [i for i in INDICES if i in wanted]
         self.base_period: tuple[str, str] = tuple(pe.get("base_period", self.ref_period))
+        self._obs_cfg: dict[str, dict] = dict(pe.get("obs", {}) or {})
+        self.obs_load_period: tuple[str, str] = tuple(
+            pe.get("obs_load_period", self.hist_load_period))
         self._cmip6_cfg: dict = getattr(config, "cmip6_daily", {}) or {}
         self._cmip6_label: str = self._cmip6_cfg.get("label", "CMIP6")
 
@@ -196,10 +215,14 @@ class PrecipExtremesDiag(DiagnosticBase):
     def nc_dir(self) -> Path:
         return Path(self.config.output_dir) / "precip_extremes"
 
-    def _nc_path(self, model: str, seg: str, cmip6: bool = False) -> Path:
+    def _nc_path(self, model: str, seg: str, cmip6: bool = False,
+                 obs: bool = False) -> Path:
         safe = model.replace("/", "_").replace(" ", "_")
-        p = self.hist_load_period if seg == "hist" else self.ssp_load_period
-        base = self.nc_dir / "cmip6" if cmip6 else self.nc_dir
+        if obs:
+            p, base = self.obs_load_period, self.nc_dir / "obs"
+        else:
+            p = self.hist_load_period if seg == "hist" else self.ssp_load_period
+            base = self.nc_dir / "cmip6" if cmip6 else self.nc_dir
         return base / f"{safe}_{seg}_{p[0]}_{p[1]}.nc"
 
     # ── Daily data → annual indices ────────────────────────────────────
@@ -421,6 +444,42 @@ class PrecipExtremesDiag(DiagnosticBase):
             out[model] = (get_hist, get_fut)
         return out
 
+    def _make_obs_loader(self, name: str, spec: dict):
+        """CMORLoader for one observational dataset laid out as a CMOR tree."""
+        from feather.config import ModelConfig
+        from feather.data.cmor_loader import CMORLoader
+
+        mc = ModelConfig(
+            name=name, institution=spec.get("institution", ""),
+            experiment=spec.get("experiment", name.lower()),
+            variant=spec.get("variant", "r1i1p1f1"),
+            data_root=spec["data_root"], grid_label=spec.get("grid_label", "gr"),
+            grids={"sfc": "latlon"},
+        )
+        cfg = copy.copy(self.config)
+        cfg.model_configs = {**self.config.model_configs, name: mc}
+        return CMORLoader(cfg)
+
+    def _obs_sources(self) -> dict[str, Callable[[], xr.DataArray]]:
+        out = {}
+        for name, spec in self._obs_cfg.items():
+            spec = spec or {}
+            if not spec.get("data_root"):
+                logger.warning("precip_extremes: obs %s has no data_root — skipped",
+                               name)
+                continue
+
+            def get_hist(n=name, sp=spec):
+                return self._make_obs_loader(n, sp).load_var(
+                    n, "pr", table="day", period=self.obs_load_period)
+
+            out[name] = get_hist
+        return out
+
+    def _obs_color(self, name: str, i: int) -> str:
+        default = ("black", "0.45", "0.7")[min(i, 2)]
+        return (self._obs_cfg.get(name) or {}).get("color", default)
+
     def _discover_cmip6(self):
         """Daily-pr CMIP6 models with the same member in hist and future."""
         cfg = self._cmip6_cfg
@@ -563,7 +622,16 @@ class PrecipExtremesDiag(DiagnosticBase):
             if r is not None:
                 cmip6_raw[mc.name] = r
 
+        obs_raw: dict[str, dict] = {}
+        for name, get_hist in self._obs_sources().items():
+            logger.info("  Observations: %s", name)
+            ds = self._segment(name, "hist", self._nc_path(name, "hist", obs=True),
+                               get_hist)
+            if ds is not None:
+                obs_raw[name] = {"hist": ds, "ssp": None}
+
         eerie = self._summarise(eerie_raw, _regular_grid(_EERIE_RES))
+        obs = self._summarise(obs_raw, _regular_grid(_EERIE_RES))
         cmip6 = self._summarise(cmip6_raw, _regular_grid(_CMIP6_RES))
         families = self._families(list(eerie))
 
@@ -577,7 +645,7 @@ class PrecipExtremesDiag(DiagnosticBase):
                     fam[idx][f] = g
             mmm[idx] = self._group(cmip6, list(cmip6), idx)
 
-        return {"eerie": eerie, "cmip6": cmip6, "families": families,
+        return {"eerie": eerie, "cmip6": cmip6, "obs": obs, "families": families,
                 "family": fam, "mmm": mmm}
 
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
@@ -606,7 +674,15 @@ class PrecipExtremesDiag(DiagnosticBase):
                 fm = fn(results, idx)
                 if fm is not None:
                     figs.append(fm)
+            for name in self._obs_with(results, idx):
+                fm = self._plot_bias(results, idx, name)
+                if fm is not None:
+                    figs.append(fm)
         return figs
+
+    @staticmethod
+    def _obs_with(results, idx) -> list[str]:
+        return [o for o, d in results.get("obs", {}).items() if idx in d["ref"]]
 
     def _label(self, f: str, g: dict, n_key: str = "n") -> str:
         n = g[n_key]
@@ -662,8 +738,10 @@ class PrecipExtremesDiag(DiagnosticBase):
 
     def _plot_reference(self, results, idx):
         label, long_name, units = INDEX_INFO[idx]
-        panels = [(self._label(f, g), g["ref"])
-                  for f, g in results["family"][idx].items()]
+        obs = self._obs_with(results, idx)
+        panels = [(o, results["obs"][o]["ref"][idx]) for o in obs]
+        panels += [(self._label(f, g), g["ref"])
+                   for f, g in results["family"][idx].items()]
         mmm = results["mmm"].get(idx)
         if mmm:
             panels.append((self._mmm_label(mmm), mmm["ref"]))
@@ -682,12 +760,13 @@ class PrecipExtremesDiag(DiagnosticBase):
             description=(
                 f"Mean annual {label} ({long_name.lower()}, {units}) over "
                 f"{self._ref_txt()} from daily precipitation (wet day: RR ≥ 1 mm). "
-                + self._panel_note(results, idx)),
+                + self._panel_note(results, idx)
+                + (f" Observational panels: {', '.join(obs)}." if obs else "")),
             computation_notes=self._computation_notes(idx),
             period=self.ref_period, units=units, plot_type="map",
             summary_statistics=self._panel_stats(panels),
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label},
+            extra={"index": label, **self._obs_meta(obs)},
         )
         return fig, meta
 
@@ -771,6 +850,54 @@ class PrecipExtremesDiag(DiagnosticBase):
         )
         return fig, meta
 
+    def _plot_bias(self, results, idx, obs_name):
+        label, long_name, units = INDEX_INFO[idx]
+        ref = results["obs"][obs_name]["ref"][idx]
+        target = _regular_grid(_EERIE_RES)
+        fields = [(self._label(f, g), g["ref"])
+                  for f, g in results["family"][idx].items()]
+        mmm = results["mmm"].get(idx)
+        if mmm:
+            fields.append((self._mmm_label(mmm), _to_grid(mmm["ref"], *target)))
+        others = [o for o in self._obs_with(results, idx) if o != obs_name]
+        fields += [(o, results["obs"][o]["ref"][idx]) for o in others]
+        if not fields:
+            return None
+        panels = [(f"{t}\nminus {obs_name}", f - ref) for t, f in fields]
+        vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=True)
+        fig = self._map_figure(
+            panels, cmap="BrBG", vmin=vmin, vmax=vmax,
+            cbar_label=f"Δ{label} ({units})",
+            suptitle=f"{label} bias vs {obs_name}, {self._ref_txt()}")
+        stats = {f"{t} minus {obs_name}": v for t, v in
+                 ((t, self._latlon_bias_stats(f, ref)) for t, f in fields)}
+        stats[f"{obs_name} (reference)"] = {"global_mean": self._latlon_field_mean(ref)}
+        meta = self._build_metadata(
+            title=f"{label} — Bias vs {obs_name} ({self._ref_txt()})",
+            figure_id=f"{idx}_bias_{obs_name.lower()}",
+            models=self._meta_models(results, idx),
+            description=(
+                f"Bias of mean annual {label} ({long_name.lower()}, {units}) over "
+                f"{self._ref_txt()} against {obs_name}: each EERIE model family"
+                + (f", the {self._cmip6_label} multi-model mean (interpolated "
+                   "bilinearly from 1° to 0.25°)" if mmm else "")
+                + (f" and, as a measure of observational uncertainty, "
+                   f"{', '.join(others)}" if others else "")
+                + f" minus {obs_name}. Positive: more "
+                + ("days" if units == "days" else "precipitation")
+                + f" than {obs_name}. The observations are daily data "
+                  "conservatively remapped to 0.25° and processed exactly like "
+                  "the models (indices from daily values; R95p/R99p against the "
+                  "dataset's own base-period percentiles). "
+                + self._panel_note(results, idx)),
+            computation_notes=self._computation_notes(idx),
+            period=self.ref_period, units=units, plot_type="map",
+            summary_statistics=stats,
+            benchmark_info=self._bench_meta(results, idx),
+            extra={"index": label, **self._obs_meta([obs_name])},
+        )
+        return fig, meta
+
     def _plot_timeseries(self, results, idx):
         label, long_name, units = INDEX_INFO[idx]
         fig, ax = plt.subplots(figsize=(13, 5))
@@ -814,6 +941,15 @@ class PrecipExtremesDiag(DiagnosticBase):
                         label=f"{f} mean ({len(series)})")
                 stats[f"{f} mean"] = self._series_stats(fm)
 
+        obs = self._obs_with(results, idx)
+        for i, o in enumerate(obs):
+            ts = results["obs"][o]["ts"].get(idx)
+            if ts is None:
+                continue
+            ax.plot(ts["year"], ts, color=self._obs_color(o, i), lw=2.2,
+                    ls=("-", "-.", ":")[min(i, 2)], label=o, zorder=10)
+            stats[o] = self._series_stats(ts)
+
         ax.set_xlabel("Year")
         ax.set_ylabel(f"{label} ({units})")
         ax.set_title(f"{label} — {long_name}, global area-weighted mean\n"
@@ -831,24 +967,32 @@ class PrecipExtremesDiag(DiagnosticBase):
                 f"({units}), {self.hist_load_period[0]}–{self.ssp_load_period[1]}: "
                 f"historical to {_HIST_BOUNDARY_YEAR - 1}, SSP2-4.5 after. Thin lines "
                 "are individual EERIE members, thick lines family means; dashed grey "
-                f"is the {self._cmip6_label} MMM with its min–max range shaded. "
-                "Each model is averaged on its own grid."),
+                f"is the {self._cmip6_label} MMM with its min–max range shaded"
+                + (f"; observations ({', '.join(obs)}, "
+                   f"{self.obs_load_period[0]}–{self.obs_load_period[1]}) in "
+                   "black/grey" if obs else "")
+                + ". Each model is averaged on its own grid."),
             computation_notes=self._computation_notes(idx),
             period=(self.hist_load_period[0], self.ssp_load_period[1]),
             units=units, plot_type="timeseries", summary_statistics=stats,
             benchmark_info=self._bench_meta(results, idx),
-            extra={"index": label},
+            extra={"index": label, **self._obs_meta(obs)},
         )
         return fig, meta
 
     # ── Metadata helpers ───────────────────────────────────────────────
 
     def _build_metadata(self, *args, extra: dict | None = None, **kwargs):
-        """Registry defaults for ``pr`` name ERA5 and the monthly group — neither
-        applies here (no observations; own dashboard page)."""
+        """Registry defaults for ``pr`` name monthly ERA5 and the monthly group —
+        neither applies here (own dashboard page; figures that use the daily
+        observations name them through *extra*)."""
         extra = {"group": self.group, "obs_dataset": "", "obs_variable": "",
                  **(extra or {})}
         return super()._build_metadata(*args, extra=extra, **kwargs)
+
+    @staticmethod
+    def _obs_meta(obs: list[str]) -> dict:
+        return {"obs_dataset": ", ".join(obs), "obs_variable": "pr"} if obs else {}
 
     def _meta_models(self, results, idx, future: bool = False) -> list[str]:
         key = "fut" if future else "ref"
@@ -882,6 +1026,9 @@ class PrecipExtremesDiag(DiagnosticBase):
             "future. Rx5day windows belong to the year of their last day. Period "
             "means bilinearly interpolated to 0.25° (EERIE) or 1° (CMIP6) before "
             "averaging across members."
+            + (f" Observations ({', '.join(self._obs_cfg)}): daily totals "
+               "conservatively remapped to 0.25° before the indices are computed, "
+               "each with its own base-period percentiles." if self._obs_cfg else "")
         )
 
     def _export_summary(self, results) -> None:
@@ -895,6 +1042,8 @@ class PrecipExtremesDiag(DiagnosticBase):
                 fields[f"{key}_ref"] = g["ref"]
                 if g["change"] is not None:
                     fields[f"{key}_change"] = g["change"]
+            for o in self._obs_with(results, idx):
+                fields[f"obs_{o}_ref".replace("-", "_")] = results["obs"][o]["ref"][idx]
             mmm = results["mmm"].get(idx)
             if mmm:
                 fields["cmip6_mmm_ref"] = _to_grid(mmm["ref"], *_regular_grid(_EERIE_RES))
