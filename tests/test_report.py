@@ -411,6 +411,84 @@ class TestOpenAIClient:
                 OpenAIClient({"api_key_env": "NONEXISTENT_KEY_VAR"})
 
 
+def _openai_status_error(cls, status, body):
+    import httpx
+
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    resp = httpx.Response(status, request=req, json={"error": body})
+    return cls(body.get("message", ""), response=resp, body=body)
+
+
+def _client_raising(*errors):
+    client = OpenAIClient.__new__(OpenAIClient)
+    client.config = {}
+    client.client = MagicMock()
+    client.client.chat.completions.create.side_effect = list(errors)
+    return client
+
+
+class TestOpenAIRetry:
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self):
+        with patch("feather.export.openai_client.time.sleep") as sleep:
+            yield sleep
+
+    def test_quota_exhausted_fails_fast(self, _no_sleep):
+        import openai
+        from feather.export.openai_client import OpenAIFatalError
+
+        err = _openai_status_error(openai.RateLimitError, 429, {
+            "message": "You have no credits remaining.",
+            "type": "insufficient_quota",
+            "code": "credit_balance_exhausted",
+        })
+        client = _client_raising(err, err, err)
+        with pytest.raises(OpenAIFatalError, match="no credits"):
+            client._call(system="s", user="u")
+        assert client.client.chat.completions.create.call_count == 1
+        _no_sleep.assert_not_called()
+
+    def test_bad_key_fails_fast(self):
+        import openai
+        from feather.export.openai_client import OpenAIFatalError
+
+        err = _openai_status_error(openai.AuthenticationError, 401, {
+            "message": "Incorrect API key", "type": "invalid_request_error",
+            "code": "invalid_api_key",
+        })
+        client = _client_raising(err)
+        with pytest.raises(OpenAIFatalError, match="API key"):
+            client._call(system="s", user="u")
+
+    def test_plain_rate_limit_still_retried(self, _no_sleep):
+        import openai
+
+        err = _openai_status_error(openai.RateLimitError, 429, {
+            "message": "Rate limit reached", "type": "requests",
+            "code": "rate_limit_exceeded",
+        })
+        ok = MagicMock()
+        ok.choices[0].message.content = '{"a": 1}'
+        client = _client_raising(err, ok)
+        assert client._call(system="s", user="u") == '{"a": 1}'
+        assert client.client.chat.completions.create.call_count == 2
+        _no_sleep.assert_called_once()
+
+    def test_cli_prints_message_without_traceback(self, capsys):
+        from feather import cli
+        from feather.export.openai_client import OpenAIFatalError
+
+        with patch.object(cli, "run_pipeline",
+                          side_effect=OpenAIFatalError("no credits left")), \
+             patch.object(cli.FeatherConfig, "from_yaml") as from_yaml:
+            from_yaml.return_value.project = {"name": "X"}
+            from_yaml.return_value.output_dir = "/tmp/x"
+            with pytest.raises(SystemExit) as exc:
+                cli.main(["--config", "x.yaml", "--steps", "report"])
+        assert exc.value.code == 1
+        assert "no credits left" in capsys.readouterr().err
+
+
 # ── ReportGenerator tests ──────────────────────────────────────────
 
 

@@ -15,6 +15,35 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 3
 _RETRY_DELAY_S = 10
 
+# Error ``code``/``type`` values on a 429 that mean "no money", not "slow down".
+_QUOTA_CODES = {"insufficient_quota", "credit_balance_exhausted"}
+
+
+class OpenAIFatalError(RuntimeError):
+    """An OpenAI error that no amount of retrying will fix (no credits,
+    bad key, no access to the model)."""
+
+
+def _fatal_reason(exc: Exception) -> str | None:
+    """Return a one-line explanation if *exc* is not worth retrying."""
+    import openai
+
+    if isinstance(exc, openai.RateLimitError):
+        if {exc.code, exc.type} & _QUOTA_CODES:
+            return (
+                "OpenAI account has no credits left — top up at "
+                "https://platform.openai.com/settings/organization/billing/ "
+                "or use another key (--openai-api-key / report.api_key_env)"
+            )
+        return None
+    if isinstance(exc, openai.AuthenticationError):
+        return "OpenAI rejected the API key — check --openai-api-key / report.api_key_env"
+    if isinstance(exc, openai.PermissionDeniedError):
+        return f"OpenAI denied access: {exc.message}"
+    if isinstance(exc, openai.NotFoundError):
+        return f"OpenAI model not found (check report.model): {exc.message}"
+    return None
+
 
 class OpenAIClient:
     """Wrapper around the OpenAI chat completions API.
@@ -79,6 +108,9 @@ class OpenAIClient:
                 )
                 return response.choices[0].message.content
             except Exception as exc:
+                reason = _fatal_reason(exc)
+                if reason:
+                    raise OpenAIFatalError(reason) from exc
                 if attempt < _MAX_RETRIES:
                     logger.warning(
                         "OpenAI call failed (attempt %d/%d): %s — "
