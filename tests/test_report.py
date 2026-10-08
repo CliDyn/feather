@@ -474,6 +474,32 @@ class TestOpenAIRetry:
         assert client.client.chat.completions.create.call_count == 2
         _no_sleep.assert_called_once()
 
+    def test_requests_json_mode(self):
+        ok = MagicMock()
+        ok.choices[0].message.content = '{"a": 1}'
+        client = _client_raising(ok)
+        client._call(system="s", user="u")
+        kwargs = client.client.chat.completions.create.call_args.kwargs
+        assert kwargs["response_format"] == {"type": "json_object"}
+
+    def test_unparseable_response_is_retried(self):
+        bad, ok = MagicMock(), MagicMock()
+        bad.choices[0].message.content = "{'a': 1}"
+        ok.choices[0].message.content = '{"a": 1}'
+        client = _client_raising(bad, ok)
+        assert client.chat_json(system="s", user="u") == {"a": 1}
+        assert client.client.chat.completions.create.call_count == 2
+
+    def test_unparseable_response_gives_up(self):
+        import json
+
+        bad = MagicMock()
+        bad.choices[0].message.content = "{'a': 1}"
+        client = _client_raising(bad, bad, bad)
+        with pytest.raises(json.JSONDecodeError):
+            client.chat_json(system="s", user="u")
+        assert client.client.chat.completions.create.call_count == 3
+
     def test_cli_prints_message_without_traceback(self, capsys):
         from feather import cli
         from feather.export.openai_client import OpenAIFatalError

@@ -86,8 +86,19 @@ class OpenAIClient:
         dict
             Parsed JSON from the LLM response.
         """
-        text = self._call(system=system, user=user)
-        return self._parse_json(text)
+        for attempt in range(1, _MAX_RETRIES + 1):
+            text = self._call(system=system, user=user)
+            try:
+                return self._parse_json(text)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "OpenAI response is not valid JSON (attempt %d/%d): %s — "
+                    "response starts with: %r",
+                    attempt, _MAX_RETRIES, exc, (text or "")[:300],
+                )
+                if attempt == _MAX_RETRIES:
+                    raise
+        raise RuntimeError("unreachable")
 
     def _call(self, system: str, user: str) -> str:
         """Call OpenAI with retry on transient errors."""
@@ -101,6 +112,7 @@ class OpenAIClient:
                     model=model,
                     max_completion_tokens=max_tokens,
                     temperature=temperature,
+                    response_format={"type": "json_object"},
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
