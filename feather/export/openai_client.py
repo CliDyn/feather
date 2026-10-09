@@ -42,6 +42,14 @@ def _fatal_reason(exc: Exception) -> str | None:
         return f"OpenAI denied access: {exc.message}"
     if isinstance(exc, openai.NotFoundError):
         return f"OpenAI model not found (check report.model): {exc.message}"
+    if isinstance(exc, openai.BadRequestError):
+        # The same request is rejected the same way every time.
+        if exc.code == "context_length_exceeded":
+            return (
+                f"OpenAI prompt too long: {exc.message} — lower "
+                "report.max_prompt_tokens"
+            )
+        return f"OpenAI rejected the request: {exc.message}"
     return None
 
 

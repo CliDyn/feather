@@ -302,6 +302,47 @@ class TestPrompts:
         assert "global_biases" in prompt
         assert "Finding 1" in prompt
 
+    @staticmethod
+    def _many_figures(n=200):
+        metadata = {"global_trends": [
+            {"figure_id": f"fig{i}", "title": f"Title {i}",
+             "variables_used": ["tas"], "models": ["A", "B"],
+             "description": "D" * 200} for i in range(n)
+        ]}
+        analyses = {"global_trends": [
+            {"figure_id": f"fig{i}", "summary": "S" * 300,
+             "spatial_patterns": "P" * 900, "confidence": "high",
+             "key_findings": ["F" * 250] * 5} for i in range(n)
+        ]}
+        syntheses = {"global_trends": {"headline_finding": "Keep me"}}
+        return syntheses, metadata, analyses
+
+    def test_curation_prompt_full_detail_within_budget(self):
+        s, m, a = self._many_figures(3)
+        prompt = build_curation_prompt(s, m, a, max_tokens=None)
+        assert "Spatial patterns: " + "P" * 900 in prompt
+        assert "Models: A, B" in prompt
+        assert prompt.count("F" * 250) == 15
+
+    def test_curation_prompt_compacted_to_budget(self):
+        from feather.export.prompts import estimate_tokens
+
+        s, m, a = self._many_figures()
+        full = build_curation_prompt(s, m, a, max_tokens=None)
+        budget = estimate_tokens(full) // 4
+        prompt = build_curation_prompt(s, m, a, max_tokens=budget)
+        assert estimate_tokens(prompt) <= budget
+        assert "Spatial patterns" not in prompt
+        # Every figure stays selectable; syntheses are kept verbatim.
+        assert all(f"Figure: fig{i}\n" in prompt for i in range(200))
+        assert "Keep me" in prompt
+
+    def test_curation_prompt_falls_back_to_ids_and_titles(self):
+        s, m, a = self._many_figures()
+        prompt = build_curation_prompt(s, m, a, max_tokens=1)
+        assert "Title: Title 199" in prompt
+        assert "Summary" not in prompt and "Variables" not in prompt
+
     def test_section_system(self):
         sys_prompt = build_section_system()
         assert "IPCC" in sys_prompt
@@ -459,6 +500,21 @@ class TestOpenAIRetry:
         client = _client_raising(err)
         with pytest.raises(OpenAIFatalError, match="API key"):
             client._call(system="s", user="u")
+
+    def test_context_length_exceeded_fails_fast(self, _no_sleep):
+        import openai
+        from feather.export.openai_client import OpenAIFatalError
+
+        err = _openai_status_error(openai.BadRequestError, 400, {
+            "message": "Input tokens exceed the configured limit",
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+        })
+        client = _client_raising(err, err, err)
+        with pytest.raises(OpenAIFatalError, match="max_prompt_tokens"):
+            client._call(system="s", user="u")
+        assert client.client.chat.completions.create.call_count == 1
+        _no_sleep.assert_not_called()
 
     def test_plain_rate_limit_still_retried(self, _no_sleep):
         import openai
