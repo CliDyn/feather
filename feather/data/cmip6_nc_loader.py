@@ -16,6 +16,7 @@ the pre-staged historical MMM.
 
 import copy
 import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -236,10 +237,15 @@ class CMIP6NCLoader:
                 continue
             logger.info("CMIP6 %s/%s: opening %d file(s)", model, exp, len(files))
             self._opened.extend(files)
-            ds = xr.open_mfdataset(
-                files, chunks={}, combine="by_coords", data_vars="minimal", coords="minimal", compat="override",
-                decode_timedelta=False, drop_variables=_BOUNDS_VARS, **_CFTIME,
-            )
+            # CESM2 & co. declare _FillValue and missing_value as 1e20 in
+            # float32 and float64; both mean the same cells, so masking all
+            # of them is right and xarray's per-file warning is noise.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="variable.*multiple fill values")
+                ds = xr.open_mfdataset(
+                    files, chunks={}, combine="by_coords", data_vars="minimal", coords="minimal", compat="override",
+                    decode_timedelta=False, drop_variables=_BOUNDS_VARS, **_CFTIME,
+                )
             segments.append(ds[variable])
 
         if not segments:
