@@ -15,6 +15,43 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 3
 _RETRY_DELAY_S = 10
 
+# Error ``code``/``type`` values on a 429 that mean "no money", not "slow down".
+_QUOTA_CODES = {"insufficient_quota", "credit_balance_exhausted"}
+
+
+class OpenAIFatalError(RuntimeError):
+    """An OpenAI error that no amount of retrying will fix (no credits,
+    bad key, no access to the model)."""
+
+
+def _fatal_reason(exc: Exception) -> str | None:
+    """Return a one-line explanation if *exc* is not worth retrying."""
+    import openai
+
+    if isinstance(exc, openai.RateLimitError):
+        if {exc.code, exc.type} & _QUOTA_CODES:
+            return (
+                "OpenAI account has no credits left — top up at "
+                "https://platform.openai.com/settings/organization/billing/ "
+                "or use another key (--openai-api-key / report.api_key_env)"
+            )
+        return None
+    if isinstance(exc, openai.AuthenticationError):
+        return "OpenAI rejected the API key — check --openai-api-key / report.api_key_env"
+    if isinstance(exc, openai.PermissionDeniedError):
+        return f"OpenAI denied access: {exc.message}"
+    if isinstance(exc, openai.NotFoundError):
+        return f"OpenAI model not found (check report.model): {exc.message}"
+    if isinstance(exc, openai.BadRequestError):
+        # The same request is rejected the same way every time.
+        if exc.code == "context_length_exceeded":
+            return (
+                f"OpenAI prompt too long: {exc.message} — lower "
+                "report.max_prompt_tokens"
+            )
+        return f"OpenAI rejected the request: {exc.message}"
+    return None
+
 
 class OpenAIClient:
     """Wrapper around the OpenAI chat completions API.
@@ -57,8 +94,19 @@ class OpenAIClient:
         dict
             Parsed JSON from the LLM response.
         """
-        text = self._call(system=system, user=user)
-        return self._parse_json(text)
+        for attempt in range(1, _MAX_RETRIES + 1):
+            text = self._call(system=system, user=user)
+            try:
+                return self._parse_json(text)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "OpenAI response is not valid JSON (attempt %d/%d): %s — "
+                    "response starts with: %r",
+                    attempt, _MAX_RETRIES, exc, (text or "")[:300],
+                )
+                if attempt == _MAX_RETRIES:
+                    raise
+        raise RuntimeError("unreachable")
 
     def _call(self, system: str, user: str) -> str:
         """Call OpenAI with retry on transient errors."""
@@ -72,6 +120,7 @@ class OpenAIClient:
                     model=model,
                     max_completion_tokens=max_tokens,
                     temperature=temperature,
+                    response_format={"type": "json_object"},
                     messages=[
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
@@ -79,6 +128,9 @@ class OpenAIClient:
                 )
                 return response.choices[0].message.content
             except Exception as exc:
+                reason = _fatal_reason(exc)
+                if reason:
+                    raise OpenAIFatalError(reason) from exc
                 if attempt < _MAX_RETRIES:
                     logger.warning(
                         "OpenAI call failed (attempt %d/%d): %s — "

@@ -237,28 +237,34 @@ def main(argv: list[str] | None = None):
     print(f"Diagnostics: {args.diagnostics or 'all'}")
     print()
 
-    result = run_pipeline(
-        cfg,
-        steps=args.steps,
-        diagnostics=args.diagnostics,
-        variables=args.variables,
-        experiment=experiment,
-        period=period,
-        api_key=args.api_key,
-        openai_api_key=args.openai_api_key,
-        skip_existing=not args.no_skip_existing,
-        compile_pdf=args.compile_pdf,
-        cmip6_individual=args.cmip6_individual,
-        added_value_regions=args.added_value_regions,
-        benchmarks=args.benchmarks,
-        save_netcdf=args.save_netcdf,
-        individual_netcdf_only=args.individual_netcdf_only,
-        ensemble_only=args.ensemble_only,
-        replot_from_netcdf=args.replot_from_netcdf,
-        no_llm=args.no_llm,
-        provenance_hash=args.provenance_hash,
-        provenance_hash_obs=args.provenance_hash_obs,
-    )
+    from feather.export.openai_client import OpenAIFatalError
+
+    try:
+        result = run_pipeline(
+            cfg,
+            steps=args.steps,
+            diagnostics=args.diagnostics,
+            variables=args.variables,
+            experiment=experiment,
+            period=period,
+            api_key=args.api_key,
+            openai_api_key=args.openai_api_key,
+            skip_existing=not args.no_skip_existing,
+            compile_pdf=args.compile_pdf,
+            cmip6_individual=args.cmip6_individual,
+            added_value_regions=args.added_value_regions,
+            benchmarks=args.benchmarks,
+            save_netcdf=args.save_netcdf,
+            individual_netcdf_only=args.individual_netcdf_only,
+            ensemble_only=args.ensemble_only,
+            replot_from_netcdf=args.replot_from_netcdf,
+            no_llm=args.no_llm,
+            provenance_hash=args.provenance_hash,
+            provenance_hash_obs=args.provenance_hash_obs,
+        )
+    except OpenAIFatalError as exc:
+        print(f"\nReport step aborted: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     print()
     print("Pipeline complete:")

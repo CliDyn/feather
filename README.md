@@ -103,6 +103,13 @@ feather --config configs/eerie_all_members_extremes.yaml \
         --steps diagnostics \
         --diagnostics heatwave_hotspots --variables tasmax -v
 
+# EERIE daily precipitation extremes (ETCCDI) — 10 members vs daily CMIP6,
+# ERA5 and MSWEP; present day + SSP2-4.5 change (derive the daily obs first,
+# see "Daily precipitation extremes" below)
+feather --config configs/eerie_10_mems_precip_extremes.yaml \
+        --steps diagnostics \
+        --diagnostics precip_extremes --save-netcdf -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -290,6 +297,7 @@ Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere,
 | `heatwave` | `HeatwaveDiag` | Berkeley Earth Land TMAX | Five TX90 heatwave indices (HWN, HWF, HWD, HWM, HWA): climatological maps + annual time series; TMAX bias map |
 | `heatwave_change` | `HeatwaveChangeDiag` | Berkeley Earth Land TMAX | Climate change signal in five TX90 heatwave indices under SSP2-4.5: [Reference \| Future \| Change] maps per model per index, land-mean time series hist+SSP stitched, mean Tmax bias map |
 | `heatwave_hotspots` | `HeatwaveHotspotsDiag` | ERA5 (derived daily tasmax) | Extreme-heat tail-widening (trend in yearly 99th − 87.5th percentile of daily tasmax, °C/decade): global trend maps per model with significance stippling and region boxes, regional box-and-whisker, PDF/CDF discrepancy panels (PNAS Fig 2–4) |
+| `precip_extremes` | `PrecipExtremesDiag` | ERA5 + MSWEP v2.8 (daily, derived to 0.25°) | Nine ETCCDI daily-precipitation indices (R1mm, R10mm, R20mm, PRCPTOT, SDII, R95p, R99p, Rx1day, Rx5day): reference climatology per model family + daily CMIP6 MMM + obs, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs each obs dataset, global-mean time series |
 | `temp_extremes_change` | `TempExtremesChangeDiag` | — (model change signal) | Climate change signal in mean daily `tasmin` **and** `tasmax` under SSP2-4.5, annual + four seasons (DJF/MAM/JJA/SON): [Reference \| Future \| Change] maps per model + stitched global-mean time series, per variable |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
@@ -332,6 +340,61 @@ The **Heatwave Hotspots diagnostic** (`heatwave_hotspots`) reproduces Figures 2�
 - **PDF** (`heatwave_hotspots_pdf`) — area-weighted probability density of the `D`-trend across land, model vs ERA5.
 
 The reference is ERA5 (the derived daily tasmax CMOR tree); the model ensemble is the EERIE high-resolution members. CMIP6 is **not** included in this first pass — daily tasmax is only on the DKRZ pool DRS (`/pool/data/CMIP6/.../day/tasmax/`), not in the zarr cache — but the config carries a stub for wiring in a yearly-percentile cache later. Per-model yearly-percentile fields are checkpointed to NetCDF in `{output_dir}/heatwave_hotspots/` so re-runs skip the heavy daily-percentile pass. Configuration lives in `configs/eerie_all_members_extremes.yaml`.
+
+#### Daily precipitation extremes (`precip_extremes`)
+
+Computes nine ETCCDI indices from **daily** `pr`, following the C3S CMIP6 extreme-indices definitions (wet day: RR ≥ 1 mm):
+
+| Index | Meaning | Units |
+|---|---|---|
+| R1mm / R10mm / R20mm | days with RR ≥ 1 / 10 / 20 mm | days/yr |
+| PRCPTOT | total wet-day precipitation | mm/yr |
+| SDII | simple daily intensity (PRCPTOT / R1mm) | mm/day |
+| R95p / R99p | wet-day total above the 95th / 99th wet-day percentile | mm/yr |
+| Rx1day / Rx5day | maximum 1-day / consecutive 5-day precipitation | mm |
+
+Periods come from `project.climate_change` (reference 1981–2000, future SSP2-4.5 2031–2050 in `configs/eerie_10_mems_precip_extremes.yaml`). `precip_extremes.seasons` (DJF, MAM, JJA, SON in the EERIE config) adds seasonal versions of every index — the same definitions over the season's days, DJF of year *Y* being December *Y−1* + January–February *Y* — with the full figure set per season (`{idx}_{season}_reference`, …). R95p/R99p thresholds are each dataset's own wet-day percentiles over `precip_extremes.base_period` (default: the reference period — ETCCDI's 1961–1990 is not covered by the 1975-start members) and stay fixed for the future. Indices are computed year by year on each model's native grid; the period means are then interpolated to 0.25° (EERIE family means) or 1° (CMIP6 MMM). The CMIP6 ensemble is auto-discovered from the DKRZ DRS tree (`cmip6_daily`): one member per model, the first (r1i1p1f1 preferred) that publishes `day/pr` in both historical and ssp245, under any institution — 35 models as of 2026-10 (of 67 historical models, 16 have no daily `pr` and 16 no ssp245 daily `pr`).
+
+Figures per index:
+- **`{idx}_reference`** — reference-period climatology: ERA5, MSWEP, one panel per EERIE model family (mean of its members), CMIP6 MMM.
+- **`{idx}_change`** — SSP2-4.5 future minus reference; counts and R95p/R99p as absolute change, PRCPTOT/SDII/Rx1day/Rx5day in percent.
+- **`{idx}_diff_cmip6`** — EERIE family minus CMIP6 MMM, reference period.
+- **`{idx}_bias_era5`, `{idx}_bias_mswep`** — each EERIE family, the CMIP6 MMM and the *other* observational dataset minus the obs, with area-weighted mean bias, RMSE, t-test and variance-ratio F-test per panel. The obs-minus-obs panel shows the observational uncertainty, which is large for the intensity indices.
+- **`{idx}_timeseries`** — global-mean annual index, historical + SSP2-4.5, members thin, family means thick, CMIP6 MMM with min–max range, ERA5/MSWEP lines.
+
+**Daily observations.** Both references are derived to daily 0.25° (1440×721, kg m⁻² s⁻¹) CMOR trees with **area-conservative** remapping before the indices are computed, so they are processed exactly like a model:
+
+| Dataset | Source on Levante | Script | Output tree |
+|---|---|---|---|
+| ERA5 | `/pool/data/ERA5/E5/sf/fc/1D/228` — daily totals, N320 reduced Gaussian | `scripts/era5_derive_pr_daily.sh` | `/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/day/pr/gr/v1/` |
+| MSWEP v2.8 | `/pool/data/ICDC/atmosphere/mswep_precipitation/DATA` — 0.1°, 3-hourly, one file per step | `scripts/mswep_derive_pr_daily.sh` | `/work/bm1344/AWI/OBS/mswep_derived/CMOR/GloH2O/MSWEP/mswep/r1i1p1f1/day/pr/gr/v1/` |
+
+The aqua-dvc MSWEP used by `precipitation_mswep` is monthly only. MSWEP days are the sum of the eight 3-hourly steps 00–21 UTC; a day with a missing step is skipped (treated as missing), never summed short. The datasets are declared under `project.precip_extremes.obs` (name → `data_root`, `experiment`, `color`); `obs_load_period` sets the years read (default: the historical load period). Without an `obs` block the diagnostic runs without observations.
+
+Full workflow:
+
+```bash
+# 1) Daily 0.25° observations (SLURM, one job per year)
+sbatch --array=1981-2014 scripts/era5_derive_pr_daily.sh
+sbatch --array=1981-2014%12 scripts/mswep_derive_pr_daily.sh
+
+# 2) Indices and figures (compute node). Daily data are read once; the
+#    per-model/per-obs checkpoints make re-runs cheap.
+feather --config configs/eerie_10_mems_precip_extremes.yaml --steps diagnostics \
+        --diagnostics precip_extremes --save-netcdf -v
+
+# 3) LLM analysis, report, website
+feather --config configs/eerie_10_mems_precip_extremes.yaml --steps analyze \
+        --diagnostics precip_extremes --api-key $VERTEX_API_KEY -v
+feather --config configs/eerie_10_mems_precip_extremes.yaml --steps report \
+        --diagnostics precip_extremes --openai-api-key $OPENAI_API_KEY -v
+feather --config configs/eerie_10_mems_precip_extremes.yaml --steps website \
+        --diagnostics precip_extremes -v
+```
+
+Add `--no-skip-existing` to `analyze` and `report` when figures changed since the last run — otherwise the cached analyses and the cached report structure (`publication/`) are reused.
+
+Checkpoints (annual index fields, native grid): `{output_dir}/precip_extremes/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…` and `…/obs/{dataset}_hist_{start}_{end}.nc`, with the seasonal fields next to each in `…_seasons.nc`; delete one to force its recomputation. Adding seasons to a finished run keeps the annual files and re-reads the daily data once for the seasons. Open them with `decode_timedelta=False` — count indices carry `units = "days"`. `--save-netcdf` writes `{output_dir}/netcdf/precip_extremes/{idx}_{ref0}-{fut1}_summary.nc` (family/CMIP6/obs fields on 0.25°).
 
 ### Climate classification
 
@@ -411,7 +474,7 @@ All diagnostics support:
 
 ## Configuration
 
-Feather uses YAML configuration files. Fourteen configs are provided:
+Feather uses YAML configuration files. Sixteen configs are provided:
 
 | Config | Model set | Data source | Comparison type |
 |--------|----------|------------|-----------------|
@@ -422,6 +485,7 @@ Feather uses YAML configuration files. Fourteen configs are provided:
 | `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
 | `configs/eerie_climchange_hw.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 heatwave signal | CMOR + kerchunk native | `multi_model` |
 | `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + 7 members (3×FESOM2 + 3×NEMO + ICON; HadGEM3 has no daily tasmax), heatwave-hotspot tail-widening (PNAS Fig 2–4) | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
+| `configs/eerie_10_mems_precip_extremes.yaml` | EERIE — 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3-GC5E-HH), ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6, ERA5 and MSWEP | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily obs | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |

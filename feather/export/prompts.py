@@ -14,6 +14,22 @@ Prompts adapt to different comparison types via ``comparison_type``:
 """
 
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Rough characters per token for English prose + JSON (measured ~3.8 on
+# EERIE curation prompts); kept low so the estimate errs on the large side.
+_CHARS_PER_TOKEN = 3.5
+
+# Default budget for the Stage 1 user prompt, below the 272k input limit
+# of the GPT-5 family to leave room for the system prompt.
+DEFAULT_CURATION_MAX_TOKENS = 200_000
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative token estimate for *text*."""
+    return int(len(text) / _CHARS_PER_TOKEN) + 1
 
 
 def _format_model_list(models: list[str]) -> str:
@@ -225,11 +241,59 @@ def build_curation_system(
     )
 
 
+def _clip(text, n: int) -> str:
+    text = str(text)
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+# Detail levels for figure entries in the curation prompt, most detailed
+# first. Each: (models line, spatial patterns, n findings, finding length,
+# summary length, description). ``None`` lengths mean untruncated.
+_FIGURE_DETAIL = [
+    (True, True, None, None, None, True),
+    (False, False, 3, 300, 400, True),
+    (False, False, 1, 200, 300, False),
+    (False, False, 0, 0, 160, False),
+    (False, False, 0, 0, 0, False),
+]
+
+
+def _figure_entry(meta: dict, analysis: dict | None, level: int) -> list[str]:
+    """Lines describing one figure at the given detail *level*."""
+    models, patterns, n_find, find_len, summ_len, desc = _FIGURE_DETAIL[level]
+    lines = [
+        f"\n  Figure: {meta.get('figure_id', 'unknown')}",
+        f"    Title: {meta.get('title', 'N/A')}",
+    ]
+    if level == len(_FIGURE_DETAIL) - 1:
+        return lines
+    lines.append(f"    Variables: {', '.join(meta.get('variables_used', []))}")
+    if models:
+        lines.append(f"    Models: {', '.join(meta.get('models', []))}")
+    if desc:
+        lines.append(f"    Description: {meta.get('description', 'N/A')}")
+    if analysis is None:
+        return lines
+
+    summary = analysis.get("summary", "N/A")
+    lines.append(f"    Summary: {summary if summ_len is None else _clip(summary, summ_len)}")
+    if patterns:
+        lines.append(f"    Spatial patterns: {analysis.get('spatial_patterns', 'N/A')}")
+    lines.append(f"    Confidence: {analysis.get('confidence', 'N/A')}")
+    findings = analysis.get("key_findings", [])
+    if n_find is not None:
+        findings = [_clip(f, find_len) for f in findings[:n_find]]
+    for f in findings:
+        lines.append(f"      - {f}")
+    return lines
+
+
 def build_curation_prompt(
     syntheses: dict[str, dict],
     figure_metadata: dict[str, list[dict]],
     figure_analyses: dict[str, list[dict]],
     n_highlights: int = 10,
+    max_tokens: int | None = DEFAULT_CURATION_MAX_TOKENS,
 ) -> str:
     """Build the user prompt for Stage 1 editorial curation.
 
@@ -243,8 +307,13 @@ def build_curation_prompt(
         diagnostic_name -> list of figure analysis dicts.
     n_highlights : int
         Target number of figures to select.
+    max_tokens : int or None
+        Token budget for the prompt. Figure entries are shortened step by
+        step (models list and spatial patterns dropped, findings and
+        summaries truncated, down to id + title) until the estimate fits.
+        Syntheses are always kept in full. ``None`` disables the budget.
     """
-    parts = [
+    head = [
         f"Please select approximately {n_highlights} figures for the report.\n",
         "=" * 60,
         "DIAGNOSTIC SYNTHESES",
@@ -252,43 +321,47 @@ def build_curation_prompt(
     ]
 
     for diag_name, synth in sorted(syntheses.items()):
-        parts.append(f"\n--- {diag_name} ---")
+        head.append(f"\n--- {diag_name} ---")
         # The provenance block is bookkeeping for audit, not prompt evidence.
         content = {k: v for k, v in synth.items() if k != "provenance"}
-        parts.append(json.dumps(content, indent=2))
+        head.append(json.dumps(content, indent=2))
 
-    parts.append("\n" + "=" * 60)
-    parts.append("AVAILABLE FIGURES (with metadata and analyses)")
-    parts.append("=" * 60)
+    head.append("\n" + "=" * 60)
+    head.append("AVAILABLE FIGURES (with metadata and analyses)")
+    head.append("=" * 60)
 
-    for diag_name in sorted(figure_metadata.keys()):
-        parts.append(f"\n--- {diag_name} ---")
-        metas = figure_metadata[diag_name]
-        analyses = figure_analyses.get(diag_name, [])
+    tail = ("\n\nSelect the most interesting findings and organise "
+            "them into a coherent report structure.")
 
-        for meta in metas:
-            fig_id = meta.get("figure_id", "unknown")
-            parts.append(f"\n  Figure: {fig_id}")
-            parts.append(f"    Title: {meta.get('title', 'N/A')}")
-            parts.append(f"    Variables: {', '.join(meta.get('variables_used', []))}")
-            parts.append(f"    Models: {', '.join(meta.get('models', []))}")
-            parts.append(f"    Description: {meta.get('description', 'N/A')}")
+    def render(level: int) -> str:
+        parts = list(head)
+        for diag_name in sorted(figure_metadata.keys()):
+            parts.append(f"\n--- {diag_name} ---")
+            analyses = {
+                a.get("figure_id"): a
+                for a in reversed(figure_analyses.get(diag_name, []))
+            }
+            for meta in figure_metadata[diag_name]:
+                parts.extend(_figure_entry(
+                    meta, analyses.get(meta.get("figure_id", "unknown")), level,
+                ))
+        parts.append(tail)
+        return "\n".join(parts)
 
-            # Find matching analysis
-            matching = [a for a in analyses if a.get("figure_id") == fig_id]
-            if matching:
-                a = matching[0]
-                parts.append(f"    Summary: {a.get('summary', 'N/A')}")
-                parts.append(f"    Spatial patterns: {a.get('spatial_patterns', 'N/A')}")
-                parts.append(f"    Confidence: {a.get('confidence', 'N/A')}")
-                findings = a.get("key_findings", [])
-                for f in findings:
-                    parts.append(f"      - {f}")
-
-    parts.append("\n\nSelect the most interesting findings and organise "
-                 "them into a coherent report structure.")
-
-    return "\n".join(parts)
+    for level in range(len(_FIGURE_DETAIL)):
+        prompt = render(level)
+        n_tok = estimate_tokens(prompt)
+        if max_tokens is None or n_tok <= max_tokens:
+            break
+    if level > 0:
+        n_figs = sum(len(v) for v in figure_metadata.values())
+        log = logger.warning if n_tok > max_tokens else logger.info
+        log(
+            "Curation prompt: %d figures exceed the %d-token budget at full "
+            "detail; using detail level %d/%d (~%d tokens)",
+            n_figs, max_tokens, level, len(_FIGURE_DETAIL) - 1, n_tok,
+        )
+    return prompt
 
 
 # ── Comparison-type-dependent section blocks ────────────────────────

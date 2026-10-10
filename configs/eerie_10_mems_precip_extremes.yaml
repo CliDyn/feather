@@ -1,0 +1,310 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE 10-member DAILY PRECIPITATION EXTREMES — present day and SSP2-4.5 change.
+#
+# Runs the `precip_extremes` diagnostic (feather/diag/precip_extremes.py):
+# nine ETCCDI indices from daily pr, as defined for the C3S CMIP6 extreme-
+# indices dataset (sis-extreme-indices-cmip6):
+#   R1mm   wet days (RR ≥ 1 mm)                         days/yr
+#   R10mm  heavy precipitation days (RR ≥ 10 mm)        days/yr
+#   R20mm  very heavy precipitation days (RR ≥ 20 mm)   days/yr
+#   PRCPTOT total wet-day precipitation                 mm/yr
+#   SDII   simple daily intensity index (PRCPTOT/R1mm)  mm/day
+#   R95p   wet-day total above the 95th percentile      mm/yr
+#   R99p   wet-day total above the 99th percentile      mm/yr
+#   Rx1day maximum 1-day precipitation                  mm
+#   Rx5day maximum consecutive 5-day precipitation      mm
+# Daily pr arrives in kg m-2 s-1 from every loader and is converted ×86400 to
+# mm/day; each model's first year is sanity-checked before indices are kept.
+#
+# Periods (same as eerie_all_members_indices.yaml):
+#   reference 1981–2000 (hist), future 2031–2050 (SSP2-4.5).  R95p/R99p
+#   thresholds are each model's own wet-day percentiles over 1981–2000 (ETCCDI
+#   uses 1961–1990, which the 1975-start members do not cover).
+#
+# Daily pr availability (checked 2026-10-07):
+#   member              hist (1981–2014)                      SSP2-4.5
+#   IFS-FESOM2-SR r1    CMOR day/pr                           CMOR, to 2050
+#   IFS-FESOM2-SR r2    kerchunk 2D_daily_0.25deg_atmos_avg   kerchunk, to 2030 only
+#   IFS-FESOM2-SR r3    kerchunk 2D_daily_0.25deg_atmos_avg   none
+#   IFS-NEMO-ER r1      CMOR day/pr                           CMOR, to 2050
+#   IFS-NEMO-ER r2/r3   CMOR day/pr (hist-1975, AWI copy)     CMOR, to 2050
+#   ICON-ESM-ER r1      CMOR day/pr                           CMOR, to 2050
+#   ICON-ESM-ER r2/r3   kerchunk 2d_daily_mean_remap025       none
+#   HadGEM3-GC5         HadGEM3-GC5E-HH day/pr (N640, gn)     ssp245, to 2099
+# Members without a future run still enter the reference maps and the time
+# series; the change maps use only members whose SSP run covers 2031–2050.
+#
+# HadGEM3-GC5: the EERIE-N640-ORCA12 tree used by eerie_10_mems_cmip6.yaml has
+# no daily table.  Daily pr comes from the GC5E-HH run instead — the same
+# simulation the EERIE configs already take psl from (see eerie_psl.yaml) —
+# on its native N640 grid (1280×960), interpolated to 0.25° for the maps.
+#
+# Observations (checked 2026-10-08), both derived to daily 0.25° CMOR trees
+# with area-conservative remapping before the indices are computed:
+#   ERA5        /pool/data/ERA5/E5/sf/fc/1D/228 — daily totals, N320 reduced
+#               Gaussian, 1940→  (scripts/era5_derive_pr_daily.sh)
+#   MSWEP v2.8  /pool/data/ICDC/atmosphere/mswep_precipitation — 3-hourly,
+#               0.1°, 1979→, complete 1981–2014 (scripts/mswep_derive_pr_daily.sh)
+# The aqua-dvc MSWEP used by precipitation_mswep is monthly only.
+#
+# CMIP6: auto-discovered from the DKRZ DRS tree, one member per model — the
+# first member (r1i1p1f1 preferred) with day/pr in BOTH historical and ssp245,
+# looked up under any institution (35 models, checked 2026-10-08; of 67
+# historical models 16 publish no day/pr and 16 have no ssp245 day/pr).  Indices are computed on each model's native grid, the MMM on a
+# common 1° grid.
+#
+# Heavy: every member's daily archive is read (twice for the reference years —
+# percentiles, then indices).  Run on a compute node; per-model checkpoints
+# under {output_dir}/precip_extremes/ make re-runs cheap.
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE 10-member daily precipitation extremes (ETCCDI) vs daily CMIP6"
+  experiment: "hist-1950"
+  period: ["1981", "2000"]
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
+  # One summary per model family, as in eerie_10_mems_cmip6.yaml: ICON-ESM-ER
+  # runs without a parameterised convection scheme, which matters most for
+  # daily precipitation extremes.
+  ensemble_mode: per_family
+  comparison_description: >-
+    ETCCDI daily precipitation extreme indices (R1mm, R10mm, R20mm, PRCPTOT,
+    SDII, R95p, R99p, Rx1day, Rx5day) for four EERIE models, each summarised by
+    the mean of its own members (IFS-FESOM2-SR: 3, IFS-NEMO-ER: 3, ICON-ESM-ER:
+    3, HadGEM3-GC5: 1), compared with the daily CMIP6 multi-model mean. The
+    present-day climatology covers 1981-2000 and the climate-change signal is
+    SSP2-4.5 2031-2050 minus 1981-2000. ICON-ESM-ER runs without a
+    parameterised convection scheme, unlike the other models, so its wet-day
+    frequency and intensity are expected to differ. Present-day biases are
+    evaluated against two daily observational references, ERA5 reanalysis and
+    MSWEP v2.8 (merged gauge-satellite-reanalysis), both conservatively remapped
+    to 0.25 degree; their mutual difference indicates observational uncertainty,
+    which is large for the intensity indices (Rx1day, Rx5day, R99p).
+
+  precip_extremes:
+    # All nine by default; list a subset to run fewer.
+    indices: [r1mm, r10mm, r20mm, prcptot, sdii, r95p, r99p, rx1day, rx5day]
+    base_period: ["1981", "2000"]   # R95p/R99p thresholds
+    # Seasonal indices (same definitions over the season's days, annual
+    # R95p/R99p thresholds; DJF = Dec of the previous year + Jan–Feb).  Each
+    # season adds the full figure set ({idx}_{season}_reference, …) and a
+    # …_seasons.nc checkpoint per model; existing annual checkpoints are kept,
+    # the daily data are re-read once for the seasons.  Remove to run annual only.
+    seasons: [DJF, MAM, JJA, SON]
+    # Daily observations as CMOR trees ({data_root}/{experiment}/r1i1p1f1/
+    # day/pr/gr/v1/), regular 0.25° (1440×721), kg m-2 s-1.  Derive them first:
+    #   sbatch --array=1981-2014 scripts/era5_derive_pr_daily.sh
+    #   sbatch --array=1981-2014 scripts/mswep_derive_pr_daily.sh
+    # Indices are computed exactly as for a model (own base-period
+    # percentiles); checkpoints go to {output_dir}/precip_extremes/obs/.
+    obs:
+      ERA5:
+        data_root: /work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5
+        experiment: era5
+        color: "black"
+      MSWEP:
+        data_root: /work/bm1344/AWI/OBS/mswep_derived/CMOR/GloH2O/MSWEP
+        experiment: mswep
+        color: "0.45"
+    obs_load_period: ["1981", "2014"]
+
+  climate_change:
+    reference_period: ["1981", "2000"]
+    future_period:    ["2031", "2050"]
+    hist_load_period: ["1981", "2014"]
+    ssp_load_period:  ["2015", "2050"]
+    # Future-run sources per member.  Members not listed (or without a
+    # future source) are reference-only.  Historical data always comes from
+    # the flat `models` block below.
+    models:
+      IFS-FESOM2-SR:
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+      IFS-FESOM2-SR-r2:
+        future_data_source: kerchunk_native
+        future_data_root:   /work/bm1344/DKRZ/kerchunks/IFS-FESOM2/ssp245
+        future_only_to:     "2030"
+      IFS-NEMO-ER:
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r2:
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      IFS-NEMO-ER-r3:
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER
+      ICON-ESM-ER:
+        future_experiment:  highres-future-ssp245
+        future_data_source: cmor
+      HadGEM3-GC5:
+        future_experiment:  ssp245
+        future_data_source: cmor
+        future_data_root:   /work/bm1344/DKRZ/MOHC/HadGEM3-GC5E-HH
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:
+  # ── IFS-FESOM2-SR ──────────────────────────────────────────────────────
+  IFS-FESOM2-SR:
+    institution: AWI
+    ensemble: EERIE
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {sfc: latlon}
+    color: "#1f77b4"
+
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    ensemble: EERIE
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {sfc: latlon}
+    color: "#5aabdf"
+
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    ensemble: EERIE
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {sfc: latlon}
+    color: "#9fcfe8"
+
+  # ── IFS-NEMO-ER ────────────────────────────────────────────────────────
+  IFS-NEMO-ER:
+    institution: BSC
+    ensemble: EERIE
+    family: IFS-NEMO-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {sfc: latlon}
+    color: "#ff7f0e"
+
+  # r2/r3 daily pr is in the AWI copy of the BSC tree, not the DKRZ CMOR tree.
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    ensemble: EERIE
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r2i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    grids: {sfc: latlon}
+    color: "#e07b00"
+
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    ensemble: EERIE
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r3i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
+    grids: {sfc: latlon}
+    color: "#a85800"
+
+  # ── ICON-ESM-ER ────────────────────────────────────────────────────────
+  ICON-ESM-ER:
+    institution: MPI-M
+    ensemble: EERIE
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {sfc: latlon}
+    color: "#2ca02c"
+
+  ICON-ESM-ER-r2:
+    institution: MPI-M
+    ensemble: EERIE
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 2
+    grids: {sfc: latlon}
+    color: "#66c266"
+
+  ICON-ESM-ER-r3:
+    institution: MPI-M
+    ensemble: EERIE
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 3
+    grids: {sfc: latlon}
+    color: "#a0dba0"
+
+  # ── HadGEM3-GC5 (daily pr from the GC5E-HH tree, native N640 grid) ────
+  HadGEM3-GC5:
+    institution: MOHC
+    ensemble: EERIE
+    family: HadGEM3-GC5
+    experiment: historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/DKRZ/MOHC/HadGEM3-GC5E-HH"
+    grid_label: "gn"
+    grids: {sfc: latlon}
+    color: "#d62728"
+
+# Daily CMIP6 ensemble read straight from the DRS NetCDF tree (no zarr cache).
+cmip6_daily:
+  enabled: true
+  label: "CMIP6"
+  root: "/work/ik1017/CMIP6/data/CMIP6"
+  experiment: historical
+  future_experiment: ssp245
+  member: r1i1p1f1
+  models: auto            # or an explicit list of source_ids
+  exclude: []
+  # max_models: 5         # uncomment for a quick staged run
+
+# The monthly benchmark machinery is not used by this diagnostic.
+cmip6:
+  enabled: false
+
+obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_datasets: {}
+
+dask:
+  n_workers: 4
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_10_mems_precip_extremes"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-2.5-flash"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+website:
+  title: "Feather — EERIE 10-Member Daily Precipitation Extremes"
+  subtitle: "ETCCDI indices, 1981–2000 and SSP2-4.5 2031–2050, EERIE model families vs daily CMIP6 MMM"
+  group_order:
+    - precipitation_extremes
+  group_labels:
+    precipitation_extremes: "Precipitation Extremes"

@@ -113,6 +113,9 @@ _ATMOS3D: dict[str, tuple[str, float]] = {
     "wap":  ("mw", 1.0),
 }
 
+#: CMOR table names that mean "daily" (see ``load_var(table=...)``).
+_DAILY_TABLES = frozenset({"day", "daily", "1d"})
+
 # Atmos 2-D daily minimum variables (e.g. from 2D_daily_0.25deg_atmos_min.parq)
 _ATMOS2D_DAILY_MIN: dict[str, tuple[str, float]] = {
     "tasmin": ("mn2t24", 1.0),   # K, daily minimum 2 m temperature
@@ -183,7 +186,7 @@ class KerchunkParquetLoader:
         model: str,
         variable: str,
         *,
-        table: str | None = None,   # accepted for API parity with CMORLoader; ignored
+        table: str | None = None,
         period: tuple[str, str] | None = None,
         time_mean: bool = False,
     ) -> xr.DataArray:
@@ -193,13 +196,25 @@ class KerchunkParquetLoader:
         ----------
         model, variable : str
             Model name and CMOR variable name.
+        table : str, optional
+            ``"day"`` returns an atmos-2D average field (e.g. ``pr``) at its
+            native daily cadence from the daily-average store.  Any other
+            value keeps the monthly behaviour.  ``tasmin``/``tasmax`` are
+            daily whatever the table.
         period : (start, end), optional
             Year strings for time slicing.
         time_mean : bool
             Return temporal mean if True.
         """
         self._touched = []
-        da = self._load_raw(model, variable)
+        if (table is not None and table.lower() in _DAILY_TABLES
+                and variable in _ATMOS2D):
+            kname, scale = _ATMOS2D[variable]
+            da = self._load_atmos2d_flat_lazy(
+                model, variable, kname, scale, "atmos2d_daily_avg",
+            )
+        else:
+            da = self._load_raw(model, variable)
 
         touched = list(dict.fromkeys(self._touched))
         provenance.record_read(
@@ -604,6 +619,12 @@ class KerchunkParquetLoader:
                 ["2D_monthly_0.25deg_atmos_avg.parq", "2D_monthly_avg.parq"],
                 "2D_monthly*avg.parq",
             )
+        elif store_type == "atmos2d_daily_avg":
+            p = self._pick_store_file(
+                base / "atmos" / "gr025",
+                ["2D_daily_0.25deg_atmos_avg.parq", "2D_daily_avg.parq"],
+                "2D_daily*avg.parq",
+            )
         elif store_type == "atmos2d_daily_min":
             p = self._pick_store_file(
                 base / "atmos" / "gr025",
@@ -665,6 +686,10 @@ class KerchunkParquetLoader:
             return self._pick_store_file(
                 base, [f"{gr}_monthly_avg.parq", f"{gr}_daily_avg.parq"],
                 f"{gr}_*avg.parq",
+            )
+        if store_type == "atmos2d_daily_avg":
+            return self._pick_store_file(
+                base, [f"{gr}_daily_avg.parq"], f"{gr}_daily_avg.parq",
             )
         if store_type == "atmos2d_daily_min":
             return self._pick_store_file(
