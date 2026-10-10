@@ -348,6 +348,16 @@ The **Heatwave Hotspots diagnostic** (`heatwave_hotspots`) reproduces Figures 2�
 
 The reference is ERA5 (the derived daily tasmax CMOR tree); the model ensemble is the EERIE high-resolution members. CMIP6 is **not** included in this first pass — daily tasmax is only on the DKRZ pool DRS (`/pool/data/CMIP6/.../day/tasmax/`), not in the zarr cache — but the config carries a stub for wiring in a yearly-percentile cache later. Per-model yearly-percentile fields are checkpointed to NetCDF in `{output_dir}/heatwave_hotspots/` so re-runs skip the heavy daily-percentile pass. Configuration lives in `configs/eerie_all_members_extremes.yaml`.
 
+With `project.ensemble_mode: per_family` (set in that config: ICON-ESM-ER runs without a parameterised convection scheme, so its members are not pooled with the IFS runs) the figures that summarise the models as one ensemble are drawn per model family, and their ids gain a `_family` suffix:
+
+- `heatwave_hotspots_regions_family` — one thick family-mean line per family over its members as thin lines.
+- `heatwave_hotspots_discrepancy_family` — one column per family; top row: observed trend minus the family's member range (0 inside it), bottom row: observed trend minus the family mean.
+- `heatwave_hotspots_boxwhisker_family` — per region, each member as a dot and the family mean as a bar, one column per family; CMIP6 keeps its box.
+- `heatwave_hotspots_pdf_family` — family-mean densities over the member densities, and one cumulative obs − family curve per family.
+- `heatwave_hotspots_eerie_vs_cmip6_family` — family-mean trend minus the CMIP6 MMM, one panel per family.
+
+The trend map and the CMIP6-only maps are unchanged. The per-model percentile caches are the same in both modes, so switching mode only replots.
+
 #### Daily precipitation extremes (`precip_extremes`)
 
 Computes nine ETCCDI indices from **daily** `pr`, following the C3S CMIP6 extreme-indices definitions (wet day: RR ≥ 1 mm):
@@ -520,7 +530,7 @@ Feather uses YAML configuration files. Sixteen configs are provided:
 | `configs/eerie_all_members.yaml` | EERIE — 8 models (3×FESOM2 + 3×NEMO + 2) | CMOR + kerchunk parquet | `multi_model` |
 | `configs/eerie_climchange_tn.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 TN signal | CMOR + kerchunk native | `multi_model` |
 | `configs/eerie_climchange_hw.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 heatwave signal | CMOR + kerchunk native | `multi_model` |
-| `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + 7 members (3×FESOM2 + 3×NEMO + ICON; HadGEM3 has no daily tasmax), heatwave-hotspot tail-widening (PNAS Fig 2–4) | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
+| `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + the 10 members (3×FESOM2 + 3×NEMO + 3×ICON incl. r2/r3 via `icon_kerchunk`; HadGEM3 has no daily tasmax and is skipped), heatwave-hotspot tail-widening (PNAS Fig 2–4), per-family summaries | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
 | `configs/eerie_10_mems_precip_extremes.yaml` | EERIE — 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3-GC5E-HH), ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6, ERA5 and MSWEP | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily obs | `multi_model` |
 | `configs/eerie_all_members_indices.yaml` | EERIE — ERA5 + 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3, which has no daily tasmax/tasmin), daily temperature extremes: tropical nights, heatwaves, `temp_extremes_change` and the 14 ETCCDI `temp_extremes_indices`, 1981–2000 + SSP2-4.5 2031–2050, vs ERA5 and daily CMIP6 | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily ERA5 | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |

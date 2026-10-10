@@ -34,7 +34,7 @@
 
 project:
   name: "EERIE"
-  description: "EERIE 10-member heatwave hotspots (extreme-heat tail-widening) vs ERA5"
+  description: "EERIE 10-member heatwave hotspots (per model family) (extreme-heat tail-widening) vs ERA5"
   experiment: "hist-1950"
   period: ["1980", "2014"]          # common window: ERA5 + EERIE hist + CMIP6 historical
   resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
@@ -46,6 +46,11 @@ project:
     ERA5-derived daily extremes, reproducing Sambartusek/Kornhuber et al. (2024,
     PNAS) Figs. 2–4.
   extremes_obs_reference: "ERA5"    # ERA5 is the reanalysis reference
+  # One summary per model family: ICON-ESM-ER runs without a parameterised
+  # convection scheme, so its members are not pooled with the IFS runs.  The
+  # ensemble figures (regions, discrepancy, boxwhisker, pdf, eerie_vs_cmip6)
+  # are drawn per family and their ids gain a "_family" suffix.
+  ensemble_mode: per_family
 
 # Global default source for the flat-model diagnostics.
 data_source:
@@ -66,6 +71,7 @@ models:
 
   IFS-FESOM2-SR:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -75,6 +81,7 @@ models:
   # IFS-FESOM2-SR run2/run3 — historical only (daily tasmax via kerchunk parquet).
   IFS-FESOM2-SR-r2:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -85,6 +92,7 @@ models:
 
   IFS-FESOM2-SR-r3:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -95,6 +103,7 @@ models:
 
   IFS-NEMO-ER:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1950
     variant: r1i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -106,6 +115,7 @@ models:
   # future, so a future window can be added later without moving data.
   IFS-NEMO-ER-r2:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r2i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -115,6 +125,7 @@ models:
 
   IFS-NEMO-ER-r3:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r3i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -124,6 +135,7 @@ models:
 
   ICON-ESM-ER:
     institution: MPI-M
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -135,6 +147,7 @@ models:
   # the fly (see feather/data/icon_kerchunk_loader.py).
   ICON-ESM-ER-r2:
     institution: MPI-M
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "icon_kerchunk"
@@ -146,6 +159,7 @@ models:
 
   ICON-ESM-ER-r3:
     institution: MPI-M
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "icon_kerchunk"
@@ -161,6 +175,7 @@ models:
   # Kept for completeness of the 10-member set; skipped with a warning.
   HadGEM3-GC5:
     institution: MOHC
+    family: HadGEM3-GC5
     experiment: eerie-historical
     variant: r1i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"

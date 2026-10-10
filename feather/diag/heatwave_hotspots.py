@@ -40,6 +40,14 @@ Figures (group ``extremes``):
   - ``heatwave_hotspots_pdf``           (Fig 4) area-weighted PDF of land
         D-trends (ERA5 vs models) + cumulative difference.
 
+With ``project.ensemble_mode: per_family`` the four figures that summarise the
+evaluated models as one ensemble (regions, discrepancy, boxwhisker, pdf) and
+``heatwave_hotspots_eerie_vs_cmip6`` are drawn per model family instead and
+their ids gain a ``_family`` suffix: family-mean lines over thin members;
+obs minus each family's member range (top row) and family mean (bottom row);
+member dots + family-mean bar per family; family-mean densities and one
+cumulative obs − family curve per family; family mean − CMIP6 MMM per family.
+
 Per-model yearly percentile fields are cached to NetCDF (outside the figures
 tree) so re-runs skip the heavy daily-data recompute:
 ``{output_dir}/heatwave_hotspots/{model}_percs_{start}_{end}.nc``.
@@ -48,6 +56,7 @@ tree) so re-runs skip the heavy daily-data recompute:
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +66,7 @@ import xarray as xr
 
 from feather.diag.base import DiagnosticBase
 from feather.diag.registry import register
+from feather.diag._families import family_label
 from feather.diag._extremes_obs import (
     obs_ref_label,
     obs_ref_model_name,
@@ -241,12 +251,29 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         "heatwave_hotspots_eerie_vs_cmip6",
     ]
 
+    #: Figures that summarise the evaluated models as one ensemble.  With
+    #: ``project.ensemble_mode: per_family`` they are drawn per model family
+    #: instead and their ids gain a ``_family`` suffix.
+    _ENSEMBLE_FIG_IDS = frozenset({
+        "heatwave_hotspots_regions",
+        "heatwave_hotspots_discrepancy",
+        "heatwave_hotspots_boxwhisker",
+        "heatwave_hotspots_pdf",
+        "heatwave_hotspots_eerie_vs_cmip6",
+    })
+
+    def _fig_id(self, base: str) -> str:
+        """Figure id for *base*, with ``_family`` in per-family mode."""
+        if self._per_family and base in self._ENSEMBLE_FIG_IDS:
+            return f"{base}_family"
+        return base
+
     @property
     def _expected_fig_ids(self) -> list[str]:
         ids = list(self._FIG_IDS)
         if self._cmip6_models:
             ids += self._CMIP6_FIG_IDS
-        return ids
+        return [self._fig_id(i) for i in ids]
 
     def run(self, skip_existing: bool = True) -> list[tuple[Path, Path]]:
         """Execute: compute per model → regrid → trends → plot → save."""
@@ -679,17 +706,25 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
             logger.warning("HeatwaveHotspotsDiag: no data — no figures produced")
             return figs
 
+        fam = self._per_family
         figs.append(self._plot_trend_map(results))
-        figs.append(self._plot_regions(results))
+        figs.append(self._plot_regions_family(results) if fam
+                    else self._plot_regions(results))
         if results["models"]:
-            figs.append(self._plot_discrepancy(results))
-            figs.append(self._plot_boxwhisker(results))
-            figs.append(self._plot_pdf(results))
+            if fam:
+                figs.append(self._plot_discrepancy_family(results))
+                figs.append(self._plot_boxwhisker_family(results))
+                figs.append(self._plot_pdf_family(results))
+            else:
+                figs.append(self._plot_discrepancy(results))
+                figs.append(self._plot_boxwhisker(results))
+                figs.append(self._plot_pdf(results))
         if results.get("cmip6_models"):
             figs.append(self._plot_cmip6_mmm_map(results))
             figs.append(self._plot_cmip6_discrepancy(results))
             if results["models"]:
-                figs.append(self._plot_eerie_vs_cmip6(results))
+                figs.append(self._plot_eerie_vs_cmip6_family(results) if fam
+                            else self._plot_eerie_vs_cmip6(results))
         return figs
 
     def _masked_obs_trend(self, results):
@@ -1090,6 +1125,421 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         )
         return fig, meta
 
+    # ── Per-family summaries (project.ensemble_mode: per_family) ─────────
+
+    def _families(self, results) -> dict[str, list[str]]:
+        """``{family: [members]}`` of the evaluated models that loaded."""
+        return self._line_families(results["models"]) or {}
+
+    def _family_trend(self, results, members):
+        """Mean D-trend of *members* (= trend of their mean, OLS is linear)."""
+        return xr.concat([results["trend_d"][m] for m in members],
+                         dim="member").mean("member")
+
+    def _family_meta(self, families) -> dict[str, Any]:
+        return {"ensemble_mode": "per_family",
+                "model_families": {f: list(m) for f, m in families.items()}}
+
+    @staticmethod
+    def _families_note(families) -> str:
+        fams = ", ".join(
+            f"{f} ({len(m)} member{'s' if len(m) != 1 else ''})"
+            for f, m in families.items())
+        return (f" Model families are summarised separately and never pooled: "
+                f"{fams}.")
+
+    def _family_map_figure(self, rows, families, lats, lons, regions, *,
+                           cblabels, suptitle):
+        """Grid of Robinson maps: one row per entry of *rows*, one column per
+        family.  ``rows`` is a list of ``(row_title, {family: field})``; each
+        row gets its own symmetric colour scale and colourbar."""
+        import cartopy.crs as ccrs
+
+        nrow, ncol = len(rows), len(families)
+        fig = plt.figure(figsize=(5.2 * ncol, 3.6 * nrow + 0.6))
+        for r, (row_title, fields) in enumerate(rows):
+            vals = np.concatenate([np.ravel(f.values) for f in fields.values()])
+            vals = np.abs(vals[np.isfinite(vals)])
+            vmax = (float(np.nanpercentile(vals, 98)) if vals.size else 0.0) or 0.5
+            axes, mesh = [], None
+            for c, (family, members) in enumerate(families.items()):
+                ax = fig.add_subplot(nrow, ncol, r * ncol + c + 1,
+                                     projection=ccrs.Robinson(central_longitude=0))
+                mesh = self._draw_map_panel(ax, fields[family], lats, lons,
+                                            cmap="RdBu_r", vmax=vmax,
+                                            regions=regions)
+                ax.set_title(f"{row_title}\n"
+                             f"{family_label(family, len(members), bold=False)}",
+                             fontsize=9)
+                axes.append(ax)
+            cb = fig.colorbar(mesh, ax=axes, orientation="horizontal",
+                              shrink=0.5, pad=0.04, extend="both")
+            cb.set_label(cblabels[r], fontsize=8)
+        fig.suptitle(suptitle, y=0.995)
+        return fig
+
+    def _plot_regions_family(self, results):
+        """Fig 2B–K, per family: thick family-mean lines over thin members."""
+        regions = results["regions"]
+        ref = results["ref_model"]
+        families = self._families(results)
+        obs_label = obs_ref_label(self.config, "tasmax")
+        cmip6_label = results.get("cmip6_label", "CMIP6")
+        ncols = 5
+        nrows = int(np.ceil(len(regions) / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows),
+                                 squeeze=False)
+
+        stats: dict[str, dict] = {}
+        for i, region in enumerate(regions):
+            ax = axes[i // ncols][i % ncols]
+            years = region["years"]
+            cmip6_series = region.get("cmip6_series", {})
+            if cmip6_series:
+                arr = np.vstack([cmip6_series[m] for m in cmip6_series])
+                if np.isfinite(arr).any():
+                    with np.errstate(invalid="ignore"):
+                        ax.fill_between(years, np.nanmin(arr, axis=0),
+                                        np.nanmax(arr, axis=0), color="grey",
+                                        alpha=0.25, lw=0, zorder=1,
+                                        label=f"{cmip6_label} range")
+                        ax.plot(years, np.nanmean(arr, axis=0), color="grey",
+                                lw=1.5, ls="--", zorder=2,
+                                label=f"{cmip6_label} MMM")
+            fam_trends: dict[str, float] = {}
+            for family, members in families.items():
+                color = self.config.get_model_color(members[0])
+                arr = np.vstack([region["model_series"][m] for m in members])
+                for m in members:
+                    ax.plot(years, region["model_series"][m], color=color,
+                            lw=0.7, alpha=0.45, zorder=3)
+                with warnings.catch_warnings():  # all-NaN years stay NaN
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    mean = np.nanmean(arr, axis=0)
+                ax.plot(years, mean, color=color, lw=2.2, zorder=4,
+                        label=family_label(family, len(members), bold=False))
+                fam_trends[family] = self._slope(years, mean) * 10.0
+            ax.plot(years, region["obs_series"], color="tab:red", lw=2.0,
+                    label=obs_label, zorder=5)
+            self._add_trend_line(ax, years, region["obs_series"], "tab:red")
+            ax.set_title(f"{chr(98 + i)}) {region['title']}", fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
+            if i % ncols == 0:
+                ax.set_ylabel(f"P{_UPPER_Q:g}−P{_LOWER_Q:g} Tx [°C]", fontsize=8)
+            stats[region["title"]] = {
+                "obs_trend_per_decade": region["obs_trend"],
+                "obs_ci_low": region["obs_ci"][0],
+                "obs_ci_high": region["obs_ci"][1],
+                "family_mean_trend_per_decade": fam_trends,
+            }
+
+        for j in range(len(regions), nrows * ncols):
+            axes[j // ncols][j % ncols].axis("off")
+
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.suptitle(f"{self.title} — regional tail-width time series "
+                     f"(family means)", y=0.99)
+        fig.tight_layout(rect=[0, 0.08, 1, 0.96])
+        fig.legend(handles, labels, loc="lower center", ncol=min(6, len(labels)),
+                   fontsize=8, bbox_to_anchor=(0.5, 0.0))
+
+        meta = self._build_metadata(
+            title=f"{self.title} — regional tail-width time series (family means)",
+            figure_id=self._fig_id("heatwave_hotspots_regions"),
+            models=[ref] + results["models"] + results.get("cmip6_models", []),
+            description=(
+                "Area-weighted yearly P99−P87.5 of daily Tx for each region "
+                "(land only); reference reanalysis in red with its fitted trend, "
+                "one thick line per model family (mean of its members' regional "
+                "series) over its members as thin lines, and the CMIP6 ensemble "
+                "as a grey min–max band with dashed MMM."
+                + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="timeseries",
+            summary_statistics=stats,
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
+    def _plot_discrepancy_family(self, results):
+        """Fig 3A per family: obs vs the family's member range, and vs its mean."""
+        ref = results["ref_model"]
+        families = self._families(results)
+        lats, lons = results["lat"], results["lon"]
+        keep = results["land_mask"] & (results["trend_lower"][ref] > 0)
+        obs_trend = results["trend_d"][ref]
+        obs_label = obs_ref_label(self.config, "tasmax")
+
+        by_range, by_mean, stats = {}, {}, {}
+        areas = xr.DataArray(results["areas"], dims=("lat", "lon"),
+                             coords={"lat": lats, "lon": lons})
+        for family, members in families.items():
+            ens = xr.concat([results["trend_d"][m] for m in members], dim="member")
+            hi, lo = ens.max("member"), ens.min("member")
+            by_range[family] = xr.where(
+                obs_trend > hi, obs_trend - hi,
+                xr.where(obs_trend < lo, obs_trend - lo, 0.0)).where(keep)
+            by_mean[family] = (obs_trend - ens.mean("member")).where(keep)
+            # Area fractions of the shown land where obs leaves the range.
+            w = areas.where(np.isfinite(by_range[family]))
+            total = float(w.sum())
+            if total > 0:
+                stats[family] = {
+                    "frac_area_obs_above_range":
+                        float((w * (by_range[family] > 0)).sum()) / total,
+                    "frac_area_obs_below_range":
+                        float((w * (by_range[family] < 0)).sum()) / total,
+                    "mean_obs_minus_family_mean": float(
+                        (w * by_mean[family]).sum()) / total,
+                }
+
+        fig = self._family_map_figure(
+            [("Obs − family member range", by_range),
+             ("Obs − family mean", by_mean)],
+            families, lats, lons, results["regions"],
+            cblabels=[f"{obs_label} minus family member range [°C/decade]",
+                      f"{obs_label} minus family mean [°C/decade]"],
+            suptitle=(f"{self.title} — observed trend vs model families "
+                      f"(red = model underestimation)"),
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — observed vs model-family discrepancy",
+            figure_id=self._fig_id("heatwave_hotspots_discrepancy"),
+            models=results["models"],
+            description=(
+                "One column per model family.  Top row: observed tail-widening "
+                "trend minus the family's member range — positive (red) where "
+                "the observed trend exceeds every member of the family (model "
+                "underestimation), 0 inside the range; with three members the "
+                "range is narrow, so read it together with the bottom row.  "
+                "Bottom row: observed trend minus the family-mean trend.  Land "
+                "only; region with a negative P87.5 trend excluded."
+                + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="map",
+            summary_statistics=stats,
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
+    def _plot_boxwhisker_family(self, results):
+        """Fig 3B–K per family: member dots + family-mean bar, CMIP6 box."""
+        regions = results["regions"]
+        families = self._families(results)
+        cmip6_label = results.get("cmip6_label", "CMIP6")
+        obs_label = obs_ref_label(self.config, "tasmax")
+        nfam = len(families)
+        ncols = 5
+        nrows = int(np.ceil(len(regions) / ncols))
+        fig, axes = plt.subplots(nrows, ncols,
+                                 figsize=(max(4, 0.9 * (nfam + 1) + 1.5) * ncols,
+                                          3.2 * nrows), squeeze=False)
+
+        stats: dict[str, dict] = {}
+        for i, region in enumerate(regions):
+            ax = axes[i // ncols][i % ncols]
+            ticks, tick_labels = [], []
+            fam_stats = {}
+            for x, (family, members) in enumerate(families.items()):
+                vals = np.array([region["model_trends"][m] for m in members],
+                                dtype=float)
+                for m, v in zip(members, vals):
+                    ax.scatter(x, v, color=self.config.get_model_color(m),
+                               s=22, zorder=4, edgecolors="k", linewidths=0.3)
+                if np.isfinite(vals).any():
+                    mean = float(np.nanmean(vals))
+                    ax.hlines(mean, x - 0.28, x + 0.28,
+                              color=self.config.get_model_color(members[0]),
+                              lw=2.5, zorder=3)
+                    fam_stats[family] = {
+                        "mean": mean,
+                        "min": float(np.nanmin(vals)),
+                        "max": float(np.nanmax(vals)),
+                        "n_members": int(np.isfinite(vals).sum()),
+                    }
+                ticks.append(x); tick_labels.append(f"{family}\n({len(members)})")
+
+            cmip6_vals = np.array(list(region.get("cmip6_trends", {}).values()),
+                                  dtype=float)
+            cmip6_vals = cmip6_vals[np.isfinite(cmip6_vals)]
+            if cmip6_vals.size:
+                ax.boxplot(cmip6_vals, vert=True, widths=0.5,
+                           positions=[nfam], showfliers=False,
+                           whis=(5, 95), patch_artist=True,
+                           boxprops=dict(facecolor="lightgrey"))
+                ax.scatter(np.full_like(cmip6_vals, nfam), cmip6_vals,
+                           color="grey", s=10, alpha=0.6, zorder=3)
+                ticks.append(nfam); tick_labels.append(cmip6_label)
+
+            ci_lo, ci_hi = region["obs_ci"]
+            ax.axhspan(ci_lo, ci_hi, color="tab:red", alpha=0.12, zorder=1)
+            ax.axhline(region["obs_trend"], color="tab:red", lw=1.5, ls="--",
+                       zorder=5, label=obs_label)
+            ax.axhline(0, color="grey", lw=0.6)
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(tick_labels, fontsize=7)
+            ax.set_xlim(-0.6, nfam + 0.6)
+            ax.set_title(f"{chr(98 + i)}) {region['title']}", fontsize=10)
+            ax.grid(True, axis="y", alpha=0.3)
+            if i % ncols == 0:
+                ax.set_ylabel("Trend [°C/decade]", fontsize=8)
+            stats[region["title"]] = {
+                "obs_trend_per_decade": region["obs_trend"],
+                "families": fam_stats,
+            }
+
+        for j in range(len(regions), nrows * ncols):
+            axes[j // ncols][j % ncols].axis("off")
+
+        fig.suptitle(f"{self.title} — model-family trends vs observed "
+                     f"(per region)", y=1.0)
+        fig.tight_layout()
+
+        meta = self._build_metadata(
+            title=f"{self.title} — model-family vs observed regional trends",
+            figure_id=self._fig_id("heatwave_hotspots_boxwhisker"),
+            models=results["models"] + results.get("cmip6_models", []),
+            description=(
+                "Per-region modelled tail-widening trends, one column per model "
+                "family: each member as a dot in its own colour, the family mean "
+                f"as a horizontal bar; the {cmip6_label} ensemble as a box "
+                "(25–75 %, whiskers 5–95 %).  Observed trend "
+                f"({obs_label}) as a red dashed line with its shaded 2.5–97.5 % "
+                "bootstrap CI." + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="distribution",
+            summary_statistics=stats,
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
+    def _plot_pdf_family(self, results):
+        """Fig 4 per family: family-mean densities + per-family CDF differences."""
+        ref = results["ref_model"]
+        families = self._families(results)
+        mask = results["land_mask"] & (results["trend_lower"][ref] > 0)
+        areas = xr.DataArray(results["areas"], dims=("lat", "lon"),
+                             coords={"lat": results["lat"], "lon": results["lon"]})
+        bins = np.linspace(-1.0, 1.0, 61)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        dx = np.diff(bins)
+
+        def _density(trend):
+            v = trend.where(mask).values.ravel()
+            w = areas.where(mask).values.ravel()
+            ok = np.isfinite(v) & np.isfinite(w)
+            if not ok.any() or w[ok].sum() <= 0:
+                return None
+            h, _ = np.histogram(v[ok], bins=bins, weights=w[ok], density=True)
+            return h
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+        obs_label = obs_ref_label(self.config, "tasmax")
+        obs_hist = _density(results["trend_d"][ref])
+        if obs_hist is not None:
+            ax1.step(centers, obs_hist, where="mid", color="tab:red", lw=2.0,
+                     label=obs_label, zorder=5)
+        obs_cdf = None if obs_hist is None else np.cumsum(obs_hist * dx)
+
+        stats = {}
+        for family, members in families.items():
+            color = self.config.get_model_color(members[0])
+            hists = [h for h in (_density(results["trend_d"][m]) for m in members)
+                     if h is not None]
+            if not hists:
+                continue
+            for h in hists:
+                ax1.step(centers, h, where="mid", color=color, lw=0.7, alpha=0.4)
+            fam_hist = np.mean(hists, axis=0)
+            label = family_label(family, len(hists), bold=False)
+            ax1.step(centers, fam_hist, where="mid", color=color, lw=2.0,
+                     label=label, zorder=4)
+            if obs_cdf is not None:
+                diff = obs_cdf - np.cumsum(fam_hist * dx)
+                ax2.plot(centers, diff, color=color, lw=2.0, label=label)
+                stats[family] = {"max_cdf_obs_minus_family": float(np.max(diff)),
+                                 "min_cdf_obs_minus_family": float(np.min(diff))}
+
+        ax1.set_yscale("log")
+        ax1.set_xlabel("Trend in yearly P99−P87.5 of Tx [°C/decade]")
+        ax1.set_ylabel("Area-weighted probability density")
+        ax1.set_title("a) Distribution of land tail-widening trends")
+        ax1.legend(fontsize=8)
+        ax1.grid(True, alpha=0.3)
+        ax1.axvline(0, color="grey", lw=0.6)
+        ax2.axhline(0, color="grey", lw=0.6)
+        ax2.set_xlabel("Trend [°C/decade]")
+        ax2.set_ylabel("CDF(obs) − CDF(family mean)")
+        ax2.set_title("b) Cumulative obs − model-family difference")
+        ax2.grid(True, alpha=0.3)
+        if stats:
+            ax2.legend(fontsize=8)
+        fig.tight_layout()
+
+        meta = self._build_metadata(
+            title=f"{self.title} — land tail-widening trend distribution "
+                  f"(model families)",
+            figure_id=self._fig_id("heatwave_hotspots_pdf"),
+            models=[ref] + results["models"],
+            description=(
+                "Area-weighted probability density of land tail-widening trends "
+                "(yearly P99−P87.5 of daily Tx) for the reanalysis reference and "
+                "each model family (thick: mean of its members' densities; thin: "
+                "members; log y-axis), with the cumulative obs − family "
+                "difference per family.  A family underestimating the extreme "
+                "tail gives a positive cumulative difference at high trend "
+                "values." + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="distribution",
+            summary_statistics=stats,
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
+    def _plot_eerie_vs_cmip6_family(self, results):
+        """Family-mean trend minus the CMIP6 MMM, one panel per family."""
+        ref = results["ref_model"]
+        families = self._families(results)
+        lats, lons = results["lat"], results["lon"]
+        keep = results["land_mask"] & (results["trend_lower"][ref] > 0)
+        label = results["cmip6_label"]
+        diffs = {
+            f: (self._family_trend(results, m) - results["cmip6_mmm_trend"]).where(keep)
+            for f, m in families.items()
+        }
+        fig = self._family_map_figure(
+            [(f"Family mean − {label} MMM", diffs)],
+            families, lats, lons, results["regions"],
+            cblabels=[f"Family mean − {label} MMM tail-widening trend "
+                      f"[°C/decade]"],
+            suptitle=f"{self.title} — model-family means minus {label} MMM",
+        )
+        meta = self._build_metadata(
+            title=f"{self.title} — model-family means minus {label} MMM",
+            figure_id=self._fig_id("heatwave_hotspots_eerie_vs_cmip6"),
+            models=results["models"] + results["cmip6_models"],
+            description=(
+                "Difference between each EERIE model family's mean tail-widening "
+                f"trend and the coarse {label} MMM (°C/decade), one panel per "
+                "family.  Red: family trend stronger than CMIP6; blue: weaker.  "
+                "Land only; region with a negative P87.5 trend excluded."
+                + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="map",
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
     # ── CMIP6 comparison maps ──────────────────────────────────────────
 
     def _render_map(
@@ -1098,10 +1548,24 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
     ):
         """Render a single Robinson trend/difference map (shared layout)."""
         import cartopy.crs as ccrs
-        import cartopy.feature as cfeature
 
         fig = plt.figure(figsize=(13, 7))
         ax = plt.axes(projection=ccrs.Robinson(central_longitude=0))
+        mesh = self._draw_map_panel(ax, field, lats, lons, cmap=cmap,
+                                    vmax=vmax, regions=regions, greyed=greyed)
+        cb = fig.colorbar(mesh, ax=ax, orientation="horizontal",
+                          shrink=0.6, pad=0.05, extend="both")
+        cb.set_label(cblabel)
+        ax.set_title(title)
+        fig.tight_layout()
+        return fig
+
+    def _draw_map_panel(self, ax, field, lats, lons, *, cmap, vmax, regions,
+                        greyed=None):
+        """Draw one Robinson trend/difference panel on *ax*; returns the mesh."""
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+
         ax.set_global()
         ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
 
@@ -1121,12 +1585,7 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         )
         for region in regions:
             self._draw_region_box(ax, region, pc)
-        cb = fig.colorbar(mesh, ax=ax, orientation="horizontal",
-                          shrink=0.6, pad=0.05, extend="both")
-        cb.set_label(cblabel)
-        ax.set_title(title)
-        fig.tight_layout()
-        return fig
+        return mesh
 
     def _plot_cmip6_mmm_map(self, results):
         """CMIP6 MMM tail-widening trend map (same style as the ERA5 Fig 2A)."""
