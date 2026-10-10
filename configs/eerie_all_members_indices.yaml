@@ -351,7 +351,7 @@ nereus:
   influence_radius: 80000
   method: "linear"
 
-output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_indices_only"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_10_mems_temp_indices"
 
 llm:
   figure_analysis:
