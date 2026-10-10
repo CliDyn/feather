@@ -110,6 +110,12 @@ feather --config configs/eerie_10_mems_precip_extremes.yaml \
         --steps diagnostics \
         --diagnostics precip_extremes --save-netcdf -v
 
+# EERIE daily temperature extremes (14 ETCCDI indices, land) — 10 members vs
+# daily CMIP6 and ERA5; present day + SSP2-4.5 change
+feather --config configs/eerie_all_members_indices.yaml \
+        --steps diagnostics \
+        --diagnostics temp_extremes_indices --save-netcdf -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -299,6 +305,7 @@ Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere,
 | `heatwave_hotspots` | `HeatwaveHotspotsDiag` | ERA5 (derived daily tasmax) | Extreme-heat tail-widening (trend in yearly 99th − 87.5th percentile of daily tasmax, °C/decade): global trend maps per model with significance stippling and region boxes, regional box-and-whisker, PDF/CDF discrepancy panels (PNAS Fig 2–4) |
 | `precip_extremes` | `PrecipExtremesDiag` | ERA5 + MSWEP v2.8 (daily, derived to 0.25°) | Nine ETCCDI daily-precipitation indices (R1mm, R10mm, R20mm, PRCPTOT, SDII, R95p, R99p, Rx1day, Rx5day): reference climatology per model family + daily CMIP6 MMM + obs, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs each obs dataset, global-mean time series |
 | `temp_extremes_change` | `TempExtremesChangeDiag` | — (model change signal) | Climate change signal in mean daily `tasmin` **and** `tasmax` under SSP2-4.5, annual + four seasons (DJF/MAM/JJA/SON): [Reference \| Future \| Change] maps per model + stitched global-mean time series, per variable |
+| `temp_extremes_indices` | `TempExtremesIndicesDiag` | ERA5 (daily tasmax/tasmin, derived to 0.25°) | Fourteen ETCCDI daily-temperature indices over land (TXx, TNx, TXn, TNn, DTR, FD, ID, TX10p, TX90p, TN10p, TN90p, WSDI, CSDI, GSL): reference climatology per model family + daily CMIP6 MMM + ERA5, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs ERA5, land-mean time series |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -396,6 +403,35 @@ Add `--no-skip-existing` to `analyze` and `report` when figures changed since th
 
 Checkpoints (annual index fields, native grid): `{output_dir}/precip_extremes/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…` and `…/obs/{dataset}_hist_{start}_{end}.nc`, with the seasonal fields next to each in `…_seasons.nc`; delete one to force its recomputation. Adding seasons to a finished run keeps the annual files and re-reads the daily data once for the seasons. Open them with `decode_timedelta=False` — count indices carry `units = "days"`. `--save-netcdf` writes `{output_dir}/netcdf/precip_extremes/{idx}_{ref0}-{fut1}_summary.nc` (family/CMIP6/obs fields on 0.25°).
 
+#### Daily temperature extremes (`temp_extremes_indices`)
+
+Fourteen ETCCDI indices from **daily** maximum and minimum 2 m temperature, as defined for the C3S CMIP6 extreme-indices dataset ([sis-extreme-indices-cmip6](https://cds.climate.copernicus.eu/datasets/sis-extreme-indices-cmip6)); maths in `feather/util/temp_indices.py`, diagnostic in `feather/diag/temp_extremes_indices.py`. It is the temperature counterpart of `precip_extremes` and shares its periods, family means, CMIP6 MMM, figure set and summary export.
+
+| Index | Definition (per year or season) | Units |
+|---|---|---|
+| TXx / TNx | Maximum of daily TX / TN | °C |
+| TXn / TNn | Minimum of daily TX / TN | °C |
+| DTR | Mean diurnal temperature range, mean(TX − TN) | °C |
+| FD / ID | Frost days (TN < 0 °C) / ice days (TX < 0 °C) | days |
+| TX10p / TX90p | Cold / warm days: share of days with TX below its 10th / above its 90th calendar-day percentile | % |
+| TN10p / TN90p | Cold / warm nights, the same for TN | % |
+| WSDI / CSDI | Warm / cold spell duration: days in runs of ≥ 6 days beyond TX90 / TN10 (annual only) | days |
+| GSL | Growing season length: first ≥ 6-day run of TG > 5 °C to the first ≥ 6-day run of TG < 5 °C after 1 July (NH; SH July–June), TG = (TX + TN)/2 (annual only) | days |
+
+- **Land only.** Every index is computed on land cells (land-area fraction > 50 %: the dataset's own `sftlf`, else the ERA5 mask from `obs_datasets.ERA5_SFTLF`); maps blank the ocean and the time series are land means. No EERIE member publishes `sftlf`, so they all use the ERA5 mask.
+- **Percentiles.** Each dataset's own calendar-day 10th/90th percentiles over `temp_extremes_indices.base_period` (default the reference period, 1981–2000), 5-day window, Hyndman–Fan type 8 as in climdex, **no bootstrap**, held fixed for the future. Over the base period TX10p…TN90p are therefore ≈ 10 % by construction (slightly less: the in-base inhomogeneity ETCCDI's bootstrap removes), so these four get change maps and time series only — no reference, bias or CMIP6-difference maps.
+- **Seasons** (`temp_extremes_indices.seasons`): every index except WSDI, CSDI and GSL; DJF of year *Y* is December *Y−1* + January–February *Y*.
+- **Members.** 10 EERIE members (3 × IFS-FESOM2-SR, 3 × IFS-NEMO-ER, 3 × ICON-ESM-ER, HadGEM3-GC5); HadGEM3-GC5 publishes no daily tasmax/tasmin in either MOHC tree and is skipped. ICON-ESM-ER r2 publishes its daily maximum only on the native R2B8 grid; `ICONKerchunkLoader` regrids it on the fly with the same CDO conservative weights that produced the published `_remap025` stores (they reproduce r2's own remapped daily minimum exactly). A flat model that is also listed under `temp_extremes_indices.obs` (ERA5 in the EERIE config, where it is a "model" for `tropical_nights`/`heatwave`) is treated as observations only.
+- **CMIP6.** `cmip6_daily` discovery, keeping the first member with `day/tasmax` **and** `day/tasmin` in both historical and ssp245 — 31 models as of 2026-10.
+- **Observations.** ERA5 daily tasmax/tasmin from `scripts/era5_derive_tasminmax.sh`, processed exactly like a model.
+
+```bash
+feather --config configs/eerie_all_members_indices.yaml --steps diagnostics \
+        --diagnostics temp_extremes_indices --save-netcdf -v
+```
+
+Checkpoints (annual index fields, native grid, ocean NaN): `{output_dir}/temp_extremes_indices/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…`, `…/obs/…`, seasonal fields in `…_seasons.nc`. The percentile thresholds are not stored (≈ 1 GB per 0.25° member); if only an SSP file is missing they are recomputed from the historical run. `temp_extremes_indices.percentile_memory_gb` (default 12) bounds the base-period block behind them — a 0.25° member needs about 9 GB per variable; above the budget the land cells are processed in groups.
+
 ### Climate classification
 
 | Diagnostic | Class | Observation | What it produces |
@@ -486,6 +522,7 @@ Feather uses YAML configuration files. Sixteen configs are provided:
 | `configs/eerie_climchange_hw.yaml` | EERIE — IFS-FESOM2-SR (r1–r3) + ICON-ESM-ER, SSP2-4.5 heatwave signal | CMOR + kerchunk native | `multi_model` |
 | `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + 7 members (3×FESOM2 + 3×NEMO + ICON; HadGEM3 has no daily tasmax), heatwave-hotspot tail-widening (PNAS Fig 2–4) | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
 | `configs/eerie_10_mems_precip_extremes.yaml` | EERIE — 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3-GC5E-HH), ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6, ERA5 and MSWEP | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily obs | `multi_model` |
+| `configs/eerie_all_members_indices.yaml` | EERIE — ERA5 + 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3, which has no daily tasmax/tasmin), daily temperature extremes: tropical nights, heatwaves, `temp_extremes_change` and the 14 ETCCDI `temp_extremes_indices`, 1981–2000 + SSP2-4.5 2031–2050, vs ERA5 and daily CMIP6 | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily ERA5 | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |

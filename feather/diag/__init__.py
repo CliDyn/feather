@@ -25,6 +25,7 @@ Diagnostics (19 registered):
 - :mod:`~feather.diag.tropical_nights_change` — Tropical Nights climate change signal (SSP2-4.5)
 - :mod:`~feather.diag.heatwave_change` — Heatwave climate change signal (Perkins & Alexander 2013, SSP2-4.5)
 - :mod:`~feather.diag.precip_extremes` — ETCCDI daily precipitation extremes, present day + SSP2-4.5 change
+- :mod:`~feather.diag.temp_extremes_indices` — ETCCDI daily temperature extremes (land), present day + SSP2-4.5 change
 """
 
 from feather.diag.base import DiagnosticBase
@@ -56,6 +57,7 @@ import feather.diag.tropical_nights_change  # noqa: F401
 import feather.diag.heatwave_change  # noqa: F401
 import feather.diag.temp_extremes_change  # noqa: F401
 import feather.diag.precip_extremes  # noqa: F401
+import feather.diag.temp_extremes_indices  # noqa: F401
 import feather.diag.climate_classification  # noqa: F401
 import feather.diag.climate_shifts  # noqa: F401
 import feather.diag.cloud_obs_comparison  # noqa: F401
