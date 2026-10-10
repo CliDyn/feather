@@ -57,15 +57,25 @@ Deliberately *not* provided
   never resets the accumulators: every cell of every month is 999.0 and
   −99.0.  They are omitted from the monthly map so a request fails loudly;
   the daily extremes below are the real thing.
-* Daily ``tasmax`` for **r2**.  r2 publishes ``2d_daily_max`` on the native
-  unstructured grid only — there is no ``_remap025`` variant, unlike r3 —
-  and this loader does no regridding.  ``load_var(..., table="day")`` for
-  ``tasmax`` therefore raises ``FileNotFoundError`` on r2, which the
-  extremes diagnostics treat like any other missing file.  Daily ``tasmin``
-  *is* remapped for both members.
+
+Native-grid fallback (daily ``tasmax`` of r2)
+---------------------------------------------
+r2 publishes ``2d_daily_max`` on the native R2B8 grid only (5,242,880 cells)
+— there is no ``_remap025`` variant, unlike r3 and unlike r2's own daily
+minimum.  When a ``_remap025`` daily store is missing but its native
+counterpart exists, the native field is regridded lazily (a batch of days
+at a time) with the **same CDO first-order conservative weights** that
+produced the published ``_remap025`` stores (``-remap,…,r2b8G_IFS25invertlat_
+yconremapweights.nc``, named in their ``history`` attribute).  Applied to
+r2's native daily minimum these weights reproduce its ``_remap025`` field to
+float32 round-off (max |Δ| 1.5e-5 K), so the regridded r2 ``tasmax`` is
+treated exactly like every other ICON 0.25° field.  The weights path can be
+overridden with ``data_source.icon_remap_weights``.  The native stores stamp
+day *D* at 23:59:59 of *D*, which is centred like the remapped stamps.
 """
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -192,7 +202,27 @@ _STORE_FILES = {
     "atmos2d_daymax": "erc2023_atmos_native_2d_daily_max_remap025.parq",
     "atmos2d_daymin": "erc2023_atmos_native_2d_daily_min_remap025.parq",
     "ocean2d_day": "erc2023_ocean_native_2d_daily_mean_remap025.parq",
+    # Native-grid counterparts, regridded on the fly when the remapped
+    # store is not published (see ``_NATIVE_FALLBACK``).
+    "atmos2d_daymax_native": "erc2023_atmos_native_2d_daily_max.parq",
+    "atmos2d_daymin_native": "erc2023_atmos_native_2d_daily_min.parq",
 }
+
+#: Remapped daily store → native store to regrid when the former is missing.
+_NATIVE_FALLBACK = {
+    "atmos2d_daymax": "atmos2d_daymax_native",
+    "atmos2d_daymin": "atmos2d_daymin_native",
+}
+
+#: CDO first-order conservative weights R2B8 → 0.25° (SCRIP format) used to
+#: produce the published ``_remap025`` stores.
+DEFAULT_REMAP_WEIGHTS = (
+    "/work/bm1344/DKRZ/ICON/erc1011/postprocessing/interpolation/"
+    "r2b8G_IFS25invertlat_yconremapweights.nc"
+)
+
+#: Days regridded per dask block on the native fallback path.
+_NATIVE_TIME_CHUNK = 8
 
 #: CMOR table names that mean "daily".  Anything else (``Amon``, ``Omon``,
 #: ``SImon``, ``None``) resolves to the monthly stores.
@@ -246,12 +276,12 @@ class ICONKerchunkLoader:
             treat this the same as a missing CMOR file and skip the model.
         FileNotFoundError
             If the store that would hold *variable* is not published for
-            this member — notably daily ``tasmax`` on r2, which exists only
-            on the native grid.
+            this member, nor a native-grid counterpart to regrid.
         """
         da = self._load_raw(model, variable, table=table)
 
-        store = "atmos2d" if variable in _ATMOS2D else "ocean2d"
+        store = self._resolve_store(variable, table)[0]
+        store = self._native_fallback(model, store, quiet=True) or store
         provenance.record_read(
             self._prov, (model, variable), period=period,
             role="model", backend=type(self).__name__, variable=variable,
@@ -330,6 +360,13 @@ class ICONKerchunkLoader:
     ) -> xr.DataArray:
         store, (name, scale, offset) = self._resolve_store(variable, table)
 
+        native = self._native_fallback(model, store)
+        if native is not None:
+            return self._apply_model_scale(
+                model, variable,
+                self._load_native_regridded(model, native, name, variable,
+                                            scale, offset))
+
         ds = self._open_store(model, store)
         if name not in ds:
             raise KeyError(
@@ -376,9 +413,91 @@ class ICONKerchunkLoader:
         if "time" not in da.dims or da.sizes["time"] == 0:
             return da
         t = pd.DatetimeIndex(np.asarray(da["time"].values))
-        if not (t.hour == 0).all():
-            return da
-        return da.assign_coords(time=t - pd.Timedelta(hours=12))
+        if (t.hour == 0).all():
+            return da.assign_coords(time=t - pd.Timedelta(hours=12))
+        # Native stores: day D stamped 23:59:59 of D.
+        if ((t.hour == 23) & (t.minute == 59)).all():
+            return da.assign_coords(time=t.normalize() + pd.Timedelta(hours=12))
+        return da
+
+    # ------------------------------------------------------------------
+    # Native-grid fallback
+    # ------------------------------------------------------------------
+
+    def _native_fallback(self, model: str, store: str,
+                         quiet: bool = False) -> str | None:
+        """Native store to regrid when the remapped *store* is not published."""
+        native = _NATIVE_FALLBACK.get(store)
+        if native is None:
+            return None
+        try:
+            self._store_path(model, store)
+            return None
+        except FileNotFoundError:
+            pass
+        try:
+            self._store_path(model, native)
+        except FileNotFoundError:
+            return None
+        if not quiet:
+            logger.info("%s: %s not published — regridding %s with the CDO "
+                        "conservative weights", model, _STORE_FILES[store],
+                        _STORE_FILES[native])
+        return native
+
+    def _load_native_regridded(
+        self, model: str, store: str, name: str, variable: str,
+        scale: float, offset: float,
+    ) -> xr.DataArray:
+        """Lazily regrid a native daily field onto the 0.25° grid."""
+        import dask.array as dsa
+
+        ds = self._open_store(model, store)
+        if name not in ds:
+            raise KeyError(
+                f"Store variable {name!r} (for {variable!r}) missing from the "
+                f"{store} store of {model!r}")
+        raw = ds[name]
+        for dim in _SQUEEZE_DIMS:
+            if dim in raw.dims and raw.sizes[dim] == 1:
+                raw = raw.isel({dim: 0}, drop=True)
+        if raw.dims[-1] != "ncells" or raw.ndim != 2:
+            raise ValueError(f"unexpected native layout {raw.dims} for {model!r}")
+
+        matrix, lat, lon = _remap_weights(str(self._weights_path()))
+        if matrix.shape[1] != raw.sizes["ncells"]:
+            raise ValueError(
+                f"{model!r}: native grid has {raw.sizes['ncells']} cells, the "
+                f"remap weights expect {matrix.shape[1]}")
+        ny, nx = len(lat), len(lon)
+
+        def regrid(block):
+            b = np.asarray(block, dtype=np.float32)
+            b = np.where(b <= _FILL_THRESHOLD, np.float32(np.nan), b)
+            out = (matrix @ b.T.astype(np.float64)).T.astype(np.float32)
+            if scale != 1.0:
+                out *= np.float32(scale)
+            if offset != 0.0:
+                out += np.float32(offset)
+            return out.reshape(b.shape[0], ny, nx)
+
+        data = raw.data.rechunk({0: _NATIVE_TIME_CHUNK, 1: -1})
+        out = dsa.map_blocks(
+            regrid, data, dtype=np.float32, drop_axis=1, new_axis=[1, 2],
+            chunks=(data.chunks[0], (ny,), (nx,)),
+        )
+        da = xr.DataArray(
+            out, dims=("time", "lat", "lon"),
+            coords={"time": ds["time"].values, "lat": lat, "lon": lon},
+            name=variable,
+            attrs={"units": raw.attrs.get("units", ""), "long_name": variable,
+                   "regridded_from": _STORE_FILES[store]},
+        )
+        return self._center_daily_time(da)
+
+    def _weights_path(self) -> Path:
+        return Path(self._config.data_source.get("icon_remap_weights")
+                    or DEFAULT_REMAP_WEIGHTS)
 
     def _apply_model_scale(
         self, model: str, variable: str, da: xr.DataArray,
@@ -430,3 +549,30 @@ class ICONKerchunkLoader:
                 f"ICON kerchunk store not found: {path}"
             )
         return path
+
+
+@lru_cache(maxsize=2)
+def _remap_weights(path: str):
+    """``(sparse matrix dst×src, lat, lon)`` from a SCRIP weights file.
+
+    The destination grid must be a regular lat/lon grid stored latitude-
+    major (as CDO writes ``dst_grid_dims = [nlon, nlat]``).
+    """
+    import scipy.sparse as sparse
+
+    with xr.open_dataset(path) as w:
+        src = w["src_address"].values.astype(np.int64) - 1
+        dst = w["dst_address"].values.astype(np.int64) - 1
+        wts = w["remap_matrix"].values[:, 0]
+        n_src = w.sizes["src_grid_size"]
+        n_dst = w.sizes["dst_grid_size"]
+        nlon, nlat = (int(v) for v in w["dst_grid_dims"].values)
+        clat = np.degrees(w["dst_grid_center_lat"].values)
+        clon = np.degrees(w["dst_grid_center_lon"].values)
+    if nlon * nlat != n_dst:
+        raise ValueError(f"{path}: dst_grid_dims {nlon}x{nlat} != {n_dst} cells")
+    lat = clat.reshape(nlat, nlon)[:, 0]
+    lon = clon.reshape(nlat, nlon)[0, :] % 360.0
+    matrix = sparse.csr_matrix((wts, (dst, src)), shape=(n_dst, n_src))
+    logger.info("Loaded remap weights %s (%d links)", path, len(wts))
+    return matrix, lat, lon
