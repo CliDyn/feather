@@ -475,3 +475,62 @@ def test_family_with_cmip6(family_diag):
     assert "heatwave_hotspots_cmip6_discrepancy" in ids
     assert ids == set(family_diag._expected_fig_ids)
     _close(figs)
+
+
+# ── Multi-panel trend maps ───────────────────────────────────────────────────
+
+def _geo_axes(fig):
+    return [ax for ax in fig.axes if hasattr(ax, "projection")]
+
+
+def test_trend_panel_figures(family_diag):
+    data = {"CM1": _make_daily_tasmax(seed=11), "CM2": _make_daily_tasmax(seed=12)}
+    family_diag._cmip6_loader = _MultiLoader(data)
+    family_diag._cmip6_models = list(data)
+    results = family_diag.compute()
+    figs = {m["figure_id"]: (f, m) for f, m in family_diag.plot(results)}
+
+    # ERA5 + 5 loaded members (Solo has no data) + CMIP6 MMM.
+    fig, meta = figs["heatwave_hotspots_trend_maps_members"]
+    assert len(_geo_axes(fig)) == 1 + 5 + 1
+    assert len(meta["summary_statistics"]) == 7
+
+    # ERA5 + 2 family means + CMIP6 MMM.
+    fig, meta = figs["heatwave_hotspots_trend_maps_family"]
+    assert len(_geo_axes(fig)) == 4
+    assert set(meta["model_families"]) == {"FamA", "FamB"}
+
+    # ERA5 + (2 families + CMIP6) minus ERA5; two colour scales.
+    fig, meta = figs["heatwave_hotspots_trend_diff_family"]
+    assert len(_geo_axes(fig)) == 4
+    stats = meta["summary_statistics"]
+    diff_keys = [k for k in stats if " − " in k]
+    assert len(diff_keys) == 3
+    for k in diff_keys:
+        assert {"global_mean_bias", "rmse", "pattern_corr_with_era5"} <= set(stats[k])
+    _close(list(figs.values()))
+
+
+def test_trend_diff_matches_family_mean_minus_era5(family_diag):
+    results = family_diag.compute()
+    figs = {m["figure_id"]: (f, m) for f, m in family_diag.plot(results)}
+    stats = figs["heatwave_hotspots_trend_diff_family"][1]["summary_statistics"]
+    key = next(k for k in stats if k.startswith("FamB mean"))
+    era5 = family_diag._trend_shown(results, results["trend_d"]["ERA5"])
+    fam = family_diag._trend_shown(
+        results, family_diag._family_trend(results, ["FamB", "FamB-r2"]))
+    assert stats[key]["global_mean_bias"] == pytest.approx(
+        family_diag._area_mean(results, fam - era5))
+    # No CMIP6 configured → no CMIP6 panel.
+    assert not any("MMM" in k for k in stats)
+    _close(list(figs.values()))
+
+
+def test_trend_panels_in_pooled_mode(diag):
+    results = diag.compute()
+    ids = {m["figure_id"] for _, m in diag.plot(results)}
+    assert {"heatwave_hotspots_trend_maps_members",
+            "heatwave_hotspots_trend_maps_family",
+            "heatwave_hotspots_trend_diff_family"} <= ids
+    import matplotlib.pyplot as plt
+    plt.close("all")

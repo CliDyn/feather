@@ -356,6 +356,12 @@ With `project.ensemble_mode: per_family` (set in that config: ICON-ESM-ER runs w
 - `heatwave_hotspots_pdf_family` — family-mean densities over the member densities, and one cumulative obs − family curve per family.
 - `heatwave_hotspots_eerie_vs_cmip6_family` — family-mean trend minus the CMIP6 MMM, one panel per family.
 
+Three multi-panel trend-map figures are drawn in both modes, every panel masked like the ERA5 trend map (land, ERA5 P87.5 trend > 0):
+
+- `heatwave_hotspots_trend_maps_members` — ERA5, each evaluated member and the CMIP6 MMM on one colour scale.
+- `heatwave_hotspots_trend_maps_family` — ERA5, the family means and the CMIP6 MMM on one colour scale.
+- `heatwave_hotspots_trend_diff_family` — the ERA5 trend (own scale), then each family mean minus ERA5 and the CMIP6 MMM minus ERA5 on one difference scale, with mean difference, RMSE, t-test, variance ratio and pattern correlation per panel.
+
 The trend map and the CMIP6-only maps are unchanged. The per-model percentile caches are the same in both modes, so switching mode only replots.
 
 #### Daily precipitation extremes (`precip_extremes`)

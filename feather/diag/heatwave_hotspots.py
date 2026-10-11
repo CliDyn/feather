@@ -39,6 +39,13 @@ Figures (group ``extremes``):
         modelled D-trends vs the observed trend.
   - ``heatwave_hotspots_pdf``           (Fig 4) area-weighted PDF of land
         D-trends (ERA5 vs models) + cumulative difference.
+  - ``heatwave_hotspots_trend_maps_members`` D-trend maps of ERA5, every
+        evaluated member and the CMIP6 MMM on one colour scale.
+  - ``heatwave_hotspots_trend_maps_family``  ERA5, the model-family means and
+        the CMIP6 MMM on one colour scale.
+  - ``heatwave_hotspots_trend_diff_family``  ERA5 (own scale), then each
+        family mean and the CMIP6 MMM minus ERA5 on a shared difference scale.
+  All three use ERA5's land + P87.5-trend > 0 mask in every panel.
 
 With ``project.ensemble_mode: per_family`` the four figures that summarise the
 evaluated models as one ensemble (regions, discrepancy, boxwhisker, pdf) and
@@ -242,6 +249,9 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         "heatwave_hotspots_discrepancy",
         "heatwave_hotspots_boxwhisker",
         "heatwave_hotspots_pdf",
+        "heatwave_hotspots_trend_maps_members",
+        "heatwave_hotspots_trend_maps_family",
+        "heatwave_hotspots_trend_diff_family",
     ]
 
     #: Extra figures rendered only when a daily CMIP6 envelope is configured.
@@ -711,6 +721,9 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         figs.append(self._plot_regions_family(results) if fam
                     else self._plot_regions(results))
         if results["models"]:
+            figs.append(self._plot_trend_maps_members(results))
+            figs.append(self._plot_trend_maps_family(results))
+            figs.append(self._plot_trend_diff_family(results))
             if fam:
                 figs.append(self._plot_discrepancy_family(results))
                 figs.append(self._plot_boxwhisker_family(results))
@@ -1125,11 +1138,273 @@ class HeatwaveHotspotsDiag(DiagnosticBase):
         )
         return fig, meta
 
+    # ── Multi-panel trend maps (ERA5 / members or families / CMIP6 MMM) ───
+
+    def _trend_panel_figure(self, results, panels, scales, *, ncols, suptitle):
+        """Robinson trend panels sharing the ERA5 land + P87.5 > 0 mask.
+
+        *panels* is a list of ``(title, field, scale)``; *scales* maps a scale
+        name to ``(cmap, vmax, colourbar label)``.  The first scale gets a
+        horizontal colourbar under the figure; any other scale a vertical one
+        beside its first panel.
+        """
+        import cartopy.crs as ccrs
+
+        ref = results["ref_model"]
+        lats, lons = results["lat"], results["lon"]
+        land = results["land_mask"]
+        greyed = land & ~(results["trend_lower"][ref] > 0)
+        nrows = int(np.ceil(len(panels) / ncols))
+        side = len(scales) > 1
+        fig = plt.figure(figsize=(4.6 * ncols, 2.6 * nrows + 1.0))
+        fig.subplots_adjust(left=0.02, right=0.96 if side else 0.98,
+                            top=0.90 if nrows > 1 else 0.84,
+                            bottom=0.13 if nrows > 1 else 0.2,
+                            wspace=0.2 if side else 0.05, hspace=0.25)
+        first: dict[str, tuple] = {}
+        for i, (title, field, scale) in enumerate(panels):
+            ax = fig.add_subplot(nrows, ncols, i + 1,
+                                 projection=ccrs.Robinson(central_longitude=0))
+            cmap, vmax, _ = scales[scale]
+            mesh = self._draw_map_panel(ax, field, lats, lons, cmap=cmap,
+                                        vmax=vmax, regions=results["regions"],
+                                        greyed=greyed)
+            ax.set_title(title, fontsize=9)
+            first.setdefault(scale, (ax, mesh))
+
+        for k, scale in enumerate(s for s in scales if s in first):
+            ax, mesh = first[scale]
+            label = scales[scale][2]
+            if k == 0:
+                cax = fig.add_axes([0.3, 0.05 if nrows > 1 else 0.08, 0.4, 0.018])
+                cb = fig.colorbar(mesh, cax=cax, orientation="horizontal",
+                                  extend="both")
+            else:
+                ax.apply_aspect()
+                pos = ax.get_position()
+                cax = fig.add_axes([pos.x1 + 0.006, pos.y0 + 0.1 * pos.height,
+                                    0.007, 0.8 * pos.height])
+                cb = fig.colorbar(mesh, cax=cax, orientation="vertical",
+                                  extend="both")
+                cb.ax.tick_params(labelsize=7)
+            cb.set_label(label, fontsize=8)
+        fig.suptitle(suptitle, y=0.99)
+        return fig
+
+    def _trend_shown(self, results, field):
+        """*field* on land where ERA5's P87.5 trend is positive."""
+        ref = results["ref_model"]
+        return field.where(results["land_mask"]
+                           & (results["trend_lower"][ref] > 0))
+
+    @staticmethod
+    def _sym_vmax(fields, default=0.5) -> float:
+        vals = np.concatenate([np.ravel(np.asarray(f)) for f in fields])
+        vals = np.abs(vals[np.isfinite(vals)])
+        return (float(np.nanpercentile(vals, 98)) if vals.size else 0.0) or default
+
+    def _area_mean(self, results, field) -> float | None:
+        w = xr.DataArray(results["areas"], dims=("lat", "lon"),
+                         coords={"lat": results["lat"], "lon": results["lon"]})
+        w = w.where(np.isfinite(field))
+        total = float(w.sum())
+        return float((w * field).sum()) / total if total > 0 else None
+
+    def _pattern_corr(self, results, a, b) -> float | None:
+        """Area-weighted centred pattern correlation of *a* and *b*."""
+        w = xr.DataArray(results["areas"], dims=("lat", "lon"),
+                         coords={"lat": results["lat"], "lon": results["lon"]})
+        ok = np.isfinite(a) & np.isfinite(b)
+        w = w.where(ok, 0.0)
+        if float(w.sum()) <= 0:
+            return None
+        am = float((w * a.fillna(0)).sum() / w.sum())
+        bm = float((w * b.fillna(0)).sum() / w.sum())
+        da, db = (a - am).where(ok, 0.0), (b - bm).where(ok, 0.0)
+        cov = float((w * da * db).sum())
+        var = float((w * da ** 2).sum()) * float((w * db ** 2).sum())
+        return cov / np.sqrt(var) if var > 0 else None
+
+    def _trend_panel_stats(self, results, shown, era5_shown) -> dict:
+        st = {"land_mean_trend_per_decade": self._area_mean(results, shown)}
+        if shown is not era5_shown:
+            diff = shown - era5_shown
+            st["mean_diff_to_era5"] = self._area_mean(results, diff)
+            msq = self._area_mean(results, diff ** 2)
+            st["rmse_to_era5"] = float(np.sqrt(msq)) if msq is not None else None
+            st["pattern_corr_with_era5"] = self._pattern_corr(
+                results, shown, era5_shown)
+        return st
+
+    def _cmip6_panel(self, results):
+        """``(label, shown MMM trend)`` or ``None`` without daily CMIP6."""
+        mmm = results.get("cmip6_mmm_trend")
+        if mmm is None or not results.get("cmip6_models"):
+            return None
+        label = (f"{results.get('cmip6_label', 'CMIP6')} MMM "
+                 f"({len(results['cmip6_models'])})")
+        return label, self._trend_shown(results, mmm)
+
+    _TREND_CBLABEL = (f"Trend in yearly P{_UPPER_Q:g}−P{_LOWER_Q:g} of daily Tx "
+                      f"[°C/decade]")
+
+    def _plot_trend_maps_members(self, results):
+        """ERA5, every evaluated member and the CMIP6 MMM on one trend scale."""
+        ref = results["ref_model"]
+        obs_label = obs_ref_label(self.config, "tasmax")
+        era5 = self._trend_shown(results, results["trend_d"][ref])
+        ordered = [m for f in self._families(results).values() for m in f]
+        entries = [(obs_label, era5)] + [
+            (m, self._trend_shown(results, results["trend_d"][m]))
+            for m in ordered]
+        cm = self._cmip6_panel(results)
+        if cm:
+            entries.append(cm)
+        vmax = self._sym_vmax([f for _, f in entries])
+        fig = self._trend_panel_figure(
+            results, [(t, f, "trend") for t, f in entries],
+            {"trend": ("RdBu_r", vmax, self._TREND_CBLABEL)},
+            ncols=4,
+            suptitle=(f"{self.title} — tail-widening trend, {obs_label}, EERIE "
+                      f"members{' and CMIP6 MMM' if cm else ''} "
+                      f"({self.period[0]}–{self.period[1]})"),
+        )
+        stats = {t: self._trend_panel_stats(results, f, era5)
+                 for t, f in entries}
+        meta = self._build_metadata(
+            title=f"{self.title} — trend maps: {obs_label}, EERIE members, CMIP6 MMM",
+            figure_id="heatwave_hotspots_trend_maps_members",
+            models=[ref] + ordered + results.get("cmip6_models", []),
+            description=(
+                "Linear trend in the yearly P99−P87.5 of daily maximum "
+                f"temperature (°C/decade) for {obs_label} (first panel), each "
+                f"of the {len(ordered)} EERIE members with daily tasmax"
+                + (f" and the {cm[0]}" if cm else "") + ", on one colour "
+                "scale.  Land only; grey: land where the ERA5 87.5th-percentile "
+                "trend is negative (excluded in every panel)."
+            ),
+            period=self.period,
+            plot_type="map",
+            summary_statistics=stats,
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+        )
+        return fig, meta
+
+    def _plot_trend_maps_family(self, results):
+        """ERA5, the family-mean trends and the CMIP6 MMM on one trend scale."""
+        ref = results["ref_model"]
+        obs_label = obs_ref_label(self.config, "tasmax")
+        families = self._families(results)
+        era5 = self._trend_shown(results, results["trend_d"][ref])
+        entries = [(obs_label, era5)] + [
+            (family_label(f, len(m), bold=False),
+             self._trend_shown(results, self._family_trend(results, m)))
+            for f, m in families.items()]
+        cm = self._cmip6_panel(results)
+        if cm:
+            entries.append(cm)
+        vmax = self._sym_vmax([f for _, f in entries])
+        fig = self._trend_panel_figure(
+            results, [(t, f, "trend") for t, f in entries],
+            {"trend": ("RdBu_r", vmax, self._TREND_CBLABEL)},
+            ncols=3,
+            suptitle=(f"{self.title} — tail-widening trend, {obs_label}, model-"
+                      f"family means{' and CMIP6 MMM' if cm else ''} "
+                      f"({self.period[0]}–{self.period[1]})"),
+        )
+        stats = {t: self._trend_panel_stats(results, f, era5)
+                 for t, f in entries}
+        meta = self._build_metadata(
+            title=f"{self.title} — trend maps: {obs_label}, family means, CMIP6 MMM",
+            figure_id="heatwave_hotspots_trend_maps_family",
+            models=[ref] + results["models"] + results.get("cmip6_models", []),
+            description=(
+                "Linear trend in the yearly P99−P87.5 of daily maximum "
+                f"temperature (°C/decade) for {obs_label} (first panel), the "
+                "mean of each EERIE model family's members"
+                + (f" and the {cm[0]}" if cm else "") + ", on one colour "
+                "scale.  Land only; grey: land where the ERA5 87.5th-percentile "
+                "trend is negative." + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="map",
+            summary_statistics=stats,
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
+    def _plot_trend_diff_family(self, results):
+        """ERA5 trend, then family means and CMIP6 MMM minus ERA5."""
+        ref = results["ref_model"]
+        obs_label = obs_ref_label(self.config, "tasmax")
+        families = self._families(results)
+        era5 = self._trend_shown(results, results["trend_d"][ref])
+        models = [(family_label(f, len(m), bold=False),
+                   self._trend_shown(results, self._family_trend(results, m)))
+                  for f, m in families.items()]
+        cm = self._cmip6_panel(results)
+        if cm:
+            models.append(cm)
+        diffs = [(f"{t} − {obs_label}", f - era5) for t, f in models]
+        fig = self._trend_panel_figure(
+            results,
+            [(obs_label, era5, "trend")] + [(t, d, "diff") for t, d in diffs],
+            {"diff": ("RdBu_r", self._sym_vmax([d for _, d in diffs]),
+                      f"Trend difference to {obs_label} [°C/decade]"),
+             "trend": ("RdBu_r", self._sym_vmax([era5]), "Trend [°C/decade]")},
+            ncols=3,
+            suptitle=(f"{self.title} — tail-widening trend: model-family means"
+                      f"{' and CMIP6 MMM' if cm else ''} minus {obs_label} "
+                      f"({self.period[0]}–{self.period[1]})"),
+        )
+        stats = {obs_label: {"land_mean_trend_per_decade":
+                             self._area_mean(results, era5)}}
+        for (t, f), (dt, d) in zip(models, diffs):
+            st = self._latlon_bias_stats(f, era5)
+            st["pattern_corr_with_era5"] = self._pattern_corr(results, f, era5)
+            st["land_mean_trend_per_decade"] = self._area_mean(results, f)
+            stats[dt] = st
+        meta = self._build_metadata(
+            title=f"{self.title} — family-mean and CMIP6 MMM trend differences "
+                  f"to {obs_label}",
+            figure_id="heatwave_hotspots_trend_diff_family",
+            models=[ref] + results["models"] + results.get("cmip6_models", []),
+            description=(
+                f"First panel: {obs_label} tail-widening trend (yearly "
+                "P99−P87.5 of daily Tx, °C/decade, own colour scale).  Other "
+                f"panels: each EERIE model family's mean trend minus {obs_label}"
+                + (f", and the {cm[0]} minus {obs_label}" if cm else "")
+                + ", on one shared difference scale; red = model trend stronger "
+                "than observed.  Land only; grey: land where the ERA5 87.5th-"
+                "percentile trend is negative.  Statistics per difference panel: "
+                "area-weighted mean difference, RMSE, t-test, variance ratio and "
+                "pattern correlation with ERA5." + self._families_note(families)
+            ),
+            period=self.period,
+            plot_type="map",
+            summary_statistics=stats,
+            obs_dataset="ERA5_TMINMAX",
+            obs_variable="tasmax",
+            extra=self._family_meta(families),
+        )
+        return fig, meta
+
     # ── Per-family summaries (project.ensemble_mode: per_family) ─────────
 
     def _families(self, results) -> dict[str, list[str]]:
-        """``{family: [members]}`` of the evaluated models that loaded."""
-        return self._line_families(results["models"]) or {}
+        """``{family: [members]}`` of the evaluated models that loaded.
+
+        Config order, so a family's first member (whose colour it takes) is
+        r1.  Independent of ``ensemble_mode``: the trend-map panels group by
+        family in both modes.
+        """
+        models = results["models"]
+        ordered = [m for m in self.config.models if m in models]
+        ordered += [m for m in models if m not in ordered]
+        return self.config.get_model_families(ordered)
 
     def _family_trend(self, results, members):
         """Mean D-trend of *members* (= trend of their mean, OLS is linear)."""
