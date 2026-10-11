@@ -186,6 +186,49 @@ def _scrip(path, n_src=4):
     }).to_netcdf(path)
 
 
+def test_remap_weights_grid_is_exact(tmp_path):
+    """Radians → degrees noise must not leak into the 0.25° target grid."""
+    from feather.data import icon_kerchunk_loader as mod
+
+    lat = np.arange(-90.0, 90.25, 0.25)
+    lon = np.arange(0.0, 360.0, 0.25)[:4]
+    # The bug being guarded against: the plain round trip is not exact.
+    assert (np.degrees(np.radians(lat)) != lat).any()
+    n = lat.size * lon.size
+    glat, glon = np.meshgrid(lat, lon, indexing="ij")
+    xr.Dataset({
+        "src_address": ("num_links", np.ones(n, np.int32)),
+        "dst_address": ("num_links", np.arange(1, n + 1, dtype=np.int32)),
+        "remap_matrix": (("num_links", "num_wgts"), np.ones((n, 1))),
+        "dst_grid_dims": ("dst_grid_rank", np.array([lon.size, lat.size], np.int32)),
+        "dst_grid_center_lat": ("dst_grid_size", np.radians(glat.ravel())),
+        "dst_grid_center_lon": ("dst_grid_size", np.radians(glon.ravel())),
+        "src_grid_center_lat": ("src_grid_size", np.zeros(1)),
+    }).to_netcdf(tmp_path / "w.nc")
+    mod._remap_weights.cache_clear()
+    _, wlat, wlon = mod._remap_weights(str(tmp_path / "w.nc"))
+    mod._remap_weights.cache_clear()
+    np.testing.assert_array_equal(wlat, lat)
+    np.testing.assert_array_equal(wlon, lon)
+
+
+def test_checkpoint_grid_snapped(tmp_path):
+    """Checkpoints with ~1e-14° coordinate noise align with clean ones."""
+    from feather.diag.temp_extremes_indices import TempExtremesIndicesDiag
+
+    lat = np.arange(-90.0, 90.25, 0.25)
+    lon = np.arange(0.0, 2.0, 0.25)
+    clean = xr.DataArray(np.ones((lat.size, lon.size)), dims=("lat", "lon"),
+                         coords={"lat": lat, "lon": lon}).to_dataset(name="txx")
+    noisy = clean.assign_coords(lat=np.degrees(np.radians(lat)),
+                                lon=np.degrees(np.radians(lon)))
+    assert not noisy.indexes["lat"].equals(clean.indexes["lat"])
+    snapped = TempExtremesIndicesDiag._snap_grid(noisy)
+    mean = xr.concat([clean["txx"], snapped["txx"]], "member",
+                     join="exact").mean("member")
+    assert dict(mean.sizes) == {"lat": lat.size, "lon": lon.size}
+
+
 class TestIconNativeFallback:
     def _loader(self, tmp_path, monkeypatch, remapped=False):
         from feather.data import icon_kerchunk_loader as mod

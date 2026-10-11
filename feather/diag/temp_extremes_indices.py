@@ -515,18 +515,29 @@ class TempExtremesIndicesDiag(PrecipExtremesDiag):
                 attrs={"long_name": f"{label}: {long_name}", "units": units})
         return xr.Dataset(data_vars)
 
+    @staticmethod
+    def _snap_grid(ds: xr.Dataset) -> xr.Dataset:
+        """Round lat/lon to 1e-9° so members on the same grid align exactly.
+
+        Checkpoints of ICON-ESM-ER r2 written before the native-grid loader
+        rounded its coordinates carry ~1e-14° noise; without this, family
+        means outer-join two near-identical grids (721 → 797 latitudes).
+        """
+        return ds.assign_coords({c: np.round(ds[c].values, 9)
+                                 for c in ("lat", "lon") if c in ds.coords})
+
     def _load_checkpoint(self, path: Path) -> xr.Dataset | None:
         """Annual (+ seasonal) checkpoint, or ``None`` if anything is missing."""
         if not path.exists():
             return None
-        ann = xr.open_dataset(path, decode_timedelta=False)
+        ann = self._snap_grid(xr.open_dataset(path, decode_timedelta=False))
         sea_vars = self._season_vars()
         if not sea_vars:
             return ann
         sea_path = self._season_path(path)
         if not sea_path.exists():
             return None
-        sea = xr.open_dataset(sea_path, decode_timedelta=False)
+        sea = self._snap_grid(xr.open_dataset(sea_path, decode_timedelta=False))
         have = set(sea.data_vars)
         # Indices whose inputs the run lacked are legitimately absent; only a
         # season with no field at all means the file predates that season.

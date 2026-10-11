@@ -571,8 +571,11 @@ def _remap_weights(path: str):
         clon = np.degrees(w["dst_grid_center_lon"].values)
     if nlon * nlat != n_dst:
         raise ValueError(f"{path}: dst_grid_dims {nlon}x{nlat} != {n_dst} cells")
-    lat = clat.reshape(nlat, nlon)[:, 0]
-    lon = clon.reshape(nlat, nlon)[0, :] % 360.0
+    # The file stores radians; converting back leaves ~1e-14° noise, which is
+    # enough for xarray to treat the grid as different from the CMOR/remap025
+    # 0.25° grids (outer joins then interleave both coordinate sets).
+    lat = np.round(clat.reshape(nlat, nlon)[:, 0], 9)
+    lon = np.round(clon.reshape(nlat, nlon)[0, :] % 360.0, 9)
     matrix = sparse.csr_matrix((wts, (dst, src)), shape=(n_dst, n_src))
     logger.info("Loaded remap weights %s (%d links)", path, len(wts))
     return matrix, lat, lon
