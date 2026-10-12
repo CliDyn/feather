@@ -343,6 +343,18 @@ class TestPrompts:
         assert "Title: Title 199" in prompt
         assert "Summary" not in prompt and "Variables" not in prompt
 
+    def test_default_budget_follows_model_context(self):
+        from feather.export.prompts import (
+            DEFAULT_CURATION_MAX_TOKENS,
+            default_curation_budget,
+        )
+
+        # gpt-4o: 128k context minus completion tokens and system margin.
+        assert default_curation_budget("gpt-4o", 16384) == 103_616
+        assert default_curation_budget("gpt-4o-2024-08-06", 16384) < 128_000 - 16384
+        for model in ("gpt-5.2-2025-12-11", "gpt-4.1", "unknown"):
+            assert default_curation_budget(model, 65536) == DEFAULT_CURATION_MAX_TOKENS
+
     def test_section_system(self):
         sys_prompt = build_section_system()
         assert "IPCC" in sys_prompt
@@ -575,6 +587,15 @@ class TestOpenAIRetry:
 
 
 class TestReportGenerator:
+    def test_prompt_budget_default_and_override(self, tmp_path):
+        cfg = _report_config(tmp_path)
+        with patch("feather.export.report.OpenAIClient"):
+            assert ReportGenerator(cfg, api_key="k").max_prompt_tokens == (
+                128_000 - 1000 - 8_000
+            )
+            cfg.report["max_prompt_tokens"] = 50_000
+            assert ReportGenerator(cfg, api_key="k").max_prompt_tokens == 50_000
+
     def test_load_syntheses(self, tmp_path):
         cfg = _report_config(tmp_path)
         analysis_dir = tmp_path / "output" / "analysis" / "global_biases"

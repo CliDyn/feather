@@ -243,6 +243,13 @@ llm:
     retry_delay: 10
     skip_existing: true
 
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
 website:
   title: "Feather — EERIE 10-Member Heatwave Hotspots"
   subtitle: "Extreme-heat tail-widening (99th − 87.5th pctile tasmax) vs ERA5 (1980–2014)"

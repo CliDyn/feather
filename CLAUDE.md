@@ -715,7 +715,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - LaTeX template uses custom Jinja2 delimiters (`<< >>`, `<% %>`) to avoid LaTeX `{}` conflicts
 - Caching: `publication/structure.json` and `publication/sections/{id}.json` for resumable runs
 - `OpenAIClient` has retry logic (3 attempts) and handles markdown-fenced JSON + LaTeX escapes in responses
-- Stage 1 prompt budget: `report.max_prompt_tokens` (default 200k, below GPT-5's 272k input limit). Over budget, `build_curation_prompt()` shortens figure entries step by step (drop models list + spatial patterns → truncate findings/summary → id + title); syntheses stay verbatim. The EERIE 10-member run (721 figures) needs level 2 (~130k tokens vs 530k at full detail). A 400 Bad Request (incl. `context_length_exceeded`) is not retried.
+- Stage 1 prompt budget: `report.max_prompt_tokens` (default 200k, below GPT-5's 272k input limit; for models with a smaller known context, e.g. `gpt-4o` at 128k — the fallback when a config has no `report:` block — the default is that window minus `max_tokens` and an 8k system-prompt margin, `default_curation_budget()`). Over budget, `build_curation_prompt()` shortens figure entries step by step (drop models list + spatial patterns → truncate findings/summary → id + title); syntheses stay verbatim. The EERIE 10-member run (721 figures) needs level 2 (~130k tokens vs 530k at full detail). A 400 Bad Request (incl. `context_length_exceeded`) is not retried.
 - Run via: `feather --steps report --openai-api-key $OPENAI_API_KEY -v`
 
 ### GRIBLoader
