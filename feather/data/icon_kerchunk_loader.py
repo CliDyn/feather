@@ -171,6 +171,15 @@ _OCEAN2D: dict[str, tuple[str, float, float]] = {
     "sisnthick": ("hs",      1.0, 0.0),   # m
 }
 
+#: Daily ocean fields on six levels (1, 50.55, 201.8, 617.1, 997.9 and
+#: 1451.7 m; ``5lev_daily_mean``), reached with a daily table.  Same units
+#: and sentinel as the 2-D ocean store; the ``depth`` axis is kept.  The
+#: store ends in 2000 and r2 lacks 1979, 1981 and 1987.
+_OCEAN5LEV_DAY: dict[str, tuple[str, float, float]] = {
+    "thetao": ("to", 1.0, 0.0),   # °C
+    "so":     ("so", 1.0, 0.0),   # PSU
+}
+
 #: Daily-**maximum** store fields (``2d_daily_max``).
 #:
 #: The store names a field's daily maximum after the field itself, so its
@@ -202,6 +211,7 @@ _STORE_FILES = {
     "atmos2d_daymax": "erc2023_atmos_native_2d_daily_max_remap025.parq",
     "atmos2d_daymin": "erc2023_atmos_native_2d_daily_min_remap025.parq",
     "ocean2d_day": "erc2023_ocean_native_2d_daily_mean_remap025.parq",
+    "ocean5lev_day": "erc2023_ocean_native_5lev_daily_mean_remap025.parq",
     # Native-grid counterparts, regridded on the fly when the remapped
     # store is not published (see ``_NATIVE_FALLBACK``).
     "atmos2d_daymax_native": "erc2023_atmos_native_2d_daily_max.parq",
@@ -226,7 +236,7 @@ _NATIVE_TIME_CHUNK = 8
 
 #: CMOR table names that mean "daily".  Anything else (``Amon``, ``Omon``,
 #: ``SImon``, ``None``) resolves to the monthly stores.
-_DAILY_TABLES = frozenset({"day", "daily", "1d", "oday"})
+_DAILY_TABLES = frozenset({"day", "daily", "1d", "oday", "hroday"})
 
 
 class ICONKerchunkLoader:
@@ -266,8 +276,9 @@ class ICONKerchunkLoader:
         Parameters
         ----------
         table : str, optional
-            ``"day"`` selects the daily stores; anything else (``"Amon"``,
-            ``"Omon"``, ``None``) selects the monthly ones.
+            ``"day"`` (or ``"Oday"``/``"HROday"``) selects the daily stores
+            — ``thetao``/``so`` then come on six depth levels; anything else
+            (``"Amon"``, ``"Omon"``, ``None``) selects the monthly ones.
 
         Raises
         ------
@@ -330,8 +341,10 @@ class ICONKerchunkLoader:
                 return "atmos2d_day", _ATMOS2D[variable]
             if variable in _OCEAN2D:
                 return "ocean2d_day", _OCEAN2D[variable]
+            if variable in _OCEAN5LEV_DAY:
+                return "ocean5lev_day", _OCEAN5LEV_DAY[variable]
             known = sorted(
-                set(_ATMOS2D) | set(_OCEAN2D)
+                set(_ATMOS2D) | set(_OCEAN2D) | set(_OCEAN5LEV_DAY)
                 | set(_ATMOS2D_DAY_MAX) | set(_ATMOS2D_DAY_MIN)
             )
             raise KeyError(

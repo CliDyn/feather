@@ -159,7 +159,7 @@ class MarineHeatwavesDiag(DiagnosticBase):
     ):
         super().__init__(model_loader, obs_loader, config,
                          cmip6_loader=cmip6_loader, save_netcdf=save_netcdf)
-        cfg = config.project.get("marine_heatwaves", {}) or {}
+        cfg = self._config_block(config)
         self.period: tuple[str, str] = tuple(
             str(x) for x in cfg.get("period", ["1982", "2014"]))
         self.clim_period: tuple[str, str] = tuple(
@@ -187,6 +187,16 @@ class MarineHeatwavesDiag(DiagnosticBase):
         self.regions: dict = {**REGIONS, **(cfg.get("regions") or {})}
         self._cmip6_cfg: dict = getattr(config, "cmip6_daily", {}) or {}
         self._cmip6_label: str = self._cmip6_cfg.get("label", "CMIP6")
+
+    #: ``project`` blocks merged (later ones win) into the settings.
+    _CONFIG_BLOCKS: tuple[str, ...] = ("marine_heatwaves",)
+
+    @classmethod
+    def _config_block(cls, config) -> dict:
+        out: dict = {}
+        for b in cls._CONFIG_BLOCKS:
+            out.update(config.project.get(b, {}) or {})
+        return out
 
     # ── Paths and checkpoints ──────────────────────────────────────────
 
@@ -245,16 +255,17 @@ class MarineHeatwavesDiag(DiagnosticBase):
     # ── Daily data → per-cell maps ─────────────────────────────────────
 
     @staticmethod
-    def _std(da: xr.DataArray) -> xr.DataArray:
+    def _std(da: xr.DataArray, zdim: str | None = None) -> xr.DataArray:
+        """``(time, lat, lon)`` — or ``(time, zdim, lat, lon)`` — south → north."""
         ren = {d: n for d, n in (("latitude", "lat"), ("longitude", "lon"))
                if d in da.dims}
         da = da.rename(ren) if ren else da
-        extra = [d for d in da.dims if d not in ("time", "lat", "lon")]
+        extra = [d for d in da.dims if d not in ("time", "lat", "lon", zdim)]
         for d in extra:
             if da.sizes[d] != 1:
                 raise ValueError(f"unexpected dimension {d!r} of size {da.sizes[d]}")
         da = da.isel({d: 0 for d in extra}, drop=True)
-        da = da.transpose("time", "lat", "lon")
+        da = da.transpose("time", *([zdim] if zdim else []), "lat", "lon")
         if da["lat"].values[0] > da["lat"].values[-1]:
             da = da.isel(lat=slice(None, None, -1))
         return da
@@ -330,10 +341,12 @@ class MarineHeatwavesDiag(DiagnosticBase):
     def _row_blocks(self, ocean: np.ndarray, nt: int) -> list[tuple[int, int]]:
         """Latitude-row blocks whose ocean cells × days fit ``memory_gb``.
 
-        The workers' temporaries (``workers × cell_chunk`` cells at
-        :data:`mhw.BYTES_PER_CELL_DAY`) come off the budget first; the rest
-        holds the block as float32.  Each block re-reads the daily files for
-        its rows, so fewer, larger blocks are faster.
+        *ocean* is a (lat, lon) mask or count of ocean cells (summed over
+        levels when several are read together).  The workers' temporaries
+        (``workers × cell_chunk`` cells at :data:`mhw.BYTES_PER_CELL_DAY`)
+        come off the budget first; the rest holds the block as float32.
+        Each block re-reads the daily files for its rows, so fewer, larger
+        blocks are faster.
         """
         temps = self.workers * self.cell_chunk * nt * mhw.BYTES_PER_CELL_DAY
         budget = self.memory_gb * 1e9 - temps
@@ -355,7 +368,19 @@ class MarineHeatwavesDiag(DiagnosticBase):
 
     def _detect_regular(self, da: xr.DataArray) -> xr.Dataset:
         """Per-cell maps of a (time, lat, lon) daily SST field."""
-        da = self._std(da)
+        da = self._std(da).expand_dims("_level", axis=1)
+        return self._detect_levels(da, "_level", [0])[0]
+
+    def _detect_levels(self, da: xr.DataArray, zdim: str,
+                       zidx: list[int]) -> list[xr.Dataset]:
+        """Per-cell maps of levels *zidx* of a (time, zdim, lat, lon) field.
+
+        All requested levels of a block of latitude rows are read together:
+        the daily files store neighbouring levels in one chunk, so reading
+        them level by level would decompress every chunk once per level.
+        Detection still runs on each level independently.  A level without
+        any ocean cell gives an empty dataset.
+        """
         ty, tm, td, cal = self._time_parts(da)
         fy, fm, fd = self._full_axis(cal)
         pos, ok = self._positions(ty, tm, td, fy, fm, fd)
@@ -364,38 +389,52 @@ class MarineHeatwavesDiag(DiagnosticBase):
             raise ValueError(f"only {ok.sum()} of {nt} days of "
                              f"{self.period[0]}–{self.period[1]}")
         first = int(np.flatnonzero(ok)[0])
-        sample = self._values(da.isel(time=first))
-        off = np.float32(self._offset(sample))
-        ocean = np.isfinite(sample)
-        ny, nx = ocean.shape
-        logger.info("  %d ocean cells, %d days (%d missing), calendar %s",
-                    int(ocean.sum()), nt, nt - int(ok.sum()), cal)
+        sample = self._values(da.isel({"time": first, zdim: list(zidx)}))
+        off = np.float32(self._offset(sample[0]))
+        ocean = np.isfinite(sample)                         # (levels, lat, lon)
+        nz, ny, nx = ocean.shape
+        logger.info("  %s ocean cells, %d days (%d missing), calendar %s",
+                    " + ".join(str(int(o.sum())) for o in ocean), nt,
+                    nt - int(ok.sum()), cal)
         years = np.unique(fy)
-        flat = np.flatnonzero(ocean.ravel())
-        maps: dict[str, np.ndarray] = {}
-        blocks = self._row_blocks(ocean, nt)
+        flats = [np.flatnonzero(o.ravel()) for o in ocean]
+        maps: list[dict[str, np.ndarray]] = [{} for _ in range(nz)]
+        blocks = self._row_blocks(ocean.sum(axis=0), nt)
         logger.info("  %d block(s) of latitude rows", len(blocks))
         for r0, r1 in blocks:
-            sea = ocean[r0:r1].ravel()
-            if not sea.any():
+            seas = [o[r0:r1].ravel() for o in ocean]
+            if not any(s.any() for s in seas):
                 continue
-            arr = np.full((int(sea.sum()), nt), np.nan, dtype=np.float32)
+            arrs = [np.full((int(s.sum()), nt), np.nan, dtype=np.float32)
+                    for s in seas]
             for y in np.unique(ty[ok]):
                 ti = np.flatnonzero((ty == y) & ok)
-                block = self._values(da.isel(time=ti, lat=slice(r0, r1)))
-                arr[:, pos[ti]] = block.reshape(len(ti), -1)[:, sea].T + off
-            logger.info("    rows %d–%d: %d cells", r0, r1, arr.shape[0])
-            part = self._detect_cells(arr, (fy, fm, fd, cal))
-            del arr
-            sel = (flat >= r0 * nx) & (flat < r1 * nx)
-            for k, v in part.items():
-                if k == "years":
+                block = self._values(da.isel({"time": ti, zdim: list(zidx),
+                                              "lat": slice(r0, r1)}))
+                block = block.reshape(len(ti), nz, -1)
+                for lev, s in enumerate(seas):
+                    if s.any():
+                        arrs[lev][:, pos[ti]] = block[:, lev][:, s].T + off
+                del block
+            for lev, s in enumerate(seas):
+                if not s.any():
                     continue
-                if k not in maps:
-                    shape = v.shape[:-1] + (ny * nx,)
-                    maps[k] = np.full(shape, np.nan, dtype=np.float32)
-                maps[k][..., flat[sel]] = v
-        return self._as_dataset(maps, years, da["lat"].values, da["lon"].values)
+                logger.info("    rows %d–%d%s: %d cells", r0, r1,
+                            f", level {zidx[lev]}" if nz > 1 else "",
+                            arrs[lev].shape[0])
+                part = self._detect_cells(arrs[lev], (fy, fm, fd, cal))
+                arrs[lev] = None
+                flat = flats[lev]
+                sel = (flat >= r0 * nx) & (flat < r1 * nx)
+                for k, v in part.items():
+                    if k == "years":
+                        continue
+                    if k not in maps[lev]:
+                        shape = v.shape[:-1] + (ny * nx,)
+                        maps[lev][k] = np.full(shape, np.nan, dtype=np.float32)
+                    maps[lev][k][..., flat[sel]] = v
+        lat, lon = da["lat"].values, da["lon"].values
+        return [self._as_dataset(m, years, lat, lon) for m in maps]
 
     @staticmethod
     def _as_dataset(maps: dict, years: np.ndarray, lat: np.ndarray,
@@ -746,8 +785,9 @@ class MarineHeatwavesDiag(DiagnosticBase):
                   ticklabels=None):
         """Robinson maps, one shared horizontal colour bar.
 
-        *panels* is ``[(title, field)]``; *greyed* maps a title to a boolean
-        field drawn in grey under the data (e.g. non-significant cells).
+        *panels* is ``[(title, field)]``; a ``None`` field leaves its slot
+        blank.  *greyed* maps a title to a boolean field drawn in grey under
+        the data (e.g. non-significant cells).
         """
         import cartopy.crs as ccrs
         import cartopy.feature as cfeature
@@ -761,11 +801,14 @@ class MarineHeatwavesDiag(DiagnosticBase):
             squeeze=False)
         pc = ccrs.PlateCarree()
         mesh = None
-        panels = [(t, self._for_plot(f)) for t, f in panels]
+        panels = [(t, None if f is None else self._for_plot(f)) for t, f in panels]
         if greyed:
             greyed = {t: (self._for_plot(g.astype(float)) > 0.5
                           if g is not None else None) for t, g in greyed.items()}
         for ax, (title, field) in zip(axes.flat, panels):
+            if field is None:
+                ax.set_visible(False)
+                continue
             ax.set_global()
             ax.add_feature(cfeature.LAND, facecolor="0.85", zorder=0)
             ax.coastlines(linewidth=0.3)

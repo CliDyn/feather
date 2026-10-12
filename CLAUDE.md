@@ -92,7 +92,9 @@ feather/                     # Package root
 │   ├── temperature_berkeley.py # TemperatureBerkeley: T2m eval vs Berkeley Earth
 │   ├── teleconnections.py    # TeleconnectionDiag: variability modes (ENSO, NAO, etc.)
 │   ├── obs_comparison.py     # ObsComparisonDiag: ERA5 vs Berkeley Earth trends and biases
-│   └── precip_obs_comparison.py # PrecipObsComparisonDiag: ERA5 vs MSWEP precip trends and biases
+│   ├── precip_obs_comparison.py # PrecipObsComparisonDiag: ERA5 vs MSWEP precip trends and biases
+│   ├── marine_heatwaves.py  # MarineHeatwavesDiag: Hobday MHWs in daily SST
+│   └── marine_heatwaves_subsurface.py # shallow vs deep MHWs on thetao model levels
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -124,7 +126,7 @@ feather/                     # Package root
 | `configs/eerie_10_mems_precip_extremes.yaml` | EERIE 10-member ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6 and daily ERA5/MSWEP (`precip_extremes`) |
 | `configs/eerie_all_members_extremes.yaml` | EERIE 10-member `heatwave_hotspots` (tail-widening, PNAS Fig 2–4) vs ERA5 + daily CMIP6 envelope, `per_family`; output `output_eerie_10_mems_temp_extremes` |
 | `configs/eerie_all_members_indices.yaml` | EERIE 10-member daily temperature extremes vs ERA5: tropical nights, heatwaves (+ `_change`), `temp_extremes_change`, and the 14 ETCCDI `temp_extremes_indices` vs daily CMIP6 |
-| `configs/eerie_10_mems_marine_heatwaves.yaml` | EERIE 10 members (7 with daily SST) — `marine_heatwaves` (Hobday 2016 / de Toma et al. 2026) 1982–2014 vs OISST v2.1 + ERA5 daily SST and daily CMIP6 Oday/tos, `per_family` |
+| `configs/eerie_10_mems_marine_heatwaves.yaml` | EERIE 10 members (7 with daily SST) — `marine_heatwaves` (Hobday 2016 / de Toma et al. 2026) 1982–2014 vs OISST v2.1 + ERA5 daily SST and daily CMIP6 Oday/tos, `per_family`; `marine_heatwaves_subsurface` on FESOM r1 + ICON r1 daily thetao |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
@@ -655,8 +657,18 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - CMIP6: `discover_daily_models(table="Oday", variable="tos")`, native grid → 1° by a sparse box average (`_box_matrix`; empty 1° cells take the nearest point within 1°), then detection on 1°.
 - Streaming: `_row_blocks` sizes latitude-row blocks so block + `workers × cell_chunk × days × BYTES_PER_CELL_DAY` fit `memory_gb`; each block reads every year of its rows; `_detect_cells` runs chunks on a thread pool. Missing days are inserted as NaN on a complete calendar axis (`_full_axis`, `_positions`); K inputs detected from the first day's mean.
 - Checkpoints `{output}/marine_heatwaves/[obs/|cmip6/]{name}_{y0}_{y1}.nc` store the detection settings as attrs; mismatch → recompute. Figures: `mhw_{metric}_{maps,members,bias,spread}`, `mhw_zonal_means`, `mhw_days_timeseries`, `mhw_regions_{region}` (paper Table 2 areas); cells with OISST climatology < `ice_mask_sst` (−1 °C) masked; maps block-averaged to `plot_resolution` for display only. Group `marine_heatwaves`; config `configs/eerie_10_mems_marine_heatwaves.yaml`.
-- Not yet: the subsurface (shallow < 50 m vs deep) part — daily `thetao` exists only for IFS-FESOM2-SR r1 (HROday 2.5/12.5/97.5/195 m…), ICON-ESM-ER r1 (1/50.55/201.8 m…) and ICON r2/r3 (`ocean_native_5lev_daily_mean_remap025`, same levels, 1975–2000 with gaps).
+- Subsurface part: `marine_heatwaves_subsurface` (below).
 - 14 tests in `tests/test_marine_heatwaves.py`, 13 in `tests/test_mhw.py`.
+
+### MarineHeatwavesSubsurfaceDiag diagnostic (`marine_heatwaves_subsurface`)
+- Subsurface part of de Toma et al. (2026) §2.4/3.3: Hobday MHWs detected **independently on every model level** of daily `thetao` (`table: HROday`) down to `max_depth` (210 m, so ICON's 201.8 m level counts; paper: 0.5–200 m), then grouped **shallow** (depth ≤ `shallow_max_depth`, 50 m) vs **deep**. Subclass of `MarineHeatwavesDiag`; settings = `project.marine_heatwaves` overridden by `project.marine_heatwaves_subsurface` (`_CONFIG_BLOCKS`). Group `marine_heatwaves_subsurface`.
+- Group maps (`pool_levels`): event means pooled over all events of the levels (per-level means weighted by event frequency), `intensity_max_max`/`category_max` = max over levels, frequency/MHW-day % / climatology = mean over levels. No vertical interpolation — each model on its own levels.
+- Daily thetao (1982–2014): IFS-FESOM2-SR r1 (2.5, 12.5 | 97.5, 195 m), ICON-ESM-ER r1 (1 | 50.55, 201.8 m — 50.55 m falls just below the divide). ICON r2/r3 load from the new `ocean5lev_day` kerchunk store (`ICONKerchunkLoader`, `thetao`/`so` with a `depth` axis, daily tables now include `hroday`) but it ends 2000 (r2 lacks 1979/1981/1987), so the 90 % coverage check skips them for 1982–2014. IFS-NEMO, FESOM r2/r3, HadGEM3: no daily thetao.
+- `_detect_levels(da, zdim, zidx)` (now also behind the surface `_detect_regular`): all requested levels of a latitude-row block are read in one pass — the CMOR files chunk (1 day, 3–4 levels, 361, 720), so level-by-level reads would decompress each chunk once per level. ~120 GB float32 per FESOM member → `memory_gb: 200`.
+- No daily subsurface obs on Levante for 1982–2014 (ICDC ORAS5 monthly; ARMOR3D weekly 2014–15 only; GLORYS12 Arctic only). The surface run's checkpoints (`{output}/marine_heatwaves/[obs/]…`, settings must match) give the 0 m reference: obs stars + members' `tos` circles on the profiles, OISST ice mask. Mixed-layer depth from `Omon/mlotst` (annual mean, deepest monthly climatology; `mld_table`).
+- Checkpoints `{output}/marine_heatwaves_subsurface/{model}_z{depth}m_{y0}_{y1}.nc` (attr `depth`), only missing levels recomputed; `{model}_mld_{y0}_{y1}.nc`.
+- Figures: `mhwz_{m}_layers` (rows families × shallow/deep), `mhwz_{m}_deep_minus_shallow`, `mhwz_{m}_levels` (every member level), `mhwz_profiles_{global|region}` (area means vs depth over cells that are ocean on every level of every member), `mhwz_zonal_means`, `mhwz_days_timeseries`, `mhwz_regions_{region}` (shallow/deep violins per member, paper Fig. 17). Named-event time–depth sections (paper Figs. 14–16) not reproduced: free-running models do not have the observed events.
+- 15 tests in `tests/test_marine_heatwaves_subsurface.py`.
 
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM

@@ -26,6 +26,20 @@
 # Run (compute node; one whole 0.25° member is ~33 GB of float32 SST):
 #   feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
 #           --diagnostics marine_heatwaves --steps diagnostics --save-netcdf -v
+#
+# Subsurface part (shallow ≤ 50 m vs deep events, paper §2.4/3.3), on the
+# model levels of daily thetao down to ~200 m.  Daily thetao (HROday):
+#   IFS-FESOM2-SR r1    2.5, 12.5 | 97.5, 195 m      1950–2014
+#   ICON-ESM-ER r1      1 | 50.55, 201.8 m           1950–2014
+#   ICON-ESM-ER r2/r3   same levels (5lev store)     1975–2000 only → skipped
+#                                                    for 1982–2014
+#   others              —                            skipped
+# Reads the surface checkpoints above (obs + members' tos) for the 0 m
+# reference, so run it after marine_heatwaves.  A member is ~120 GB of
+# float32 over its levels; with memory_gb 200 it reads in one block.
+#   feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+#           --diagnostics marine_heatwaves_subsurface --steps diagnostics \
+#           --save-netcdf -v
 # ─────────────────────────────────────────────────────────────────────────────
 
 project:
@@ -73,6 +87,15 @@ project:
     memory_gb: 64
     workers: 8
     cell_chunk: 5000
+
+  # Detection settings, period, obs and regions are inherited from
+  # marine_heatwaves; anything set here overrides them.
+  marine_heatwaves_subsurface:
+    table: HROday
+    max_depth: 210                  # include ICON's 201.8 m level (paper: 200 m)
+    shallow_max_depth: 50           # ≤ 50 m shallow, deeper = deep
+    mld_table: Omon                 # mlotst for the mixed-layer lines
+    memory_gb: 200
 
 data_source:
   type: "cmor"
@@ -227,5 +250,7 @@ website:
   subtitle: "Hobday et al. (2016) marine heatwaves in daily SST vs OISST v2.1 and ERA5 (1982–2014)"
   group_order:
     - marine_heatwaves
+    - marine_heatwaves_subsurface
   group_labels:
     marine_heatwaves: "Marine Heatwaves"
+    marine_heatwaves_subsurface: "Subsurface Marine Heatwaves"
