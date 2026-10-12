@@ -114,7 +114,7 @@ _ATMOS3D: dict[str, tuple[str, float]] = {
 }
 
 #: CMOR table names that mean "daily" (see ``load_var(table=...)``).
-_DAILY_TABLES = frozenset({"day", "daily", "1d"})
+_DAILY_TABLES = frozenset({"day", "daily", "1d", "oday"})
 
 # Atmos 2-D daily minimum variables (e.g. from 2D_daily_0.25deg_atmos_min.parq)
 _ATMOS2D_DAILY_MIN: dict[str, tuple[str, float]] = {
@@ -198,7 +198,9 @@ class KerchunkParquetLoader:
             Model name and CMOR variable name.
         table : str, optional
             ``"day"`` returns an atmos-2D average field (e.g. ``pr``) at its
-            native daily cadence from the daily-average store.  Any other
+            native daily cadence from the daily-average store; ``"day"`` or
+            ``"Oday"`` returns ocean 2-D fields (e.g. ``tos``) daily instead
+            of resampled to monthly means.  Any other
             value keeps the monthly behaviour.  ``tasmin``/``tasmax`` are
             daily whatever the table.
         period : (start, end), optional
@@ -207,12 +209,14 @@ class KerchunkParquetLoader:
             Return temporal mean if True.
         """
         self._touched = []
-        if (table is not None and table.lower() in _DAILY_TABLES
-                and variable in _ATMOS2D):
+        daily = table is not None and table.lower() in _DAILY_TABLES
+        if daily and variable in _ATMOS2D:
             kname, scale = _ATMOS2D[variable]
             da = self._load_atmos2d_flat_lazy(
                 model, variable, kname, scale, "atmos2d_daily_avg",
             )
+        elif daily and variable in _OCEAN2D:
+            da = self._load_ocean_var(model, variable, daily=True)
         else:
             da = self._load_raw(model, variable)
 
@@ -499,7 +503,9 @@ class KerchunkParquetLoader:
     # Ocean 2-D (daily → monthly)
     # ------------------------------------------------------------------
 
-    def _load_ocean_var(self, model: str, variable: str) -> xr.DataArray:
+    def _load_ocean_var(self, model: str, variable: str,
+                        daily: bool = False) -> xr.DataArray:
+        """Ocean 2-D field: monthly means, or the store's daily values."""
         kname, scale, offset = _OCEAN2D[variable]
         ds = self._open_store(model, "ocean2d")
         raw = ds[kname]
@@ -546,12 +552,13 @@ class KerchunkParquetLoader:
             else:
                 data = data + offset
 
-        # Resample daily → monthly mean (label on month start)
-        data = (
-            data
-            .resample(time="MS")
-            .mean(skipna=True)
-        )
+        if not daily:
+            # Resample daily → monthly mean (label on month start)
+            data = (
+                data
+                .resample(time="MS")
+                .mean(skipna=True)
+            )
         data = data.rename(variable)
         # After the K→°C offset is applied (either explicitly or via CF
         # decode), set units="degC" so _needs_celsius_conversion returns False

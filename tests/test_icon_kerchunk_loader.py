@@ -353,6 +353,11 @@ class TestStoreResolution:
         assert store == "ocean2d_day"
         assert spec == _OCEAN2D["siconc"]
 
+    def test_oday_table_is_daily(self):
+        store, spec = ICONKerchunkLoader._resolve_store("tos", "Oday")
+        assert store == "ocean2d_day"
+        assert spec == _OCEAN2D["tos"]
+
     def test_daily_conversions_carry_over(self):
         """Daily fields get the same scaling as their monthly counterparts."""
         _, (_, scale, _) = ICONKerchunkLoader._resolve_store("hfss", "day")

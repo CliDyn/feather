@@ -226,7 +226,7 @@ _NATIVE_TIME_CHUNK = 8
 
 #: CMOR table names that mean "daily".  Anything else (``Amon``, ``Omon``,
 #: ``SImon``, ``None``) resolves to the monthly stores.
-_DAILY_TABLES = frozenset({"day", "daily", "1d"})
+_DAILY_TABLES = frozenset({"day", "daily", "1d", "oday"})
 
 
 class ICONKerchunkLoader:

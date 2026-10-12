@@ -26,6 +26,7 @@ Diagnostics (19 registered):
 - :mod:`~feather.diag.heatwave_change` — Heatwave climate change signal (Perkins & Alexander 2013, SSP2-4.5)
 - :mod:`~feather.diag.precip_extremes` — ETCCDI daily precipitation extremes, present day + SSP2-4.5 change
 - :mod:`~feather.diag.temp_extremes_indices` — ETCCDI daily temperature extremes (land), present day + SSP2-4.5 change
+- :mod:`~feather.diag.marine_heatwaves` — Hobday marine heatwaves in daily SST vs OISST/ERA5 and daily CMIP6
 """
 
 from feather.diag.base import DiagnosticBase
@@ -58,6 +59,7 @@ import feather.diag.heatwave_change  # noqa: F401
 import feather.diag.temp_extremes_change  # noqa: F401
 import feather.diag.precip_extremes  # noqa: F401
 import feather.diag.temp_extremes_indices  # noqa: F401
+import feather.diag.marine_heatwaves  # noqa: F401
 import feather.diag.climate_classification  # noqa: F401
 import feather.diag.climate_shifts  # noqa: F401
 import feather.diag.cloud_obs_comparison  # noqa: F401
