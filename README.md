@@ -123,6 +123,12 @@ feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
         --steps diagnostics \
         --diagnostics marine_heatwaves --save-netcdf -v
 
+# Subsurface marine heatwaves, shallow (<= 50 m) vs deep, on daily thetao
+# model levels (IFS-FESOM2-SR r1, ICON-ESM-ER r1); run after marine_heatwaves
+feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+        --steps diagnostics \
+        --diagnostics marine_heatwaves_subsurface --save-netcdf -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -314,6 +320,7 @@ Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere,
 | `temp_extremes_change` | `TempExtremesChangeDiag` | — (model change signal) | Climate change signal in mean daily `tasmin` **and** `tasmax` under SSP2-4.5, annual + four seasons (DJF/MAM/JJA/SON): [Reference \| Future \| Change] maps per model + stitched global-mean time series, per variable |
 | `temp_extremes_indices` | `TempExtremesIndicesDiag` | ERA5 (daily tasmax/tasmin, derived to 0.25°) | Fourteen ETCCDI daily-temperature indices over land (TXx, TNx, TXn, TNn, DTR, FD, ID, TX10p, TX90p, TN10p, TN90p, WSDI, CSDI, GSL): reference climatology per model family + daily CMIP6 MMM + ERA5, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs ERA5, land-mean time series |
 | `marine_heatwaves` | `MarineHeatwavesDiag` | NOAA OISST v2.1 + ERA5 (daily SST, derived to 0.25°) | Hobday et al. (2016) marine heatwaves detected per ocean cell in daily SST (de Toma et al. 2026 surface analysis): frequency, MHW days, mean duration, max/mean/cumulative intensity, intensity variability, onset/decline rates, max category — maps per family + CMIP6 MMM, every member, bias vs OISST (grey within 2σ of the member spread), member spread, zonal means, yearly MHW days, violins over the paper's seven areas of interest |
+| `marine_heatwaves_subsurface` | `MarineHeatwavesSubsurfaceDiag` | — (no daily subsurface obs; surface OISST/ERA5 as 0 m reference) | Hobday marine heatwaves detected independently on each daily `thetao` model level down to ~200 m and grouped shallow (≤ 50 m) vs deep (de Toma et al. 2026 §2.4): shallow/deep maps per family, deep − shallow, every member level, depth profiles (global + seven regions, with mixed-layer depth), zonal means, yearly MHW days, shallow/deep violins per region |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -476,6 +483,19 @@ feather --config configs/eerie_10_mems_marine_heatwaves.yaml --steps diagnostics
 ```
 
 Checkpoints (per-cell maps and yearly counts, native grid): `{output_dir}/marine_heatwaves/{model}_{start}_{end}.nc`, `…/obs/…`, `…/cmip6/…` (1°). They store the detection settings and are recomputed when those change.
+
+#### Subsurface marine heatwaves (`marine_heatwaves_subsurface`)
+
+The subsurface part of de Toma et al. (2026, §2.4 and §3.3). The same Hobday detection is run **independently on every model level** of daily `thetao` (`table: HROday`) down to `max_depth` (210 m, so ICON's 201.8 m level is included), and the levels are grouped into **shallow** (depth ≤ `shallow_max_depth`, 50 m) and **deep**. Settings are `project.marine_heatwaves` overridden by `project.marine_heatwaves_subsurface`, so detection matches the surface run.
+
+- **Inputs.** Daily `thetao` exists for 1982–2014 only for IFS-FESOM2-SR r1 (2.5, 12.5 | 97.5, 195 m) and ICON-ESM-ER r1 (1 | 50.55, 201.8 m). ICON's 50.55 m level falls just below the divide, so the two families sample the column differently; the per-level maps and profiles show this. ICON-ESM-ER r2/r3 load from the new `ocean5lev_day` kerchunk store (`ICONKerchunkLoader`, `to`/`so` with a `depth` axis), but it ends in 2000 and r2 lacks 1979, 1981 and 1987, so the 90 % coverage check skips them for 1982–2014. IFS-NEMO, IFS-FESOM2 r2/r3 and HadGEM3 have no daily subsurface temperature.
+- **No vertical interpolation.** Each model is analysed on its own levels.
+- **Grouping** (`pool_levels`). Event means (duration, intensities, rates) are pooled over all events of the group's levels (per-level means weighted by event frequency); maximum intensity and category take the maximum over levels; frequency, MHW-day share and climatology are the mean over levels.
+- **Reference.** There is no daily subsurface observation product on Levante for 1982–2014 (ICDC ORAS5 is monthly, ARMOR3D covers 2014–15 weekly, GLORYS12 the Arctic only), so this compares the members with each other. The surface run's checkpoints (`{output_dir}/marine_heatwaves/[obs/]…`, same settings) mark 0 m on the profiles (OISST/ERA5 and each member's `tos`) and supply the OISST ice mask. Mixed-layer depth comes from `Omon/mlotst` (`mld_table`).
+- **Figures.** `mhwz_{m}_layers` (shallow and deep per family), `mhwz_{m}_deep_minus_shallow`, `mhwz_{m}_levels` (every member level), `mhwz_profiles_{global|region}` (area means vs depth over cells that are ocean on every level of every member, with MLD), `mhwz_zonal_means`, `mhwz_days_timeseries`, `mhwz_regions_{region}` (shallow/deep violins per member, paper Fig. 17). The paper's time–depth sections of named events (Figs. 14–16) are not reproduced: free-running models do not contain the observed events.
+- **Cost.** All requested levels of a latitude-row block are read in one pass (the CMOR files chunk 3–4 levels together). One FESOM member is ~120 GB of float32, hence `memory_gb: 200` in the config block — use a ≥ 256 GB node or lower it to read in more blocks.
+
+Checkpoints: `{output_dir}/marine_heatwaves_subsurface/{model}_z{depth}m_{start}_{end}.nc` per level (only missing levels are recomputed) and `{model}_mld_{start}_{end}.nc`.
 
 ### Climate classification
 
