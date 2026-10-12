@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# EERIE all-members heatwave-hotspots (extreme-heat tail-widening) diagnostic.
+# EERIE 10-member heatwave-hotspots (extreme-heat tail-widening) diagnostic.
 #
 # Reproduces Figures 2–4 of Sambartusek, Kornhuber et al. (2024, PNAS,
 # doi:10.1073/pnas.2411258121) — "A global emergence of regional heatwave
@@ -12,7 +12,11 @@
 # grid, land-masked (>25 %), and masked grey where the P87.5 trend is negative.
 #
 # Reference = ERA5 (derived daily tasmax CMOR tree).  The "model ensemble" is
-# the EERIE high-resolution members.  A daily CMIP6 envelope is included by
+# the 10 EERIE members (IFS-FESOM2-SR r1–r3, IFS-NEMO-ER r1–r3, ICON-ESM-ER
+# r1–r3, HadGEM3-GC5).  HadGEM3-GC5 publishes no daily tasmax and is skipped
+# with a warning, so 9 members enter the ensemble.  ICON-ESM-ER r2's daily
+# maximum exists only on the native R2B8 grid and is regridded on the fly by
+# the icon_kerchunk loader.  A daily CMIP6 envelope is included by
 # reading tasmax straight from the DKRZ CMIP6 DRS tree (/work/ik1017/CMIP6/
 # data/CMIP6/.../historical/r1i1p1f1/day/tasmax/) — no zarr cache needed; see
 # the cmip6_daily block below.  Per-model yearly percentiles are cached to
@@ -30,25 +34,31 @@
 
 project:
   name: "EERIE"
-  description: "EERIE all-members heatwave hotspots (extreme-heat tail-widening) vs ERA5"
+  description: "EERIE 10-member heatwave hotspots (per model family) (extreme-heat tail-widening) vs ERA5"
   experiment: "hist-1950"
   period: ["1980", "2014"]          # common window: ERA5 + EERIE hist + CMIP6 historical
   resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
   comparison_type: "multi_model"
   comparison_description: >-
     Trends in extreme-heat tail-widening (yearly 99th minus 87.5th percentile of
-    daily tasmax) across all EERIE high-resolution members, evaluated against
+    daily tasmax) across the 10 EERIE members (IFS-FESOM2-SR, IFS-NEMO-ER and
+    ICON-ESM-ER with 3 members each; HadGEM3-GC5 publishes no daily tasmax), evaluated against
     ERA5-derived daily extremes, reproducing Sambartusek/Kornhuber et al. (2024,
     PNAS) Figs. 2–4.
   extremes_obs_reference: "ERA5"    # ERA5 is the reanalysis reference
+  # One summary per model family: ICON-ESM-ER runs without a parameterised
+  # convection scheme, so its members are not pooled with the IFS runs.  The
+  # ensemble figures (regions, discrepancy, boxwhisker, pdf, eerie_vs_cmip6)
+  # are drawn per family and their ids gain a "_family" suffix.
+  ensemble_mode: per_family
 
 # Global default source for the flat-model diagnostics.
 data_source:
   type: "cmor"
   root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
 
-# Flat models: ERA5 (reference) + EERIE members publishing daily tasmax.
-# Members lacking daily tasmax are skipped gracefully by the diagnostic.
+# Flat models: ERA5 (reference) + the 10 EERIE members.
+# Members lacking daily tasmax (HadGEM3-GC5) are skipped gracefully.
 models:
   ERA5:
     institution: ECMWF
@@ -61,6 +71,7 @@ models:
 
   IFS-FESOM2-SR:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
@@ -70,6 +81,7 @@ models:
   # IFS-FESOM2-SR run2/run3 — historical only (daily tasmax via kerchunk parquet).
   IFS-FESOM2-SR-r2:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -80,6 +92,7 @@ models:
 
   IFS-FESOM2-SR-r3:
     institution: AWI
+    family: IFS-FESOM2-SR
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
@@ -90,6 +103,7 @@ models:
 
   IFS-NEMO-ER:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1950
     variant: r1i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -101,6 +115,7 @@ models:
   # future, so a future window can be added later without moving data.
   IFS-NEMO-ER-r2:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r2i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -110,6 +125,7 @@ models:
 
   IFS-NEMO-ER-r3:
     institution: BSC
+    family: IFS-NEMO-ER
     experiment: hist-1975
     variant: r3i1p1f1
     data_root: "/work/bm1344/AWI/EERIE/BSC/IFS-NEMO-ER"
@@ -119,17 +135,54 @@ models:
 
   ICON-ESM-ER:
     institution: MPI-M
+    family: ICON-ESM-ER
     experiment: hist-1950
     variant: r1i1p1f1
     grids:
       sfc: latlon
     color: "#2ca02c"
 
-  # HadGEM3-GC5 is intentionally excluded: neither the EERIE-N640-ORCA12 run
-  # (…/AWI/EERIE/MOHC/…, only Amon/psl) nor the GC5E-HH run
-  # (/work/bm1344/DKRZ/MOHC/HadGEM3-GC5E-HH/, day/ has tas/pr/psl/ua/uas/vas
-  # but no tasmax — tasmax only in monthly Amon) publishes *daily* tasmax,
-  # which this tail-widening diagnostic requires.
+  # r2/r3 are not CMOR'd: daily stores from the gr025 kerchunk references.
+  # r2's daily maximum exists only on the native grid and is regridded on
+  # the fly (see feather/data/icon_kerchunk_loader.py).
+  ICON-ESM-ER-r2:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 2
+    grids:
+      sfc: latlon
+    color: "#66c266"
+
+  ICON-ESM-ER-r3:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 3
+    grids:
+      sfc: latlon
+    color: "#a0dba0"
+
+  # HadGEM3-GC5: neither the EERIE-N640-ORCA12 run (…/AWI/EERIE/MOHC/…, only
+  # Amon/psl) nor the GC5E-HH run (/work/bm1344/DKRZ/MOHC/HadGEM3-GC5E-HH/,
+  # day/ has tas/pr/psl/ua/uas/vas but no tasmax) publishes *daily* tasmax.
+  # Kept for completeness of the 10-member set; skipped with a warning.
+  HadGEM3-GC5:
+    institution: MOHC
+    family: HadGEM3-GC5
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    grids:
+      sfc: latlon
+    color: "#d62728"
 
 obs_root: "/work/bm1344/AWI/OBS"
 obs_datasets:
@@ -178,7 +231,7 @@ nereus:
   influence_radius: 80000
   method: "linear"
 
-output_dir: "/work/bm1344/AWI/EERIE/output_eerie_all_members_extremes"
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_10_mems_temp_extremes"
 
 llm:
   figure_analysis:
@@ -190,8 +243,15 @@ llm:
     retry_delay: 10
     skip_existing: true
 
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
 website:
-  title: "Feather — EERIE Heatwave Hotspots"
+  title: "Feather — EERIE 10-Member Heatwave Hotspots"
   subtitle: "Extreme-heat tail-widening (99th − 87.5th pctile tasmax) vs ERA5 (1980–2014)"
   group_order:
     - extremes

@@ -367,3 +367,170 @@ def test_no_cmip6_keeps_base_figures(diag):
     assert fig_ids == set(HeatwaveHotspotsDiag._FIG_IDS)
     import matplotlib.pyplot as plt
     plt.close("all")
+
+
+# ── Per-family ensemble mode ─────────────────────────────────────────────────
+
+_FAMILY_MODELS = ("ERA5", "FamA", "FamA-r2", "FamA-r3", "FamB", "FamB-r2", "Solo")
+
+
+@pytest.fixture
+def family_diag(tmp_path, monkeypatch):
+    cfg = _make_config(tmp_path, models=_FAMILY_MODELS)
+    cfg.project["ensemble_mode"] = "per_family"
+    # Solo has no daily tasmax: skipped, so its family must not appear.
+    data = {m: _make_daily_tasmax(seed=i) for i, m in enumerate(_FAMILY_MODELS)
+            if m != "Solo"}
+
+    class _Loader(_MultiLoader):
+        def load_var(self, model, variable, **kw):
+            if model not in self._m:
+                raise FileNotFoundError(model)
+            return super().load_var(model, variable, **kw)
+
+    d = HeatwaveHotspotsDiag(_Loader(data), None, cfg,
+                             period=("1980", "1984"), n_bootstrap=50)
+    da = data["ERA5"]
+    lat = np.asarray(da["lat"]); lon = np.asarray(da["lon"])
+
+    def _fake_probe(values, slon, slat, resolution, influence_radius):
+        interp = _FakeInterp(lat, lon)
+        return interp(values), interp
+
+    monkeypatch.setattr("feather.diag.heatwave_hotspots.nr_regrid_probe",
+                        _fake_probe)
+    monkeypatch.setattr("feather.diag.heatwave_hotspots._BE_LANDMASK_PATH",
+                        tmp_path / "no_such_landmask.nc")
+    return d
+
+
+def _close(figs):
+    import matplotlib.pyplot as plt
+    for fig, _ in figs:
+        plt.close(fig)
+
+
+def test_family_fig_ids_suffixed(family_diag):
+    ids = family_diag._expected_fig_ids
+    assert "heatwave_hotspots_trend_map" in ids          # obs-only: unchanged
+    assert "heatwave_hotspots_discrepancy_family" in ids
+    assert "heatwave_hotspots_discrepancy" not in ids
+    family_diag._cmip6_models = ["CM1"]
+    ids = family_diag._expected_fig_ids
+    assert "heatwave_hotspots_eerie_vs_cmip6_family" in ids
+    assert "heatwave_hotspots_cmip6_mmm_map" in ids
+
+
+def test_pooled_ids_unchanged(diag):
+    assert diag._expected_fig_ids == HeatwaveHotspotsDiag._FIG_IDS
+
+
+def test_family_compute_and_plot(family_diag):
+    results = family_diag.compute()
+    assert "Solo" not in results["models"]
+    assert family_diag._families(results) == {
+        "FamA": ["FamA", "FamA-r2", "FamA-r3"], "FamB": ["FamB", "FamB-r2"],
+    }
+    figs = family_diag.plot(results)
+    by_id = {meta["figure_id"]: meta for _, meta in figs}
+    assert set(by_id) == {family_diag._fig_id(i)
+                          for i in HeatwaveHotspotsDiag._FIG_IDS}
+    for fid, meta in by_id.items():
+        if fid.endswith("_family"):
+            assert meta["ensemble_mode"] == "per_family"
+            assert set(meta["model_families"]) == {"FamA", "FamB"}
+
+    # Box-whisker stats: family mean = mean of its members' regional trends.
+    region = results["regions"][0]
+    bw = by_id["heatwave_hotspots_boxwhisker_family"]["summary_statistics"]
+    fam_a = bw[region["title"]]["families"]["FamA"]
+    expect = np.mean([region["model_trends"][m]
+                      for m in ("FamA", "FamA-r2", "FamA-r3")])
+    assert fam_a["mean"] == pytest.approx(expect)
+    assert fam_a["n_members"] == 3
+    assert fam_a["min"] <= fam_a["mean"] <= fam_a["max"]
+
+    # Discrepancy: two rows (range, mean) × two family columns.
+    fig = next(f for f, m in figs
+               if m["figure_id"] == "heatwave_hotspots_discrepancy_family")
+    assert sum(1 for ax in fig.axes if hasattr(ax, "projection")) == 4
+    _close(figs)
+
+
+def test_family_trend_is_member_mean(family_diag):
+    results = family_diag.compute()
+    fam = family_diag._family_trend(results, ["FamB", "FamB-r2"])
+    expect = (results["trend_d"]["FamB"] + results["trend_d"]["FamB-r2"]) / 2
+    np.testing.assert_allclose(fam.values, expect.values)
+
+
+def test_family_with_cmip6(family_diag):
+    data = {"CM1": _make_daily_tasmax(seed=11), "CM2": _make_daily_tasmax(seed=12)}
+    family_diag._cmip6_loader = _MultiLoader(data)
+    family_diag._cmip6_models = list(data)
+    results = family_diag.compute()
+    figs = family_diag.plot(results)
+    ids = {m["figure_id"] for _, m in figs}
+    assert "heatwave_hotspots_eerie_vs_cmip6_family" in ids
+    assert "heatwave_hotspots_cmip6_discrepancy" in ids
+    assert ids == set(family_diag._expected_fig_ids)
+    _close(figs)
+
+
+# ── Multi-panel trend maps ───────────────────────────────────────────────────
+
+def _geo_axes(fig):
+    return [ax for ax in fig.axes if hasattr(ax, "projection")]
+
+
+def test_trend_panel_figures(family_diag):
+    data = {"CM1": _make_daily_tasmax(seed=11), "CM2": _make_daily_tasmax(seed=12)}
+    family_diag._cmip6_loader = _MultiLoader(data)
+    family_diag._cmip6_models = list(data)
+    results = family_diag.compute()
+    figs = {m["figure_id"]: (f, m) for f, m in family_diag.plot(results)}
+
+    # ERA5 + 5 loaded members (Solo has no data) + CMIP6 MMM.
+    fig, meta = figs["heatwave_hotspots_trend_maps_members"]
+    assert len(_geo_axes(fig)) == 1 + 5 + 1
+    assert len(meta["summary_statistics"]) == 7
+
+    # ERA5 + 2 family means + CMIP6 MMM.
+    fig, meta = figs["heatwave_hotspots_trend_maps_family"]
+    assert len(_geo_axes(fig)) == 4
+    assert set(meta["model_families"]) == {"FamA", "FamB"}
+
+    # ERA5 + (2 families + CMIP6) minus ERA5; two colour scales.
+    fig, meta = figs["heatwave_hotspots_trend_diff_family"]
+    assert len(_geo_axes(fig)) == 4
+    stats = meta["summary_statistics"]
+    diff_keys = [k for k in stats if " − " in k]
+    assert len(diff_keys) == 3
+    for k in diff_keys:
+        assert {"global_mean_bias", "rmse", "pattern_corr_with_era5"} <= set(stats[k])
+    _close(list(figs.values()))
+
+
+def test_trend_diff_matches_family_mean_minus_era5(family_diag):
+    results = family_diag.compute()
+    figs = {m["figure_id"]: (f, m) for f, m in family_diag.plot(results)}
+    stats = figs["heatwave_hotspots_trend_diff_family"][1]["summary_statistics"]
+    key = next(k for k in stats if k.startswith("FamB mean"))
+    era5 = family_diag._trend_shown(results, results["trend_d"]["ERA5"])
+    fam = family_diag._trend_shown(
+        results, family_diag._family_trend(results, ["FamB", "FamB-r2"]))
+    assert stats[key]["global_mean_bias"] == pytest.approx(
+        family_diag._area_mean(results, fam - era5))
+    # No CMIP6 configured → no CMIP6 panel.
+    assert not any("MMM" in k for k in stats)
+    _close(list(figs.values()))
+
+
+def test_trend_panels_in_pooled_mode(diag):
+    results = diag.compute()
+    ids = {m["figure_id"] for _, m in diag.plot(results)}
+    assert {"heatwave_hotspots_trend_maps_members",
+            "heatwave_hotspots_trend_maps_family",
+            "heatwave_hotspots_trend_diff_family"} <= ids
+    import matplotlib.pyplot as plt
+    plt.close("all")

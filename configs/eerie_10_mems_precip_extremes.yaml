@@ -301,6 +301,13 @@ llm:
     retry_delay: 10
     skip_existing: true
 
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
 website:
   title: "Feather — EERIE 10-Member Daily Precipitation Extremes"
   subtitle: "ETCCDI indices, 1981–2000 and SSP2-4.5 2031–2050, EERIE model families vs daily CMIP6 MMM"

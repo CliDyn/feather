@@ -26,6 +26,33 @@ _CHARS_PER_TOKEN = 3.5
 # of the GPT-5 family to leave room for the system prompt.
 DEFAULT_CURATION_MAX_TOKENS = 200_000
 
+# Context windows (input + output tokens) of OpenAI models whose limit is
+# below what DEFAULT_CURATION_MAX_TOKENS assumes, matched by name prefix.
+_SMALL_CONTEXT_MODELS = (
+    ("gpt-4o", 128_000),
+    ("gpt-4-turbo", 128_000),
+    ("o1-mini", 128_000),
+)
+
+# Room left for the system prompt on top of the user prompt.
+_SYSTEM_PROMPT_MARGIN = 8_000
+
+
+def default_curation_budget(model: str, max_completion_tokens: int) -> int:
+    """Stage 1 prompt budget for *model* when none is configured.
+
+    Models with a known context window below the GPT-5 one get that window
+    minus the completion tokens and a system-prompt margin; every other
+    model gets ``DEFAULT_CURATION_MAX_TOKENS``.
+    """
+    for prefix, context in _SMALL_CONTEXT_MODELS:
+        if model.startswith(prefix):
+            return min(
+                DEFAULT_CURATION_MAX_TOKENS,
+                context - max_completion_tokens - _SYSTEM_PROMPT_MARGIN,
+            )
+    return DEFAULT_CURATION_MAX_TOKENS
+
 
 def estimate_tokens(text: str) -> int:
     """Conservative token estimate for *text*."""

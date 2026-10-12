@@ -598,6 +598,21 @@ class PrecipExtremesDiag(DiagnosticBase):
             out[model] = (get_hist, get_fut)
         return out
 
+    def _cmip6_sources(self, loader, model: str) -> tuple[Callable, Callable]:
+        """``(get_hist, get_fut)`` daily-data getters for one CMIP6 model."""
+        def get_hist(m=model):
+            return loader.load_var(m, "pr", table="day", period=self.hist_load_period)
+
+        def get_fut(m=model):
+            return loader.load_var(m, "pr", table="day", period=self.ssp_load_period)
+
+        return get_hist, get_fut
+
+    def _obs_indices(self, name: str, get_hist: Callable) -> xr.Dataset | None:
+        """Index checkpoint of one observational dataset (computed if missing)."""
+        return self._segment(name, "hist", self._nc_path(name, "hist", obs=True),
+                             get_hist)
+
     def _make_obs_loader(self, name: str, spec: dict):
         """CMORLoader for one observational dataset laid out as a CMOR tree."""
         from feather.config import ModelConfig
@@ -776,15 +791,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         loader, cmip6_models = self._discover_cmip6()
         for mc in cmip6_models:
             logger.info("  CMIP6 model: %s", mc.name)
-
-            def get_hist(m=mc.name):
-                return loader.load_var(m, "pr", table="day",
-                                       period=self.hist_load_period)
-
-            def get_fut(m=mc.name):
-                return loader.load_var(m, "pr", table="day",
-                                       period=self.ssp_load_period)
-
+            get_hist, get_fut = self._cmip6_sources(loader, mc.name)
             r = self._model_indices(mc.name, get_hist, get_fut, cmip6=True)
             if r is not None:
                 cmip6_raw[mc.name] = r
@@ -792,8 +799,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         obs_raw: dict[str, dict] = {}
         for name, get_hist in self._obs_sources().items():
             logger.info("  Observations: %s", name)
-            ds = self._segment(name, "hist", self._nc_path(name, "hist", obs=True),
-                               get_hist)
+            ds = self._obs_indices(name, get_hist)
             if ds is not None:
                 obs_raw[name] = {"hist": ds, "ssp": None}
 
@@ -841,15 +847,55 @@ class PrecipExtremesDiag(DiagnosticBase):
             if not results["family"][idx] and not results["mmm"].get(idx):
                 logger.warning("%s: no data for %s — skipping", self.name, idx)
                 continue
-            for fn in (self._plot_reference, self._plot_change,
-                       self._plot_diff_cmip6, self._plot_timeseries):
+            for fn in self._figure_fns(idx):
                 fm = fn(results, idx)
                 if fm is not None:
                     yield fm
-            for name in self._obs_with(results, idx):
+            for name in (self._obs_with(results, idx) if self._bias_wanted(idx) else []):
                 fm = self._plot_bias(results, idx, name)
                 if fm is not None:
                     yield fm
+
+    def _figure_fns(self, idx: str) -> list[Callable]:
+        """Figure builders for *idx*, bias maps aside (see :meth:`_bias_wanted`)."""
+        return [self._plot_reference, self._plot_change,
+                self._plot_diff_cmip6, self._plot_timeseries]
+
+    def _bias_wanted(self, idx: str) -> bool:
+        return True
+
+    # Wording and colour hooks — subclasses for other variables override them.
+    _ref_cmap: str = "cmo.rain"
+    _diff_cmap: str = "BrBG"
+    _quantity: str = "precipitation"
+    _domain: str = "global (land + ocean)"
+    _obs_variable: str = "pr"
+
+    def _ref_cmap_for(self, idx: str) -> str:
+        return self._ref_cmap
+
+    def _ref_vmin(self, idx: str, vmin: float) -> float:
+        return max(0.0, vmin)
+
+    def _change_cmap(self, idx: str) -> str:
+        return self._diff_cmap
+
+    def _ref_definition(self, idx: str) -> str:
+        return "from daily precipitation (wet day: RR ≥ 1 mm)"
+
+    def _change_note(self, idx: str) -> str:
+        return (" R95p/R99p use each model's reference-period wet-day "
+                "percentile as a fixed threshold." if self._split(idx)[0] in
+                ("r95p", "r99p") else "")
+
+    def _obs_processing_note(self) -> str:
+        return ("The observations are daily data conservatively remapped to "
+                "0.25° and processed exactly like the models (indices from daily "
+                "values; R95p/R99p against the dataset's own base-period "
+                "percentiles). ")
+
+    def _more(self, units: str) -> str:
+        return "days" if units == "days" else self._quantity
 
     @staticmethod
     def _obs_with(results, idx) -> list[str]:
@@ -919,9 +965,9 @@ class PrecipExtremesDiag(DiagnosticBase):
         if not panels:
             return None
         vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=False)
-        vmin = max(0.0, vmin)
+        vmin = self._ref_vmin(idx, vmin)
         fig = self._map_figure(
-            panels, cmap="cmo.rain", vmin=vmin, vmax=vmax,
+            panels, cmap=self._ref_cmap_for(idx), vmin=vmin, vmax=vmax,
             cbar_label=f"{label} ({units})",
             suptitle=f"{label} — {long_name}\nReference period {self._ref_txt()}")
         meta = self._build_metadata(
@@ -930,7 +976,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             models=self._meta_models(results, idx),
             description=(
                 f"Mean {self._per(season)} {label} ({long_name.lower()}, {units}) over "
-                f"{self._ref_txt()} from daily precipitation (wet day: RR ≥ 1 mm). "
+                f"{self._ref_txt()} {self._ref_definition(idx)}. "
                 + self._panel_note(results, idx)
                 + (f" Observational panels: {', '.join(obs)}." if obs else "")),
             computation_notes=self._computation_notes(idx),
@@ -957,7 +1003,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=True,
                                         floor=5.0 if pct else 0.0)
         fig = self._map_figure(
-            panels, cmap="BrBG", vmin=vmin, vmax=vmax,
+            panels, cmap=self._change_cmap(idx), vmin=vmin, vmax=vmax,
             cbar_label=f"Δ{label} ({cunits})",
             suptitle=(f"{label} change, SSP2-4.5 {self._fut_txt()} minus "
                       f"{self._ref_txt()}" + (" (relative)" if pct else "")))
@@ -976,9 +1022,7 @@ class PrecipExtremesDiag(DiagnosticBase):
                 + "Only members whose SSP2-4.5 run covers the future period enter "
                   "the family means"
                 + (f"; families without one: {', '.join(no_fut)}." if no_fut else ".")
-                + (" R95p/R99p use each model's reference-period wet-day "
-                   "percentile as a fixed threshold." if self._split(idx)[0] in
-                   ("r95p", "r99p") else "")),
+                + self._change_note(idx)),
             computation_notes=self._computation_notes(idx),
             period=(self.ref_period[0], self.fut_period[1]), units=cunits,
             plot_type="map", summary_statistics=self._panel_stats(panels),
@@ -1000,7 +1044,7 @@ class PrecipExtremesDiag(DiagnosticBase):
                    g["ref"] - mmm_hr) for f, g in fam.items()]
         vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=True)
         fig = self._map_figure(
-            panels, cmap="BrBG", vmin=vmin, vmax=vmax,
+            panels, cmap=self._diff_cmap, vmin=vmin, vmax=vmax,
             cbar_label=f"Δ{label} ({units})",
             suptitle=(f"{label}: EERIE minus {self._cmip6_label} MMM "
                       f"({mmm['n']} models), {self._ref_txt()}"))
@@ -1013,7 +1057,7 @@ class PrecipExtremesDiag(DiagnosticBase):
                 f"between each EERIE model family and the {self._cmip6_label} "
                 f"multi-model mean of {mmm['n']} models (one member each), the MMM "
                 "interpolated bilinearly from 1° to 0.25°. Positive: EERIE has more "
-                f"{'days' if units == 'days' else 'precipitation'} than CMIP6. "
+                f"{self._more(units)} than CMIP6. "
                 "No observational reference is involved."),
             computation_notes=self._computation_notes(idx),
             period=self.ref_period, units=units, plot_type="map",
@@ -1039,7 +1083,7 @@ class PrecipExtremesDiag(DiagnosticBase):
         panels = [(f"{t}\nminus {obs_name}", f - ref) for t, f in fields]
         vmin, vmax = self._robust_range([p[1] for p in panels], symmetric=True)
         fig = self._map_figure(
-            panels, cmap="BrBG", vmin=vmin, vmax=vmax,
+            panels, cmap=self._diff_cmap, vmin=vmin, vmax=vmax,
             cbar_label=f"Δ{label} ({units})",
             suptitle=f"{label} bias vs {obs_name}, {self._ref_txt()}")
         stats = {f"{t} minus {obs_name}": v for t, v in
@@ -1057,11 +1101,9 @@ class PrecipExtremesDiag(DiagnosticBase):
                 + (f" and, as a measure of observational uncertainty, "
                    f"{', '.join(others)}" if others else "")
                 + f" minus {obs_name}. Positive: more "
-                + ("days" if units == "days" else "precipitation")
-                + f" than {obs_name}. The observations are daily data "
-                  "conservatively remapped to 0.25° and processed exactly like "
-                  "the models (indices from daily values; R95p/R99p against the "
-                  "dataset's own base-period percentiles). "
+                + self._more(units)
+                + f" than {obs_name}. "
+                + self._obs_processing_note()
                 + self._panel_note(results, idx)),
             computation_notes=self._computation_notes(idx),
             period=self.ref_period, units=units, plot_type="map",
@@ -1125,7 +1167,8 @@ class PrecipExtremesDiag(DiagnosticBase):
 
         ax.set_xlabel("Year")
         ax.set_ylabel(f"{label} ({units})")
-        ax.set_title(f"{label} — {long_name}, global area-weighted mean\n"
+        ax.set_title(f"{label} — {long_name}, {self._domain.split(' (')[0]} "
+                     "area-weighted mean\n"
                      f"Blue: reference {self._ref_txt()}; red: future "
                      f"{self._fut_txt()} (SSP2-4.5)")
         ax.grid(True, alpha=0.3)
@@ -1136,7 +1179,7 @@ class PrecipExtremesDiag(DiagnosticBase):
             figure_id=f"{idx}_timeseries",
             models=self._meta_models(results, idx),
             description=(
-                f"Area-weighted global (land + ocean) mean of {self._per(season)} {label} "
+                f"Area-weighted {self._domain} mean of {self._per(season)} {label} "
                 f"({units}), {self.hist_load_period[0]}–{self.ssp_load_period[1]}: "
                 f"historical to {_HIST_BOUNDARY_YEAR - 1}, SSP2-4.5 after. Thin lines "
                 "are individual EERIE members, thick lines family means; dashed grey "
@@ -1163,9 +1206,8 @@ class PrecipExtremesDiag(DiagnosticBase):
                  **(extra or {})}
         return super()._build_metadata(*args, extra=extra, **kwargs)
 
-    @staticmethod
-    def _obs_meta(obs: list[str]) -> dict:
-        return {"obs_dataset": ", ".join(obs), "obs_variable": "pr"} if obs else {}
+    def _obs_meta(self, obs: list[str]) -> dict:
+        return {"obs_dataset": ", ".join(obs), "obs_variable": self._obs_variable} if obs else {}
 
     def _meta_models(self, results, idx, future: bool = False) -> list[str]:
         key = "fut" if future else "ref"

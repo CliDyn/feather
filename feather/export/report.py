@@ -20,11 +20,11 @@ from feather.export.latex_builder import (
 )
 from feather.export.openai_client import OpenAIClient
 from feather.export.prompts import (
-    DEFAULT_CURATION_MAX_TOKENS,
     build_curation_prompt,
     build_curation_system,
     build_section_prompt,
     build_section_system,
+    default_curation_budget,
 )
 from feather.export.schemas import (
     ReportStructure,
@@ -63,9 +63,12 @@ class ReportGenerator:
 
         report_cfg = config.report if config.report else {}
         self.n_highlights = report_cfg.get("n_highlights", 10)
-        self.max_prompt_tokens = report_cfg.get(
-            "max_prompt_tokens", DEFAULT_CURATION_MAX_TOKENS,
-        )
+        self.max_prompt_tokens = report_cfg.get("max_prompt_tokens")
+        if self.max_prompt_tokens is None:
+            self.max_prompt_tokens = default_curation_budget(
+                report_cfg.get("model", "gpt-4o"),
+                report_cfg.get("max_tokens", 16384),
+            )
         self.client = OpenAIClient(report_cfg, api_key=api_key)
 
         # Extract prompt context from config for templated system prompts

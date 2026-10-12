@@ -374,12 +374,14 @@ class TestStoreResolution:
             ICONKerchunkLoader._resolve_store("nosuchvar", "day")
 
     def test_every_store_key_has_a_file(self):
-        keys = {"atmos2d", "ocean2d", "atmos2d_day",
-                "atmos2d_daymax", "atmos2d_daymin", "ocean2d_day"}
-        assert set(_STORE_FILES) == keys
+        remapped = {"atmos2d", "ocean2d", "atmos2d_day",
+                    "atmos2d_daymax", "atmos2d_daymin", "ocean2d_day"}
+        native = {"atmos2d_daymax_native", "atmos2d_daymin_native"}
+        assert set(_STORE_FILES) == remapped | native
         assert "daily_max" in _STORE_FILES["atmos2d_daymax"]
         assert "daily_min" in _STORE_FILES["atmos2d_daymin"]
-        assert all(f.endswith("_remap025.parq") for f in _STORE_FILES.values())
+        assert all(_STORE_FILES[k].endswith("_remap025.parq") for k in remapped)
+        assert all(not _STORE_FILES[k].endswith("_remap025.parq") for k in native)
 
 
 class TestMonthlyExtremeSentinels:
