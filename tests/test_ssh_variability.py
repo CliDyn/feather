@@ -306,6 +306,10 @@ class TestFigures:
         fam = next(t for t in meta["summary_statistics"] if t.startswith("FamA"))
         assert "area_mean_ratio" in meta["summary_statistics"][fam]
         assert "frac_area_within_2std" in meta["summary_statistics"][fam]
+        assert meta["colormap"] == "RdBu_r"
+        maps = json.loads(next(p[1] for p in saved
+                               if p[0].stem == "ssh_std_raw_daily_maps").read_text())
+        assert maps["colormap"] == "Reds"
         reg = json.loads(next(p[1] for p in saved
                               if p[0].stem == "ssh_daily_regions").read_text())
         assert "gulf_stream" in reg["summary_statistics"]

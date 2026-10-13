@@ -550,7 +550,7 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                 f"{_CMIP6_RES:g}° before the statistics.")
 
     def _ssh_meta(self, res, *, title, figure_id, description, units, plot_type,
-                  stats, models, extra=None):
+                  stats, models, extra=None, colormap=None):
         n_cmip6 = len(res["cmip6"])
         return self._build_metadata(
             title=title, figure_id=figure_id, models=models,
@@ -565,7 +565,8 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                    "observations": list(res["obs"]),
                    "reference_obs": res["reference"],
                    "ensemble_mode": "per_family" if self._per_family else "pooled",
-                   "model_families": res["families"], **(extra or {})},
+                   "model_families": res["families"],
+                   **({"colormap": colormap} if colormap else {}), **(extra or {})},
         )
 
     def _ssh_style(self, k: str, fields: list) -> dict:
@@ -604,6 +605,7 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                             f"AVISO box-averaged onto {_CMIP6_RES:g}°"
                             if res["mmm"].get(k) else "") + "."),
             units=units, plot_type="map", stats=self._stats(panels),
+            colormap=style["cmap"],
             models=self._models_of(res, k), extra={"statistic": k})
         return fig, meta
 
@@ -627,6 +629,7 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
             figure_id=f"ssh_{k}_{freq}_members",
             description=f"{long_name} ({units}) for every EERIE member, next to {ref}.",
             units=units, plot_type="map", stats=self._stats(panels), models=members,
+            colormap=style["cmap"],
             extra={"statistic": k})
         return fig, meta
 
@@ -677,7 +680,7 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                          + (f" The {self._cmip6_label} MMM is compared with {ref} "
                             f"box-averaged onto {_CMIP6_RES:g}° before its "
                             f"statistics." if mmm else "")),
-            units=units, plot_type="bias_map", stats=stats,
+            units=units, plot_type="bias_map", stats=stats, colormap="RdBu_r",
             models=self._models_of(res, k), extra={"statistic": k})
         return fig, meta
 
