@@ -132,6 +132,8 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
         self.hp_window: int = int(cfg.get("hp_window_days", 91))
         self.smooth_width: int = int(cfg.get("smooth_width", 31))
         self.min_valid: float = float(cfg.get("min_valid_fraction", 0.9))
+        # Free text appended to every figure's computation notes (caveats).
+        self.notes: str = " ".join(str(cfg.get("notes") or "").split())
         self.daily_tables: list[str] = list(cfg.get("daily_tables",
                                                     ["Oday", "HROday"]))
         self.monthly_table: str = str(cfg.get("monthly_table", "Omon"))
@@ -531,7 +533,7 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                          f"(seasonal cycle and linear trend removed)"),
             "std_hp": (f"SSH high-pass std (<{self.hp_window} d)",
                        f"Standard deviation of high-pass sea-surface-height anomalies "
-                       f"(periods shorter than ~{self.hp_window} days: mesoscale)"),
+                       f"(periods shorter than ~{self.hp_window} days)"),
         }[k]
         return info[0], info[1], _DISPLAY[k][1]
 
@@ -547,7 +549,13 @@ class SSHVariabilityDiag(MarineHeatwavesDiag):
                 f"covers fewer than {self.min_valid:.0%} of the steps (sea ice) are "
                 f"masked. EERIE members and AVISO on the common 0.25° grid; "
                 f"{self._cmip6_label} models and AVISO box-averaged onto "
-                f"{_CMIP6_RES:g}° before the statistics.")
+                f"{_CMIP6_RES:g}° before the statistics. AVISO absolute dynamic "
+                f"topography has the dynamic atmospheric correction removed "
+                f"(inverse-barometer response and wind- and pressure-driven "
+                f"barotropic signals shorter than about 20 days), so a model whose "
+                f"zos contains such signals shows extra high-frequency variance "
+                f"that is not mesoscale."
+                + (f" {self.notes}" if self.notes else ""))
 
     def _ssh_meta(self, res, *, title, figure_id, description, units, plot_type,
                   stats, models, extra=None, colormap=None):

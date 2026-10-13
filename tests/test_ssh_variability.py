@@ -357,3 +357,6 @@ class TestLoaderFiles:
         assert diag.reference == "AVISO"
         assert cfg.model_configs["HadGEM3-GC5"].data_root.startswith(
             "/work/bm1344/DKRZ/MOHC/")
+        notes = diag._computation_notes()
+        assert "dynamic atmospheric correction" in notes
+        assert notes.endswith(diag.notes) and "ICON-ESM-ER caveat" in diag.notes

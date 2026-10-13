@@ -512,14 +512,14 @@ The notebook `/work/bm1344/AWI/EERIE/science/zos_multimodel_std.ipynb` (maps of 
 - `mean` — time-mean SSH minus its area mean over the cells every dataset covers. Models and AVISO use different reference levels, so only the pattern is compared.
 - `std_raw` — standard deviation of SSH as it is (the notebook's quantity).
 - `std_anom` — after removing the seasonal climatology (calendar-day means smoothed over 31 days; monthly means for monthly data) and a linear trend.
-- `std_hp` — daily only: anomaly minus its centred 91-day running mean (`hp_window_days`), i.e. the mesoscale.
+- `std_hp` — daily only: anomaly minus its centred 91-day running mean (`hp_window_days`): periods shorter than about 3 months, mostly the mesoscale (but see the ICON caveat below).
 
 Two comparisons, both on the 0.25° grid:
 
 - **Daily** — 8 members: CMOR `HROday` for the r1 members, the kerchunk stores for IFS-FESOM2 and ICON-ESM-ER r2/r3, and HadGEM3-GC5 from `/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12` (`gr1`; the AWI copy has no `zos`). `daily_tables` are tried in order (`Oday`, `HROday`) and a table returning monthly data is passed over. IFS-NEMO-ER r2/r3 have monthly ocean output only. CMIP6 publishes no daily `zos`.
 - **Monthly** — all 10 members (`Omon`) plus the CMIP6 historical `Omon/zos` ensemble (55 models, one member each), box-averaged from the native ocean grid onto 1°. AVISO is box-averaged onto 1° *before* its statistics for this comparison: averaging removes eddy variance, so the std of a 1° field is lower than the 1° mean of the 0.25° std.
 
-Observations: `scripts/aviso_derive_zos_daily.sh` turns the CMEMS DUACS DT2024 allsat L4 files behind the EERIE intake entry `dkrz.disk.observations.AVISO.ssh-L4.daily_multi` (`adt`, 0.125°, daily) into `Oday` and `Omon` CMOR trees on the models' grid (cdo `remapcon`, about 17 s per weight build). Cells AVISO covers on fewer than 90 % of the steps (`min_valid_fraction`; seasonal sea ice) are masked. The gridded AVISO product is smoothed in space and time, which lowers its high-pass variance compared with eddy-rich models.
+Observations: `scripts/aviso_derive_zos_daily.sh` turns the CMEMS DUACS DT2024 allsat L4 files behind the EERIE intake entry `dkrz.disk.observations.AVISO.ssh-L4.daily_multi` (`adt`, 0.125°, daily) into `Oday` and `Omon` CMOR trees on the models' grid (cdo `remapcon`, about 17 s per weight build). Cells AVISO covers on fewer than 90 % of the steps (`min_valid_fraction`; seasonal sea ice) are masked. The gridded AVISO product is smoothed in space and time, which lowers its high-pass variance compared with eddy-rich models. Its absolute dynamic topography also has the dynamic atmospheric correction removed (inverse-barometer response and wind- and pressure-driven barotropic signals shorter than about 20 days); a model whose `zos` contains these signals shows extra high-frequency variance that is not mesoscale. This is stated in every figure's computation notes. `ssh_variability.notes` in the config appends free-text caveats to those notes, which the LLM analysis reads.
 
 Figures (`f` = daily | monthly): `ssh_{stat}_{f}_maps` (AVISO, family means, and for monthly AVISO at 1° + CMIP6 MMM), `ssh_{stat}_{f}_members`, `ssh_{stat}_{f}_bias` (grey where a multi-member family's difference is within twice its member spread; area-mean ratio to AVISO in the statistics), `ssh_{f}_zonal_means`, `ssh_{f}_regions` (Gulf Stream, Kuroshio Extension, Agulhas Retroflection, Brazil–Malvinas Confluence, East Australian Current, Drake Passage, equatorial Pacific, ocean 60°S–60°N).
 
@@ -530,6 +530,20 @@ feather --config configs/eerie_10_mems_ssh.yaml --steps diagnostics \
 ```
 
 Checkpoints: `{output_dir}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{start}_{end}.nc`. They hold the statistics on each dataset's own grid, so a rerun after a plotting failure only redraws the figures.
+
+Results of the 2026-10-13 run (area means over the cells all datasets cover, cm):
+
+| | AVISO | IFS-FESOM2-SR | IFS-NEMO-ER | ICON-ESM-ER | HadGEM3-GC5 | CMIP6 MMM (1°) |
+|---|---|---|---|---|---|---|
+| daily raw std | 7.55 | 7.22 | 6.94 | 9.94 | 7.90 | — |
+| daily anomaly std | 6.30 | 6.08 | 5.84 | 8.19 | 6.67 | — |
+| daily high-pass std | 3.69 | 3.90 | 3.73 | 6.62 | 4.33 | — |
+| monthly raw std | 6.90 (1°: 6.55) | 6.28 | 6.11 | 7.52 | 6.86 | 5.31 |
+| monthly anomaly std | 5.57 (1°: 5.13) | 4.98 | 4.88 | 5.35 | 5.46 | 3.58 |
+
+Members of a family agree closely (daily high-pass std: FESOM 3.88/3.91/3.91 cm, ICON 6.60/6.62/6.64 cm), although r1 is read from CMOR and r2/r3 from kerchunk stores.
+
+**ICON-ESM-ER caveat.** ICON's daily high-pass std is about 1.8 times AVISO's, with the excess spread over whole basins in the Southern Ocean and the high-latitude North Pacific and Atlantic (Drake Passage: 17.3 vs 9.7 cm raw daily std), not concentrated in the boundary currents. Monthly, ICON is close to AVISO. This points to sub-monthly barotropic or inverse-barometer signals in ICON's `zos` that AVISO removes, not to excess eddy activity. It is not yet verified; the check is the regression of ICON's daily high-pass `zos` on `psl` (about −1 cm/hPa for an inverse-barometer response).
 
 HadGEM3-GC5's `gr1` latitudes and longitudes are float32, up to 3·10⁻⁵° away from the regular 0.25° values. The shared regridding helper (`_to_grid` in `feather/diag/precip_extremes.py`) now gives a field that is on the target grid within float tolerance the exact target coordinates. Before, it kept the field's own coordinates, and xarray arithmetic with another field kept only the points with exactly equal coordinates (655 × 1340 of 721 × 1440 for HadGEM3). That caused a shape mismatch in the `ssh_variability` bias statistics and could silently shrink fields in the other diagnostics that use the helper (`precip_extremes`, `temp_extremes_indices`, both marine heatwave diagnostics).
 

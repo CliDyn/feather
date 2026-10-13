@@ -58,6 +58,16 @@ project:
     smooth_width: 31                # smoothing (days) of the daily climatology
     min_valid_fraction: 0.9         # mask cells AVISO covers < 90 % of the time
     reference_obs: AVISO
+    # Appended to every figure's computation notes (read by the LLM analysis).
+    notes: >-
+      ICON-ESM-ER caveat: its daily high-pass SSH std is about 1.8 times
+      AVISO's (6.6 vs 3.7 cm area mean, all three members alike), with the
+      excess spread over whole basins in the Southern Ocean and the
+      high-latitude North Pacific and Atlantic rather than in the eddy-rich
+      boundary currents; monthly it is close to AVISO. This points to
+      sub-monthly barotropic or inverse-barometer signals in ICON zos that
+      AVISO removes, not to excess mesoscale eddy activity. Not yet verified
+      against sea-level pressure.
     obs:
       AVISO:
         institution: CMEMS
