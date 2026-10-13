@@ -529,7 +529,9 @@ feather --config configs/eerie_10_mems_ssh.yaml --steps diagnostics \
         --diagnostics ssh_variability --save-netcdf -v
 ```
 
-Checkpoints: `{output_dir}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{start}_{end}.nc`.
+Checkpoints: `{output_dir}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{start}_{end}.nc`. They hold the statistics on each dataset's own grid, so a rerun after a plotting failure only redraws the figures.
+
+HadGEM3-GC5's `gr1` latitudes and longitudes are float32, up to 3·10⁻⁵° away from the regular 0.25° values. The shared regridding helper (`_to_grid` in `feather/diag/precip_extremes.py`) now gives a field that is on the target grid within float tolerance the exact target coordinates. Before, it kept the field's own coordinates, and xarray arithmetic with another field kept only the points with exactly equal coordinates (655 × 1340 of 721 × 1440 for HadGEM3). That caused a shape mismatch in the `ssh_variability` bias statistics and could silently shrink fields in the other diagnostics that use the helper (`precip_extremes`, `temp_extremes_indices`, both marine heatwave diagnostics).
 
 `CMORLoader` now reads only the CMOR-named files (`{var}_{table}_*.nc`) of a directory when there are any: the IFS-NEMO-ER r1 `HROday/zos` directory also holds hand-merged `zos_merged_*.nc` copies (one broken) that broke or duplicated the read.
 
