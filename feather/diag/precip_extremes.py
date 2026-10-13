@@ -158,7 +158,10 @@ def _to_grid(da: xr.DataArray, lat: np.ndarray, lon: np.ndarray) -> xr.DataArray
     if (da.sizes["lat"] == len(lat) and da.sizes["lon"] == len(lon)
             and np.allclose(np.sort(da["lat"].values), lat)
             and np.allclose(np.sort(da["lon"].values % 360.0), lon)):
-        return da.assign_coords(lon=da["lon"] % 360.0).sortby(["lat", "lon"])
+        # Stamp the exact target axes: coordinates equal only within float
+        # tolerance make xarray arithmetic inner-join on the few exact matches.
+        da = da.assign_coords(lon=da["lon"] % 360.0).sortby(["lat", "lon"])
+        return da.assign_coords(lat=lat, lon=lon)
     da = da.assign_coords(lon=da["lon"].values % 360.0).sortby(["lat", "lon"])
     left = da.isel(lon=slice(-2, None)).assign_coords(
         lon=da["lon"].values[-2:] - 360.0)

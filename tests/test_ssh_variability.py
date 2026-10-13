@@ -77,6 +77,20 @@ class TestStats:
         assert out["valid_frac"][0] == 1.0 and out["valid_frac"][1] == 0.0
         assert np.isnan(out["std_raw"][1]) and np.isnan(out["mean"][1])
 
+    def test_to_grid_stamps_exact_coords(self):
+        """A field on the grid within float tolerance gets the exact axes,
+        so arithmetic with other fields does not inner-join to a subset."""
+        from feather.diag.precip_extremes import _regular_grid, _to_grid
+        lat, lon = _regular_grid(0.25)
+        a = xr.DataArray(np.ones((len(lat), len(lon)), dtype=np.float32),
+                         coords={"lat": lat.astype(np.float32),
+                                 "lon": lon.astype(np.float32) + 1e-6},
+                         dims=("lat", "lon"))
+        b = xr.DataArray(np.ones((len(lat), len(lon))),
+                         coords={"lat": lat, "lon": lon}, dims=("lat", "lon"))
+        assert (a - b).size < a.size                 # the failure mode
+        assert (_to_grid(a, lat, lon) - _to_grid(b, lat, lon)).shape == a.shape
+
     def test_monthly_has_no_high_pass(self):
         x = np.random.default_rng(1).normal(size=(4, 48)).astype(np.float32)
         slots = np.tile(np.arange(12), 4)
