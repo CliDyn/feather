@@ -129,6 +129,13 @@ feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
         --steps diagnostics \
         --diagnostics marine_heatwaves_subsurface --save-netcdf -v
 
+# SSH variability (mean + std of zos) vs AVISO — daily (8 members) and
+# monthly (10 members + CMIP6); derive the AVISO tree first, see
+# "Sea-surface height" below
+feather --config configs/eerie_10_mems_ssh.yaml \
+        --steps diagnostics \
+        --diagnostics ssh_variability --save-netcdf -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -321,6 +328,7 @@ Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere,
 | `temp_extremes_indices` | `TempExtremesIndicesDiag` | ERA5 (daily tasmax/tasmin, derived to 0.25°) | Fourteen ETCCDI daily-temperature indices over land (TXx, TNx, TXn, TNn, DTR, FD, ID, TX10p, TX90p, TN10p, TN90p, WSDI, CSDI, GSL): reference climatology per model family + daily CMIP6 MMM + ERA5, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs ERA5, land-mean time series |
 | `marine_heatwaves` | `MarineHeatwavesDiag` | NOAA OISST v2.1 + ERA5 (daily SST, derived to 0.25°) | Hobday et al. (2016) marine heatwaves detected per ocean cell in daily SST (de Toma et al. 2026 surface analysis): frequency, MHW days, mean duration, max/mean/cumulative intensity, intensity variability, onset/decline rates, max category — maps per family + CMIP6 MMM, every member, bias vs OISST (grey within 2σ of the member spread), member spread, zonal means, yearly MHW days, violins over the paper's seven areas of interest |
 | `marine_heatwaves_subsurface` | `MarineHeatwavesSubsurfaceDiag` | — (no daily subsurface obs; surface OISST/ERA5 as 0 m reference) | Hobday marine heatwaves detected independently on each daily `thetao` model level down to ~200 m and grouped shallow (≤ 50 m) vs deep (de Toma et al. 2026 §2.4): shallow/deep maps per family, deep − shallow, every member level, depth profiles (global + seven regions, with mixed-layer depth), zonal means, yearly MHW days, shallow/deep violins per region |
+| `ssh_variability` | `SSHVariabilityDiag` | AVISO DT2024 allsat L4 `adt` (daily, derived to 0.25°) | Sea-surface height per grid cell: time mean (minus its area mean) and standard deviation of the raw series, of anomalies (seasonal cycle + trend removed) and of high-pass (< 91 d, mesoscale) anomalies — daily for the 8 members with daily `zos`, monthly for all 10 + CMIP6 `Omon/zos` on 1°: maps per family, every member, difference to AVISO, zonal means, regional means over boundary currents |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -496,6 +504,34 @@ The subsurface part of de Toma et al. (2026, §2.4 and §3.3). The same Hobday d
 - **Cost.** All requested levels of a latitude-row block are read in one pass (the CMOR files chunk 3–4 levels together). One FESOM member is ~120 GB of float32, hence `memory_gb: 200` in the config block — use a ≥ 256 GB node or lower it to read in more blocks.
 
 Checkpoints: `{output_dir}/marine_heatwaves_subsurface/{model}_z{depth}m_{start}_{end}.nc` per level (only missing levels are recomputed) and `{model}_mld_{start}_{end}.nc`.
+
+#### Sea-surface height (`ssh_variability`)
+
+The notebook `/work/bm1344/AWI/EERIE/science/zos_multimodel_std.ipynb` (maps of the temporal standard deviation and the mean of daily SSH, models next to AVISO) for the whole EERIE ensemble, over **1993–2014** (AVISO starts in 1993, the historical runs end in 2014). Statistics per grid cell (`feather/util/ssh_stats.py`):
+
+- `mean` — time-mean SSH minus its area mean over the cells every dataset covers. Models and AVISO use different reference levels, so only the pattern is compared.
+- `std_raw` — standard deviation of SSH as it is (the notebook's quantity).
+- `std_anom` — after removing the seasonal climatology (calendar-day means smoothed over 31 days; monthly means for monthly data) and a linear trend.
+- `std_hp` — daily only: anomaly minus its centred 91-day running mean (`hp_window_days`), i.e. the mesoscale.
+
+Two comparisons, both on the 0.25° grid:
+
+- **Daily** — 8 members: CMOR `HROday` for the r1 members, the kerchunk stores for IFS-FESOM2 and ICON-ESM-ER r2/r3, and HadGEM3-GC5 from `/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12` (`gr1`; the AWI copy has no `zos`). `daily_tables` are tried in order (`Oday`, `HROday`) and a table returning monthly data is passed over. IFS-NEMO-ER r2/r3 have monthly ocean output only. CMIP6 publishes no daily `zos`.
+- **Monthly** — all 10 members (`Omon`) plus the CMIP6 historical `Omon/zos` ensemble (55 models, one member each), box-averaged from the native ocean grid onto 1°. AVISO is box-averaged onto 1° *before* its statistics for this comparison: averaging removes eddy variance, so the std of a 1° field is lower than the 1° mean of the 0.25° std.
+
+Observations: `scripts/aviso_derive_zos_daily.sh` turns the CMEMS DUACS DT2024 allsat L4 files behind the EERIE intake entry `dkrz.disk.observations.AVISO.ssh-L4.daily_multi` (`adt`, 0.125°, daily) into `Oday` and `Omon` CMOR trees on the models' grid (cdo `remapcon`, about 17 s per weight build). Cells AVISO covers on fewer than 90 % of the steps (`min_valid_fraction`; seasonal sea ice) are masked. The gridded AVISO product is smoothed in space and time, which lowers its high-pass variance compared with eddy-rich models.
+
+Figures (`f` = daily | monthly): `ssh_{stat}_{f}_maps` (AVISO, family means, and for monthly AVISO at 1° + CMIP6 MMM), `ssh_{stat}_{f}_members`, `ssh_{stat}_{f}_bias` (grey where a multi-member family's difference is within twice its member spread; area-mean ratio to AVISO in the statistics), `ssh_{f}_zonal_means`, `ssh_{f}_regions` (Gulf Stream, Kuroshio Extension, Agulhas Retroflection, Brazil–Malvinas Confluence, East Australian Current, Drake Passage, equatorial Pacific, ocean 60°S–60°N).
+
+```bash
+sbatch --array=1993-2014 scripts/aviso_derive_zos_daily.sh
+feather --config configs/eerie_10_mems_ssh.yaml --steps diagnostics \
+        --diagnostics ssh_variability --save-netcdf -v
+```
+
+Checkpoints: `{output_dir}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{start}_{end}.nc`.
+
+`CMORLoader` now reads only the CMOR-named files (`{var}_{table}_*.nc`) of a directory when there are any: the IFS-NEMO-ER r1 `HROday/zos` directory also holds hand-merged `zos_merged_*.nc` copies (one broken) that broke or duplicated the read.
 
 ### Climate classification
 

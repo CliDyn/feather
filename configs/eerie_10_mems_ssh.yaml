@@ -1,0 +1,229 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE 10-member sea-surface-height variability vs AVISO (and CMIP6).
+#
+# Generalises /work/bm1344/AWI/EERIE/science/zos_multimodel_std.ipynb: per
+# grid cell, the time mean and the standard deviation of SSH (raw, anomalies
+# without seasonal cycle and trend, and high-pass < 91 days = mesoscale),
+# models next to AVISO, over 1993–2014 (AVISO starts 1993, the historical
+# runs end 2014).
+#
+# zos availability (checked 2026-10-13):
+#   member              daily                            monthly
+#   IFS-FESOM2-SR r1    CMOR HROday                      CMOR Omon
+#   IFS-FESOM2-SR r2/r3 kerchunk ocean store (Oday)      kerchunk (Omon)
+#   IFS-NEMO-ER r1      CMOR HROday                      CMOR Omon
+#   IFS-NEMO-ER r2/r3   —                                CMOR Omon (hist-1975)
+#   ICON-ESM-ER r1      CMOR HROday                      CMOR Omon
+#   ICON-ESM-ER r2/r3   kerchunk ocean 2d daily          kerchunk monthly
+#   HadGEM3-GC5         DKRZ MOHC tree Oday (gr1)        DKRZ MOHC tree Omon
+# → daily: 8 members; monthly: all 10 + CMIP6 historical Omon/zos.
+# CMIP6 publishes no daily zos, so the CMIP6 comparison is monthly only.
+#
+# Prerequisite (AVISO DT2024 allsat L4 adt → 0.25° CMOR tree, Oday + Omon):
+#   sbatch --array=1993-2014 scripts/aviso_derive_zos_daily.sh
+#
+# Run (compute node; a daily 0.25° member is ~33 GB of float32 over 1993–2014,
+# read in blocks of latitude rows that fit memory_gb):
+#   feather --config configs/eerie_10_mems_ssh.yaml --steps diagnostics \
+#           --diagnostics ssh_variability --save-netcdf -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE 10-member sea-surface-height variability vs AVISO"
+  experiment: "hist-1950"
+  period: ["1993", "2014"]
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    Mean and temporal variability of sea-surface height (zos) of the EERIE
+    eddy-rich coupled members against AVISO satellite altimetry (DT2024
+    absolute dynamic topography), daily (8 members) and monthly (10 members
+    and the CMIP6 historical ensemble on 1°). Eddy-rich models are expected
+    to reproduce the high SSH variability of the western boundary currents
+    and the Antarctic Circumpolar Current that coarse CMIP6 models miss; the
+    gridded AVISO product is smoothed in space and time, which lowers its
+    mesoscale (high-pass) variance compared with the models.
+  # One summary per model family: ICON-ESM-ER runs without a parameterised
+  # convection scheme, so its members are not pooled with the IFS runs.
+  ensemble_mode: per_family
+
+  ssh_variability:
+    period: ["1993", "2014"]
+    daily: true
+    monthly: true
+    daily_tables: [Oday, HROday]    # first one that holds daily data wins
+    monthly_table: Omon
+    hp_window_days: 91              # high-pass: anomaly minus 91-day running mean
+    smooth_width: 31                # smoothing (days) of the daily climatology
+    min_valid_fraction: 0.9         # mask cells AVISO covers < 90 % of the time
+    reference_obs: AVISO
+    obs:
+      AVISO:
+        institution: CMEMS
+        experiment: aviso
+        data_root: "/work/bm1344/AWI/OBS/aviso_derived/CMOR/CMEMS/AVISO"
+        color: "#000000"
+    # Blocks of latitude rows are read so the block plus the workers'
+    # temporaries (workers × cell_chunk × steps × 40 B) fit memory_gb.
+    memory_gb: 64
+    workers: 8
+    cell_chunk: 5000
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:
+  IFS-FESOM2-SR:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#1f77b4"
+
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {o2d: latlon}
+    color: "#5aabdf"
+
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {o2d: latlon}
+    color: "#9fcfe8"
+
+  # r1 from the DKRZ CMOR tree (default root), which has Oday/tos.
+  IFS-NEMO-ER:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#ff7f0e"
+
+  # r2/r3 (hist-1975) publish monthly ocean output only: monthly comparison.
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r2i1p1f1
+    data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
+    grids: {o2d: latlon}
+    color: "#e07b00"
+
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r3i1p1f1
+    data_root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP/BSC/IFS-NEMO-ER"
+    grids: {o2d: latlon}
+    color: "#a85800"
+
+  ICON-ESM-ER:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#2ca02c"
+
+  ICON-ESM-ER-r2:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 2
+    grids: {o2d: latlon}
+    color: "#66c266"
+
+  ICON-ESM-ER-r3:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 3
+    grids: {o2d: latlon}
+    color: "#a0dba0"
+
+  # zos (Oday + Omon, gr1 = 0.25°) is in the DKRZ MOHC tree, not in the AWI
+  # copy the other EERIE configs use.
+  HadGEM3-GC5:
+    institution: MOHC
+    family: HadGEM3-GC5
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    grids: {o2d: latlon}
+    color: "#d62728"
+
+obs_root: "/work/bm1344/AWI/OBS"
+obs_datasets: {}
+
+cmip6:
+  enabled: false
+
+# CMIP6 historical Omon/zos (one member per model, r1i1p1f1 preferred) read
+# from the DKRZ DRS tree and box-averaged onto 1° before the statistics.
+cmip6_daily:
+  enabled: true
+  root: "/work/ik1017/CMIP6/data/CMIP6"
+  experiment: "historical"
+  member: "r1i1p1f1"
+  models: auto
+  label: "CMIP6"
+  # exclude: []
+  # max_models: 10
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_10_mems_ssh"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-2.5-flash"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — EERIE 10-Member Sea-Surface Height"
+  subtitle: "Mean and variability of SSH vs AVISO altimetry (1993–2014)"
+  group_order:
+    - sea_level
+  group_labels:
+    sea_level: "Sea Level"

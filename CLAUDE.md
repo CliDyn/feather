@@ -94,7 +94,8 @@ feather/                     # Package root
 │   ├── obs_comparison.py     # ObsComparisonDiag: ERA5 vs Berkeley Earth trends and biases
 │   ├── precip_obs_comparison.py # PrecipObsComparisonDiag: ERA5 vs MSWEP precip trends and biases
 │   ├── marine_heatwaves.py  # MarineHeatwavesDiag: Hobday MHWs in daily SST
-│   └── marine_heatwaves_subsurface.py # shallow vs deep MHWs on thetao model levels
+│   ├── marine_heatwaves_subsurface.py # shallow vs deep MHWs on thetao model levels
+│   └── ssh_variability.py   # SSH mean + std (raw/anomaly/high-pass) vs AVISO
 ├── llm/
 │   ├── schemas.py           # FigureAnalysis, DiagnosticSynthesis (Pydantic)
 │   ├── prompts.py           # System + user prompts for Gemini analysis
@@ -127,6 +128,7 @@ feather/                     # Package root
 | `configs/eerie_all_members_extremes.yaml` | EERIE 10-member `heatwave_hotspots` (tail-widening, PNAS Fig 2–4) vs ERA5 + daily CMIP6 envelope, `per_family`; output `output_eerie_10_mems_temp_extremes` |
 | `configs/eerie_all_members_indices.yaml` | EERIE 10-member daily temperature extremes vs ERA5: tropical nights, heatwaves (+ `_change`), `temp_extremes_change`, and the 14 ETCCDI `temp_extremes_indices` vs daily CMIP6 |
 | `configs/eerie_10_mems_marine_heatwaves.yaml` | EERIE 10 members (7 with daily SST) — `marine_heatwaves` (Hobday 2016 / de Toma et al. 2026) 1982–2014 vs OISST v2.1 + ERA5 daily SST and daily CMIP6 Oday/tos, `per_family`; `marine_heatwaves_subsurface` on FESOM r1 + ICON r1 daily thetao |
+| `configs/eerie_10_mems_ssh.yaml` | EERIE 10 members — `ssh_variability` 1993–2014 vs AVISO: daily (8 members with daily `zos`) and monthly (10 members + CMIP6 `Omon/zos` on 1°), `per_family` |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
@@ -669,6 +671,17 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Checkpoints `{output}/marine_heatwaves_subsurface/{model}_z{depth}m_{y0}_{y1}.nc` (attr `depth`), only missing levels recomputed; `{model}_mld_{y0}_{y1}.nc`.
 - Figures: `mhwz_{m}_layers` (rows families × shallow/deep), `mhwz_{m}_deep_minus_shallow`, `mhwz_{m}_levels` (every member level), `mhwz_profiles_{global|region}` (area means vs depth over cells that are ocean on every level of every member), `mhwz_zonal_means`, `mhwz_days_timeseries`, `mhwz_regions_{region}` (shallow/deep violins per member, paper Fig. 17). Named-event time–depth sections (paper Figs. 14–16) not reproduced: free-running models do not have the observed events.
 - 15 tests in `tests/test_marine_heatwaves_subsurface.py`.
+
+### SSHVariabilityDiag diagnostic (`ssh_variability`)
+- From `/work/bm1344/AWI/EERIE/science/zos_multimodel_std.ipynb`: per-cell `mean` (minus its area mean over the cells all datasets cover — reference levels differ), `std_raw`, `std_anom` (seasonal climatology — calendar-day means smoothed over 31 days, monthly means for monthly data — and linear trend removed) and, daily only, `std_hp` (anomaly minus its centred `hp_window_days` = 91-day running mean; a step needs half its window valid). Maths in `feather/util/ssh_stats.py`. Subclass of `MarineHeatwavesDiag` (block reading, `_box_matrix`, `_map_grid`, families); config block `project.ssh_variability`. Group `sea_level`. Display: std in cm, mean in m.
+- Two comparisons (`daily`, `monthly` flags), period 1993–2014. **Daily**: 8 members — `daily_tables` tried in order (`Oday`, `HROday`), a table returning non-daily data is skipped (the FESOM kerchunk loader serves `HROday` as monthly). **Monthly** (`Omon`): all 10 members + CMIP6 `Omon/zos` via `discover_daily_models(table="Omon", variable="zos")` (55 models; duplicate names, e.g. UKESM1-0-LL under two institutions, dropped). CMIP6 has **no daily zos** on the pool.
+- HadGEM3-GC5 `zos` (Oday + Omon, `gr1`) is only in `/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12` → `data_root` override in the config. IFS-NEMO-ER r2/r3 need `data_root: …/BSC/IFS-NEMO-ER` (hist-1975).
+- AVISO: `scripts/aviso_derive_zos_daily.sh` — DUACS DT2024 allsat L4 `adt` from `/work/uc0928/FUTURE_DATA/aviso_allsat/DATA/YYYY/MM/` (the files behind intake `dkrz.disk.observations.AVISO.ssh-L4.daily_multi`, kerchunk `/work/bm1344/k202193/Kerchunk/Obs/aviso_allsat.parq`; the GitHub intake catalogue cannot be opened from the feather env — no aiohttp) → `cdo remapcon` r1440x721 → `/work/bm1344/AWI/OBS/aviso_derived/CMOR/CMEMS/AVISO/aviso/r1i1p1f1/{Oday,Omon}/zos/gr/v1/`. cdo `setattribute` values must not contain commas, parentheses or `;`. For the CMIP6 comparison AVISO is box-averaged onto 1° **before** its statistics (checkpoint `obs/AVISO_1deg_monthly_…`).
+- Mask: cells where the reference covers < `min_valid_fraction` (0.9) of the steps.
+- Checkpoints `{output}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{y0}_{y1}.nc` (attrs `period`, `hp_window_days`, `smooth_width`; mismatch → recompute). Units checked: |area mean| of the first step must be ≤ 5 m.
+- Figures `ssh_{stat}_{daily|monthly}_{maps|members|bias}`, `ssh_{f}_zonal_means`, `ssh_{f}_regions` (boundary currents, Drake Passage, equatorial Pacific, ocean 60°S–60°N); `--save-netcdf` writes `ssh_{stat}_{f}_{p0}-{p1}.nc` (+ `_1deg_` with CMIP6).
+- `CMORLoader._data_files`: when a version directory holds CMOR-named files (`{var}_{table}_*.nc`), other `.nc` files are ignored with a warning — the IFS-NEMO-ER r1 `HROday/zos` directory contains hand-merged `zos_merged_*.nc` (one broken).
+- 16 tests in `tests/test_ssh_variability.py`.
 
 ### AddedValueDiag diagnostic
 - 14th diagnostic: Dosio et al. (2015) Added Value (AV) of EERIE ensemble vs CMIP6 MMM
