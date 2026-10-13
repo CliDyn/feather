@@ -420,6 +420,17 @@ class TestOcean2D:
         da = loader.load_var("IFS-FESOM2-SR", "siconc")
         assert da.attrs.get("units") == "K"  # raw synthetic data has "K"
 
+    def test_tos_daily_not_resampled(self, tmp_path, monkeypatch):
+        loader, _ = _make_loader(tmp_path, monkeypatch)
+        monthly = loader.load_var("IFS-FESOM2-SR", "tos")
+        daily = loader.load_var("IFS-FESOM2-SR", "tos", table="Oday")
+        raw = _make_ocean2d_store()["avg_tos"]
+        assert daily.sizes["time"] == raw.sizes["time"]
+        assert daily.sizes["time"] > monthly.sizes["time"]
+        assert daily.attrs["units"] == "degC"
+        np.testing.assert_allclose(float(daily.mean()),
+                                   float(raw.mean()) - 273.15, atol=1e-3)
+
     def test_all_ocean2d_variables_loadable(self, tmp_path, monkeypatch):
         loader, _ = _make_loader(tmp_path, monkeypatch)
         for var in _OCEAN2D:

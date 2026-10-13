@@ -116,6 +116,26 @@ feather --config configs/eerie_all_members_indices.yaml \
         --steps diagnostics \
         --diagnostics temp_extremes_indices --save-netcdf -v
 
+# EERIE marine heatwaves (Hobday et al. 2016) in daily SST — 7 members with
+# daily SST vs OISST v2.1, ERA5 and daily CMIP6 (derive the daily obs first,
+# see "Marine heatwaves" below)
+feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+        --steps diagnostics \
+        --diagnostics marine_heatwaves --save-netcdf -v
+
+# Subsurface marine heatwaves, shallow (<= 50 m) vs deep, on daily thetao
+# model levels (IFS-FESOM2-SR r1, ICON-ESM-ER r1); run after marine_heatwaves
+feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+        --steps diagnostics \
+        --diagnostics marine_heatwaves_subsurface --save-netcdf -v
+
+# SSH variability (mean + std of zos) vs AVISO — daily (8 members) and
+# monthly (10 members + CMIP6); derive the AVISO tree first, see
+# "Sea-surface height" below
+feather --config configs/eerie_10_mems_ssh.yaml \
+        --steps diagnostics \
+        --diagnostics ssh_variability --save-netcdf -v
+
 # TerraDT baseline evaluation
 feather --config configs/terradt.yaml -v
 
@@ -306,6 +326,9 @@ Feather provides 26 registered diagnostics across atmosphere, ocean, cryosphere,
 | `precip_extremes` | `PrecipExtremesDiag` | ERA5 + MSWEP v2.8 (daily, derived to 0.25°) | Nine ETCCDI daily-precipitation indices (R1mm, R10mm, R20mm, PRCPTOT, SDII, R95p, R99p, Rx1day, Rx5day): reference climatology per model family + daily CMIP6 MMM + obs, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs each obs dataset, global-mean time series |
 | `temp_extremes_change` | `TempExtremesChangeDiag` | — (model change signal) | Climate change signal in mean daily `tasmin` **and** `tasmax` under SSP2-4.5, annual + four seasons (DJF/MAM/JJA/SON): [Reference \| Future \| Change] maps per model + stitched global-mean time series, per variable |
 | `temp_extremes_indices` | `TempExtremesIndicesDiag` | ERA5 (daily tasmax/tasmin, derived to 0.25°) | Fourteen ETCCDI daily-temperature indices over land (TXx, TNx, TXn, TNn, DTR, FD, ID, TX10p, TX90p, TN10p, TN90p, WSDI, CSDI, GSL): reference climatology per model family + daily CMIP6 MMM + ERA5, SSP2-4.5 change maps, EERIE − CMIP6 difference, bias maps vs ERA5, land-mean time series |
+| `marine_heatwaves` | `MarineHeatwavesDiag` | NOAA OISST v2.1 + ERA5 (daily SST, derived to 0.25°) | Hobday et al. (2016) marine heatwaves detected per ocean cell in daily SST (de Toma et al. 2026 surface analysis): frequency, MHW days, mean duration, max/mean/cumulative intensity, intensity variability, onset/decline rates, max category — maps per family + CMIP6 MMM, every member, bias vs OISST (grey within 2σ of the member spread), member spread, zonal means, yearly MHW days, violins over the paper's seven areas of interest |
+| `marine_heatwaves_subsurface` | `MarineHeatwavesSubsurfaceDiag` | — (no daily subsurface obs; surface OISST/ERA5 as 0 m reference) | Hobday marine heatwaves detected independently on each daily `thetao` model level down to ~200 m and grouped shallow (≤ 50 m) vs deep (de Toma et al. 2026 §2.4): shallow/deep maps per family, deep − shallow, every member level, depth profiles (global + seven regions, with mixed-layer depth), zonal means, yearly MHW days, shallow/deep violins per region |
+| `ssh_variability` | `SSHVariabilityDiag` | AVISO DT2024 allsat L4 `adt` (daily, derived to 0.25°) | Sea-surface height per grid cell: time mean (minus its area mean) and standard deviation of the raw series, of anomalies (seasonal cycle + trend removed) and of high-pass (< 91 d, mesoscale) anomalies — daily for the 8 members with daily `zos`, monthly for all 10 + CMIP6 `Omon/zos` on 1°: maps per family, every member, difference to AVISO, zonal means, regional means over boundary currents |
 
 The **Tropical Nights Index** (TN20) counts nights per year where daily minimum temperature exceeds 20 °C. Requires daily `tasmin` (CMOR) or kerchunk-parquet mn2t24 store. Per-model NC checkpoints are written to `{output_dir}/tropical_nights/`.
 
@@ -448,6 +471,84 @@ feather --config configs/eerie_all_members_indices.yaml --steps diagnostics \
 
 Checkpoints (annual index fields, native grid, ocean NaN): `{output_dir}/temp_extremes_indices/{model}_{hist|ssp}_{start}_{end}.nc`, `…/cmip6/…`, `…/obs/…`, seasonal fields in `…_seasons.nc`. The percentile thresholds are not stored (≈ 1 GB per 0.25° member); if only an SSP file is missing they are recomputed from the historical run. `temp_extremes_indices.percentile_memory_gb` (default 12) bounds the base-period block behind them — a 0.25° member needs about 9 GB per variable; above the budget the land cells are processed in groups.
 
+#### Marine heatwaves (`marine_heatwaves`)
+
+The surface analysis of de Toma et al. (2026, [EGUsphere-2026-5747](https://doi.org/10.5194/egusphere-2026-5747), code [ROHAN](https://github.com/vincenzodetoma/ROHAN)), applied to the EERIE members instead of ocean reanalyses. Detection (`feather/util/mhw.py`) is Hobday et al. (2016) as implemented in Oliver's `marineHeatWaves.detect`, vectorised over cells and checked against a per-cell port of it: 90th percentile of an 11-day window per calendar day over the climatology period, climatology and threshold smoothed with a 31-day running mean, events ≥ 5 days, gaps ≤ 2 days joined, no detrending. All settings live in `project.marine_heatwaves`.
+
+- **Inputs.** Daily `tos` (`table="Oday"`): CMOR `Oday` for the r1 members, the IFS-FESOM2 kerchunk ocean store (`avg_tos`, now served daily as well as monthly) and ICON-ESM-ER's `ocean_native_2d_daily_mean_remap025` store for r2/r3. IFS-NEMO-ER r2/r3 publish monthly ocean output only, and HadGEM3-GC5's daily ocean store holds only `zos`, so 7 of the 10 members enter. Missing days (FESOM r2/r3 lack about a week) are NaN and never exceed the threshold.
+- **Observations.** `scripts/oisst_derive_tos_daily.sh` (NOAA OISST v2.1 AVHRR-only from the ICDC copy, 0.25° cell-centred → the models' 721×1440 grid, bilinear) and `scripts/era5_derive_tos_daily.sh` (ERA5 daily-mean SST, code 34, N320 → 0.25° bilinear, K → °C) write CMOR trees processed exactly like a member. OISST is the reference.
+- **CMIP6.** Daily historical `Oday/tos`, one member per model (32 models in the 1982–2014 run, 2026-10; r1i1p1f1 where it has `Oday/tos`), box-averaged from the native ocean grid onto 1° before detection; empty 1° cells take the nearest source point within 1°. Each dataset is thus evaluated at its own resolution.
+- **Per-cell metrics.** Event frequency, % of days in a MHW, mean duration, maximum intensity over all events, mean peak / mean / cumulative intensity, mean within-event intensity standard deviation, mean onset and decline rates, maximum category (intensities relative to the seasonal climatology), plus yearly MHW days and events.
+- **Masking.** Cells where the OISST annual-mean climatology is below `ice_mask_sst` (−1 °C) are masked in all figures.
+- **Figures.** Per metric: `mhw_{m}_maps` (obs, family means, CMIP6 MMM), `mhw_{m}_members`, `mhw_{m}_bias` (family means, ERA5 and the CMIP6 MMM minus OISST; grey where a multi-member family's bias is within twice its member standard deviation, as in the paper's Fig. 1), `mhw_{m}_spread`. Plus `mhw_zonal_means`, `mhw_days_timeseries` (ocean mean 60°S–60°N) and `mhw_regions_{region}` (violins over the paper's seven areas of interest).
+- **Cost.** A 0.25° member is ~690k ocean cells × 12,053 days (33 GB of float32). Blocks of latitude rows are read so the block plus `workers × cell_chunk` temporaries fit `memory_gb` (default 64 GB, 8 workers, 5000 cells); detection takes about 3 ms per cell for 33 years on one core (≈ 35 min per member, a few minutes on 8 workers), so reading the daily data dominates.
+
+```bash
+sbatch --array=1982-2014 scripts/oisst_derive_tos_daily.sh
+sbatch --array=1982-2014 scripts/era5_derive_tos_daily.sh
+feather --config configs/eerie_10_mems_marine_heatwaves.yaml --steps diagnostics \
+        --diagnostics marine_heatwaves --save-netcdf -v
+```
+
+Checkpoints (per-cell maps and yearly counts, native grid): `{output_dir}/marine_heatwaves/{model}_{start}_{end}.nc`, `…/obs/…`, `…/cmip6/…` (1°). They store the detection settings and are recomputed when those change.
+
+#### Subsurface marine heatwaves (`marine_heatwaves_subsurface`)
+
+The subsurface part of de Toma et al. (2026, §2.4 and §3.3). The same Hobday detection is run **independently on every model level** of daily `thetao` (`table: HROday`) down to `max_depth` (210 m, so ICON's 201.8 m level is included), and the levels are grouped into **shallow** (depth ≤ `shallow_max_depth`, 50 m) and **deep**. Settings are `project.marine_heatwaves` overridden by `project.marine_heatwaves_subsurface`, so detection matches the surface run.
+
+- **Inputs.** Daily `thetao` exists for 1982–2014 only for IFS-FESOM2-SR r1 (2.5, 12.5 | 97.5, 195 m) and ICON-ESM-ER r1 (1 | 50.55, 201.8 m). ICON's 50.55 m level falls just below the divide, so the two families sample the column differently; the per-level maps and profiles show this. ICON-ESM-ER r2/r3 load from the new `ocean5lev_day` kerchunk store (`ICONKerchunkLoader`, `to`/`so` with a `depth` axis), but it ends in 2000 and r2 lacks 1979, 1981 and 1987, so the 90 % coverage check skips them for 1982–2014. IFS-NEMO, IFS-FESOM2 r2/r3 and HadGEM3 have no daily subsurface temperature.
+- **No vertical interpolation.** Each model is analysed on its own levels.
+- **Grouping** (`pool_levels`). Event means (duration, intensities, rates) are pooled over all events of the group's levels (per-level means weighted by event frequency); maximum intensity and category take the maximum over levels; frequency, MHW-day share and climatology are the mean over levels.
+- **Reference.** There is no daily subsurface observation product on Levante for 1982–2014 (ICDC ORAS5 is monthly, ARMOR3D covers 2014–15 weekly, GLORYS12 the Arctic only), so this compares the members with each other. The surface run's checkpoints (`{output_dir}/marine_heatwaves/[obs/]…`, same settings) mark 0 m on the profiles (OISST/ERA5 and each member's `tos`) and supply the OISST ice mask. Mixed-layer depth comes from `Omon/mlotst` (`mld_table`).
+- **Figures.** `mhwz_{m}_layers` (shallow and deep per family), `mhwz_{m}_deep_minus_shallow`, `mhwz_{m}_levels` (every member level), `mhwz_profiles_{global|region}` (area means vs depth over cells that are ocean on every level of every member, with MLD), `mhwz_zonal_means`, `mhwz_days_timeseries`, `mhwz_regions_{region}` (shallow/deep violins per member, paper Fig. 17). The paper's time–depth sections of named events (Figs. 14–16) are not reproduced: free-running models do not contain the observed events.
+- **Cost.** All requested levels of a latitude-row block are read in one pass (the CMOR files chunk 3–4 levels together). One FESOM member is ~120 GB of float32, hence `memory_gb: 200` in the config block — use a ≥ 256 GB node or lower it to read in more blocks.
+
+Checkpoints: `{output_dir}/marine_heatwaves_subsurface/{model}_z{depth}m_{start}_{end}.nc` per level (only missing levels are recomputed) and `{model}_mld_{start}_{end}.nc`.
+
+#### Sea-surface height (`ssh_variability`)
+
+The notebook `/work/bm1344/AWI/EERIE/science/zos_multimodel_std.ipynb` (maps of the temporal standard deviation and the mean of daily SSH, models next to AVISO) for the whole EERIE ensemble, over **1993–2014** (AVISO starts in 1993, the historical runs end in 2014). Statistics per grid cell (`feather/util/ssh_stats.py`):
+
+- `mean` — time-mean SSH minus its area mean over the cells every dataset covers. Models and AVISO use different reference levels, so only the pattern is compared.
+- `std_raw` — standard deviation of SSH as it is (the notebook's quantity).
+- `std_anom` — after removing the seasonal climatology (calendar-day means smoothed over 31 days; monthly means for monthly data) and a linear trend.
+- `std_hp` — daily only: anomaly minus its centred 91-day running mean (`hp_window_days`): periods shorter than about 3 months, mostly the mesoscale (but see the ICON caveat below).
+
+Two comparisons, both on the 0.25° grid:
+
+- **Daily** — 8 members: CMOR `HROday` for the r1 members, the kerchunk stores for IFS-FESOM2 and ICON-ESM-ER r2/r3, and HadGEM3-GC5 from `/work/bm1344/DKRZ/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12` (`gr1`; the AWI copy has no `zos`). `daily_tables` are tried in order (`Oday`, `HROday`) and a table returning monthly data is passed over. IFS-NEMO-ER r2/r3 have monthly ocean output only. CMIP6 publishes no daily `zos`.
+- **Monthly** — all 10 members (`Omon`) plus the CMIP6 historical `Omon/zos` ensemble (55 models, one member each), box-averaged from the native ocean grid onto 1°. AVISO is box-averaged onto 1° *before* its statistics for this comparison: averaging removes eddy variance, so the std of a 1° field is lower than the 1° mean of the 0.25° std.
+
+Observations: `scripts/aviso_derive_zos_daily.sh` turns the CMEMS DUACS DT2024 allsat L4 files behind the EERIE intake entry `dkrz.disk.observations.AVISO.ssh-L4.daily_multi` (`adt`, 0.125°, daily) into `Oday` and `Omon` CMOR trees on the models' grid (cdo `remapcon`, about 17 s per weight build). Cells AVISO covers on fewer than 90 % of the steps (`min_valid_fraction`; seasonal sea ice) are masked. The gridded AVISO product is smoothed in space and time, which lowers its high-pass variance compared with eddy-rich models. Its absolute dynamic topography also has the dynamic atmospheric correction removed (inverse-barometer response and wind- and pressure-driven barotropic signals shorter than about 20 days); a model whose `zos` contains these signals shows extra high-frequency variance that is not mesoscale. This is stated in every figure's computation notes. `ssh_variability.notes` in the config appends free-text caveats to those notes, which the LLM analysis reads.
+
+Figures (`f` = daily | monthly): `ssh_{stat}_{f}_maps` (AVISO, family means, and for monthly AVISO at 1° + CMIP6 MMM), `ssh_{stat}_{f}_members`, `ssh_{stat}_{f}_bias` (grey where a multi-member family's difference is within twice its member spread; area-mean ratio to AVISO in the statistics), `ssh_{f}_zonal_means`, `ssh_{f}_regions` (Gulf Stream, Kuroshio Extension, Agulhas Retroflection, Brazil–Malvinas Confluence, East Australian Current, Drake Passage, equatorial Pacific, ocean 60°S–60°N).
+
+```bash
+sbatch --array=1993-2014 scripts/aviso_derive_zos_daily.sh
+feather --config configs/eerie_10_mems_ssh.yaml --steps diagnostics \
+        --diagnostics ssh_variability --save-netcdf -v
+```
+
+Checkpoints: `{output_dir}/ssh_variability/[obs/|cmip6/]{name}_{daily|monthly}_{start}_{end}.nc`. They hold the statistics on each dataset's own grid, so a rerun after a plotting failure only redraws the figures.
+
+Results of the 2026-10-13 run (area means over the cells all datasets cover, cm):
+
+| | AVISO | IFS-FESOM2-SR | IFS-NEMO-ER | ICON-ESM-ER | HadGEM3-GC5 | CMIP6 MMM (1°) |
+|---|---|---|---|---|---|---|
+| daily raw std | 7.55 | 7.22 | 6.94 | 9.94 | 7.90 | — |
+| daily anomaly std | 6.30 | 6.08 | 5.84 | 8.19 | 6.67 | — |
+| daily high-pass std | 3.69 | 3.90 | 3.73 | 6.62 | 4.33 | — |
+| monthly raw std | 6.90 (1°: 6.55) | 6.28 | 6.11 | 7.52 | 6.86 | 5.31 |
+| monthly anomaly std | 5.57 (1°: 5.13) | 4.98 | 4.88 | 5.35 | 5.46 | 3.58 |
+
+Members of a family agree closely (daily high-pass std: FESOM 3.88/3.91/3.91 cm, ICON 6.60/6.62/6.64 cm), although r1 is read from CMOR and r2/r3 from kerchunk stores.
+
+**ICON-ESM-ER caveat.** ICON's daily high-pass std is about 1.8 times AVISO's, with the excess spread over whole basins in the Southern Ocean and the high-latitude North Pacific and Atlantic (Drake Passage: 17.3 vs 9.7 cm raw daily std), not concentrated in the boundary currents. Monthly, ICON is close to AVISO. This points to sub-monthly barotropic or inverse-barometer signals in ICON's `zos` that AVISO removes, not to excess eddy activity. It is not yet verified; the check is the regression of ICON's daily high-pass `zos` on `psl` (about −1 cm/hPa for an inverse-barometer response).
+
+HadGEM3-GC5's `gr1` latitudes and longitudes are float32, up to 3·10⁻⁵° away from the regular 0.25° values. The shared regridding helper (`_to_grid` in `feather/diag/precip_extremes.py`) now gives a field that is on the target grid within float tolerance the exact target coordinates. Before, it kept the field's own coordinates, and xarray arithmetic with another field kept only the points with exactly equal coordinates (655 × 1340 of 721 × 1440 for HadGEM3). That caused a shape mismatch in the `ssh_variability` bias statistics and could silently shrink fields in the other diagnostics that use the helper (`precip_extremes`, `temp_extremes_indices`, both marine heatwave diagnostics).
+
+`CMORLoader` now reads only the CMOR-named files (`{var}_{table}_*.nc`) of a directory when there are any: the IFS-NEMO-ER r1 `HROday/zos` directory also holds hand-merged `zos_merged_*.nc` copies (one broken) that broke or duplicated the read.
+
 ### Climate classification
 
 | Diagnostic | Class | Observation | What it produces |
@@ -539,6 +640,7 @@ Feather uses YAML configuration files. Sixteen configs are provided:
 | `configs/eerie_all_members_extremes.yaml` | EERIE — ERA5 + the 10 members (3×FESOM2 + 3×NEMO + 3×ICON incl. r2/r3 via `icon_kerchunk`; HadGEM3 has no daily tasmax and is skipped), heatwave-hotspot tail-widening (PNAS Fig 2–4), per-family summaries | CMOR + kerchunk parquet (ERA5 derived daily + EERIE day table) | `multi_model` |
 | `configs/eerie_10_mems_precip_extremes.yaml` | EERIE — 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3-GC5E-HH), ETCCDI daily precipitation extremes, 1981–2000 + SSP2-4.5 2031–2050, vs daily CMIP6, ERA5 and MSWEP | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily obs | `multi_model` |
 | `configs/eerie_all_members_indices.yaml` | EERIE — ERA5 + 10 members (3×FESOM2 + 3×NEMO + 3×ICON + HadGEM3, which has no daily tasmax/tasmin), daily temperature extremes: tropical nights, heatwaves, `temp_extremes_change` and the 14 ETCCDI `temp_extremes_indices`, 1981–2000 + SSP2-4.5 2031–2050, vs ERA5 and daily CMIP6 | CMOR + kerchunk (EERIE day tables), DRS NetCDF (CMIP6), derived daily ERA5 | `multi_model` |
+| `configs/eerie_10_mems_marine_heatwaves.yaml` | EERIE — 10 members, of which 7 publish daily SST (3×FESOM2, NEMO r1, 3×ICON), marine heatwaves (Hobday et al. 2016; de Toma et al. 2026) 1982–2014 vs OISST v2.1, ERA5 and daily CMIP6, per family | CMOR + kerchunk (EERIE Oday), DRS NetCDF (CMIP6 Oday), derived daily obs | `multi_model` |
 | `configs/himansu_319.yaml` | IFS-FESOM T319 | per-year NetCDF | `single_model` |
 | `configs/tco_grib.yaml` | IFS-FESOM TCO399/TCO319 | GRIB files | `resolution_sensitivity` |
 | `configs/destine_ifs_fesom.yaml` | IFS-FESOM only | intake catalogs | `single_model` |

@@ -128,7 +128,7 @@ class CMORLoader:
                 table = "Amon"
 
         data_dir = self._find_version_dir(model, variable, table)
-        nc_files = sorted(data_dir.glob("*.nc"))
+        nc_files = self._data_files(data_dir, model, variable, table)
         if not nc_files:
             raise FileNotFoundError(
                 f"No NetCDF files in {data_dir}"
@@ -211,12 +211,33 @@ class CMORLoader:
         ds[time_dim] = (time_dim, dates)
         return ds
 
+    def _data_files(self, data_dir: Path, model: str, variable: str,
+                    table: str) -> list[Path]:
+        """NetCDF files of *data_dir*, without stray non-CMOR files.
+
+        When some files follow the CMOR name pattern ``{var}_{table}_*.nc``,
+        only those are used: the IFS-NEMO-ER r1 ``HROday/zos`` directory also
+        holds hand-merged ``zos_merged_*.nc`` copies (one of them broken) that
+        would duplicate time steps.  Directories without any CMOR-named file
+        (e.g. the HadGEM3 ``zos_nemo_*`` files) are used as they are.
+        """
+        nc_files = sorted(data_dir.glob("*.nc"))
+        names = {variable, self._get_alias(model, variable)}
+        cmor = [f for f in nc_files
+                if any(f.name.startswith(f"{n}_{table}_") for n in names)]
+        if cmor and len(cmor) < len(nc_files):
+            logger.warning("%s: ignoring %d non-CMOR file(s) in %s: %s", model,
+                           len(nc_files) - len(cmor), data_dir,
+                           ", ".join(f.name for f in nc_files if f not in cmor))
+            return cmor
+        return nc_files
+
     def _open_variable(
         self, model: str, variable: str, table: str,
     ) -> xr.DataArray:
         """Open and return a DataArray for a single variable."""
         data_dir = self._find_version_dir(model, variable, table)
-        nc_files = sorted(data_dir.glob("*.nc"))
+        nc_files = self._data_files(data_dir, model, variable, table)
         if not nc_files:
             raise FileNotFoundError(
                 f"No NetCDF files in {data_dir}"

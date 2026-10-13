@@ -1,0 +1,256 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# EERIE 10-member marine heatwaves (Hobday et al. 2016) in daily SST.
+#
+# Surface part of de Toma et al. (2026, EGUsphere-2026-5747, "Comparing
+# Surface and Subsurface Marine Heatwaves in Ocean Reanalyses"; code
+# github.com/vincenzodetoma/ROHAN), applied to the EERIE members: marine
+# heatwaves are detected in every ocean cell of each dataset's daily SST
+# (90th percentile of an 11-day window, 31-day smoothing, events ≥ 5 days,
+# gaps ≤ 2 days joined, no detrending) and the per-cell event statistics are
+# compared with NOAA OISST v2.1 (reference) and ERA5.
+#
+# Daily SST availability (checked 2026-10-12):
+#   IFS-FESOM2-SR r1    CMOR Oday/tos              1950–2014
+#   IFS-FESOM2-SR r2/r3 kerchunk ocean avg_tos     1975–2014
+#   IFS-NEMO-ER r1      CMOR Oday/tos              1950–2014
+#   IFS-NEMO-ER r2/r3   — (only Omon on disk)      skipped
+#   ICON-ESM-ER r1      CMOR Oday/tos              1950–2014
+#   ICON-ESM-ER r2/r3   kerchunk ocean 2d daily    1975–2014
+#   HadGEM3-GC5         — (daily ocean store has only zos)  skipped
+# → 7 members in 3 families enter the analysis.
+#
+# Prerequisites (daily obs as CMOR trees on the models' 0.25° grid):
+#   sbatch --array=1982-2014 scripts/oisst_derive_tos_daily.sh
+#   sbatch --array=1982-2014 scripts/era5_derive_tos_daily.sh
+#
+# Run (compute node; one whole 0.25° member is ~33 GB of float32 SST):
+#   feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+#           --diagnostics marine_heatwaves --steps diagnostics --save-netcdf -v
+#
+# Subsurface part (shallow ≤ 50 m vs deep events, paper §2.4/3.3), on the
+# model levels of daily thetao down to ~200 m.  Daily thetao (HROday):
+#   IFS-FESOM2-SR r1    2.5, 12.5 | 97.5, 195 m      1950–2014
+#   ICON-ESM-ER r1      1 | 50.55, 201.8 m           1950–2014
+#   ICON-ESM-ER r2/r3   same levels (5lev store)     1975–2000 only → skipped
+#                                                    for 1982–2014
+#   others              —                            skipped
+# Reads the surface checkpoints above (obs + members' tos) for the 0 m
+# reference, so run it after marine_heatwaves.  A member is ~120 GB of
+# float32 over its levels; with memory_gb 200 it reads in one block.
+#   feather --config configs/eerie_10_mems_marine_heatwaves.yaml \
+#           --diagnostics marine_heatwaves_subsurface --steps diagnostics \
+#           --save-netcdf -v
+# ─────────────────────────────────────────────────────────────────────────────
+
+project:
+  name: "EERIE"
+  description: "EERIE 10-member marine heatwaves (Hobday et al. 2016) vs OISST v2.1 and ERA5"
+  experiment: "hist-1950"
+  period: ["1982", "2014"]          # OISST starts September 1981
+  resolution: "high-resolution (~10-20 km atm, ~5-10 km ocean)"
+  comparison_type: "multi_model"
+  comparison_description: >-
+    Marine heatwave statistics (Hobday et al. 2016 definition) of the EERIE
+    eddy-rich coupled members with daily SST (IFS-FESOM2-SR r1–r3, IFS-NEMO-ER
+    r1, ICON-ESM-ER r1–r3) against NOAA OISST v2.1 and ERA5 daily SST and the
+    daily CMIP6 historical ensemble, following the surface analysis of de Toma
+    et al. (2026). Coarse (eddy-permitting) models are known to produce fewer,
+    weaker and longer events than eddy-resolving models or observations.
+  # One summary per model family: ICON-ESM-ER runs without a parameterised
+  # convection scheme, so its members are not pooled with the IFS runs.
+  ensemble_mode: per_family
+
+  marine_heatwaves:
+    period: ["1982", "2014"]
+    climatology_period: ["1982", "2014"]   # the paper uses the whole record
+    pctile: 90
+    window_half_width: 5
+    smooth_width: 31
+    min_duration: 5
+    max_gap: 2
+    ice_mask_sst: -1.0              # mask cells colder than this in OISST (sea ice)
+    reference_obs: OISST
+    obs:
+      OISST:
+        institution: NOAA
+        experiment: oisst
+        data_root: "/work/bm1344/AWI/OBS/oisst_derived/CMOR/NOAA/OISST"
+        color: "#000000"
+      ERA5:
+        institution: ECMWF
+        experiment: era5
+        data_root: "/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5"
+        color: "#777777"
+    # Resources: blocks of latitude rows are read so that the block plus the
+    # workers' temporaries fit memory_gb.  64 GB, 8 workers × 5000 cells
+    # holds a whole 0.25° member (~690k ocean cells) in two blocks.
+    memory_gb: 64
+    workers: 8
+    cell_chunk: 5000
+
+  # Detection settings, period, obs and regions are inherited from
+  # marine_heatwaves; anything set here overrides them.
+  marine_heatwaves_subsurface:
+    table: HROday
+    max_depth: 210                  # include ICON's 201.8 m level (paper: 200 m)
+    shallow_max_depth: 50           # ≤ 50 m shallow, deeper = deep
+    mld_table: Omon                 # mlotst for the mixed-layer lines
+    memory_gb: 200
+
+data_source:
+  type: "cmor"
+  root: "/work/bm1344/DKRZ/CMOR/EERIE/HighResMIP"
+
+models:
+  IFS-FESOM2-SR:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#1f77b4"
+
+  IFS-FESOM2-SR-r2:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {o2d: latlon}
+    color: "#5aabdf"
+
+  IFS-FESOM2-SR-r3:
+    institution: AWI
+    family: IFS-FESOM2-SR
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "kerchunk_parquet"
+    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    grids: {o2d: latlon}
+    color: "#9fcfe8"
+
+  # r1 from the DKRZ CMOR tree (default root), which has Oday/tos.
+  IFS-NEMO-ER:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#ff7f0e"
+
+  # r2/r3 (hist-1975) publish monthly ocean output only — skipped with a warning.
+  IFS-NEMO-ER-r2:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r2i1p1f1
+    grids: {o2d: latlon}
+    color: "#e07b00"
+
+  IFS-NEMO-ER-r3:
+    institution: BSC
+    family: IFS-NEMO-ER
+    experiment: hist-1975
+    variant: r3i1p1f1
+    grids: {o2d: latlon}
+    color: "#a85800"
+
+  ICON-ESM-ER:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r1i1p1f1
+    grids: {o2d: latlon}
+    color: "#2ca02c"
+
+  ICON-ESM-ER-r2:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r2i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 2
+    grids: {o2d: latlon}
+    color: "#66c266"
+
+  ICON-ESM-ER-r3:
+    institution: MPI-M
+    family: ICON-ESM-ER
+    experiment: hist-1950
+    variant: r3i1p1f1
+    data_source_type: "icon_kerchunk"
+    data_root: "/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618"
+    member: 3
+    grids: {o2d: latlon}
+    color: "#a0dba0"
+
+  # No daily SST published (its Oday kerchunk store holds only zos) — skipped.
+  HadGEM3-GC5:
+    institution: MOHC
+    family: HadGEM3-GC5
+    experiment: eerie-historical
+    variant: r1i1p1f1
+    data_root: "/work/bm1344/AWI/EERIE/MOHC/HadGEM3-GC5-EERIE-N640-ORCA12"
+    grid_label: "gr1"
+    grids: {o2d: latlon}
+    color: "#d62728"
+
+obs_root: "/work/bm1344/AWI/OBS"
+obs_datasets: {}
+
+cmip6:
+  enabled: false
+
+# Daily CMIP6 historical SST (Oday/tos, one member per model) read from the
+# DKRZ DRS tree; box-averaged from the native ocean grid onto 1° before
+# detection.  Checkpoints: {output}/marine_heatwaves/cmip6/{model}_1982_2014.nc
+cmip6_daily:
+  enabled: true
+  root: "/work/ik1017/CMIP6/data/CMIP6"
+  experiment: "historical"
+  member: "r1i1p1f1"
+  models: auto
+  label: "CMIP6"
+  # exclude: []
+  # max_models: 10
+
+dask:
+  n_workers: 8
+  memory_limit: "16GB"
+
+nereus:
+  projection: "rob"
+  resolution: 0.25
+  influence_radius: 80000
+  method: "linear"
+
+output_dir: "/work/bm1344/AWI/EERIE/output_eerie_10_mems_marine_heatwaves"
+
+llm:
+  figure_analysis:
+    provider: "vertex"
+    model: "gemini-2.5-flash"
+    api_key_env: "VERTEX_API_KEY"
+    thinking_budget: 8192
+    max_retries: 3
+    retry_delay: 10
+    skip_existing: true
+
+report:
+  model: "gpt-5.2-2025-12-11"
+  max_tokens: 65536
+  temperature: 0.3
+  api_key_env: "OPENAI_API_KEY"
+  n_highlights: 10
+
+website:
+  title: "Feather — EERIE 10-Member Marine Heatwaves"
+  subtitle: "Hobday et al. (2016) marine heatwaves in daily SST vs OISST v2.1 and ERA5 (1982–2014)"
+  group_order:
+    - marine_heatwaves
+    - marine_heatwaves_subsurface
+  group_labels:
+    marine_heatwaves: "Marine Heatwaves"
+    marine_heatwaves_subsurface: "Subsurface Marine Heatwaves"

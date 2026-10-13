@@ -353,6 +353,11 @@ class TestStoreResolution:
         assert store == "ocean2d_day"
         assert spec == _OCEAN2D["siconc"]
 
+    def test_oday_table_is_daily(self):
+        store, spec = ICONKerchunkLoader._resolve_store("tos", "Oday")
+        assert store == "ocean2d_day"
+        assert spec == _OCEAN2D["tos"]
+
     def test_daily_conversions_carry_over(self):
         """Daily fields get the same scaling as their monthly counterparts."""
         _, (_, scale, _) = ICONKerchunkLoader._resolve_store("hfss", "day")
@@ -375,7 +380,8 @@ class TestStoreResolution:
 
     def test_every_store_key_has_a_file(self):
         remapped = {"atmos2d", "ocean2d", "atmos2d_day",
-                    "atmos2d_daymax", "atmos2d_daymin", "ocean2d_day"}
+                    "atmos2d_daymax", "atmos2d_daymin", "ocean2d_day",
+                    "ocean5lev_day"}
         native = {"atmos2d_daymax_native", "atmos2d_daymin_native"}
         assert set(_STORE_FILES) == remapped | native
         assert "daily_max" in _STORE_FILES["atmos2d_daymax"]
