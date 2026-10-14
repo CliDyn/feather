@@ -23,6 +23,11 @@ The framework is **grid-agnostic**: diagnostics automatically dispatch between H
 
 ### From scratch (conda/mamba)
 
+`environment.yml` uses **conda-forge only** (`nodefaults`); no Anaconda
+`defaults` channel, so the Anaconda Terms of Service do not apply. A
+conda-forge-first installer such as [Miniforge](https://github.com/conda-forge/miniforge)
+or micromamba is recommended.
+
 ```bash
 # Create the environment with all dependencies
 conda env create -f environment.yml

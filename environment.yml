@@ -1,7 +1,10 @@
 name: feather
+# conda-forge only.  `nodefaults` stops conda from adding Anaconda's
+# `defaults` channel (repo.anaconda.com), whose use is subject to the
+# Anaconda Terms of Service.
 channels:
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - python>=3.10
   # Scientific stack

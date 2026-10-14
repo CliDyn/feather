@@ -15,6 +15,21 @@ feather --help > /dev/null
 
 echo "== provenance commit: ${FEATHER_GIT_COMMIT:-<unset>}"
 
+echo "== conda packages all from conda-forge (no Anaconda channels)"
+python - <<'PY'
+import json, subprocess
+pkgs = json.loads(subprocess.run(["micromamba", "list", "-n", "base", "--json"],
+                                 capture_output=True, text=True, check=True).stdout)
+if isinstance(pkgs, dict):  # newer micromamba: {"packages": [...], ...}
+    pkgs = pkgs["packages"]
+# pip-installed packages (nereus, gsw, ...) may be listed with channel "pypi"
+bad = ["%s (%s)" % (p["name"], p["channel"]) for p in pkgs
+       if p.get("channel") and p["channel"] != "pypi"
+       and "conda-forge" not in p["channel"]]
+assert not bad, "packages from non-conda-forge channels: " + ", ".join(bad)
+print("ok, %d packages" % len(pkgs))
+PY
+
 echo "== nereus conservative remapping"
 python - <<'PY'
 from feather.diag.base import DiagnosticBase

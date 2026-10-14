@@ -25,7 +25,9 @@ RUN apt-get update \
 # ── Conda environment (from the same file developers use) ───────────
 USER $MAMBA_USER
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
-RUN micromamba install -y -n base -f /tmp/environment.yml \
+# conda-forge only (no Anaconda channels); checked again in smoke_test.sh.
+RUN micromamba config set channel_priority strict \
+ && micromamba install -y -n base --override-channels -c conda-forge -f /tmp/environment.yml \
  && micromamba clean --all --yes
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 # `singularity exec` bypasses the micromamba entrypoint that activates the

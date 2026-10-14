@@ -8,7 +8,7 @@ under Singularity/Apptainer (Levante, which has no Docker daemon).
 
 | Layer | What |
 |---|---|
-| Base | `mambaorg/micromamba` (Debian), conda-forge environment from `environment.yml` |
+| Base | `mambaorg/micromamba` (Debian), environment from `environment.yml`, **conda-forge only** — no Anaconda channels (the smoke test fails if any package comes from elsewhere) |
 | nereus | pinned GitHub commit from `environment.yml` (PyPI 0.4.1 lacks conservative remapping) |
 | TeX Live | `pdflatex` + the packages the report template uses |
 | Offline data | Natural Earth coastline/land/ocean (110m, 50m) and regionmask AR6 polygons, under `/opt/feather-cache` |
