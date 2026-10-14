@@ -8,7 +8,9 @@
 #
 # See docker/README.md for bind mounts (Levante /work, /pool) and API keys.
 
-FROM mambaorg/micromamba:2.0.5
+# micromamba >= 2.9: 2.0.5 needed ~53 min to solve environment.yml (and the
+# runner was killed mid-solve on a later build); 2.9.0 solves it in ~15 s.
+FROM mambaorg/micromamba:2.9.0
 
 # ── System packages (root) ──────────────────────────────────────────
 # git: pip installs nereus from a pinned GitHub commit (environment.yml).
@@ -26,8 +28,8 @@ RUN apt-get update \
 USER $MAMBA_USER
 COPY --chown=$MAMBA_USER:$MAMBA_USER environment.yml /tmp/environment.yml
 # conda-forge only (no Anaconda channels); checked again in smoke_test.sh.
-RUN micromamba config set channel_priority strict \
- && micromamba install -y -n base --override-channels -c conda-forge -f /tmp/environment.yml \
+RUN micromamba install -y -n base --override-channels -c conda-forge \
+        --channel-priority strict -f /tmp/environment.yml \
  && micromamba clean --all --yes
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 # `singularity exec` bypasses the micromamba entrypoint that activates the
