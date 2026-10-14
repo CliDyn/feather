@@ -35,6 +35,19 @@ conda activate feather
 pip install -e .
 ```
 
+### Container (Docker / Singularity)
+
+A ready-built image of the latest `main` is published to
+`ghcr.io/clidyn/feather:latest` (every build also as `:sha-<commit>`):
+
+```bash
+docker run --rm ghcr.io/clidyn/feather:latest --help                  # Docker
+singularity pull docker://ghcr.io/clidyn/feather:latest              # Levante
+```
+
+Build locally with `docker build -t feather:latest .`. See
+[docker/README.md](docker/README.md) for bind mounts, API keys and SLURM use.
+
 ### Into an existing environment
 
 ```bash

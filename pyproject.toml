@@ -9,6 +9,8 @@ description = "Lightweight climate model evaluation framework for high-resolutio
 requires-python = ">=3.10"
 dependencies = [
     "xarray",
+    "pandas",
+    "cftime",
     "dask",
     "distributed",
     "numpy",
@@ -22,6 +24,10 @@ dependencies = [
     "pyyaml",
     "netcdf4",
     "zarr",
+    "fsspec",
+    "kerchunk>=0.2",      # kerchunk-parquet loaders (IFS-FESOM2 r2/r3, ICON r2/r3)
+    "fastparquet>=2023.0",
+    "gsw",                # TEOS-10 SA -> SP conversion in ocean_en4
     "cmocean",
     "regionmask>=0.13",   # AR6 (Iturbide et al. 2020) reference-region polygons
     "nbformat",
@@ -36,6 +42,7 @@ feather = "feather.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov"]
+grib = ["cfgrib", "eccodes"]
 
 [tool.setuptools.packages.find]
 include = ["feather*"]
@@ -44,4 +51,13 @@ include = ["feather*"]
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring real data on Levante",
+]
+
+# Ship templates/CSS without relying on setuptools-scm's git file finder,
+# which finds nothing when building from a tree without .git (Docker).
+[tool.setuptools.package-data]
+feather = [
+    "website/templates/*.html",
+    "website/static/*.css",
+    "export/templates/*.jinja2",
 ]

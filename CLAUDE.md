@@ -130,6 +130,8 @@ feather/                     # Package root
 | `configs/eerie_10_mems_marine_heatwaves.yaml` | EERIE 10 members (7 with daily SST) — `marine_heatwaves` (Hobday 2016 / de Toma et al. 2026) 1982–2014 vs OISST v2.1 + ERA5 daily SST and daily CMIP6 Oday/tos, `per_family`; `marine_heatwaves_subsurface` on FESOM r1 + ICON r1 daily thetao |
 | `configs/eerie_10_mems_ssh.yaml` | EERIE 10 members — `ssh_variability` 1993–2014 vs AVISO: daily (8 members with daily `zos`) and monthly (10 members + CMIP6 `Omon/zos` on 1°), `per_family` |
 | `configs/obs_only.yaml` | Observation-only intercomparison (ERA5/Berkeley/MSWEP/CHIRPS/CRU; no models) |
+| `Dockerfile`, `docker/` | Container image (Docker + Singularity); `docker/README.md` for usage |
+| `.github/workflows/docker.yml` | Build, smoke-test, push image to GHCR (`:latest` from main, `:sha-<short>`) |
 | `feather/cli.py` | CLI entry point — `feather` command (argparse) |
 | `feather/run.py` | Pipeline orchestration — `run_pipeline()` |
 | `feather/config.py` | FeatherConfig + ModelConfig dataclasses, dual-format YAML loading |
@@ -732,6 +734,15 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Dashboard: collapsible "Provenance" panel per figure (inputs, regridding with fallback badge, benchmark exclusions).
 - Not done (deferred from the design): deriving sidecar `units` from the conversion chain (needs per-diagnostic edits); routing the ~22 direct `nr.regrid` call sites (non-flux, nearest) through `util.regrid`; feeding provenance fields into the LLM prompt.
 - 84 tests across `tests/test_provenance.py` (33), `test_provenance_inputs.py` (17), `test_provenance_llm.py` (11), `test_provenance_verify.py` (17), `test_provenance_outputs.py` (6) — incl. a sidecar-equality check that `global_biases`/`timeseries`/`seasonal_cycle` produce identical results with recording on and off.
+
+### Container image
+- `Dockerfile` (micromamba + `environment.yml`, so nereus comes from the pinned commit) + TeX Live for `report`; feather installed non-editable at `/opt/feather` with `tests/` and `configs/`. One image for Docker and Singularity (Levante has only `module load singularity`, no Docker — build on GitHub or a local machine).
+- Tags: `:latest` tracks main, `:sha-<short>` per build, `:<version>` for `v*` tags. `.github/workflows/docker.yml` builds PRs (no push), runs `docker/smoke_test.sh`, pushes from main.
+- Offline: `docker/fetch_offline_data.py` bakes cartopy Natural Earth (coastline/land/ocean, 110m + 50m) and regionmask AR6 polygons into `/opt/feather-cache`. `CARTOPY_DATA_DIR` is cartopy's *read-only* `pre_existing_data_dir` — downloads go to `config["data_dir"]`, so the script sets that explicitly. regionmask uses pooch → `XDG_CACHE_HOME`.
+- No `.git` in the image: `provenance.git_info()` falls back to `FEATHER_GIT_COMMIT`/`_BRANCH`/`_DIRTY` (build args).
+- Package data (templates, CSS) declared in `[tool.setuptools.package-data]`: setuptools-scm's git file finder finds nothing without `.git`.
+- `docker/entrypoint.sh`: args starting with `-` → `feather`, else exec the command; sets a per-user `MPLCONFIGDIR` (Singularity image is read-only). Under `singularity exec` the micromamba activation is bypassed, so `PATH`/`PROJ_DATA`/`GDAL_DATA` are set via `ENV`.
+- Data paths in configs are absolute Levante paths → bind `/work,/pool,/scratch,/home` at the same paths.
 
 ### LLM analysis
 - `FigureAnalyzer` scans `{output_dir}/figures/` for PNG+JSON pairs, sends to Gemini, saves to `{output_dir}/analysis/`
