@@ -109,7 +109,14 @@ def git_info(path: str | Path | None = None) -> dict[str, Any]:
 
     commit = _git("rev-parse", "HEAD")
     if commit is None:
-        return {"git_commit": None, "git_branch": None, "git_dirty": None}
+        # Container images carry no .git; the build stamps the commit instead.
+        env_commit = os.environ.get("FEATHER_GIT_COMMIT") or None
+        dirty = os.environ.get("FEATHER_GIT_DIRTY")
+        return {
+            "git_commit": env_commit,
+            "git_branch": os.environ.get("FEATHER_GIT_BRANCH") or None,
+            "git_dirty": (dirty.lower() == "true") if env_commit and dirty else None,
+        }
     status = _git("status", "--porcelain", "--untracked-files=no")
     return {
         "git_commit": commit,

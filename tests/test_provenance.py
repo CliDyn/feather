@@ -79,6 +79,30 @@ class TestOutsideRun:
         assert provenance.figure_block({"figure_id": "x"}) is None
 
 
+class TestGitInfoOutsideCheckout:
+    """Container images have no .git; the commit comes from the build."""
+
+    def test_no_checkout_no_env(self, tmp_path, monkeypatch):
+        for var in ("FEATHER_GIT_COMMIT", "FEATHER_GIT_BRANCH", "FEATHER_GIT_DIRTY"):
+            monkeypatch.delenv(var, raising=False)
+        assert provenance.git_info(tmp_path) == {
+            "git_commit": None, "git_branch": None, "git_dirty": None,
+        }
+
+    def test_env_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FEATHER_GIT_COMMIT", "abc1234def")
+        monkeypatch.setenv("FEATHER_GIT_BRANCH", "main")
+        monkeypatch.setenv("FEATHER_GIT_DIRTY", "false")
+        assert provenance.git_info(tmp_path) == {
+            "git_commit": "abc1234def", "git_branch": "main", "git_dirty": False,
+        }
+
+    def test_dirty_unknown_without_flag(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("FEATHER_GIT_COMMIT", "abc1234def")
+        monkeypatch.delenv("FEATHER_GIT_DIRTY", raising=False)
+        assert provenance.git_info(tmp_path)["git_dirty"] is None
+
+
 # ── Run record ───────────────────────────────────────────────────────
 
 

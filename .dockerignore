@@ -1,0 +1,17 @@
+# Keep the build context small and free of local results/secrets
+.git
+.github
+.claude
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.egg-info
+build/
+dist/
+output/
+output_*/
+notebooks/
+*.png
+*.nc
+*.sif
+.env

@@ -1,0 +1,91 @@
+# Build the feather container image, smoke-test it, and publish it to GHCR.
+#
+#   push to main        -> ghcr.io/<owner>/feather:latest + :sha-<short>
+#   tag v*              -> ghcr.io/<owner>/feather:<version>
+#   pull request        -> build + smoke test only (nothing pushed)
+#   manual (dispatch)   -> same as push to the selected branch
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - environment.yml
+      - pyproject.toml
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Image name (GHCR requires lower case)
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/feather" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=ref,event=pr
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: feather:ci
+          build-args: |
+            FEATHER_GIT_COMMIT=${{ github.sha }}
+            FEATHER_GIT_BRANCH=${{ github.head_ref || github.ref_name }}
+            FEATHER_GIT_DIRTY=false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: docker run --rm feather:ci bash docker/smoke_test.sh
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FEATHER_GIT_COMMIT=${{ github.sha }}
+            FEATHER_GIT_BRANCH=${{ github.head_ref || github.ref_name }}
+            FEATHER_GIT_DIRTY=false
+          cache-from: type=gha

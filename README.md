@@ -23,6 +23,11 @@ The framework is **grid-agnostic**: diagnostics automatically dispatch between H
 
 ### From scratch (conda/mamba)
 
+`environment.yml` uses **conda-forge only** (`nodefaults`); no Anaconda
+`defaults` channel, so the Anaconda Terms of Service do not apply. A
+conda-forge-first installer such as [Miniforge](https://github.com/conda-forge/miniforge)
+or micromamba is recommended.
+
 ```bash
 # Create the environment with all dependencies
 conda env create -f environment.yml
@@ -34,6 +39,19 @@ mamba env create -f environment.yml
 conda activate feather
 pip install -e .
 ```
+
+### Container (Docker / Singularity)
+
+A ready-built image of the latest `main` is published to
+`ghcr.io/clidyn/feather:latest` (every build also as `:sha-<commit>`):
+
+```bash
+docker run --rm ghcr.io/clidyn/feather:latest --help                  # Docker
+singularity pull docker://ghcr.io/clidyn/feather:latest              # Levante
+```
+
+Build locally with `docker build -t feather:latest .`. See
+[docker/README.md](docker/README.md) for bind mounts, API keys and SLURM use.
 
 ### Into an existing environment
 
