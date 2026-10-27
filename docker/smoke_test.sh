@@ -49,6 +49,9 @@ assert DiagnosticBase._conservative_available(), \
 print("ok")
 PY
 
+echo "== zarr codecs of the kerchunk stores"
+python -c "from zarr.registry import get_numcodec; get_numcodec({'id': 'gribscan.rawgrib'}); print('ok')"
+
 echo "== offline data (no network needed)"
 python - <<'PY'
 import cartopy.io.shapereader as shp, regionmask

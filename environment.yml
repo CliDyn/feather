@@ -55,3 +55,6 @@ dependencies:
     - openai>=1.0
     - kerchunk>=0.2
     - fastparquet>=2023.0
+    # Codec `gribscan.rawgrib` of the IFS-FESOM2 r2/r3 kerchunk stores
+    # (KerchunkParquetLoader); PyPI only, not on conda-forge.
+    - gribscan>=0.0.16

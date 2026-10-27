@@ -27,6 +27,7 @@ dependencies = [
     "fsspec",
     "kerchunk>=0.2",      # kerchunk-parquet loaders (IFS-FESOM2 r2/r3, ICON r2/r3)
     "fastparquet>=2023.0",
+    "gribscan>=0.0.16",   # codec of the IFS-FESOM2 r2/r3 kerchunk stores
     "gsw",                # TEOS-10 SA -> SP conversion in ocean_en4
     "cmocean",
     "regionmask>=0.13",   # AR6 (Iturbide et al. 2020) reference-region polygons
