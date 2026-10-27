@@ -101,8 +101,15 @@ singularity exec \
 - Run from your feather checkout (or pass absolute `--config`/`--output`)
   so relative config paths and `output_*` resolve on the host. The image itself
   is read-only.
-- `exec … feather-entrypoint.sh` sets a writable matplotlib cache under
-  `$TMPDIR`. `singularity run feather_latest.sif --help` works too.
+- Always go through `feather-entrypoint.sh` (or `singularity run`), also for
+  `python`/`pytest`/`bash`: `… feather-entrypoint.sh python script.py`.
+  Singularity passes the host environment in, and on Levante a loaded conda
+  setup exports `GDAL_DATA`, `PROJ_LIB`, `LD_LIBRARY_PATH`, … for other
+  versions (symptom: `pyogrio … does not appear to correctly contain GDAL data
+  files` when importing regionmask). The entrypoint (`docker/env.sh`) drops
+  those, pins the image's paths and sets a writable matplotlib cache under
+  `$TMPDIR`. Alternatively use `singularity exec --cleanenv` (then pass API
+  keys with `--env`).
 - Smoke test: `singularity exec feather_latest.sif bash /opt/feather/docker/smoke_test.sh`.
 
 Example SLURM job:

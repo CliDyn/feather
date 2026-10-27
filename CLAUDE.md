@@ -742,7 +742,7 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Offline: `docker/fetch_offline_data.py` bakes cartopy Natural Earth (coastline/land/ocean, 110m + 50m) and regionmask AR6 polygons into `/opt/feather-cache`. `CARTOPY_DATA_DIR` is cartopy's *read-only* `pre_existing_data_dir` — downloads go to `config["data_dir"]`, so the script sets that explicitly. regionmask uses pooch → `XDG_CACHE_HOME`.
 - No `.git` in the image: `provenance.git_info()` falls back to `FEATHER_GIT_COMMIT`/`_BRANCH`/`_DIRTY` (build args).
 - Package data (templates, CSS) declared in `[tool.setuptools.package-data]`: setuptools-scm's git file finder finds nothing without `.git`.
-- `docker/entrypoint.sh`: args starting with `-` → `feather`, else exec the command; sets a per-user `MPLCONFIGDIR` (Singularity image is read-only). Under `singularity exec` the micromamba activation is bypassed, so `PATH`/`PROJ_DATA`/`GDAL_DATA` are set via `ENV`.
+- `docker/entrypoint.sh`: args starting with `-` → `feather`, else exec the command; sets a per-user `MPLCONFIGDIR` (Singularity image is read-only). Under `singularity exec` the micromamba activation is bypassed, so `PATH`/`PROJ_DATA`/`GDAL_DATA` are set via `ENV`. Singularity also passes the host environment in and host values beat the image `ENV`: a Levante conda setup's `GDAL_DATA`/`PROJ_LIB`/`LD_LIBRARY_PATH` broke the regionmask (pyogrio) import. `docker/env.sh`, sourced by the entrypoint and `smoke_test.sh`, unsets those and re-pins the image paths; always run through the entrypoint (or `--cleanenv`).
 - Data paths in configs are absolute Levante paths → bind `/work,/pool,/scratch,/home` at the same paths.
 
 ### LLM analysis

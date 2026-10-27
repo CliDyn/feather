@@ -8,7 +8,18 @@
 # PyPI release), offline data, LaTeX, templates, and a short unit-test subset.
 # The full unit suite takes ~1.5 h; run it with `pytest tests/ -m "not integration"`.
 set -euo pipefail
+source /opt/feather/docker/env.sh
 cd /opt/feather
+
+echo "== host environment does not leak in"
+python - <<'PY2'
+import os
+for var, want in [("GDAL_DATA", "/opt/conda/share/gdal"),
+                  ("PROJ_DATA", "/opt/conda/share/proj")]:
+    assert os.environ.get(var) == want, f"{var}={os.environ.get(var)!r}"
+assert "LD_LIBRARY_PATH" not in os.environ, os.environ["LD_LIBRARY_PATH"]
+print("ok")
+PY2
 
 echo "== feather CLI"
 feather --help > /dev/null
