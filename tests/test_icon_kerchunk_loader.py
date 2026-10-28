@@ -300,6 +300,24 @@ class TestStorePath:
         (override / "2" / _STORE_FILES["ocean2d"]).touch()
         assert override in loader._store_path(MODEL, "ocean2d").parents
 
+    def test_legacy_prefixed_name_accepted(self, tmp_path):
+        # r2 keeps the pre-2026-10 ``erc2023_`` names on its native stores.
+        cfg = _make_config(tmp_path, member=2)
+        loader = ICONKerchunkLoader(cfg)
+        root = tmp_path / "stores" / "2"
+        root.mkdir(parents=True)
+        (root / ("erc2023_" + _STORE_FILES["atmos2d"])).touch()
+        assert loader._store_path(MODEL, "atmos2d").name.startswith("erc2023_")
+
+    def test_current_name_preferred_over_legacy(self, tmp_path):
+        cfg = _make_config(tmp_path, member=2)
+        loader = ICONKerchunkLoader(cfg)
+        root = tmp_path / "stores" / "2"
+        root.mkdir(parents=True)
+        (root / _STORE_FILES["atmos2d"]).touch()
+        (root / ("erc2023_" + _STORE_FILES["atmos2d"])).touch()
+        assert loader._store_path(MODEL, "atmos2d").name == _STORE_FILES["atmos2d"]
+
     def test_missing_store_raises_filenotfound(self, tmp_path):
         loader = ICONKerchunkLoader(_make_config(tmp_path))
         with pytest.raises(FileNotFoundError):

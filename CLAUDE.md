@@ -780,9 +780,9 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 ### ICONKerchunkLoader
 - `feather/data/icon_kerchunk_loader.py`: loads ICON-ESM-ER hist-1950 members **r2/r3**, which the EERIE CMOR tree does not publish (only r1 is CMOR'd)
 - Source: kerchunk parquet reference stores under `/work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618/{2,3}/` (the intake catalogues at `/work/bm1344/DKRZ/intake/disk/phase2-model-output/icon-esm-er/hist-1950/r{2,3}i1p1f1/` point at these; the loader reads them directly, bypassing intake)
-- Reads only the two gr025 monthly stores: `erc2023_{atmos,ocean}_native_2d_monthly_mean_remap025.parq`
+- Reads only the two gr025 monthly stores: `{atmos,ocean}_native_2d_monthly_mean_remap025.parq`. DKRZ dropped the old `erc2023_` prefix around 2026-10-14 (r3 on all stores, r2 only on the `_remap025` ones); `_store_path` tries the current name, then `erc2023_` + name
 - Config: per-model `data_source_type: "icon_kerchunk"`, `data_root` = the version dir, `member` = store sub-directory (`2` → r2i1p1f1, `3` → r3i1p1f1) → routed via `CompositeModelLoader`
-- Grid already matches CMOR output: 0.25° lat/lon, lat −90→90 (721), lon 0→359.75 (1440), monthly 1975-02 → 2014-12. No regridding or reordering
+- Grid already matches CMOR output: 0.25° lat/lon, lat −90→90 (721), lon 0→359.75 (1440), monthly 1975-01 → 2014-12 (480 months, stamped at the last second of each month). No regridding or reordering
 - **Distinct from `KerchunkParquetLoader`** (IFS-FESOM2 r2/r3): that one handles a flat `value` dim, GRIB short names and 9999 fill; the ICON stores are rectilinear with near-CMOR names, so the two share nothing
 - **Fill-value gotcha**: the ocean stores declare a zarr-level `fill_value: 0.0` alongside the real `missing_value: -9e33`. Letting xarray mask automatically turns every genuine zero (open-water `conc`, `hi`) into NaN. Stores are opened with `mask_and_scale=False` and masked explicitly on the `-1e30` sentinel
 - Conversions to CMOR conventions: `clt` and `conc` fraction → % (×100); `hfls`/`hfss` ICON down-positive → CMOR up-positive (×−1). Radiation components (`rlut`, `rsut`, `rsds`, `rlus`, …) are already CMOR-signed and pass through. `to`/`so` are already °C/PSU — ICON is not a TEOS-10 model, so no `absolute_salinity`
