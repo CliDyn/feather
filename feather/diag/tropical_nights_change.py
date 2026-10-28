@@ -181,6 +181,9 @@ class TropicalNightsChangeDiag(DiagnosticBase):
         """Return loader for the historical experiment of *model*."""
         cc_cfg = self._cc_models.get(model, {})
         src = cc_cfg.get("hist_data_source", "cmor")
+        if src == "icon_kerchunk":
+            from feather.data.icon_kerchunk_loader import loader_for_root
+            return loader_for_root(self.config, model, cc_cfg["hist_data_root"])
         if src == "kerchunk_native":
             mc = self.config.model_configs.get(model)
             variant = mc.variant if mc else "r1i1p1f1"
@@ -204,6 +207,12 @@ class TropicalNightsChangeDiag(DiagnosticBase):
             )
 
         src = cc_cfg.get("future_data_source", "cmor")
+        if src == "icon_kerchunk":
+            fut_root = cc_cfg.get("future_data_root")
+            if not fut_root:
+                return None
+            from feather.data.icon_kerchunk_loader import loader_for_root
+            return loader_for_root(self.config, model, fut_root)
         if src == "kerchunk_native":
             fut_root = cc_cfg.get("future_data_root")
             if not fut_root:

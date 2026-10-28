@@ -575,6 +575,25 @@ class ICONKerchunkLoader:
         )
 
 
+def loader_for_root(config: FeatherConfig, model: str,
+                    data_root: str) -> "ICONKerchunkLoader":
+    """Loader reading *model* from another version directory.
+
+    The climate-change diagnostics take the historical members from the
+    flat config but read the scenario from a sibling tree, e.g.
+    ``…/ICON/phase2/highres-future-ssp245/v20240618``.  The member
+    sub-directory (``ModelConfig.member``) is kept.
+    """
+    import copy
+    from feather.config import ModelConfig
+
+    mc = copy.copy(config.model_configs.get(model) or ModelConfig(name=model))
+    mc.data_root = data_root
+    cfg = copy.copy(config)
+    cfg.model_configs = {**config.model_configs, model: mc}
+    return ICONKerchunkLoader(cfg)
+
+
 @lru_cache(maxsize=2)
 def _remap_weights(path: str):
     """``(sparse matrix dst×src, lat, lon)`` from a SCRIP weights file.
