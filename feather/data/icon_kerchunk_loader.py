@@ -7,7 +7,11 @@ intake catalogues pointing at kerchunk reference stores::
     /work/bm1344/DKRZ/intake/disk/phase2-model-output/icon-esm-er/hist-1950/
         r2i1p1f1/{atmos,ocean,land}/gr025/main.yaml
             → /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/
-                  v20240618/{2,3}/erc2023_{realm}_native_*_remap025.parq
+                  v20240618/{2,3}/{realm}_native_*_remap025.parq
+
+(DKRZ dropped the ``erc2023_`` prefix of these names in 2026-10: r3
+everywhere, r2 on the ``_remap025`` stores only; both spellings are
+accepted.)
 
 This loader reads the gr025 ``2d_monthly_mean`` stores — and, when a
 diagnostic asks for ``table="day"``, the matching ``2d_daily_{mean,min,max}``
@@ -27,7 +31,7 @@ variable names, so almost nothing is shared.
 Store conventions handled here
 ------------------------------
 * Grid is standard and needs no reordering: ``lat`` −90→90 (721),
-  ``lon`` 0→359.75 (1440).  Time is monthly, 1975-02 → 2014-12, or daily,
+  ``lon`` 0→359.75 (1440).  Time is monthly, 1975-01 → 2014-12, or daily,
   1975-01-02 → 2014-12-31 (14,609 steps), for the ``day`` stores.
 * Singleton ``height`` / ``height_2`` / ``height_3`` / ``lev`` / ``depth``
   dimensions are squeezed away.
@@ -201,22 +205,26 @@ _SQUEEZE_DIMS = ("height", "height_2", "height_3", "lev", "depth")
 #: Anything at or below this is land; genuine fields never approach it.
 _FILL_THRESHOLD = -1e30
 
-#: Store file names under ``{root}/{member}/``.
+#: Store file names under ``{root}/{member}/``.  Older listings carry the
+#: ``_LEGACY_PREFIX`` in front; ``_store_path`` accepts both.
 _STORE_FILES = {
     # Monthly means (the default for every diagnostic that passes no table).
-    "atmos2d": "erc2023_atmos_native_2d_monthly_mean_remap025.parq",
-    "ocean2d": "erc2023_ocean_native_2d_monthly_mean_remap025.parq",
+    "atmos2d": "atmos_native_2d_monthly_mean_remap025.parq",
+    "ocean2d": "ocean_native_2d_monthly_mean_remap025.parq",
     # Daily, reached with ``table="day"``.
-    "atmos2d_day": "erc2023_atmos_native_2d_daily_mean_remap025.parq",
-    "atmos2d_daymax": "erc2023_atmos_native_2d_daily_max_remap025.parq",
-    "atmos2d_daymin": "erc2023_atmos_native_2d_daily_min_remap025.parq",
-    "ocean2d_day": "erc2023_ocean_native_2d_daily_mean_remap025.parq",
-    "ocean5lev_day": "erc2023_ocean_native_5lev_daily_mean_remap025.parq",
+    "atmos2d_day": "atmos_native_2d_daily_mean_remap025.parq",
+    "atmos2d_daymax": "atmos_native_2d_daily_max_remap025.parq",
+    "atmos2d_daymin": "atmos_native_2d_daily_min_remap025.parq",
+    "ocean2d_day": "ocean_native_2d_daily_mean_remap025.parq",
+    "ocean5lev_day": "ocean_native_5lev_daily_mean_remap025.parq",
     # Native-grid counterparts, regridded on the fly when the remapped
     # store is not published (see ``_NATIVE_FALLBACK``).
-    "atmos2d_daymax_native": "erc2023_atmos_native_2d_daily_max.parq",
-    "atmos2d_daymin_native": "erc2023_atmos_native_2d_daily_min.parq",
+    "atmos2d_daymax_native": "atmos_native_2d_daily_max.parq",
+    "atmos2d_daymin_native": "atmos_native_2d_daily_min.parq",
 }
+
+#: Prefix of the store names before DKRZ renamed them (2026-10).
+_LEGACY_PREFIX = "erc2023_"
 
 #: Remapped daily store → native store to regrid when the former is missing.
 _NATIVE_FALLBACK = {
@@ -556,12 +564,34 @@ class ICONKerchunkLoader:
         root = Path(mc.data_root) if (mc and mc.data_root) else self._root
         member = str(mc.member) if mc else "1"
 
-        path = root / member / _STORE_FILES[store]
-        if not path.exists():
-            raise FileNotFoundError(
-                f"ICON kerchunk store not found: {path}"
-            )
-        return path
+        name = _STORE_FILES[store]
+        for candidate in (name, _LEGACY_PREFIX + name):
+            path = root / member / candidate
+            if path.exists():
+                return path
+        raise FileNotFoundError(
+            f"ICON kerchunk store not found: {root / member / name} "
+            f"(nor {_LEGACY_PREFIX}{name})"
+        )
+
+
+def loader_for_root(config: FeatherConfig, model: str,
+                    data_root: str) -> "ICONKerchunkLoader":
+    """Loader reading *model* from another version directory.
+
+    The climate-change diagnostics take the historical members from the
+    flat config but read the scenario from a sibling tree, e.g.
+    ``…/ICON/phase2/highres-future-ssp245/v20240618``.  The member
+    sub-directory (``ModelConfig.member``) is kept.
+    """
+    import copy
+    from feather.config import ModelConfig
+
+    mc = copy.copy(config.model_configs.get(model) or ModelConfig(name=model))
+    mc.data_root = data_root
+    cfg = copy.copy(config)
+    cfg.model_configs = {**config.model_configs, model: mc}
+    return ICONKerchunkLoader(cfg)
 
 
 @lru_cache(maxsize=2)

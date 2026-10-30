@@ -144,6 +144,20 @@ project:
         hist_data_source:   cmor
         future_experiment:  highres-future-ssp245
         future_data_source: cmor
+      # ICON r2/r3 ssp245: gr025 kerchunk stores (DKRZ, 2026-10), 2015-2030
+      # only -> SSP time series, no 2031-2050 change maps (like FESOM r2).
+      ICON-ESM-ER-r2:
+        hist_data_source:   icon_kerchunk
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618
+        future_data_source: icon_kerchunk
+        future_data_root:   /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/highres-future-ssp245/v20240618
+        future_only_to:     "2030"
+      ICON-ESM-ER-r3:
+        hist_data_source:   icon_kerchunk
+        hist_data_root:     /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/hist-1950/v20240618
+        future_data_source: icon_kerchunk
+        future_data_root:   /work/bm1344/DKRZ/kerchunks_batched/ICON/phase2/highres-future-ssp245/v20240618
+        future_only_to:     "2030"
 
 # Global default source for the flat-model (base) diagnostics.
 data_source:
