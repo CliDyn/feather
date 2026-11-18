@@ -116,7 +116,7 @@ models:
       sfc: latlon
     color: "#d62728"
 
-obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_root: "/work/bm1344/AWI/OBS/aqua"
 obs_datasets:
   BERKELEY_EARTH_TMAX:
     path: "/work/bm1344/AWI/OBS/berkeleyearth"

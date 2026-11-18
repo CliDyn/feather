@@ -281,13 +281,13 @@ models:
     grids: {sfc: latlon}
     color: "#bcbd22"
 
-obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_root: "/work/bm1344/AWI/OBS/aqua"
 obs_datasets:
   ERA5:
     path: "{obs_root}/ERA5/mon"
     variables:
-      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2024.nc"
-      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2024.nc"
+      t2m: "ERA5_2m_temperature_mon_full_sfc_1940-2025.nc"
+      tp: "ERA5_total_precipitation_mon_full_sfc_1940-2025.nc"
   MSWEP:
     path: "{obs_root}/MSWEP/v2.8"
     variables:

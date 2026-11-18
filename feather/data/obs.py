@@ -268,6 +268,12 @@ class ObsLoader:
             self._cache[cache_key] = xr.open_dataset(filepath, chunks="auto")
 
         ds = self._cached(cache_key, period)
+        # The pre-DVC PSC files publish CMIP6 ``sivol`` (ice volume per cell
+        # area, m) instead of ``sithick``.  That is the grid-cell-mean
+        # thickness nereus' ice_volume expects without a concentration, so
+        # expose it under the name the diagnostics read.
+        if "sithick" not in ds and "sivol" in ds:
+            ds = ds.rename({"sivol": "sithick"})
         if period is not None and "time" in ds.dims:
             ds = ds.sel(time=slice(period[0], period[1]))
         return ds
