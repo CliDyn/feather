@@ -286,7 +286,7 @@ cmip6_daily:
 cmip6:
   enabled: false
 
-obs_root: "/work/bb1153/b382289/data/aqua-dvc/datasets"
+obs_root: "/work/bm1344/AWI/OBS/aqua"
 obs_datasets: {}
 
 dask:

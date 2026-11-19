@@ -433,7 +433,7 @@ Figures per index:
 | ERA5 | `/pool/data/ERA5/E5/sf/fc/1D/228` — daily totals, N320 reduced Gaussian | `scripts/era5_derive_pr_daily.sh` | `/work/bm1344/AWI/OBS/era5_derived/CMOR/ECMWF/ERA5/era5/r1i1p1f1/day/pr/gr/v1/` |
 | MSWEP v2.8 | `/pool/data/ICDC/atmosphere/mswep_precipitation/DATA` — 0.1°, 3-hourly, one file per step | `scripts/mswep_derive_pr_daily.sh` | `/work/bm1344/AWI/OBS/mswep_derived/CMOR/GloH2O/MSWEP/mswep/r1i1p1f1/day/pr/gr/v1/` |
 
-The aqua-dvc MSWEP used by `precipitation_mswep` is monthly only. MSWEP days are the sum of the eight 3-hourly steps 00–21 UTC; a day with a missing step is skipped (treated as missing), never summed short. The datasets are declared under `project.precip_extremes.obs` (name → `data_root`, `experiment`, `color`); `obs_load_period` sets the years read (default: the historical load period). Without an `obs` block the diagnostic runs without observations.
+The `obs_root` MSWEP used by `precipitation_mswep` is monthly only. MSWEP days are the sum of the eight 3-hourly steps 00–21 UTC; a day with a missing step is skipped (treated as missing), never summed short. The datasets are declared under `project.precip_extremes.obs` (name → `data_root`, `experiment`, `color`); `obs_load_period` sets the years read (default: the historical load period). Without an `obs` block the diagnostic runs without observations.
 
 Full workflow:
 

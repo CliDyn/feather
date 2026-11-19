@@ -961,6 +961,38 @@ class TestObsLoaderMethods:
         with pytest.raises(FileNotFoundError, match="bad_product"):
             loader.load_psc("bad_product")
 
+    def test_load_psc_sivol_exposed_as_sithick(self, tmp_path):
+        """Pre-DVC PSC files carry ``sivol``; load_psc renames it."""
+        from feather.data.obs import ObsLoader
+        time = xr.date_range("2000-01-01", periods=3, freq="MS")
+        ds = xr.Dataset(
+            {
+                "sivol": (("time", "y", "x"), np.ones((3, 2, 4))),
+                "areacello": (("y", "x"), np.full((2, 4), 1e8)),
+                "latitude": (("y", "x"), np.full((2, 4), 75.0)),
+            },
+            coords={"time": time},
+        )
+        ds.to_netcdf(tmp_path / "piomas.nc")
+        config = FeatherConfig(
+            model_catalogs={},
+            models=[],
+            obs_root="",
+            obs_datasets={
+                "PSC": {
+                    "path": str(tmp_path),
+                    "variables": {"piomas": "piomas.nc"},
+                },
+            },
+            cmip6={"enabled": False},
+            dask={},
+            nereus={},
+            output_dir=str(tmp_path),
+        )
+        out = ObsLoader(config).load_psc("piomas", ("2000-02", "2000-03"))
+        assert "sithick" in out and "sivol" not in out
+        assert out.sizes["time"] == 2
+
 
 # ── Test constructor parameters ──────────────────────────────────────
 
