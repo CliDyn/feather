@@ -211,13 +211,13 @@ obs_datasets:
     path: "/work/bm1344/AWI/OBS/hadisst"
     variables:
       sst: "HadISST_sst.nc"
-  # OSI-SAF monthly v3 was only in the deleted aqua-dvc tree and is not in
-  # the copy: sea_ice warns and runs without OSI-SAF until it is re-derived.
+  # Monthly means of the ICDC daily OSI-SAF v3.0 files (CDR to 2020, ICDR from
+  # 2021), scripts/osisaf_derive_siconc_monthly.sh; thin months left out.
   OSI_SAF:
-    path: "{obs_root}/OSI-SAF/OSI-AQUA"
+    path: "{obs_root}/OSI-SAF/v3p0/monthly"
     variables:
-      nh: "monthly/ice_conc_nh_ease2-250_cdr_v3_monthly_1979-2024.nc"
-      sh: "monthly/ice_conc_sh_ease2-250_cdr_v3_monthly_1979-2024.nc"
+      nh: "ice_conc_nh_ease2-250_cdr-icdr-v3p0_monthly_1979-2024.nc"
+      sh: "ice_conc_sh_ease2-250_cdr-icdr-v3p0_monthly_1979-2024.nc"
   PSC:
     path: "{obs_root}/PSC"
     variables:
