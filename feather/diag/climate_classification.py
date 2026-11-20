@@ -670,7 +670,18 @@ class KTClimateClassification(DiagnosticBase):
         latv = np.asarray(clim[lat_name].values)
         lonv = self._to_target_lon_convention(np.asarray(clim[lon_name].values))
 
-        if lonv.ndim == 1:
+        lat_dims = clim[lat_name].dims
+        unstructured = (
+            lonv.ndim == 1 and lat_dims == clim[lon_name].dims
+            and lat_dims[0] not in (lat_name, lon_name)
+        )
+        if unstructured:
+            # Unstructured grid (e.g. ICON's triangular cells on one dim
+            # ``i``/``ncells``, 1-D lat/lon per cell): scattered points.
+            if clim.dims != ("month", lat_dims[0]):
+                clim = clim.transpose("month", lat_dims[0])
+            lon2d, lat2d = lonv, latv
+        elif lonv.ndim == 1:
             # Regular grid: sort columns by longitude (so the source matches
             # the target lon convention and no hemisphere is dropped).
             order = np.argsort(lonv)

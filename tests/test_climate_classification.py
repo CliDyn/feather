@@ -409,3 +409,21 @@ def test_compute_reuses_saved_climatologies(tmp_path):
     assert d._clim_path("CMIP6 MMM").exists()
     assert {"M1", "M2", "ERA5", "Berkeley Earth HR", "MSWEP",
             "CMIP6 CM1"} <= d._reused_clims
+
+
+def test_regrid_monthly_unstructured_points(tmp_path):
+    """ICON-ESM-LR-style field: one cell dim with 1-D lat/lon coords."""
+    d = _kt_diag(tmp_path)
+    rng = np.random.default_rng(0)
+    n = 4000
+    lat = np.degrees(np.arcsin(rng.uniform(-1, 1, n)))
+    lon = rng.uniform(-180, 180, n)
+    vals = np.broadcast_to(20.0 - 0.3 * np.abs(lat), (12, n)).copy()
+    clim = xr.DataArray(vals, dims=("month", "i"),
+                        coords={"month": np.arange(1, 13),
+                                "latitude": ("i", lat), "longitude": ("i", lon)})
+    out = d._regrid_monthly(clim, 2_000_000.0)
+    assert out.dims == ("month", "lat", "lon")
+    assert out.shape[0] == 12
+    eq = float(out.isel(month=0).sel(lat=15.0, method="nearest").mean())
+    assert abs(eq - (20.0 - 0.3 * 15.0)) < 3.0
