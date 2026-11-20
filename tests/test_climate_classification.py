@@ -204,3 +204,66 @@ def test_area_weighting_respected():
     pct = area_percent_by_type(code, area)
     assert pct["Ar"] == pytest.approx(75.0)
     assert pct["BW"] == pytest.approx(25.0)
+
+
+# ── Figure summary_statistics (sidecar numbers for LLM / audit) ─────────
+
+def _stats_diag():
+    from feather.diag.climate_classification import KTClimateClassification
+    return KTClimateClassification.__new__(KTClimateClassification)
+
+
+def _stats_results():
+    lat = np.array([-10.0, 10.0])
+    lon = np.array([0.0, 10.0, 20.0])
+    def da(v):
+        return xr.DataArray(np.array(v, dtype=float), dims=("lat", "lon"),
+                            coords={"lat": lat, "lon": lon})
+    codes = {
+        "ERA5": da([[1, 1, 2], [3, 3, np.nan]]),
+        "M1": da([[1, 1, 2], [3, 3, np.nan]]),        # identical
+        "M2": da([[2, 2, 2], [2, 2, np.nan]]),        # agrees on 1 of 5 cells
+    }
+    from feather.util.spatial import compute_latlon_areas
+    area = xr.DataArray(compute_latlon_areas(lat, lon), dims=("lat", "lon"),
+                        coords={"lat": lat, "lon": lon})
+    area_pct = {k: area_percent_by_type(v, area) for k, v in codes.items()}
+    return {"codes": codes, "area_pct": area_pct, "lat": lat, "lon": lon,
+            "models": ["M1", "M2"]}
+
+
+def test_area_stats_pct_and_minus_era5():
+    res = _stats_results()
+    stats = _stats_diag()._area_stats(res, ["ERA5", "M1", "M2"])
+    assert set(stats) == {"ERA5", "M1", "M2"}
+    assert not any(k.endswith("_minus_ERA5_pct") for k in stats["ERA5"])
+    assert sum(v for k, v in stats["M2"].items() if k.endswith("_pct")
+               and "_minus_" not in k) == pytest.approx(100.0, abs=0.01)
+    for lbl in KT_LABELS:
+        assert stats["M1"][f"{lbl}_minus_ERA5_pct"] == pytest.approx(0.0)
+        assert stats["M2"][f"{lbl}_minus_ERA5_pct"] == pytest.approx(
+            res["area_pct"]["M2"][lbl] - res["area_pct"]["ERA5"][lbl], abs=1e-3)
+
+
+def test_area_stats_without_era5_has_no_differences():
+    res = _stats_results()
+    del res["area_pct"]["ERA5"]
+    stats = _stats_diag()._area_stats(res, ["M1"])
+    assert not any("_minus_" in k for k in stats["M1"])
+
+
+def test_agreement_stats():
+    res = _stats_results()
+    panels = [(k, v) for k, v in res["codes"].items()]
+    stats = _stats_diag()._agreement_stats(res, panels)
+    assert "ERA5" not in stats
+    assert stats["M1"]["agreement_with_ERA5_pct"] == pytest.approx(100.0)
+    assert stats["M1"]["classified_land_pct_of_ERA5"] == pytest.approx(100.0)
+    # All cells have equal area here (symmetric lats): 1 of 5 agree.
+    assert stats["M2"]["agreement_with_ERA5_pct"] == pytest.approx(20.0, abs=0.01)
+
+
+def test_agreement_stats_empty_without_era5():
+    res = _stats_results()
+    del res["codes"]["ERA5"]
+    assert _stats_diag()._agreement_stats(res, list(res["codes"].items())) == {}

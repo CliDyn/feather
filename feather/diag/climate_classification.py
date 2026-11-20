@@ -844,6 +844,82 @@ class KTClimateClassification(DiagnosticBase):
         cbar.ax.set_xticklabels(KT_LABELS, fontsize=8)
         return fig
 
+    # ── Figure statistics (sidecar ``summary_statistics``) ─────────────
+
+    def _area_stats(self, results: dict, sources: list[str]) -> dict[str, dict]:
+        """% land area per KT type per source, plus the difference from ERA5.
+
+        Keys per source: ``{type}_pct`` and, for every source other than the
+        reference when ERA5 is available, ``{type}_minus_ERA5_pct``.
+        """
+        area_pct = results["area_pct"]
+        ref = area_pct.get(_ERA5)
+        stats: dict[str, dict] = {}
+        for src in sources:
+            pct = area_pct[src]
+            entry = {f"{lbl}_pct": round(float(pct[lbl]), 3) for lbl in KT_LABELS}
+            if ref is not None and src != _ERA5:
+                entry.update({
+                    f"{lbl}_minus_{_ERA5}_pct": round(float(pct[lbl] - ref[lbl]), 3)
+                    for lbl in KT_LABELS
+                })
+            stats[src] = entry
+        return stats
+
+    @staticmethod
+    def _area_note() -> str:
+        return (
+            "summary_statistics: per source, {type}_pct = % of classified land "
+            "area in each KT type (sums to 100); {type}_minus_ERA5_pct = that "
+            "% minus ERA5's (percentage points)."
+        )
+
+    @staticmethod
+    def _agreement_note() -> str:
+        return (
+            "summary_statistics: per panel, agreement_with_ERA5_pct = "
+            "area-weighted % of land classified in both the source and ERA5 "
+            "where the KT type equals ERA5's; classified_land_pct_of_ERA5 = "
+            "the source's classified land area as % of ERA5's."
+        )
+
+    def _agreement_stats(
+        self, results: dict, panels: list[tuple[str, xr.DataArray]],
+    ) -> dict[str, dict]:
+        """Area-weighted categorical agreement of each panel with ERA5.
+
+        ``agreement_with_ERA5_pct``: % of the land area classified in both the
+        source and ERA5 where the two KT types are equal.
+        ``classified_land_pct_of_ERA5``: classified area of the source as a %
+        of ERA5's (coverage check for the agreement denominator).
+        Empty when ERA5 is not among the sources.
+        """
+        codes = results["codes"]
+        if _ERA5 not in codes:
+            return {}
+        area = compute_latlon_areas(
+            np.asarray(results["lat"]), np.asarray(results["lon"]))
+        ref = np.asarray(codes[_ERA5].values, dtype=float)
+        ref_ok = np.isfinite(ref) & (ref >= 1) & (ref <= 14)
+        ref_area = float(area[ref_ok].sum())
+        stats: dict[str, dict] = {}
+        for name, code in panels:
+            if name == _ERA5:
+                continue
+            c = np.asarray(code.values, dtype=float)
+            ok = np.isfinite(c) & (c >= 1) & (c <= 14)
+            both = ok & ref_ok
+            denom = float(area[both].sum())
+            if denom <= 0:
+                continue
+            agree = float(area[both & (c == ref)].sum())
+            stats[name] = {
+                f"agreement_with_{_ERA5}_pct": round(100.0 * agree / denom, 3),
+                f"classified_land_pct_of_{_ERA5}": round(
+                    100.0 * float(area[ok].sum()) / ref_area, 3) if ref_area > 0 else None,
+            }
+        return stats
+
     def _plot_maps(self, results: dict) -> tuple[plt.Figure, dict]:
         """Multi-panel discrete KT classification maps (one panel per source)."""
         sources = self._ordered_sources(results)
@@ -861,8 +937,10 @@ class KTClimateClassification(DiagnosticBase):
                 "on a common 0.25° grid. Panels are ordered ERA5, Berkeley Earth "
                 "HR + MSWEP, the EERIE models, then the CMIP6 multi-model mean."
             ),
+            computation_notes=self._agreement_note(),
             period=self.period,
             plot_type="map",
+            summary_statistics=self._agreement_stats(results, panels),
         )
         return fig, meta
 
@@ -933,8 +1011,10 @@ class KTClimateClassification(DiagnosticBase):
                     "Land only, common grid."
                 )
             ),
+            computation_notes=self._agreement_note(),
             period=self.period,
             plot_type="map",
+            summary_statistics=self._agreement_stats(results, panels),
         )
         return fig, meta
 
@@ -967,8 +1047,10 @@ class KTClimateClassification(DiagnosticBase):
                 "Percentage of classified land area in each Köppen–Trewartha "
                 "type, grouped by type with one bar per source."
             ),
+            computation_notes=self._area_note(),
             period=self.period,
             plot_type="bar",
+            summary_statistics=self._area_stats(results, sources),
         )
         return fig, meta
 
@@ -1011,8 +1093,10 @@ class KTClimateClassification(DiagnosticBase):
                 "Köppen–Trewartha type for every source (each source sums to "
                 "100 %). Also written to kt_area_percent CSV."
             ),
+            computation_notes=self._area_note(),
             period=self.period,
             plot_type="table",
-            extra={"area_percent": area_pct},
+            summary_statistics=self._area_stats(results, sources),
+            extra={"area_percent": area_pct},   # kept for back-compatibility
         )
         return fig, meta
