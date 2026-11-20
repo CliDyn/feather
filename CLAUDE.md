@@ -293,7 +293,7 @@ Variables use CMOR names as canonical IDs (e.g., `"tas"` not `"avg_2t"`). The `V
 - EN4: `EN4/1950-2022/{thetao,so}-1950_2022.nc` (thetao stored in K; aqua-dvc had v4.2.2 to 2024)
 - PIOMAS/GIOMAS: `PSC/{PIOMAS,GIOMAS}/sivol_*_197901-202212_*.new.nc` — CMIP6 `sivol` (cell-mean thickness), renamed to `sithick` by `ObsLoader.load_psc()`
 - MSWEP: `MSWEP/v2.8/zarr/mswep280.past-nrt.monthly.zarr`; Berkeley Earth 1°: `BERKELEY-EARTH/aqua-filled/`; ESA-CCI SST: `ESA-CCI-L4/v3.0.1/`
-- **OSI-SAF monthly is not available** (not in the old tree; ICDC `/pool/data/ICDC/ice_and_snow/osisaf_iceconc` is daily only) → `sea_ice` warns and runs without it
+- OSI-SAF: `OSI-SAF/v3p0/monthly/ice_conc_{nh,sh}_ease2-250_cdr-icdr-v3p0_monthly_1979-2024.nc` — derived by `scripts/osisaf_derive_siconc_monthly.sh` from the ICDC daily files (`/pool/data/ICDC/ice_and_snow/osisaf_iceconc/DATA`; OSI-450-a CDR v3.0 to 2020, OSI-430-a ICDR v3.0 from 2021): plain mean of the daily `ice_conc` (%, EASE2 25 km, 2-D lat/lon), stamped the 15th 12:00. Months with < 10 daily fields are **omitted, not NaN** (1986-04/05/06, 1987-01, 1987-12; list in `skipped_months.txt`); 1979–mid-1987 is SMMR every-other-day (~15 fields/month). The aqua-dvc monthly files it replaces were not in the old tree.
 
 ### CMIP6
 - Catalog: `/home/a/a270088/PYTHON/DestinE/cmip6/cmip6_zarr_catalog.yaml` (593 entries)

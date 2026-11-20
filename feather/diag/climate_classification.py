@@ -94,10 +94,12 @@ class KTClimateClassification(DiagnosticBase):
         config,
         *,
         cmip6_loader=None,
+        benchmarks: list | None = None,
         experiment: str = "baseline_hist",
         period: tuple[str, str] = ("1990", "2014"),
     ):
-        super().__init__(model_loader, obs_loader, config, cmip6_loader=cmip6_loader)
+        super().__init__(model_loader, obs_loader, config,
+                         cmip6_loader=cmip6_loader, benchmarks=benchmarks)
         self.experiment = experiment
         self.period = period
         self._res = float(self.config.nereus.get("resolution", 0.25))
@@ -212,12 +214,16 @@ class KTClimateClassification(DiagnosticBase):
         # Regridded monthly climatology per source: tas in °C, pr in cm/month.
         clims_tas: dict[str, xr.DataArray] = {}
         clims_pr: dict[str, xr.DataArray] = {}
+        # Sources whose climatology came from a saved NetCDF (not rewritten).
+        self._reused_clims: set[str] = set()
 
         # ── EERIE models (tas + pr) ────────────────────────────────────
         model_sources: list[str] = []
         for model in self.config.models:
             try:
-                tmon, pmon = self._model_clim(model)
+                tmon, pmon = self._cached_clim(model, need=("tas", "pr"))
+                if tmon is None:
+                    tmon, pmon = self._model_clim(model)
             except (KeyError, FileNotFoundError, ValueError) as exc:
                 logger.warning("  %s: skipping — %s", model, exc)
                 continue
@@ -227,16 +233,21 @@ class KTClimateClassification(DiagnosticBase):
 
         # ── ERA5 (tas + pr) ────────────────────────────────────────────
         try:
-            tas = self._load_obs_var("tas", self.period)
-            pr = self._load_obs_var("pr", self.period)
-            clims_tas[_ERA5] = self._regrid_monthly(self._clim_tas(tas), self._ir)
-            clims_pr[_ERA5] = self._regrid_monthly(self._clim_pr(pr), self._ir)
+            t_c, p_c = self._cached_clim(_ERA5, need=("tas", "pr"))
+            if t_c is not None:
+                clims_tas[_ERA5], clims_pr[_ERA5] = t_c, p_c
+            else:
+                tas = self._load_obs_var("tas", self.period)
+                pr = self._load_obs_var("pr", self.period)
+                clims_tas[_ERA5] = self._regrid_monthly(self._clim_tas(tas), self._ir)
+                clims_pr[_ERA5] = self._regrid_monthly(self._clim_pr(pr), self._ir)
         except Exception as exc:
             logger.warning("  ERA5: skipping — %s", exc)
 
         # ── Berkeley Earth HR (tas only) ───────────────────────────────
         try:
-            clims_tas[_BE_HR] = self._regrid_monthly(
+            t_c, _ = self._cached_clim(_BE_HR, need=("tas",))
+            clims_tas[_BE_HR] = t_c if t_c is not None else self._regrid_monthly(
                 self._be_hr_monthly_clim(), self._ir,
             )
         except Exception as exc:
@@ -244,8 +255,12 @@ class KTClimateClassification(DiagnosticBase):
 
         # ── MSWEP (pr only) ────────────────────────────────────────────
         try:
-            pr = self.obs_loader.load_mswep(self.period)
-            clims_pr[_MSWEP] = self._regrid_monthly(self._clim_pr(pr), self._ir)
+            _, p_c = self._cached_clim(_MSWEP, need=("pr",))
+            if p_c is not None:
+                clims_pr[_MSWEP] = p_c
+            else:
+                pr = self.obs_loader.load_mswep(self.period)
+                clims_pr[_MSWEP] = self._regrid_monthly(self._clim_pr(pr), self._ir)
         except Exception as exc:
             logger.warning("  MSWEP: skipping — %s", exc)
 
@@ -259,7 +274,7 @@ class KTClimateClassification(DiagnosticBase):
         # ── CMIP6 members (tas + pr) — save each, accumulate MMM ────────
         cmip6_sum_t = cmip6_sum_p = None
         cmip6_n = 0
-        if self.cmip6_enabled:
+        if self._cmip6_source() is not None:
             cmip6_sum_t, cmip6_sum_p, cmip6_n = self._collect_cmip6_clims()
 
         # ── Per-family ensembles (mean/median of member climatologies) ──
@@ -324,6 +339,8 @@ class KTClimateClassification(DiagnosticBase):
 
         # ── Persistence ────────────────────────────────────────────────
         for src in set(clims_tas) | set(clims_pr):
+            if src in self._reused_clims:
+                continue
             self._save_clim_nc(src, clims_tas.get(src), clims_pr.get(src))
         for src, code in codes.items():
             self._save_nc(src, code)
@@ -358,6 +375,13 @@ class KTClimateClassification(DiagnosticBase):
             if p.exists():
                 codes[src] = xr.open_dataset(p)["kt_code"]
         if not codes:
+            return None
+        if self._cmip6_source() is not None and _CMIP6_MMM not in codes:
+            logger.info(
+                "  Cached classification has no %s but the benchmark is "
+                "enabled — reclassifying (saved climatologies are reused)",
+                _CMIP6_MMM,
+            )
             return None
 
         df = pd.read_csv(csv, index_col=0)
@@ -436,6 +460,79 @@ class KTClimateClassification(DiagnosticBase):
             return max(self._ir, 250_000.0)
         return self._ir
 
+    def _cmip6_source(self):
+        """The CMIP6 benchmark loader, or None when no CMIP6 benchmark is on.
+
+        Only the CMIP6 benchmark is classified (as ``CMIP6 MMM``); other
+        benchmarks (e.g. HighResMIP) are ignored here.  Falls back to the
+        legacy ``cmip6_loader`` when ``cmip6.enabled`` is set.
+        """
+        if self.cmip6_loader is None:
+            return None
+        explicit = getattr(self, "_benchmarks_explicit", False)
+        for b in (getattr(self, "benchmarks", []) or []) if explicit else []:
+            if getattr(b, "label", "") == _CMIP6_MMM:
+                return b
+        if self.config.cmip6.get("enabled", False):
+            return self.cmip6_loader
+        return None
+
+    def _cached_clim(
+        self, source: str, need: tuple[str, ...] = ("tas", "pr"),
+    ) -> tuple[xr.DataArray | None, xr.DataArray | None]:
+        """Reuse a saved ``{source}_clim`` NetCDF (tas °C, pr cm/month).
+
+        Returns ``(None, None)`` when reuse is off (``--no-skip-existing``),
+        the file is missing, lacks a needed variable, or is on a different
+        grid from the configured resolution / bounds / sources so far.
+        """
+        if not getattr(self, "_reuse_cache", False):
+            return None, None
+        path = self._clim_path(source)
+        if not path.exists():
+            return None, None
+        try:
+            ds = xr.open_dataset(path)
+            keys = {"tas": "tas_clim", "pr": "pr_clim"}
+            if any(keys[v] not in ds for v in need):
+                return None, None
+            lat = np.asarray(ds["lat"].values)
+            lon = np.asarray(ds["lon"].values)
+            if not self._grid_matches(lat, lon):
+                logger.info("  %s: saved climatology on another grid — recomputing",
+                            source)
+                return None, None
+            tas = ds["tas_clim"].astype("float64").load() if "tas" in need else None
+            pr = (ds["pr_clim"].astype("float64") / 10.0).load() if "pr" in need else None
+            ds.close()
+        except Exception as exc:
+            logger.warning("  %s: cannot reuse %s (%s) — recomputing", source, path, exc)
+            return None, None
+        if self._tlat is None:
+            self._tlat, self._tlon = lat, lon
+        for da in (tas, pr):
+            if da is not None:
+                da.attrs = {}
+        if not hasattr(self, "_reused_clims"):
+            self._reused_clims = set()
+        self._reused_clims.add(source)
+        logger.info("  %s: reusing saved climatology %s", source, path.name)
+        return tas, pr
+
+    def _grid_matches(self, lat: np.ndarray, lon: np.ndarray) -> bool:
+        if self._tlat is not None:
+            return (lat.shape == self._tlat.shape and lon.shape == self._tlon.shape
+                    and np.allclose(lat, self._tlat) and np.allclose(lon, self._tlon))
+        if len(lat) < 2 or len(lon) < 2:
+            return False
+        if not (np.isclose(abs(lat[1] - lat[0]), self._res)
+                and np.isclose(abs(lon[1] - lon[0]), self._res)):
+            return False
+        return (self._lat_bounds[0] - self._res <= lat.min()
+                and lat.max() <= self._lat_bounds[1] + self._res
+                and self._lon_bounds[0] - self._res <= lon.min()
+                and lon.max() <= self._lon_bounds[1] + self._res)
+
     def _collect_cmip6_clims(self):
         """Save each CMIP6 member's climatology; return (sum_tas, sum_pr, n).
 
@@ -449,15 +546,24 @@ class KTClimateClassification(DiagnosticBase):
         tas_info = get_var("tas")
         pr_info = get_var("pr")
 
+        loader = self._cmip6_source()
         sum_t = sum_p = None
         n = 0
-        for model in self.cmip6_loader.models:
-            tas = self.cmip6_loader.load_var(
+        n_reused = 0
+        for model in loader.models:
+            tmon, pmon = self._cached_clim(f"CMIP6 {model}", need=("tas", "pr"))
+            if tmon is not None:
+                sum_t = tmon if sum_t is None else sum_t + tmon
+                sum_p = pmon if sum_p is None else sum_p + pmon
+                n += 1
+                n_reused += 1
+                continue
+            tas = loader.load_var(
                 tas_info.cmip6_variable, model,
                 table=tas_info.cmip6_table or None,
                 period=self.period, time_mean=False,
             )
-            pr = self.cmip6_loader.load_var(
+            pr = loader.load_var(
                 pr_info.cmip6_variable, model,
                 table=pr_info.cmip6_table or None,
                 period=self.period, time_mean=False,
@@ -473,6 +579,9 @@ class KTClimateClassification(DiagnosticBase):
 
         if n == 0:
             logger.info("  CMIP6: no members available")
+        else:
+            logger.info("  CMIP6: %d member(s) in the MMM (%d from saved "
+                        "climatologies)", n, n_reused)
         return sum_t, sum_p, n
 
     def _classify_from(
@@ -844,6 +953,82 @@ class KTClimateClassification(DiagnosticBase):
         cbar.ax.set_xticklabels(KT_LABELS, fontsize=8)
         return fig
 
+    # ── Figure statistics (sidecar ``summary_statistics``) ─────────────
+
+    def _area_stats(self, results: dict, sources: list[str]) -> dict[str, dict]:
+        """% land area per KT type per source, plus the difference from ERA5.
+
+        Keys per source: ``{type}_pct`` and, for every source other than the
+        reference when ERA5 is available, ``{type}_minus_ERA5_pct``.
+        """
+        area_pct = results["area_pct"]
+        ref = area_pct.get(_ERA5)
+        stats: dict[str, dict] = {}
+        for src in sources:
+            pct = area_pct[src]
+            entry = {f"{lbl}_pct": round(float(pct[lbl]), 3) for lbl in KT_LABELS}
+            if ref is not None and src != _ERA5:
+                entry.update({
+                    f"{lbl}_minus_{_ERA5}_pct": round(float(pct[lbl] - ref[lbl]), 3)
+                    for lbl in KT_LABELS
+                })
+            stats[src] = entry
+        return stats
+
+    @staticmethod
+    def _area_note() -> str:
+        return (
+            "summary_statistics: per source, {type}_pct = % of classified land "
+            "area in each KT type (sums to 100); {type}_minus_ERA5_pct = that "
+            "% minus ERA5's (percentage points)."
+        )
+
+    @staticmethod
+    def _agreement_note() -> str:
+        return (
+            "summary_statistics: per panel, agreement_with_ERA5_pct = "
+            "area-weighted % of land classified in both the source and ERA5 "
+            "where the KT type equals ERA5's; classified_land_pct_of_ERA5 = "
+            "the source's classified land area as % of ERA5's."
+        )
+
+    def _agreement_stats(
+        self, results: dict, panels: list[tuple[str, xr.DataArray]],
+    ) -> dict[str, dict]:
+        """Area-weighted categorical agreement of each panel with ERA5.
+
+        ``agreement_with_ERA5_pct``: % of the land area classified in both the
+        source and ERA5 where the two KT types are equal.
+        ``classified_land_pct_of_ERA5``: classified area of the source as a %
+        of ERA5's (coverage check for the agreement denominator).
+        Empty when ERA5 is not among the sources.
+        """
+        codes = results["codes"]
+        if _ERA5 not in codes:
+            return {}
+        area = compute_latlon_areas(
+            np.asarray(results["lat"]), np.asarray(results["lon"]))
+        ref = np.asarray(codes[_ERA5].values, dtype=float)
+        ref_ok = np.isfinite(ref) & (ref >= 1) & (ref <= 14)
+        ref_area = float(area[ref_ok].sum())
+        stats: dict[str, dict] = {}
+        for name, code in panels:
+            if name == _ERA5:
+                continue
+            c = np.asarray(code.values, dtype=float)
+            ok = np.isfinite(c) & (c >= 1) & (c <= 14)
+            both = ok & ref_ok
+            denom = float(area[both].sum())
+            if denom <= 0:
+                continue
+            agree = float(area[both & (c == ref)].sum())
+            stats[name] = {
+                f"agreement_with_{_ERA5}_pct": round(100.0 * agree / denom, 3),
+                f"classified_land_pct_of_{_ERA5}": round(
+                    100.0 * float(area[ok].sum()) / ref_area, 3) if ref_area > 0 else None,
+            }
+        return stats
+
     def _plot_maps(self, results: dict) -> tuple[plt.Figure, dict]:
         """Multi-panel discrete KT classification maps (one panel per source)."""
         sources = self._ordered_sources(results)
@@ -861,8 +1046,10 @@ class KTClimateClassification(DiagnosticBase):
                 "on a common 0.25° grid. Panels are ordered ERA5, Berkeley Earth "
                 "HR + MSWEP, the EERIE models, then the CMIP6 multi-model mean."
             ),
+            computation_notes=self._agreement_note(),
             period=self.period,
             plot_type="map",
+            summary_statistics=self._agreement_stats(results, panels),
         )
         return fig, meta
 
@@ -933,8 +1120,10 @@ class KTClimateClassification(DiagnosticBase):
                     "Land only, common grid."
                 )
             ),
+            computation_notes=self._agreement_note(),
             period=self.period,
             plot_type="map",
+            summary_statistics=self._agreement_stats(results, panels),
         )
         return fig, meta
 
@@ -967,8 +1156,10 @@ class KTClimateClassification(DiagnosticBase):
                 "Percentage of classified land area in each Köppen–Trewartha "
                 "type, grouped by type with one bar per source."
             ),
+            computation_notes=self._area_note(),
             period=self.period,
             plot_type="bar",
+            summary_statistics=self._area_stats(results, sources),
         )
         return fig, meta
 
@@ -1011,8 +1202,10 @@ class KTClimateClassification(DiagnosticBase):
                 "Köppen–Trewartha type for every source (each source sums to "
                 "100 %). Also written to kt_area_percent CSV."
             ),
+            computation_notes=self._area_note(),
             period=self.period,
             plot_type="table",
-            extra={"area_percent": area_pct},
+            summary_statistics=self._area_stats(results, sources),
+            extra={"area_percent": area_pct},   # kept for back-compatibility
         )
         return fig, meta
