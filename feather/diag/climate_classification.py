@@ -301,6 +301,7 @@ class KTClimateClassification(DiagnosticBase):
             ensemble_names += list(names.values())
 
         # CMIP6 multi-model mean from the zarr CMIP6 loader (global/legacy path)
+        cmip6_members = list(getattr(self, "_cmip6_members", []))
         if cmip6_n > 0:
             clims_tas[_CMIP6_MMM] = cmip6_sum_t / cmip6_n
             clims_pr[_CMIP6_MMM] = cmip6_sum_p / cmip6_n
@@ -343,7 +344,9 @@ class KTClimateClassification(DiagnosticBase):
                 continue
             self._save_clim_nc(src, clims_tas.get(src), clims_pr.get(src))
         for src, code in codes.items():
-            self._save_nc(src, code)
+            extra = ({"cmip6_members": ",".join(cmip6_members)}
+                     if src == _CMIP6_MMM else None)
+            self._save_nc(src, code, extra_attrs=extra)
         for name, code in ensemble_codes.items():
             self._save_nc(name, code)
         self._write_csv(area_pct)
@@ -355,6 +358,7 @@ class KTClimateClassification(DiagnosticBase):
             "sources": list(codes.keys()),
             "ensembles": ensembles,            # label → {"mean","median","members"}
             "ensemble_codes": ensemble_codes,  # name → KT code field
+            "cmip6_members": cmip6_members,
             "lat": self._tlat,
             "lon": self._tlon,
         }
@@ -383,6 +387,27 @@ class KTClimateClassification(DiagnosticBase):
                 _CMIP6_MMM,
             )
             return None
+
+        # Members of the cached CMIP6 MMM, re-recorded for provenance. A cache
+        # written before the list was stored cannot say which members it
+        # holds, so it is reclassified (saved climatologies are reused).
+        cmip6_members: list[str] = []
+        if _CMIP6_MMM in codes:
+            attr = codes[_CMIP6_MMM].attrs.get("cmip6_members")
+            if attr is None:
+                with xr.open_dataset(self._nc_path(_CMIP6_MMM)) as ds:
+                    attr = ds.attrs.get("cmip6_members")
+            if not attr:
+                logger.info(
+                    "  Cached %s does not list its members — reclassifying "
+                    "(saved climatologies are reused)", _CMIP6_MMM,
+                )
+                return None
+            cmip6_members = attr.split(",")
+            loader = self._cmip6_source()
+            if loader is not None:
+                for model in cmip6_members:
+                    self._record_cmip6_reuse(loader, model)
 
         df = pd.read_csv(csv, index_col=0)
         area_pct = {
@@ -426,6 +451,7 @@ class KTClimateClassification(DiagnosticBase):
             "sources": list(codes.keys()),
             "ensembles": ensembles,
             "ensemble_codes": ensemble_codes,
+            "cmip6_members": cmip6_members,
             "lat": self._tlat,
             "lon": self._tlon,
         }
@@ -550,6 +576,7 @@ class KTClimateClassification(DiagnosticBase):
         sum_t = sum_p = None
         n = 0
         n_reused = 0
+        self._cmip6_members = []
         for model in loader.models:
             tmon, pmon = self._cached_clim(f"CMIP6 {model}", need=("tas", "pr"))
             if tmon is not None:
@@ -557,6 +584,8 @@ class KTClimateClassification(DiagnosticBase):
                 sum_p = pmon if sum_p is None else sum_p + pmon
                 n += 1
                 n_reused += 1
+                self._cmip6_members.append(model)
+                self._record_cmip6_reuse(loader, model)
                 continue
             tas = loader.load_var(
                 tas_info.cmip6_variable, model,
@@ -576,6 +605,7 @@ class KTClimateClassification(DiagnosticBase):
             sum_t = tmon if sum_t is None else sum_t + tmon
             sum_p = pmon if sum_p is None else sum_p + pmon
             n += 1
+            self._cmip6_members.append(model)
 
         if n == 0:
             logger.info("  CMIP6: no members available")
@@ -583,6 +613,33 @@ class KTClimateClassification(DiagnosticBase):
             logger.info("  CMIP6: %d member(s) in the MMM (%d from saved "
                         "climatologies)", n, n_reused)
         return sum_t, sum_p, n
+
+    def _record_cmip6_reuse(self, loader, model: str) -> None:
+        """Provenance for a CMIP6 member taken from its saved climatology.
+
+        A reused member is never loaded, so the loader emits no
+        ``benchmark_member`` event for it; without this the run record would
+        list only the members computed in this run.
+        """
+        from feather import provenance
+
+        if provenance.current_run() is None:
+            return
+        from feather.data.cmip6 import CMIP6Loader
+
+        try:
+            variants = CMIP6Loader._get_variants(loader.models.get(model) or {})
+        except Exception:
+            variants = []
+        path = str(self._clim_path(f"CMIP6 {model}"))
+        for var in ("tas", "pr"):
+            provenance.emit(
+                "benchmark_member", benchmark=getattr(loader, "label", "CMIP6"),
+                variable=var, model=model,
+                variant=variants[0] if variants else None,
+                status="used", reason=None, stores=[path],
+                source="saved_climatology",
+            )
 
     def _classify_from(
         self, tmon: xr.DataArray, pmon: xr.DataArray,
@@ -767,7 +824,9 @@ class KTClimateClassification(DiagnosticBase):
 
     # ── Persistence ────────────────────────────────────────────────────
 
-    def _save_nc(self, source: str, code: xr.DataArray) -> None:
+    def _save_nc(
+        self, source: str, code: xr.DataArray, extra_attrs: dict | None = None,
+    ) -> None:
         start, end = self.period
         out = code.astype("float32").rename("kt_code")
         ds = xr.Dataset(
@@ -783,6 +842,7 @@ class KTClimateClassification(DiagnosticBase):
                 "land_only": "True — ocean pixels are NaN",
                 "kt_mapping_json": json.dumps(KT_CODES),
                 "reference": "Trewartha & Horn (1980); Belda et al. (2014)",
+                **(extra_attrs or {}),
             },
         )
         path = self._nc_path(source)
@@ -984,14 +1044,31 @@ class KTClimateClassification(DiagnosticBase):
                     for lbl in KT_LABELS
                 })
             stats[src] = entry
+        for src, n in self._member_counts(results).items():
+            if src in stats:
+                stats[src]["n_members"] = n
         return stats
+
+    @staticmethod
+    def _member_counts(results: dict) -> dict[str, int]:
+        """Number of members behind each multi-member summary source."""
+        counts: dict[str, int] = {}
+        members = results.get("cmip6_members") or []
+        if members:
+            counts[_CMIP6_MMM] = len(members)
+        for info in results.get("ensembles", {}).values():
+            for key in ("mean", "median"):
+                if info.get(key):
+                    counts[info[key]] = len(info.get("members", []))
+        return counts
 
     @staticmethod
     def _area_note() -> str:
         return (
             "summary_statistics: per source, {type}_pct = % of classified land "
             "area in each KT type (sums to 100); {type}_minus_ERA5_pct = that "
-            "% minus ERA5's (percentage points)."
+            "% minus ERA5's (percentage points); n_members = number of "
+            "members averaged into a multi-member mean (CMIP6 MMM, family means)."
         )
 
     @staticmethod
@@ -1000,7 +1077,9 @@ class KTClimateClassification(DiagnosticBase):
             "summary_statistics: per panel, agreement_with_ERA5_pct = "
             "area-weighted % of land classified in both the source and ERA5 "
             "where the KT type equals ERA5's; classified_land_pct_of_ERA5 = "
-            "the source's classified land area as % of ERA5's."
+            "the source's classified land area as % of ERA5's; n_members = "
+            "number of members averaged into a multi-member mean (CMIP6 MMM, "
+            "family means)."
         )
 
     def _agreement_stats(
@@ -1038,6 +1117,9 @@ class KTClimateClassification(DiagnosticBase):
                 f"classified_land_pct_of_{_ERA5}": round(
                     100.0 * float(area[ok].sum()) / ref_area, 3) if ref_area > 0 else None,
             }
+        for src, n in self._member_counts(results).items():
+            if src in stats:
+                stats[src]["n_members"] = n
         return stats
 
     def _plot_maps(self, results: dict) -> tuple[plt.Figure, dict]:
@@ -1097,16 +1179,28 @@ class KTClimateClassification(DiagnosticBase):
         for s in (_ERA5, _BE_MSWEP):
             if s in codes:
                 panels.append((s, codes[s]))
-        # Each family's mean then median, in ensemble order.
-        for label, info in results.get("ensembles", {}).items():
-            for key in ("mean", "median"):
-                name = info.get(key)
-                if name in ensemble_codes:
-                    panels.append((name, ensemble_codes[name]))
+        # Each family's mean then median, in family order. In per-family mode
+        # a single-member family (e.g. HadGEM3-GC5) is shown as the member.
+        ensembles = results.get("ensembles", {})
+        singles: list[str] = []
+        for label, members in self._ensemble_groups(results["models"]).items():
+            info = ensembles.get(label)
+            if info:
+                for key in ("mean", "median"):
+                    name = info.get(key)
+                    if name in ensemble_codes:
+                        panels.append((name, ensemble_codes[name]))
+            elif self._per_family and len(members) == 1 and members[0] in codes:
+                panels.append((members[0], codes[members[0]]))
+                singles.append(members[0])
         if _CMIP6_MMM in codes:
             panels.append((_CMIP6_MMM, codes[_CMIP6_MMM]))
 
-        labels = ", ".join(results.get("ensembles", {}).keys())
+        labels = ", ".join(ensembles.keys())
+        singles_note = (
+            f" Single-member families ({', '.join(singles)}) are shown as "
+            "that member." if singles else ""
+        )
         fig = self._render_kt_maps(
             panels, results["lon"], results["lat"],
             f"{self.title} — Observations vs Ensembles "
@@ -1123,6 +1217,7 @@ class KTClimateClassification(DiagnosticBase):
                     "classified from the per-cell mean of the member tas and "
                     "pr climatologies. Families are summarised separately and "
                     "not pooled into one ensemble. Land only, common grid."
+                    + singles_note
                 ) if self._per_family else (
                     "Köppen–Trewartha classification: observations alongside "
                     f"the ensemble mean and median of each model family "

@@ -411,6 +411,99 @@ def test_compute_reuses_saved_climatologies(tmp_path):
             "CMIP6 CM1"} <= d._reused_clims
 
 
+def _capture_provenance(monkeypatch):
+    from feather import provenance
+    events = []
+    monkeypatch.setattr(provenance, "current_run", lambda: object())
+    monkeypatch.setattr(provenance, "emit",
+                        lambda step, **f: events.append({"step": step, **f}))
+    return events
+
+
+def test_reused_cmip6_members_are_recorded(tmp_path, monkeypatch):
+    events = _capture_provenance(monkeypatch)
+    cm = _Bench("CMIP6 MMM", models=("CM1", "CM2"))
+    cm.models = {"CM1": {"variants": ["r1i1p1f1"]}, "CM2": {}}
+    d = _kt_diag(tmp_path, benchmarks=[cm], cmip6_loader=cm)
+    _prime(d, {"M1": 0.0, "M2": 1.0, "ERA5": 0.0, "Berkeley Earth HR": 0.5,
+               "MSWEP": 0.0, "CMIP6 CM1": -1.0})
+    res = d.compute()
+    assert res["cmip6_members"] == ["CM1"]     # CM2 has no data (_Bench → None)
+    rec = [e for e in events if e["step"] == "benchmark_member"]
+    assert {(e["model"], e["variable"]) for e in rec} == {("CM1", "tas"), ("CM1", "pr")}
+    assert all(e["status"] == "used" and e["source"] == "saved_climatology"
+               and e["variant"] == "r1i1p1f1" and e["benchmark"] == "CMIP6 MMM"
+               for e in rec)
+    with xr.open_dataset(d._nc_path("CMIP6 MMM")) as ds:
+        assert ds.attrs["cmip6_members"] == "CM1"
+
+    # Replotting from the cached classification re-records the members.
+    events.clear()
+    cached = _kt_diag(tmp_path, benchmarks=[cm], cmip6_loader=cm)
+    cached._reuse_cache = True
+    out = cached._load_cached_results()
+    assert out is not None and out["cmip6_members"] == ["CM1"]
+    assert {(e["model"], e["variable"]) for e in events} == {("CM1", "tas"), ("CM1", "pr")}
+
+
+def test_cached_mmm_without_member_list_is_refused(tmp_path):
+    cm = _Bench("CMIP6 MMM")
+    d = _kt_diag(tmp_path, benchmarks=[cm], cmip6_loader=cm)
+    _prime(d, {})
+    lat, lon = _grid()
+    code = xr.DataArray(np.ones((len(lat), len(lon))), dims=("lat", "lon"),
+                        coords={"lat": lat, "lon": lon})
+    d._save_nc("M1", code)
+    d._save_nc("CMIP6 MMM", code)                 # old cache: no member list
+    d._write_csv({"M1": {lbl: 0.0 for lbl in KT_LABELS}})
+    assert d._load_cached_results() is None
+    d._save_nc("CMIP6 MMM", code, extra_attrs={"cmip6_members": "CM1,CM2"})
+    assert d._load_cached_results()["cmip6_members"] == ["CM1", "CM2"]
+
+
+def test_member_counts_in_stats():
+    res = _stats_results()
+    res["codes"]["CMIP6 MMM"] = res["codes"]["M2"]
+    res["area_pct"]["CMIP6 MMM"] = res["area_pct"]["M2"]
+    res["cmip6_members"] = ["A", "B", "C"]
+    res["ensembles"] = {"F": {"mean": "F Mean", "members": ["M1", "M2"]}}
+    res["codes"]["F Mean"] = res["codes"]["M1"]
+    res["area_pct"]["F Mean"] = res["area_pct"]["M1"]
+    d = _stats_diag()
+    agree = d._agreement_stats(res, list(res["codes"].items()))
+    area = d._area_stats(res, list(res["codes"]))
+    for st in (agree, area):
+        assert st["CMIP6 MMM"]["n_members"] == 3
+        assert st["F Mean"]["n_members"] == 2
+        assert "n_members" not in st["M1"]
+
+
+def test_ensemble_maps_show_single_member_family(tmp_path, monkeypatch):
+    from feather.diag.climate_classification import KTClimateClassification
+    cfg = _Cfg(tmp_path)
+    cfg.models = ["M1", "M2", "H1"]
+    cfg.get_model_families = lambda models: {
+        k: [m for m in v if m in models]
+        for k, v in {"M": ["M1", "M2"], "H": ["H1"]}.items()
+        if any(m in models for m in v)}
+    d = _kt_diag(tmp_path)
+    d.config = cfg
+    res = _stats_results()
+    res["codes"]["H1"] = res["codes"]["M2"]
+    res["models"] = ["M1", "M2", "H1"]
+    res["ensembles"] = {"M": {"mean": "M Mean", "members": ["M1", "M2"]}}
+    res["ensemble_codes"] = {"M Mean": res["codes"]["M1"]}
+    seen = {}
+    monkeypatch.setattr(KTClimateClassification, "_render_kt_maps",
+                        lambda self, panels, *a: seen.setdefault("p", panels))
+    monkeypatch.setattr(KTClimateClassification, "_build_metadata",
+                        lambda self, **kw: kw)
+    _, meta = d._plot_ensemble_maps(res)
+    assert [n for n, _ in seen["p"]] == ["ERA5", "M Mean", "H1"]
+    assert "H1" in meta["summary_statistics"]
+    assert "(H1) are shown as that member" in meta["description"]
+
+
 def test_regrid_monthly_unstructured_points(tmp_path):
     """ICON-ESM-LR-style field: one cell dim with 1-D lat/lon coords."""
     d = _kt_diag(tmp_path)
