@@ -88,6 +88,12 @@ def main(argv: list[str] | None = None):
              "llm.figure_analysis.gcp_project and FEATHER_GCP_PROJECT.",
     )
     parser.add_argument(
+        "--gemini-model",
+        default=None,
+        help="Gemini model for the analyze step (overrides "
+             "llm.figure_analysis.model)",
+    )
+    parser.add_argument(
         "--vertex-location",
         default=None,
         help="Vertex AI location for --gcp-project (default: global)",
@@ -235,8 +241,10 @@ def main(argv: list[str] | None = None):
     args.steps = [s for item in args.steps for s in item.split(",")]
 
     cfg = FeatherConfig.from_yaml(args.config)
-    if args.gcp_project or args.vertex_location:
+    if args.gcp_project or args.vertex_location or args.gemini_model:
         fa = cfg.llm.setdefault("figure_analysis", {})
+        if args.gemini_model:
+            fa["model"] = args.gemini_model
         if args.gcp_project:
             fa["gcp_project"] = args.gcp_project
         if args.vertex_location:

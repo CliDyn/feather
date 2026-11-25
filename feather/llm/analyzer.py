@@ -201,7 +201,9 @@ class FigureAnalyzer:
                     analyses.append(analysis_dict)
                     n_figures += 1
                     logger.info("  Analysed: %s", png_path.stem)
-                except Exception:
+                except Exception as exc:
+                    if _fatal(exc):
+                        raise RuntimeError(self._fatal_message(exc)) from exc
                     logger.exception("  Failed: %s", png_path.stem)
 
             # Per-diagnostic synthesis
@@ -219,7 +221,9 @@ class FigureAnalyzer:
                     self._save_json(synthesis_path, synthesis_dict)
                     n_syntheses += 1
                     logger.info("  Synthesis complete: %s", diag_name)
-                except Exception:
+                except Exception as exc:
+                    if _fatal(exc):
+                        raise RuntimeError(self._fatal_message(exc)) from exc
                     logger.exception("  Synthesis failed: %s", diag_name)
 
         logger.info(
@@ -426,6 +430,8 @@ class FigureAnalyzer:
                 return response.text
             except Exception as exc:
                 failures.append(f"{type(exc).__name__}: {exc}"[:300])
+                if not _retryable(exc):
+                    raise
                 if attempt < self.max_retries:
                     logger.warning(
                         "Gemini call failed (attempt %d/%d): %s — "
@@ -440,6 +446,23 @@ class FigureAnalyzer:
                     raise
 
         raise RuntimeError("Gemini call failed after all retries")  # pragma: no cover
+
+    def _fatal_message(self, exc: Exception) -> str:
+        """Explain an error that would fail every figure, so the run stops."""
+        code = getattr(exc, "code", None)
+        where = (f"project '{self.gcp_project}', location "
+                 f"'{self.vertex_location}'"
+                 if getattr(self, "backend", "") == "vertex_project"
+                 else "the Gemini API key")
+        if code == 404:
+            hint = (f"Model '{self.model_name}' is not available to {where}. "
+                    "Set llm.figure_analysis.model (or --gemini-model) to a "
+                    "model the project can use.")
+        elif code == 402:
+            hint = f"Billing or credits exhausted for {where}."
+        else:
+            hint = f"Access denied for {where} ({code})."
+        return f"Stopping the analyze step: {hint} Gemini said: {exc}"
 
     @staticmethod
     def _raise_if_truncated(response: Any) -> None:
@@ -607,3 +630,19 @@ def _usage(response: Any) -> dict[str, int | None]:
         "thinking": _get("thoughts_token_count"),
         "total": _get("total_token_count"),
     }
+
+
+def _status(exc: Exception) -> int | None:
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _retryable(exc: Exception) -> bool:
+    """False for client errors (4xx) a retry cannot fix; 408/429 do retry."""
+    code = _status(exc)
+    return code is None or code >= 500 or code in (408, 429)
+
+
+def _fatal(exc: Exception) -> bool:
+    """Errors that would fail every figure the same way: auth, billing, access, model."""
+    return _status(exc) in (401, 402, 403, 404)

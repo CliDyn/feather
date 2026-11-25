@@ -792,3 +792,55 @@ class TestFigureAnalyzerAnalyze:
 
         # Call should still succeed — just no thinking_config key
         analyzer.client.models.generate_content.assert_called_once()
+
+
+class _ApiError(Exception):
+    """Stands in for google.genai.errors.APIError (carries an int ``code``)."""
+
+    def __init__(self, code):
+        super().__init__(f"{code} ERROR")
+        self.code = code
+
+
+@patch("feather.llm.analyzer.genai")
+class TestApiErrorHandling:
+    def _analyzer(self, mock_genai, tmp_path, side_effect):
+        cfg = _minimal_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = side_effect
+        mock_genai.Client.return_value = mock_client
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        analyzer.retry_delay = 0
+        return analyzer, mock_client
+
+    def test_model_not_found_stops_run_after_one_call(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=3)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(404))
+        with pytest.raises(RuntimeError, match="not available"):
+            analyzer.run(skip_existing=False)
+        assert client.models.generate_content.call_count == 1
+
+    def test_billing_error_stops_run(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=2)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(402))
+        with pytest.raises(RuntimeError, match="Billing"):
+            analyzer.run(skip_existing=False)
+        assert client.models.generate_content.call_count == 1
+
+    def test_bad_request_not_retried_but_run_continues(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=2)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(400))
+        result = analyzer.run(skip_existing=False)
+        assert result["figure_analyses"] == 0
+        assert client.models.generate_content.call_count == 2
+
+    def test_server_and_rate_limit_errors_retried(self, mock_genai, tmp_path):
+        paths = _setup_figures(tmp_path, n_figures=1)
+        ok = MagicMock()
+        ok.text = json.dumps(_valid_analysis_dict())
+        analyzer, client = self._analyzer(
+            mock_genai, tmp_path, [_ApiError(503), _ApiError(429), ok])
+        analyzer.max_retries = 3
+        result = analyzer.analyze_figure(paths[0][0], paths[0][1])
+        assert isinstance(result, FigureAnalysis)
+        assert client.models.generate_content.call_count == 3
