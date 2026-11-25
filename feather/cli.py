@@ -80,6 +80,19 @@ def main(argv: list[str] | None = None):
         help="Vertex AI API key for the analyze step",
     )
     parser.add_argument(
+        "--gcp-project",
+        default=None,
+        help="Google Cloud project for the analyze step: Gemini via Vertex "
+             "AI, billed to the project, authenticated with Application "
+             "Default Credentials (no API key). Overrides "
+             "llm.figure_analysis.gcp_project and FEATHER_GCP_PROJECT.",
+    )
+    parser.add_argument(
+        "--vertex-location",
+        default=None,
+        help="Vertex AI location for --gcp-project (default: global)",
+    )
+    parser.add_argument(
         "--openai-api-key",
         default=None,
         help="OpenAI API key for the report step",
@@ -222,6 +235,12 @@ def main(argv: list[str] | None = None):
     args.steps = [s for item in args.steps for s in item.split(",")]
 
     cfg = FeatherConfig.from_yaml(args.config)
+    if args.gcp_project or args.vertex_location:
+        fa = cfg.llm.setdefault("figure_analysis", {})
+        if args.gcp_project:
+            fa["gcp_project"] = args.gcp_project
+        if args.vertex_location:
+            fa["vertex_location"] = args.vertex_location
     if args.output:
         cfg.output_dir = args.output
 
