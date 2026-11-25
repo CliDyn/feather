@@ -79,6 +79,13 @@ def _sample_metadata():
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_gcp_project_env(monkeypatch):
+    """A Cloud project in the caller's env would switch the backend."""
+    monkeypatch.delenv("FEATHER_GCP_PROJECT", raising=False)
+    monkeypatch.delenv("FEATHER_VERTEX_LOCATION", raising=False)
+
+
 def _minimal_config(tmp_path):
     """Return a minimal FeatherConfig for testing."""
     return FeatherConfig(
@@ -481,6 +488,13 @@ class TestRaiseIfTruncated:
 
 # ── Analyzer tests ───────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _fake_adc(monkeypatch):
+    """Vertex backend checks Application Default Credentials at init."""
+    import google.auth
+    monkeypatch.setattr(google.auth, "default", lambda **kw: (object(), None))
+
+
 @patch("feather.llm.analyzer.genai")
 class TestFigureAnalyzerInit:
     def test_init_with_api_key(self, mock_genai, tmp_path):
@@ -500,6 +514,49 @@ class TestFigureAnalyzerInit:
         cfg = _minimal_config(tmp_path)
         with pytest.raises(RuntimeError, match="API key not found"):
             FigureAnalyzer(cfg)
+
+    def test_init_vertex_project_from_config(self, mock_genai, tmp_path, monkeypatch):
+        monkeypatch.delenv("VERTEX_API_KEY", raising=False)
+        monkeypatch.delenv("FEATHER_GCP_PROJECT", raising=False)
+        monkeypatch.delenv("FEATHER_VERTEX_LOCATION", raising=False)
+        cfg = _minimal_config(tmp_path)
+        cfg.llm = {"figure_analysis": {"gcp_project": "proj-a"}}
+        analyzer = FigureAnalyzer(cfg, api_key="ignored")
+        mock_genai.Client.assert_called_once_with(
+            vertexai=True, project="proj-a", location="global")
+        assert analyzer.backend == "vertex_project"
+
+    def test_init_vertex_project_from_env(self, mock_genai, tmp_path, monkeypatch):
+        monkeypatch.setenv("FEATHER_GCP_PROJECT", "proj-b")
+        monkeypatch.setenv("FEATHER_VERTEX_LOCATION", "europe-west4")
+        cfg = _minimal_config(tmp_path)
+        FigureAnalyzer(cfg)
+        mock_genai.Client.assert_called_once_with(
+            vertexai=True, project="proj-b", location="europe-west4")
+
+    def test_init_vertex_credentials_error(self, mock_genai, tmp_path, monkeypatch):
+        monkeypatch.setenv("FEATHER_GCP_PROJECT", "proj-c")
+        mock_genai.Client.side_effect = ValueError("no default credentials")
+        with pytest.raises(RuntimeError, match="application-default login"):
+            FigureAnalyzer(_minimal_config(tmp_path))
+
+    def test_init_vertex_without_adc_fails_early(self, mock_genai, tmp_path, monkeypatch):
+        import google.auth
+        from google.auth.exceptions import DefaultCredentialsError
+
+        def _no_adc(**kw):
+            raise DefaultCredentialsError("Your default credentials were not found")
+        monkeypatch.setattr(google.auth, "default", _no_adc)
+        monkeypatch.setenv("FEATHER_GCP_PROJECT", "proj-d")
+        with pytest.raises(RuntimeError, match="GOOGLE_APPLICATION_CREDENTIALS"):
+            FigureAnalyzer(_minimal_config(tmp_path))
+        mock_genai.Client.assert_not_called()
+
+    def test_init_key_backend_without_project(self, mock_genai, tmp_path, monkeypatch):
+        monkeypatch.delenv("FEATHER_GCP_PROJECT", raising=False)
+        analyzer = FigureAnalyzer(_minimal_config(tmp_path), api_key="k")
+        mock_genai.Client.assert_called_once_with(api_key="k")
+        assert analyzer.backend == "gemini_api_key"
 
     def test_init_default_config(self, mock_genai, tmp_path, monkeypatch):
         monkeypatch.delenv("VERTEX_API_KEY", raising=False)
@@ -735,3 +792,55 @@ class TestFigureAnalyzerAnalyze:
 
         # Call should still succeed — just no thinking_config key
         analyzer.client.models.generate_content.assert_called_once()
+
+
+class _ApiError(Exception):
+    """Stands in for google.genai.errors.APIError (carries an int ``code``)."""
+
+    def __init__(self, code):
+        super().__init__(f"{code} ERROR")
+        self.code = code
+
+
+@patch("feather.llm.analyzer.genai")
+class TestApiErrorHandling:
+    def _analyzer(self, mock_genai, tmp_path, side_effect):
+        cfg = _minimal_config(tmp_path)
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = side_effect
+        mock_genai.Client.return_value = mock_client
+        analyzer = FigureAnalyzer(cfg, api_key="k")
+        analyzer.retry_delay = 0
+        return analyzer, mock_client
+
+    def test_model_not_found_stops_run_after_one_call(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=3)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(404))
+        with pytest.raises(RuntimeError, match="not available"):
+            analyzer.run(skip_existing=False)
+        assert client.models.generate_content.call_count == 1
+
+    def test_billing_error_stops_run(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=2)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(402))
+        with pytest.raises(RuntimeError, match="Billing"):
+            analyzer.run(skip_existing=False)
+        assert client.models.generate_content.call_count == 1
+
+    def test_bad_request_not_retried_but_run_continues(self, mock_genai, tmp_path):
+        _setup_figures(tmp_path, n_figures=2)
+        analyzer, client = self._analyzer(mock_genai, tmp_path, _ApiError(400))
+        result = analyzer.run(skip_existing=False)
+        assert result["figure_analyses"] == 0
+        assert client.models.generate_content.call_count == 2
+
+    def test_server_and_rate_limit_errors_retried(self, mock_genai, tmp_path):
+        paths = _setup_figures(tmp_path, n_figures=1)
+        ok = MagicMock()
+        ok.text = json.dumps(_valid_analysis_dict())
+        analyzer, client = self._analyzer(
+            mock_genai, tmp_path, [_ApiError(503), _ApiError(429), ok])
+        analyzer.max_retries = 3
+        result = analyzer.analyze_figure(paths[0][0], paths[0][1])
+        assert isinstance(result, FigureAnalysis)
+        assert client.models.generate_content.call_count == 3

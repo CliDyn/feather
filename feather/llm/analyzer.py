@@ -34,15 +34,28 @@ logger = logging.getLogger(__name__)
 
 
 class FigureAnalyzer:
-    """Analyse diagnostic figures using Gemini via Vertex AI Express.
+    """Analyse diagnostic figures using Gemini.
+
+    Two backends:
+
+    * **Vertex AI on a Google Cloud project** (used when a project is set:
+      ``llm.figure_analysis.gcp_project``, else the ``FEATHER_GCP_PROJECT``
+      environment variable). Authenticates with Application Default
+      Credentials (``gcloud auth application-default login``, or
+      ``GOOGLE_APPLICATION_CREDENTIALS`` pointing at a credentials file) and
+      bills the project; no API key, no AI Studio prepaid credits. Location
+      from ``llm.figure_analysis.vertex_location`` /
+      ``FEATHER_VERTEX_LOCATION``, default ``global``.
+    * **Gemini Developer API with an API key** otherwise (the old behaviour).
 
     Parameters
     ----------
     config : FeatherConfig
         Feather configuration (for output paths and LLM settings).
     api_key : str or None
-        Vertex AI API key. Falls back to the env var specified in config
-        (``llm.figure_analysis.api_key_env``, default ``VERTEX_API_KEY``).
+        Gemini API key for the key backend. Falls back to the env var
+        specified in config (``llm.figure_analysis.api_key_env``, default
+        ``VERTEX_API_KEY``). Ignored when a Cloud project is set.
     """
 
     def __init__(
@@ -67,16 +80,51 @@ class FigureAnalyzer:
         # the cap leaves room beyond the thinking budget.
         self.max_output_tokens = fa_config.get("max_output_tokens", 8192)
 
-        # Configure Vertex AI client
-        api_key_env = fa_config.get("api_key_env", "VERTEX_API_KEY")
-        key = api_key or os.getenv(api_key_env)
-        if not key:
-            raise RuntimeError(
-                f"Vertex AI API key not found. Set the '{api_key_env}' "
-                "environment variable or pass api_key= to FigureAnalyzer."
-            )
-        self.client = genai.Client(api_key=key)
-        logger.info("Using Gemini model: %s (Gemini Developer API)", self.model_name)
+        # Gemini client: Vertex AI on a Cloud project when one is set,
+        # otherwise the Gemini Developer API with a key.
+        self.gcp_project = (fa_config.get("gcp_project")
+                            or os.getenv("FEATHER_GCP_PROJECT") or None)
+        self.vertex_location = (fa_config.get("vertex_location")
+                                or os.getenv("FEATHER_VERTEX_LOCATION")
+                                or "global")
+        if self.gcp_project:
+            self.backend = "vertex_project"
+            try:
+                # The client resolves credentials lazily (on the first
+                # request); check them now so a missing login fails once,
+                # not after max_retries on every figure.
+                import google.auth
+                google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"])
+                self.client = genai.Client(
+                    vertexai=True, project=self.gcp_project,
+                    location=self.vertex_location,
+                )
+            except Exception as exc:   # google.auth DefaultCredentialsError
+                raise RuntimeError(
+                    f"Cannot create a Vertex AI client for project "
+                    f"'{self.gcp_project}' ({exc}). Application Default "
+                    "Credentials are needed: run `gcloud auth "
+                    "application-default login`, or set "
+                    "GOOGLE_APPLICATION_CREDENTIALS to a credentials file."
+                ) from exc
+            logger.info("Using Gemini model: %s (Vertex AI, project %s, %s)",
+                        self.model_name, self.gcp_project, self.vertex_location)
+        else:
+            self.backend = "gemini_api_key"
+            api_key_env = fa_config.get("api_key_env", "VERTEX_API_KEY")
+            key = api_key or os.getenv(api_key_env)
+            if not key:
+                raise RuntimeError(
+                    f"Gemini API key not found. Set the '{api_key_env}' "
+                    "environment variable or pass api_key= to FigureAnalyzer, "
+                    "or set a Google Cloud project (llm.figure_analysis."
+                    "gcp_project / FEATHER_GCP_PROJECT / --gcp-project) to "
+                    "use Vertex AI with Application Default Credentials."
+                )
+            self.client = genai.Client(api_key=key)
+            logger.info("Using Gemini model: %s (Gemini Developer API)",
+                        self.model_name)
 
         # Extract prompt context from config for templated system prompts
         self._prompt_models = config.models
@@ -153,7 +201,9 @@ class FigureAnalyzer:
                     analyses.append(analysis_dict)
                     n_figures += 1
                     logger.info("  Analysed: %s", png_path.stem)
-                except Exception:
+                except Exception as exc:
+                    if _fatal(exc):
+                        raise RuntimeError(self._fatal_message(exc)) from exc
                     logger.exception("  Failed: %s", png_path.stem)
 
             # Per-diagnostic synthesis
@@ -171,7 +221,9 @@ class FigureAnalyzer:
                     self._save_json(synthesis_path, synthesis_dict)
                     n_syntheses += 1
                     logger.info("  Synthesis complete: %s", diag_name)
-                except Exception:
+                except Exception as exc:
+                    if _fatal(exc):
+                        raise RuntimeError(self._fatal_message(exc)) from exc
                     logger.exception("  Synthesis failed: %s", diag_name)
 
         logger.info(
@@ -378,6 +430,8 @@ class FigureAnalyzer:
                 return response.text
             except Exception as exc:
                 failures.append(f"{type(exc).__name__}: {exc}"[:300])
+                if not _retryable(exc):
+                    raise
                 if attempt < self.max_retries:
                     logger.warning(
                         "Gemini call failed (attempt %d/%d): %s — "
@@ -392,6 +446,23 @@ class FigureAnalyzer:
                     raise
 
         raise RuntimeError("Gemini call failed after all retries")  # pragma: no cover
+
+    def _fatal_message(self, exc: Exception) -> str:
+        """Explain an error that would fail every figure, so the run stops."""
+        code = getattr(exc, "code", None)
+        where = (f"project '{self.gcp_project}', location "
+                 f"'{self.vertex_location}'"
+                 if getattr(self, "backend", "") == "vertex_project"
+                 else "the Gemini API key")
+        if code == 404:
+            hint = (f"Model '{self.model_name}' is not available to {where}. "
+                    "Set llm.figure_analysis.model (or --gemini-model) to a "
+                    "model the project can use.")
+        elif code == 402:
+            hint = f"Billing or credits exhausted for {where}."
+        else:
+            hint = f"Access denied for {where} ({code})."
+        return f"Stopping the analyze step: {hint} Gemini said: {exc}"
 
     @staticmethod
     def _raise_if_truncated(response: Any) -> None:
@@ -423,6 +494,7 @@ class FigureAnalyzer:
             "schema_version": provenance.SCHEMA_VERSION,
             "run_id": provenance.current_run_id(),
             "provider": "vertex",
+            "backend": getattr(self, "backend", "gemini_api_key"),
             "model": self.model_name,
             "schema": schema.__name__,
             "thinking_budget": self.thinking_budget,
@@ -558,3 +630,19 @@ def _usage(response: Any) -> dict[str, int | None]:
         "thinking": _get("thoughts_token_count"),
         "total": _get("total_token_count"),
     }
+
+
+def _status(exc: Exception) -> int | None:
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _retryable(exc: Exception) -> bool:
+    """False for client errors (4xx) a retry cannot fix; 408/429 do retry."""
+    code = _status(exc)
+    return code is None or code >= 500 or code in (408, 429)
+
+
+def _fatal(exc: Exception) -> bool:
+    """Errors that would fail every figure the same way: auth, billing, access, model."""
+    return _status(exc) in (401, 402, 403, 404)
