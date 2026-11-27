@@ -38,7 +38,7 @@ models:
     variant: r2i1p1f1
     # Kerchunk parquet store: {data_root}/{variant}/atmos/gr025/... and ocean/gr025/...
     data_source_type: "kerchunk_parquet"
-    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    data_root: "/work/bm1344/AWI/EERIE/kerchunks_patched/IFS-FESOM2/hist-1950"
     grids:
       sfc: latlon
       o2d: latlon
@@ -51,7 +51,7 @@ models:
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
-    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    data_root: "/work/bm1344/AWI/EERIE/kerchunks_patched/IFS-FESOM2/hist-1950"
     grids:
       sfc: latlon
       o2d: latlon

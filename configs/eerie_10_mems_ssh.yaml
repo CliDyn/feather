@@ -99,7 +99,7 @@ models:
     experiment: hist-1950
     variant: r2i1p1f1
     data_source_type: "kerchunk_parquet"
-    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    data_root: "/work/bm1344/AWI/EERIE/kerchunks_patched/IFS-FESOM2/hist-1950"
     grids: {o2d: latlon}
     color: "#5aabdf"
 
@@ -109,7 +109,7 @@ models:
     experiment: hist-1950
     variant: r3i1p1f1
     data_source_type: "kerchunk_parquet"
-    data_root: "/work/bm1344/DKRZ/kerchunks/IFS-FESOM2/hist-1950"
+    data_root: "/work/bm1344/AWI/EERIE/kerchunks_patched/IFS-FESOM2/hist-1950"
     grids: {o2d: latlon}
     color: "#9fcfe8"
 

@@ -799,6 +799,13 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - Ocean/sea-ice archive gaps (atmosphere is complete): r2 missing 1996-02..06, r3 missing 1982-08..12 and 1993-04..1994-03
 - 57 dedicated tests in `tests/test_icon_kerchunk_loader.py` (+ 4 native-fallback tests in `tests/test_temp_extremes_indices.py`), plus `TestEerie10MembersConfig` in `tests/test_composite_loader.py`
 
+### Stale kerchunk references (IFS-FESOM2 r2/r3)
+- A kerchunk store records byte ranges inside its source files; when a source is rewritten later the ranges point at wrong bytes → `Zstd decompression error` (or silently wrong data). Hit 2026-11: a270228 rewrote yearly ocean dailies after the DKRZ stores (k202193, built 2026-02) — hist r2 2012 (+7 missing days 02-23..29), hist r3 1999 (+8 days 10-24..31), ssp245 r2 2015–2021 (offsets only).
+- **Patched copies**: `/work/bm1344/AWI/EERIE/kerchunks_patched/IFS-FESOM2/{hist-1950,ssp245}` — only those `ocean/gr025/2D_daily_avg_*.parq` are copies (hist time axes now 14610 days); `atmos/`, `land/` and other members are symlinks to the DKRZ originals. All EERIE configs point their FESOM r2/r3 `data_root`/`hist_data_root`/`future_data_root` there. README in the tree; drop it once DKRZ rebuilds the stores.
+- `scripts/kerchunk_patch_rewritten_years.py SRC DST --year Y [Y …]` (needs h5py, e.g. the `aqua` env): copies a store, rebuilds the year's references from the HDF5 chunk index (per variable, so differing gaps per variable work), re-splices inline `time`/`time_2`, fixes `.zmetadata` shapes, and repeats a per-file constant record (`lev_bnds`) from a neighbouring year; `--check` decodes every patched chunk and compares samples with the file.
+- **Data caveat**: in the rewritten hist r2 2012 files, 2012-02-20..29 are inconsistent with the surrounding days (global-mean SST −0.46 °C, siconc +7 %, back on 03-01) — served as is; needs the data owner.
+- **Loader check**: `KerchunkParquetLoader` and `ICONKerchunkLoader` call `warn_stale_references()` when opening a store: one warning per store listing referenced files newer than the store (or missing). Best effort within `data_source.kerchunk_stale_check_seconds` (default 5, 0 disables): complete for the NetCDF-backed stores (~440 files, <1 s), sampled (golden-ratio spread) for the FDB-backed IFS atmosphere stores (up to ~2 M files at 30–70 ms per `stat`). 14 tests in `tests/test_kerchunk_stale_refs.py`.
+
 ### CompositeModelLoader
 - `feather/data/composite_loader.py`: routes `load_var()` and `load_coords()` to the correct backend per model
 - Triggered when `config.is_multi_source()` returns `True` (models have different `data_source_type`)
