@@ -1573,7 +1573,13 @@ class TeleconnectionDiag(DiagnosticBase):
             ax = axes[row, col]
 
             lats = pat["lat"].values
-            lons = pat["lon"].values
+            # nereus folds longitudes into [-180, 180), so a +180 column would
+            # land on -180 and the display cells east of 179 deg fall outside
+            # the linear triangulation (white line along the dateline). Keep
+            # it just west of 180 instead; it holds the wrapped -180 values.
+            lons = np.where(
+                pat["lon"].values >= 180, 180 - _SEAM_EPS_DEG, pat["lon"].values,
+            )
             lon2d, lat2d = np.meshgrid(lons, lats)
 
             _, _, interpolator = nr.plot(
@@ -1686,11 +1692,9 @@ class TeleconnectionDiag(DiagnosticBase):
 
         result = {}
 
-        # Rectilinear: xarray interp
+        # Rectilinear: xarray interp (wrapped across the dateline)
         for key, pat in rect_patterns.items():
-            result[key] = pat.interp(
-                lat=target_lats, lon=target_lons, method="nearest",
-            )
+            result[key] = _interp_lon_periodic(pat, target_lats, target_lons)
 
         # Curvilinear / renamed-rectilinear: nereus regrid
         # Pass validated lon/lat arrays explicitly (extract_coordinates
@@ -1710,9 +1714,8 @@ class TeleconnectionDiag(DiagnosticBase):
                 )
                 # Align to same target grid as rectilinear patterns
                 if "lat" in regridded.dims and "lon" in regridded.dims:
-                    result[key] = regridded.interp(
-                        lat=target_lats, lon=target_lons,
-                        method="nearest",
+                    result[key] = _interp_lon_periodic(
+                        regridded, target_lats, target_lons,
                     )
                 else:
                     result[key] = regridded
@@ -1870,3 +1873,40 @@ class TeleconnectionDiag(DiagnosticBase):
             summary_statistics=stats if stats else None,
         )
         return fig, meta
+
+
+# Longitude span copied across the dateline before interpolating onto the
+# common grid. Wide enough to cover one coarse (1-2 deg) source column, narrow
+# enough that a regional pattern (NAO, IOD) is never extrapolated.
+_SEAM_PAD_DEG = 2.0
+# Offset that keeps the +180 column of a plotted pattern inside nereus'
+# [-180, 180) longitude range.
+_SEAM_EPS_DEG = 1e-3
+
+
+def _interp_lon_periodic(
+    pat: xr.DataArray, target_lats: np.ndarray, target_lons: np.ndarray,
+) -> xr.DataArray:
+    """Nearest-neighbour ``interp`` onto -180..180 targets, wrapped at 180 deg.
+
+    A source on -180..180 stops short of one or both seam edges (0.25 deg grids
+    end at -179.75/180, 1 deg grids at +-179.5), and ``xarray.interp`` returns
+    NaN outside the source range even for ``method="nearest"``. The NaN column
+    at +-180 then widens to a white wedge along the dateline once ``nr.plot``
+    triangulates the pattern linearly. Columns within ``_SEAM_PAD_DEG`` of the
+    seam are copied to the other side (lon -+ 360) before interpolating.
+    """
+    lons = pat["lon"].values
+    east = pat.isel(lon=np.where(lons > 180 - _SEAM_PAD_DEG)[0])
+    west = pat.isel(lon=np.where(lons < -180 + _SEAM_PAD_DEG)[0])
+    parts = [pat]
+    if east.sizes["lon"]:
+        parts.append(east.assign_coords(lon=east["lon"].values - 360))
+    if west.sizes["lon"]:
+        parts.append(west.assign_coords(lon=west["lon"].values + 360))
+    if len(parts) > 1:
+        pat = xr.concat(parts, dim="lon").sortby("lon")
+        _, keep = np.unique(pat["lon"].values, return_index=True)
+        pat = pat.isel(lon=np.sort(keep))
+    return pat.interp(lat=target_lats, lon=target_lons, method="nearest")
+

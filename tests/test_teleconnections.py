@@ -1190,6 +1190,82 @@ class TestObsLonNorm:
         assert "lon" in result["ipsl"].dims
 
 
+class TestDatelineSeam:
+    """No white stripe along 180 deg in the pattern maps (AO, PDO, ...)."""
+
+    @staticmethod
+    def _field(lats, lons):
+        la, lo = np.meshgrid(lats, lons, indexing="ij")
+        return xr.DataArray(
+            np.cos(np.deg2rad(lo)) * np.sin(np.deg2rad(la)),
+            dims=("lat", "lon"), coords={"lat": lats, "lon": lons},
+        )
+
+    @pytest.mark.parametrize("lons", [
+        np.arange(0, 360, 0.25),        # 0.25 deg model / ERA5: ends at 180
+        np.arange(0.5, 360, 1.0),       # HadISST: ends at +-179.5
+    ])
+    def test_global_pattern_has_no_nan_column(self, lons):
+        pat = self._field(np.arange(20, 90, 1.0), lons)
+        out = TeleconnectionDiag._regrid_patterns_to_common({"p": pat})["p"]
+        assert float(out.lon.min()) == -180 and float(out.lon.max()) == 180
+        assert not np.isnan(out).any()
+        # the two seam columns are the same meridian
+        np.testing.assert_allclose(
+            out.sel(lon=-180).values, out.sel(lon=180).values, atol=0.05,
+        )
+
+    def test_pacific_pattern_closed_at_dateline(self):
+        """PDO-like box 110E-100W on a 1 deg grid."""
+        pat = self._field(np.arange(20.5, 70, 1.0), np.arange(110.5, 260, 1.0))
+        out = TeleconnectionDiag._regrid_patterns_to_common({"p": pat})["p"]
+        for lon in (-180.0, 180.0):
+            assert np.isfinite(out.sel(lon=lon, lat=slice(21, 69))).all()
+
+    def test_regional_pattern_not_extrapolated(self):
+        """The wrap only touches the seam; a smaller box stays NaN outside."""
+        wide = self._field(np.arange(20, 80, 1.0), np.arange(-90, 40.5, 1.0))
+        small = self._field(np.arange(30, 70, 1.0), np.arange(-60, 10.5, 1.0))
+        out = TeleconnectionDiag._regrid_patterns_to_common(
+            {"wide": wide, "small": small},
+        )
+        assert np.isnan(out["small"].sel(lon=slice(-90, -61))).all()
+        assert np.isnan(out["small"].sel(lon=slice(11, 40))).all()
+
+    def test_plot_keeps_seam_column_inside_nereus_range(self, monkeypatch):
+        """nereus folds lon into [-180, 180); +180 must not land on -180."""
+        import matplotlib.pyplot as plt
+        import feather.diag.teleconnections as tc
+
+        seen = []
+        real_plot = tc.nr.plot
+
+        def spy(data, lon, lat, **kw):
+            seen.append((np.asarray(lon), np.asarray(data)))
+            return real_plot(data, lon, lat, **kw)
+
+        monkeypatch.setattr(tc.nr, "plot", spy)
+        diag = TeleconnectionDiag.__new__(TeleconnectionDiag)
+        diag._build_metadata = lambda **k: k
+        diag._obs_meta = lambda m: {}
+        diag.period = ("1980", "2014")
+        result = {
+            "model_indices": {},
+            "obs_pattern": self._field(
+                np.arange(20.5, 90, 1.0), np.arange(0.5, 360, 1.0),
+            ),
+            "model_patterns": {},
+        }
+        fig, _ = diag._plot_pattern(_MODE_REGISTRY["ao"], result)
+        plt.close(fig)
+        lon, data = seen[0]
+        assert lon.max() < 180
+        east = lon == lon.max()
+        assert lon.max() > 179.9
+        # interior rows (the first/last target rows sit outside the source lats)
+        assert np.isfinite(data[east][1:-1]).all()
+
+
 # ── Sign convention tests ───────────────────────────────────────────
 
 

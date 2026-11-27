@@ -552,7 +552,8 @@ If your data format is not supported, create a new loader class (see `GRIBLoader
 - `_field_global_mean()` uses cos-lat weighting directly (grid-config-independent), used for PDO global SST removal
 - **Curvilinear CMIP6 ocean grids** (ORCA, tripolar): `_find_latlon()` detects `nav_lat`/`nav_lon` etc.; `_get_latlon_arrays()` wraps `nereus.extract_coordinates()` with validation (falls back to named coords when nereus returns integer dim indices). Box means use `nr.subset_by_bbox()` on flattened coord arrays. EOF on curvilinear grids uses `_compute_eof_flat()` (returns PC index only, no spatial pattern). Regression patterns work on any grid shape.
 - **Pattern display**: all patterns (obs, model, CMIP6) regridded to common 1° grid via `_regrid_patterns_to_common()`. Rectilinear uses `xr.DataArray.interp()`, curvilinear uses `nr.regrid()` with explicit lon/lat arrays. All panels rendered with `method="linear"` in `nr.plot()` for smooth display.
-- 87 dedicated tests across `tests/test_eof.py` (13), `tests/test_spectrum.py` (9), `tests/test_teleconnections.py` (65)
+- **Dateline seam** (white stripe along 180° in AO/PDO/... pattern maps): the common 1° grid runs −180..180 but sources stop short of one edge (0.25° → −179.75..180, HadISST → ±179.5) and `xarray.interp` gives NaN outside the source range even with `nearest`; `_interp_lon_periodic()` copies the columns within 2° of the seam to the other side first (narrow, so regional boxes are not extrapolated). Separately, nereus folds plot longitudes into [−180, 180), so `_plot_pattern` moves the +180 column to 179.999 — otherwise it lands on −180 and the display cells east of 179° fall outside the linear triangulation.
+- 92 dedicated tests across `tests/test_eof.py` (13), `tests/test_spectrum.py` (9), `tests/test_teleconnections.py` (70)
 
 ### ObsComparisonDiag diagnostic
 - 15th diagnostic: ERA5 vs Berkeley Earth comparison for global trends and climatological biases
