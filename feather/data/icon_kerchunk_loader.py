@@ -541,6 +541,12 @@ class ICONKerchunkLoader:
 
         path = self._store_path(model, store)
         logger.debug("Opening ICON kerchunk store %s for %s", path, model)
+        from feather.data.kerchunk_loader import (
+            stale_check_seconds,
+            warn_stale_references,
+        )
+
+        warn_stale_references(path, stale_check_seconds(self._config))
         fs = fsspec.filesystem(
             "reference", fo=str(path), remote_protocol="file", lazy=True,
         )

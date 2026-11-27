@@ -38,6 +38,128 @@ from feather.data.variables import get_var
 
 logger = logging.getLogger(__name__)
 
+# Stores already checked by warn_stale_references() in this process.
+_STALE_CHECKED: set[str] = set()
+
+
+def stale_reference_files(
+    store: Path | str, time_budget: float = 5.0,
+) -> list[tuple[str, float | None]]:
+    """Files a parquet reference store points at that changed after it was built.
+
+    A kerchunk store records byte ranges inside its source files. If a source
+    file is rewritten later (e.g. the IFS-FESOM2 r2/r3 ocean dailies of 2012 and
+    1999, rewritten 2026-11 to fill missing days), the ranges point at the wrong
+    bytes: reads fail with codec errors ("Zstd decompression error") or, worse,
+    decode to wrong data. Returns ``(path, mtime)`` for every referenced file
+    modified after the earliest reference file of the store, and
+    ``(path, None)`` for referenced files that no longer exist. Only the
+    directory (``{store}/{var}/refs.*.parq``) layout is inspected.
+
+    Best effort within *time_budget* seconds: the NetCDF-backed stores (a few
+    hundred files, ~1 ms per ``stat``) are checked completely, while the FDB
+    archives behind the IFS atmosphere stores (up to ~2 million files, 30-70 ms
+    per ``stat``) are sampled, spread evenly over the store.
+    """
+    import os
+    import time
+
+    deadline = time.monotonic() + time_budget
+    store = Path(store)
+    if not store.is_dir():
+        return []
+    ref_files = sorted(store.glob("*/refs.*.parq"))
+    if not ref_files:
+        return []
+    built = min(p.stat().st_mtime for p in ref_files)
+
+    paths: set[str] = set()
+    n_read = 0
+    for rf in ref_files:
+        if time.monotonic() > deadline:
+            break
+        n_read += 1
+        try:
+            col = pd.read_parquet(rf, columns=["path"])["path"]
+        except Exception:  # unreadable/odd schema: not our concern here
+            continue
+        paths.update(p for p in col.dropna().unique() if isinstance(p, str) and p)
+
+    ordered = sorted(paths)
+    # Golden-ratio permutation: any prefix is spread evenly over the store.
+    spread = np.argsort((np.arange(len(ordered)) * 0.6180339887498949) % 1.0)
+    stale: list[tuple[str, float | None]] = []
+    n_stat = 0
+    for i in spread:
+        if time.monotonic() > deadline:
+            break
+        p = ordered[i]
+        local = p[len("file://"):] if p.startswith("file://") else p
+        if "://" in local:  # remote reference: cannot stat
+            continue
+        n_stat += 1
+        try:
+            mtime = os.stat(local).st_mtime
+        except OSError:
+            stale.append((local, None))
+            continue
+        if mtime > built:
+            stale.append((local, mtime))
+    if n_read < len(ref_files) or n_stat < len(ordered):
+        logger.debug(
+            "Stale-reference check of %s sampled %d/%d reference files and "
+            "%d/%d source files within %.0f s",
+            store, n_read, len(ref_files), n_stat, len(ordered), time_budget,
+        )
+    stale.sort()
+    return stale
+
+
+def stale_check_seconds(config: FeatherConfig) -> float:
+    """``data_source.kerchunk_stale_check_seconds`` (default 5; 0 disables)."""
+    try:
+        return float((config.data_source or {}).get("kerchunk_stale_check_seconds", 5.0))
+    except (TypeError, ValueError, AttributeError):
+        return 5.0
+
+
+def warn_stale_references(
+    store: Path | str, time_budget: float = 5.0, max_listed: int = 5,
+) -> None:
+    """Log a warning (once per store) if :func:`stale_reference_files` finds any.
+
+    ``time_budget <= 0`` disables the check (config:
+    ``data_source.kerchunk_stale_check_seconds``).
+    """
+    import datetime as _dt
+
+    key = str(store)
+    if time_budget <= 0 or key in _STALE_CHECKED:
+        return
+    _STALE_CHECKED.add(key)
+    try:
+        stale = stale_reference_files(store, time_budget=time_budget)
+    except Exception:  # never let the check break a load
+        logger.debug("Stale-reference check failed for %s", store, exc_info=True)
+        return
+    if not stale:
+        return
+
+    def _fmt(item):
+        path, mtime = item
+        when = "missing" if mtime is None else (
+            "modified " + _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d"))
+        return f"{path} ({when})"
+
+    listed = "; ".join(_fmt(s) for s in stale[:max_listed])
+    more = f"; … and {len(stale) - max_listed} more" if len(stale) > max_listed else ""
+    logger.warning(
+        "Kerchunk store %s references %d source file(s) changed after the store "
+        "was built — reads from them can fail (e.g. 'Zstd decompression error') "
+        "or return wrong data until the references are regenerated: %s%s",
+        store, len(stale), listed, more,
+    )
+
 # ---------------------------------------------------------------------------
 # Variable mapping: CMOR canonical name → (store, kerchunk_name, scale)
 #
@@ -588,6 +710,7 @@ class KerchunkParquetLoader:
         self._store_paths[key] = path
         self._touched.append(path)
         logger.debug("Opening kerchunk store %s for %s/%s", path, model, store_type)
+        warn_stale_references(path, stale_check_seconds(self._config))
         fs = fsspec.filesystem("reference", fo=str(path), remote_protocol="file", lazy=True)
         ds = xr.open_dataset(
             fs.get_mapper(""),
