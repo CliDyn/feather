@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """End-to-end test of the CMIP6Loader with real Levante data.
 
 Run on a compute node (SLURM or Jupyter), NOT on the login node:

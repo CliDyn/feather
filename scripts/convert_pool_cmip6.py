@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Convert DKRZ CMIP6 pool (DRS NetCDF) into feather's per-variable zarr cache.
 
 Reads the on-disk CMIP6 DRS tree at ``/pool/data/CMIP6/data/{activity}`` and

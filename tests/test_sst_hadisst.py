@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Structural tests for the sst_hadisst diagnostic (no real data).
 
 End-to-end trend/Taylor computation needs real model + HadISST data and is

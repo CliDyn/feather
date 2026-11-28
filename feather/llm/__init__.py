@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """LLM analysis sub-package for Feather.
 
 Uses Gemini to provide scientific analysis of generated diagnostic figures.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Variable metadata and model-obs-CMIP6 mapping registry.
 
 Unit conversion notes

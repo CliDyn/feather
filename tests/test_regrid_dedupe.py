@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the pole-safe conservative regridding wrapper.
 
 A regular lat/lon grid that includes ±90° gives SphericalVoronoi duplicate

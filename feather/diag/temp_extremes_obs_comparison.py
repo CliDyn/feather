@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Temperature-extremes observational comparison: Berkeley Earth vs CRU TS.
 
 Compares daily maximum (``tasmax``) and minimum (``tasmin``) near-surface

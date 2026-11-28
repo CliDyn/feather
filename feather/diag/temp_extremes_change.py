@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Daily Tmin/Tmax climate change signal diagnostic.
 
 Computes the climate change signal of the **mean daily minimum (tasmin)** and

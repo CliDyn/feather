@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Integration test for the `analyze` step against the real Gemini API.
 
 Unlike ``tests/test_llm.py`` (fully mocked), this test exercises the

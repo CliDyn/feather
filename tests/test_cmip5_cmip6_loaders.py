@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the CMIP5 and CMIP6 (NetCDF-tree) loaders (synthetic trees)."""
 
 import numpy as np

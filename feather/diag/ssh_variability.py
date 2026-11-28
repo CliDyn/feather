@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Sea-surface-height variability: EERIE members vs AVISO (and CMIP6).
 
 Generalises the notebook ``/work/bm1344/AWI/EERIE/science/

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Discovery helpers for the DKRZ CMIP6 on-disk DRS tree.
 
 The DKRZ CMIP6 pool (``/pool/data/CMIP6/data``) stores data as a CMIP6

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Precipitation evaluation diagnostic against MSWEP v2.8.
 
 Produces 8 figures across 6 groups:

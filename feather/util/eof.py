@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """EOF (Empirical Orthogonal Function) computation via SVD.
 
 Provides area-weighted EOF decomposition of 2D+time DataArrays

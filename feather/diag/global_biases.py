@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Global climatology bias maps diagnostic.
 
 For each variable x period, produces a combined multi-panel figure with

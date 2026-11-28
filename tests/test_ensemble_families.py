@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Per-model-family summaries (``project.ensemble_mode: per_family``) beyond
 global_biases: shared helpers, time series, Added Value (maps, bars, NetCDF,
 ocean, AR6) and the Köppen–Trewartha ensemble map.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Shared engine for pairwise observational-dataset comparisons.
 
 The four obs-comparison diagnostics (temperature, precipitation, cloud cover,

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Smoke test: verify that a Gemini API key can reach the Vertex AI Express
 endpoint and return a coherent response.
 

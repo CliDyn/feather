@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Marine heatwaves (Hobday et al., 2016) in daily SST: EERIE vs obs and CMIP6.
 
 Follows the surface analysis of de Toma et al. (2026, EGUsphere-2026-5747,

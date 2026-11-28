@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Per-model-family ensemble summaries (``project.ensemble_mode: per_family``).
 
 Some model sets must not be pooled into one ensemble: in EERIE, ICON-ESM-ER

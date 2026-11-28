@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Pydantic schemas for the report generator.
 
 Defines the data structures for editorial curation (Stage 1) and

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tropical Nights climate change signal diagnostic.
 
 Compares mean annual Tropical Nights (TN > 20 °C) between a historical

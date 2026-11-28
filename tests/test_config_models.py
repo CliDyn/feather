@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Guard against shipping configs that reference a retired LLM model.
 
 Providers retire model IDs (e.g. ``gemini-3-pro-preview`` started returning

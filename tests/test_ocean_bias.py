@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the shared ocean benchmark-bias module (feather.diag.ocean_bias).
 
 Pure-function coverage only (no real data): grid construction, unit/grid

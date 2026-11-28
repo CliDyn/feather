@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Extend feather's benchmark zarr cache with the 2015-2025 scenario period.
 
 The historical benchmark caches built by ``convert_pool_cmip6.py`` end in

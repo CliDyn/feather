@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Global Warming Level (GWL) window computation.
 
 Given a GCM's global-mean near-surface temperature, find the 30-year window

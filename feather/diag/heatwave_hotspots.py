@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Heatwave Hotspots — extreme-heat tail-widening trends (PNAS Fig 2–4).
 
 Reproduces Figures 2–4 of Sambartusek, Kornhuber et al. (2024, PNAS,

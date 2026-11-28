@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for CMORLoader (feather.data.cmor_loader)."""
 
 from pathlib import Path

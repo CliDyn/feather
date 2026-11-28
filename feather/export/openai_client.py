@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Thin OpenAI API wrapper with retry logic.
 
 Follows the same pattern as the Gemini wrapper in ``llm/analyzer.py``

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Configurable observation reference for extreme-index diagnostics.
 
 The tropical-nights and heatwave diagnostics (and their climate-change

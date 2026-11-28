@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for provenance in NetCDF exports, the dashboard and PROV-JSON."""
 
 import json

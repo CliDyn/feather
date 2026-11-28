@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Export a figure's provenance as W3C PROV-JSON.
 
 Feather keeps provenance internally as flat JSON events (what the sidecar,

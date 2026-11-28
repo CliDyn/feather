@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Unit tests for the pool→zarr converter logic (no heavy I/O)."""
 
 from pathlib import Path

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Feather — Lightweight Climate Model Evaluation Framework."""
 
 __version__ = "0.1.0"

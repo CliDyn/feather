@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the Köppen–Trewartha climate classification.
 
 Focus on the pure classifier (:mod:`feather.util.koeppen_trewartha`), which
