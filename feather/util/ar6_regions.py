@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """IPCC AR6 WGI reference regions (Iturbide et al. 2020).
 
 The 58 regions of `Iturbide et al. (2020)

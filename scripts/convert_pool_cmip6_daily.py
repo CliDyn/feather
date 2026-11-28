@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Convert DKRZ CMIP6 pool *daily* tas/tasmax/tasmin/pr into per-variable zarr.
 
 Companion to :mod:`scripts.convert_pool_cmip6`, restricted to the daily

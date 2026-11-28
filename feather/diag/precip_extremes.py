@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """ETCCDI daily-precipitation extremes: present day and SSP2-4.5 change.
 
 Computes nine ETCCDI indices from **daily** precipitation for every EERIE

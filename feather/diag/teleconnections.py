@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Climate variability modes (teleconnections) diagnostic.
 
 Evaluates large-scale teleconnection patterns (ENSO, NAO, SAM, AO, IOD,

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Ocean 3D evaluation diagnostic against EN4 v4.2.2.
 
 Compares DestinE high-resolution models against EN4 v4.2.2 observations

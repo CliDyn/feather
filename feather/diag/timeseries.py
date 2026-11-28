@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Global-mean time series diagnostic.
 
 Plots area-weighted global mean time series for each variable, with all

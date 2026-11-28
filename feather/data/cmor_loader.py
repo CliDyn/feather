@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Load model data from a standard CMOR directory tree.
 
 Supports directory structures like EERIE Ensemble::

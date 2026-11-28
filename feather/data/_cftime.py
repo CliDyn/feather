@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Cross-version helper for requesting cftime time decoding from xarray.
 
 Newer xarray (>= 2025) deprecates the ``use_cftime=True`` kwarg in favour of

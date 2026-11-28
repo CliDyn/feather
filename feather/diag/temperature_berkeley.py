@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """2m Temperature evaluation against Berkeley Earth Land+Ocean.
 
 Produces 10 figures across 8 groups:

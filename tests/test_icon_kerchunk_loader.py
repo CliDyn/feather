@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for ICONKerchunkLoader — ICON-ESM-ER r2/r3 gr025 reference stores."""
 
 import numpy as np

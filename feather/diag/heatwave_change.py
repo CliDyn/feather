@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Heatwave climate change signal diagnostic (Perkins & Alexander 2013).
 
 Compares five heatwave indices between a historical reference period (hist-1950)

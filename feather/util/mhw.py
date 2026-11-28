@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Marine heatwave detection (Hobday et al., 2016) vectorised over many cells.
 
 A marine heatwave (MHW) is a run of at least ``min_duration`` days on which

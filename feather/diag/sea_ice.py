@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Sea ice diagnostic.
 
 Evaluates DestinE sea ice simulations against OSI-SAF (concentration/extent)

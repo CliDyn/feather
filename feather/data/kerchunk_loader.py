@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Load model data from Parquet-format kerchunk reference stores.
 
 Handles IFS-FESOM2 hist-1950 ensemble members (e.g. r2i1p1f1, r3i1p1f1)

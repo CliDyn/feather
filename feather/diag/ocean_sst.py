@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Ocean SST evaluation diagnostic.
 
 Compares DestinE high-resolution models against ESA-CCI L4 v3.0.1 SST

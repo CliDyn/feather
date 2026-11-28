@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the ETCCDI precipitation indices and the precip_extremes diagnostic."""
 
 import json

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Pipeline orchestration — run diagnostics, analysis, report, and website.
 
 Provides :func:`run_pipeline` which ties together all feather stages

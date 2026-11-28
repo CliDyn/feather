@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for GRIBLoader — per-month GRIB files on HEALPix grid."""
 
 import numpy as np

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Sea-surface temperature evaluation against HadISST.
 
 A second SST observational reference alongside ESA-CCI.  HadISST is coarser

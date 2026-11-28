@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for AR6 reference-region Added Value (feather.diag._ar6_added_value)."""
 
 import csv

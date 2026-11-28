@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Heatwave Indices diagnostic (TX90 method).
 
 Five interconnected heatwave indices based on the 90th percentile of daily

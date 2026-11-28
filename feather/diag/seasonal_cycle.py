@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Seasonal cycle diagnostic.
 
 Plots the 12-month climatological cycle (Jan-Dec) of global-mean values

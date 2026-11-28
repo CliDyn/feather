@@ -7,6 +7,8 @@ name = "feather"
 version = "0.1.0"
 description = "Lightweight climate model evaluation framework for high-resolution climate models"
 requires-python = ">=3.10"
+license = {text = "BSD-3-Clause"}
+classifiers = ["License :: OSI Approved :: BSD License"]
 dependencies = [
     "xarray",
     "pandas",

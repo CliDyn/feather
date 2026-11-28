@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Shared ocean benchmark-bias computation + NetCDF export.
 
 The ocean diagnostics (``ocean_sst``, ``ocean_en4``, ``sea_ice``) historically

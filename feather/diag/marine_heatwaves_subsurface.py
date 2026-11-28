@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Subsurface marine heatwaves: shallow (≤ 50 m) vs deep (> 50 m) events.
 
 Subsurface part of de Toma et al. (2026, EGUsphere-2026-5747, "Comparing

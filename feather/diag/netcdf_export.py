@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Shared NetCDF export for climatology/bias map diagnostics.
 
 Writes the per-source fields underlying the bias-map figures (observations,

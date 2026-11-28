@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for AddedValueDiag (Dosio et al. 2015).
 
 All tests use small synthetic data (nside=8 HEALPix / 5° lat-lon) and

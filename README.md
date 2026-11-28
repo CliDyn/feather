@@ -1236,3 +1236,9 @@ pytest tests/ -v
 Python 3.10+. See `environment.yml` for the full dependency list, or install via `conda env create -f environment.yml`.
 
 Key dependencies: xarray, dask, numpy, scipy, matplotlib, cartopy, healpy, nereus, gsw, cfgrib, pydantic, google-genai, openai.
+
+## License
+
+Feather is released under the [BSD 3-Clause License](LICENSE), Copyright (c) 2026, feather contributors.
+
+Feather's dependencies carry their own licences. Most are permissive (nereus and regionmask MIT, xarray Apache-2.0, cartopy BSD-3-Clause), but healpy is GPL-2.0-only. Feather only imports it and does not include its code; the container image does bundle it, and healpy in that image remains under the GPL-2.0.

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Integration test for the `analyze` step on the DestinE Added-Value config.
 
 Exercises :class:`feather.llm.analyzer.FigureAnalyzer` end-to-end with a

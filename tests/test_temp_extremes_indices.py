@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the ETCCDI temperature indices and the temp_extremes_indices diagnostic."""
 
 import json
