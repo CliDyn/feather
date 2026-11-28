@@ -1,0 +1,28 @@
+# Citation metadata for feather (https://citation-file-format.github.io/).
+# TODO before release: replace the placeholder author with the real list,
+# add the Zenodo DOI (identifiers) and the release date (date-released).
+cff-version: 1.2.0
+message: "If you use feather, please cite it using the metadata below."
+type: software
+title: "Feather: a lightweight climate model evaluation framework"
+abstract: >-
+  Feather compares high-resolution climate models against observations
+  (ERA5, CERES, EN4, ESA-CCI, HadISST, OSI-SAF, PIOMAS/GIOMAS, MSWEP,
+  Berkeley Earth) and CMIP6/HighResMIP multi-model means. It generates
+  diagnostic figures, LLM-analysed results, a LaTeX report and a static
+  web dashboard.
+authors:
+  - family-names: "TODO"
+    given-names: "TODO"
+    affiliation: "TODO"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+version: 0.1.0
+license: BSD-3-Clause
+repository-code: "https://github.com/CliDyn/feather"
+keywords:
+  - climate model evaluation
+  - high-resolution climate models
+  - CMIP6
+  - HighResMIP
+  - EERIE
+  - DestinE

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Stale kerchunk references: source files rewritten after the store was built."""
 from __future__ import annotations
 

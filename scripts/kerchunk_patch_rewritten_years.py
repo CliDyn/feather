@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Patch a kerchunk parquet reference store after source NetCDF files were rewritten.
 
 The IFS-FESOM2 hist-1950 r2/r3 ocean daily stores (DKRZ, built 2026-02) index
