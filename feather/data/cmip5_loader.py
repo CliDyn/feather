@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Load CMIP5 GCM data from the ESGF CMIP5 DRS tree.
 
 Directory layout (``output1``)::

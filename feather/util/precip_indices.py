@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """ETCCDI daily-precipitation extreme indices.
 
 Definitions follow the ETCCDI set as distributed in the C3S dataset

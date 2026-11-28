@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the configurable ERA5/Berkeley extremes obs reference."""
 
 import numpy as np

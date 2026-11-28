@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Prompt templates for Gemini-based climate figure analysis.
 
 Each prompt instructs the LLM to produce structured scientific analysis

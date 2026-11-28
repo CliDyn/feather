@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for TempExtremesChangeDiag (daily Tmin/Tmax climate change signal)."""
 
 import numpy as np

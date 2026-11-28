@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for area-conservative remapping of flux/precipitation fields.
 
 Covers the variable classification, the method chooser on ``DiagnosticBase``

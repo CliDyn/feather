@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Gemini-based analysis of climate diagnostic figures.
 
 The :class:`FigureAnalyzer` scans ``{output_dir}/figures/`` for PNG files

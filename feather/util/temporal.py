@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Temporal utilities: climatologies, anomalies, seasonal grouping, trends."""
 
 import numpy as np

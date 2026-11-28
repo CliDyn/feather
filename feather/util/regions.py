@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """CORDEX analysis regions (CMIP6 ``*-11`` domains).
 
 This module provides a small, dependency-free catalogue of the CORDEX-CMIP6

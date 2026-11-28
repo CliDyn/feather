@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """CMIP6 data loader for multi-model mean comparisons.
 
 Loads CMIP6 historical data from per-variable zarr files, regrids to a

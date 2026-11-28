@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Radiation budget diagnostic.
 
 Computes derived radiation quantities (net TOA/surface radiation, CRE,

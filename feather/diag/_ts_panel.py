@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Shared rendering for envelope / anomaly global-mean time-series figures.
 
 Used by the ``timeseries``, ``temperature_berkeley`` and

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Köppen–Trewartha climate shifts at a global warming level (Phase 2).
 
 For each model family (CORDEX / CMIP5 / CMIP6) this diagnostic compares the

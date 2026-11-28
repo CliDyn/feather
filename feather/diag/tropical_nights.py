@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tropical Nights Index diagnostic (climdex TN20p).
 
 Annual count of days where daily minimum 2m temperature (tasmin) exceeds

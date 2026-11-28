@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for NetCDFLoader — per-year NetCDF files on HEALPix grid."""
 
 import numpy as np

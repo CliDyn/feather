@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Static site generator for feather climate diagnostics.
 
 Scans ``{output_dir}/figures/`` and ``{output_dir}/analysis/``, renders

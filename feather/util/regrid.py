@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Regridding helpers that work around degenerate source grids.
 
 ``nereus`` builds conservative remapping weights from a spherical Voronoi

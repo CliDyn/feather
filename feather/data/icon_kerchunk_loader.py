@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Load ICON-ESM-ER ensemble members from Parquet-format kerchunk stores.
 
 The EERIE CMOR tree publishes only ``r1i1p1f1`` for ICON-ESM-ER.  The

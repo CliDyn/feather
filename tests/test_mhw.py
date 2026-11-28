@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the vectorised marine heatwave detection (feather.util.mhw)."""
 
 import numpy as np

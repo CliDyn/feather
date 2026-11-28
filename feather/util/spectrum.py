@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Power spectrum utilities for climate variability analysis.
 
 Provides Welch spectral density estimation for teleconnection indices.

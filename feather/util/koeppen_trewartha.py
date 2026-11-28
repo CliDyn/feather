@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Köppen–Trewartha (KT14) climate classification.
 
 Vectorised xarray implementation of the Köppen–Trewartha climate

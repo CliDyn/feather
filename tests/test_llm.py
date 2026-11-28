@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for feather.llm — schemas, prompts, analyzer, JSON parsing.
 
 All tests mock google.genai — no real API calls.

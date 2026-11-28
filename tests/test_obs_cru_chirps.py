@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for CHIRPS/CRU/Berkeley-Land loaders and the obs-comparison engine.
 
 Covers:

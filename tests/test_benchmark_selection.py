@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the --benchmarks runtime selection in _run_diagnostics."""
 
 from unittest.mock import MagicMock, patch

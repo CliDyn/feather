@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for Berkeley Earth land-only masking.
 
 The Berkeley Earth Land+Ocean product reports SST over the ocean rather

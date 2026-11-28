@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """``feather verify`` — check an output tree against its recorded provenance.
 
 Turns recorded provenance into signals:

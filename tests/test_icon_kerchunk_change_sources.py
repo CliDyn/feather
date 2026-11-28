@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """``icon_kerchunk`` hist/future sources of the climate-change diagnostics.
 
 ICON-ESM-ER r2/r3 have no CMOR output; their hist-1950 and ssp245 runs are

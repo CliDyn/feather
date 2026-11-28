@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Cloud-cover observational comparison: ERA5 vs CRU TS.
 
 Compares total cloud cover (``clt``, %) from ERA5 against the CRU TS v4.09

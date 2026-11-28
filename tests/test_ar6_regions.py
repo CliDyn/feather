@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the AR6 (Iturbide et al. 2020) reference-region catalogue."""
 
 import numpy as np

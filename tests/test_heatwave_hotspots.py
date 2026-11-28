@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for HeatwaveHotspotsDiag — extreme-heat tail-widening (PNAS Fig 2–4)."""
 
 import numpy as np

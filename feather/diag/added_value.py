@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Added Value diagnostic (Dosio et al. 2015).
 
 Quantifies the added value of the EERIE model ensemble (mean and median)

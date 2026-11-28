@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Added Value over the 58 AR6 (Iturbide et al. 2020) reference regions.
 
 Companion to :mod:`feather.diag.added_value`, reached with

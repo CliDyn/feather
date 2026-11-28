@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Precipitation observational dataset comparison: ERA5 vs MSWEP v2.8.
 
 Produces 13 figures across 5 groups:

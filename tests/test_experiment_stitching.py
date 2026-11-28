@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for cross-experiment time stitching (DestinE + CMIP6).
 
 The DestinE catalog splits each model across separate experiments

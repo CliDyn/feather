@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """``feather provenance`` — inspect the provenance of figures and runs.
 
 Examples::

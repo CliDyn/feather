@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Shared Berkeley Earth high-resolution loading and land-masking helpers.
 
 The Berkeley Earth gridded products (Global TAVG HR, Land TMAX/TMIN) store

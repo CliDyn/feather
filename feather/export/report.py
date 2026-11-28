@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Report generator — main orchestrator.
 
 Collects diagnostic outputs, runs 3-stage LLM workflow, and produces

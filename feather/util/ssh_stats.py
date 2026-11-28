@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Per-cell sea-surface-height statistics: mean and three standard deviations.
 
 Used by :class:`feather.diag.ssh_variability.SSHVariabilityDiag`.  Every

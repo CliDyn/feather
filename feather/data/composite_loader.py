@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Composite model loader for multi-data-source configurations.
 
 When models in a single config use different backends (e.g. DestinE

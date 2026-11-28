@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Pydantic schemas for structured LLM analysis output.
 
 These models define the expected shape of Gemini's analysis responses,

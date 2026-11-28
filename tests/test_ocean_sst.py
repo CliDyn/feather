@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for the ocean SST diagnostic (feather.diag.ocean_sst)."""
 
 import json

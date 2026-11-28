@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Pre-download the network resources feather fetches lazily at run time.
 
 Run at image build time so diagnostics work on compute nodes without

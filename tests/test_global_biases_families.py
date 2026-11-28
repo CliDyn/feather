@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Tests for per-model-family summaries in GlobalBiases (ensemble_mode)."""
 
 import dataclasses

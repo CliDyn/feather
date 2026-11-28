@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """ETCCDI daily-temperature extremes: present day and SSP2-4.5 change.
 
 Computes fourteen ETCCDI indices from **daily** maximum and minimum

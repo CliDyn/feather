@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 feather contributors
+# SPDX-License-Identifier: BSD-3-Clause
 """Observational dataset comparison: ERA5 vs Berkeley Earth trends and biases.
 
 Produces 10 figures across 4 groups:
